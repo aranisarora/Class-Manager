@@ -1,0 +1,157 @@
+@import "tailwindcss";
+
+/* Class Manager — design tokens. A dark developer instrument: near-black
+   surfaces, one accent, and a restrained good/warn/bad triad kept for message
+   status. Declared in @theme so Tailwind generates utilities from them
+   (bg-surface, text-dim, border-line, font-mono, rounded-panel …) while staying
+   plain custom properties at runtime — which is what lets the light block
+   below simply re-point them. */
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", "JetBrains Mono", Menlo,
+    Consolas, monospace;
+
+  --color-bg: #08090b;
+  --color-surface: #101216;
+  --color-raised: #171a1f;
+  --color-line: #23272e;
+  --color-line-soft: #1a1e23;
+
+  --color-ink: #e7eaee;
+  --color-dim: #98a1ac;
+  --color-faint: #6a727c;
+
+  --color-accent: #4c9aff;
+  --color-accent-soft: #12233d;
+
+  --color-good: #3fb950;
+  --color-warn: #d6a029;
+  --color-bad: #f2555a;
+
+  --color-in: #191d22;
+  --color-out: #0e3b30;
+
+  --radius-panel: 0.625rem;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --color-bg: #f6f7f9;
+    --color-surface: #ffffff;
+    --color-raised: #f1f3f6;
+    --color-line: #dee2e8;
+    --color-line-soft: #eceff3;
+    --color-ink: #14171b;
+    --color-dim: #545c66;
+    --color-faint: #838b95;
+    --color-accent: #1a6fe0;
+    --color-accent-soft: #e6f0ff;
+    --color-good: #1a7f37;
+    --color-warn: #9a6700;
+    --color-bad: #cf222e;
+    --color-in: #ffffff;
+    --color-out: #d9fdd3;
+  }
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  html {
+    background: var(--color-bg);
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-synthesis-weight: none;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection {
+    background: var(--color-accent);
+    color: #fff;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+}
+
+/* Shared primitives the emulator renders with (§17: a primitive WhatsApp, not a
+   replica). `.tick` reads data-status: queued|sent|delivered|read|failed. */
+
+@layer components {
+  .bubble-in,
+  .bubble-out {
+    max-width: 30rem;
+    width: fit-content;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--color-line);
+    border-radius: 0.75rem;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .bubble-in {
+    background: var(--color-in);
+    border-top-left-radius: 0.1875rem;
+    margin-right: auto;
+  }
+  .bubble-out {
+    background: var(--color-out);
+    border-top-right-radius: 0.1875rem;
+    margin-left: auto;
+  }
+
+  .pane-scroll {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line) transparent;
+  }
+  .pane-scroll::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .pane-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .pane-scroll::-webkit-scrollbar-thumb {
+    background: var(--color-line);
+    border-radius: 999px;
+  }
+  .pane-scroll::-webkit-scrollbar-thumb:hover {
+    background: var(--color-faint);
+  }
+
+  .tick {
+    display: inline-flex;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    letter-spacing: -0.08em;
+    color: var(--color-faint);
+    opacity: 0.85;
+  }
+  .tick[data-status="queued"] {
+    opacity: 0.45;
+  }
+  .tick[data-status="delivered"] {
+    color: var(--color-dim);
+  }
+  .tick[data-status="read"] {
+    color: var(--color-accent);
+    opacity: 1;
+  }
+  .tick[data-status="failed"] {
+    color: var(--color-bad);
+    letter-spacing: normal;
+    opacity: 1;
+  }
+}

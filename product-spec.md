@@ -13,7 +13,7 @@
 Assume all of this is configured before phase 0.
 
 **Meta**
-- Meta Business account, business-verified (gates tier progression and Flows)
+- Meta Business account, business-verified (gates tier progression)
 - WhatsApp Business Account under it
 - Phone number registered to the WABA and verified by SMS or voice. If the number was previously a Twilio WhatsApp sender it must be deregistered there first — a number lives on exactly one platform
 - Display name submitted and approved. This is what every parent sees in their chat header
@@ -26,11 +26,6 @@ Assume all of this is configured before phase 0.
 - Subscribed to the `messages` field, which carries inbound messages *and* delivery statuses on one stream
 - `X-Hub-Signature-256` verified against the app secret on every request
 - Returns 200 immediately. Meta retries on timeout, so all processing goes on a queue, never inline
-
-**Flows** (for the two Flows in §14.6)
-- RSA keypair generated, public key uploaded to the WABA
-- Data-exchange endpoint implementing the encrypted request/response protocol
-- Flow JSON published per artifact
 
 **Ongoing**
 - Message templates submitted per category (§16.2)
@@ -46,7 +41,7 @@ Non-negotiable. Each is a rule a plausible-looking implementation breaks silentl
 2. **Mint once, replay verbatim.** A button's action is authored at compose time, validated, stored. The tap replays the stored payload. **No model inference at tap time**, where a misread commits someone to being somewhere.
 3. **Compute the effect before committing it.** Model-authored writes run inside a transaction whose affected rows are captured and shown before commit. The bot never estimates blast radius — it knows (§14.2).
 4. **Sending is not receiving.** `queued ≠ sent ≠ delivered ≠ read`, enforced in schema, code and copy. The bot never claims what it cannot see.
-5. **Multi-step consequences live in transactions, not in the model's memory.** A cancel that credits and notifies is one operation that cannot half-complete.
+5. **Multi-step consequences live in transactions, not in the model's memory.** A cancel that credits and notifies is one operation that cannot half-complete — and **messages inside it are staged until commit**, so a rollback has messaged nobody (§14.2.1).
 6. **Nothing is sent during onboarding until the admin says go.** Building the roster messages nobody.
 7. **Parsed input is a proposal, never a write.** Anything read from an image, voice note or document is read back before it is acted on (§14.5).
 8. **Every proactive message must pass one test, at runtime:** would this recipient have asked for it? This is not a review checklist — the bot composes its own messages (§14.4), so it applies the test itself, before sending.
@@ -61,7 +56,7 @@ Indian coaching businesses run on WhatsApp by hand — schedules, payment chasin
 
 Every user is **WhatsApp-only by design**. A number not on WhatsApp is out of scope.
 
-**This is a manager, not a notification system.** It is expected to notice things nobody asked it to look for, compose messages nobody specified, and answer questions nobody anticipated. The architecture in §4 exists to make that safe rather than to prevent it.
+**This is a manager, not a notification system.** It is expected to notice things nobody asked it to look for, compose messages nobody specified, and answer questions nobody anticipated. The architecture in §4 exists to make that safe rather than to prevent it, and §13.1 is what lets it act on its own schedule rather than only when code wakes it.
 
 ---
 
@@ -74,7 +69,7 @@ The bot carries a lot of doctrine. Feeding all of it into every prompt is expens
 | **0 · Schema** | Unique keys, FKs, RLS policies | Zero | No — the database refuses |
 | **1 · Operations** | Transactional writes carrying their own consequences | Zero | No — it's inside the transaction |
 | **2 · Core doctrine** | Rules shaping *every* reply | ~300 tok, cached | Rarely |
-| **3 · Pulled modules** | Situation-specific behavior | Manifest ~200 tok; module ~500 when pulled | Only by failing to pull |
+| **3 · Behavior modules** | Situation-specific behavior | ~4.5k tok, cached | Rarely — always in context |
 | **4 · Memory** | This academy, this person (§5) | Small, per-conversation | — |
 | **5 · Lint** | Post-generation repair | Zero | It's a check, not a rule |
 
@@ -102,9 +97,9 @@ Always in context. Roughly ten rules, and they shape every single reply:
 9. **Roles are hats.** Never ask someone to confirm something to themselves.
 10. **When uncertain, say so plainly** rather than guessing.
 
-### 4.2 Layer 3 — the module manifest
+### 4.2 Layer 3 — behavior modules
 
-A manifest of one line per behavior module sits always-on. Each line is written as a **trigger condition, not a title** — a title doesn't tell the model when to pull it.
+One file per behavior, all of them always in context. Each carries a **trigger condition, not a title** — the condition is what tells the model when the module applies.
 
 ```
 coach-churn      — a coach is leaving, being replaced, or their sessions need reassigning
@@ -114,13 +109,13 @@ bulk-change      — a change affecting more than a handful of people or session
 new-intake       — a stranger asking about joining
 schedule-change  — moving, cancelling or rescheduling anything recurring
 escalation       — anger, safety language, or two failed turns
-feedback         — a parent rating, a complaint, a coach observation
+feedback         — a parent complains or praises, or a coach makes an observation
 reporting        — the admin wants numbers, trends, or a view
 ```
 
-Nine lines always in context. The full module loads only when its condition fires. **Adding a behavior means adding a file, not touching code.**
+~4.5k tokens, always present, inside the cached prefix (§4.4). **Adding a behavior means adding a file, not touching code.**
 
-**Accepted limitation:** a model that must decide to pull will sometimes fail to. Mitigations — the highest-stakes rules live in layer 2, and layer 5 catches the expensive misses. Layer 3 is best-effort by design; that is the price of not paying for everything on every turn.
+**Why they are not lazy-loaded.** An earlier design had the model pull modules on demand from a manifest, keeping only the nine trigger lines in context. That saves ~4.5k tokens of an already-cached prefix — nearly nothing — and buys a failure mode where the bot behaves correctly or not depending on whether it classified the situation right, which is invisible from the outside and nearly undebuggable. **Cached tokens are cheap; unreliable judgment is not.** The trigger conditions stay because they are how the model knows a module applies; they just no longer gate a fetch.
 
 ### 4.3 Follow-up buttons
 
@@ -138,20 +133,21 @@ Costs nothing, is always relevant, and **teaches capability by demonstration rat
 Layering is what makes a clean prompt-cache prefix possible:
 
 ```
-STABLE PREFIX  (cached per academy, TTL, refreshed on schema change)
+STABLE PREFIX  (byte-identical across turns; changes only with schema or modules)
 ├─ core doctrine          ~300 tok
 ├─ schema                 ~2k tok
-├─ module manifest        ~200 tok
+├─ behavior modules       ~4.5k tok
 └─ operation signatures   ~1k tok
 
 VARIABLE TAIL  (never cached)
-├─ pulled modules         ~500 ea
-├─ memory                 ~400
+├─ memory hot set         ~400
 ├─ conversation
 └─ query results, media
 ```
 
-~3.5k stable tokens per academy. Gemini's context caching is explicit — create the cache, hold the handle on the academy record, refresh on schema change. Audio (§14.5) sits in the variable tail regardless, so native audio never touches the cacheable prefix.
+~8k stable tokens. Audio (§14.5) sits in the variable tail regardless, so native audio never touches the cacheable prefix.
+
+**Keeping the prefix byte-identical is the discipline; explicit cache handles are deferred.** Gemini supports explicit context caching — create the cache, hold the handle on `academy.prompt_cache_handle`, refresh on schema change — and it is worth doing once volume justifies it. Until then implicit caching does the same work with no stale-handle failure mode, where the bot would run against last week's schema and look merely confused. The column exists and stays null until phase 8's instrumentation shows the spend.
 
 ### 4.5 Layer 5 — lint
 
@@ -161,31 +157,41 @@ Deterministic repair on generated output, for rules a model under pressure will 
 - Rewrite machine timestamps into the academy's timezone and idiom
 - **Downgrade claims the system can't back** — "delivered" where only "sent" is known
 - Flag product vocabulary the academy's memory says they don't use
-- **Reject numbers with no source** in the data the model was given (§10.2)
+
+All four are string operations, which is the whole test for belonging here. **Number-grounding is not a lint rule.** Tracing every numeral in generated prose back to a query result is an attribution problem, not a regex, and it false-positives on dates, times, ages, prices and "three weeks." It is a prompt rule (§10.2) verified by eval (§17), not a deterministic gate.
 
 ---
 
 ## 5. Memory
 
-Each entity carries a short document the bot reads and writes. This replaces any notion of a fixed settings table for soft facts.
+Each entity accumulates facts the bot reads and writes. This replaces any notion of a fixed settings table for soft facts.
 
 **Academy memory** — vocabulary, policies that emerged in conversation, quirks the schema can't hold. *"Calls them batches, not classes." "Runs a separate fee cycle for the Sunday camp." "Doesn't want parents told about coach swaps."*
 
 **Person memory** — *"Asks about collections every Monday morning." "Never taps buttons, always types." "Kid has boards in March, expects a pause."*
 
+**Facts are kept; context is bounded.** These are two different things, and collapsing them into one capped text blob is how a memory system becomes an amnesia system — the pruning decision then gets made by a model under context pressure, and what it drops is invisible.
+
+- **`memory_fact` is append-only and is the record** (§6.2). A fact is never edited or deleted; it is superseded by a newer fact, or retired. Nothing the bot learned is lost because the prompt budget got tight.
+- **`academy.memory` and `person.memory` are a bounded hot set** — the facts currently worth carrying in the prompt, rebuilt from the store. This is a cache, not the record.
+- **Anything outside the hot set stays retrievable.** The bot searches the store when a conversation reaches for something it isn't carrying. **Forgetting is a context decision, never a storage one.**
+
 **Design constraints:**
 
-- **The bot writes it asynchronously after a turn**, never blocking a reply
-- **Bounded size with active pruning.** A memory that grows forever becomes noise and eats the context budget. Cap it, and when full make the bot curate rather than truncate
+- **The bot writes facts asynchronously after a turn**, never blocking a reply
 - **Facts, not transcripts.** "Prefers voice notes over typing" — not a log of what was said
-- **Visible and editable.** The admin can ask *"what do you know about me?"* and correct it. This matters for trust and it is a cheap debugging surface
-- **Observed patterns live here.** If an admin asks about unpaid fees every Monday, that is a memory, and the Monday brief reads it and offers the button
+- **Curation is scheduled, not per-turn.** Rebuilding the hot set is a model call, and running one after every turn roughly doubles the model calls in the product for no benefit. It runs when a subject's store crosses a threshold (§13)
+- **Visible and editable.** The admin can ask *"what do you know about me?"* and correct it — a correction writes a superseding fact rather than destroying the old one. This matters for trust and it is a cheap debugging surface
+- **Observed patterns live here.** If an admin asks about unpaid fees every Monday, that is a fact, and the Monday brief reads it and offers the button
+- **Memory that nothing acts on is a diary.** Reminder lead times, nudge timings and menu contents are all read from here (§7.2, §8.2). A fact that changes no behavior was not worth storing
 
 ---
 
 ## 6. Data model
 
-Postgres. Every table: `id uuid pk default gen_random_uuid()`, `created_at timestamptz default now()`, and — except `academy` — `academy_id uuid not null references academy(id)`.
+Postgres. Every table: `id uuid pk default gen_random_uuid()`, `created_at timestamptz default now()`, and — except `academy` and `sender` — `academy_id uuid not null references academy(id)`.
+
+**`sender` is the one deliberately global table.** One number serves many academies (§16), so it cannot carry a tenant. It holds credentials, is never reachable through a user session, and is readable only by the send path's own role.
 
 ### 6.1 Tenancy and place
 
@@ -201,7 +207,7 @@ academy (
   rail                       text not null default 'rail1',   -- rail1 | rail2
   upi_handle                 text,
   sender_id                  uuid not null references sender(id),
-  memory                     text,          -- §5
+  memory                     text,          -- §5. bounded hot set, not the record.
   prompt_cache_handle        text,
   settings                   jsonb not null default '{}'
 )
@@ -219,7 +225,8 @@ Three separate concerns. Collapsing them is what makes "parent pays for child" a
 person (
   full_name  text not null,
   notes      text,
-  memory     text                          -- §5
+  memory     text,                         -- §5. bounded hot set, not the record.
+  settings   jsonb not null default '{}'   -- per-person timing overrides (§8.2)
 )
 
 contact (                                   -- a WhatsApp number
@@ -256,7 +263,18 @@ coach (
 )
 
 academy_admin ( person_id uuid not null references person(id) )
+
+memory_fact (                               -- §5. append-only. this is the record.
+  subject_kind text not null,               -- academy | person
+  subject_id   uuid not null,
+  fact         text not null,
+  source       text,                        -- the turn or observation that produced it
+  supersedes   uuid references memory_fact(id),
+  retired_at   timestamptz
+)
 ```
+
+**Facts are never updated or deleted.** A correction writes a new row pointing at the one it supersedes; `academy.memory` and `person.memory` are rebuilt from the live set on a schedule. This makes "why does it think that?" answerable, which a mutable blob does not.
 
 **The self-paying adult is `account.holder_person_id = player.person_id`.** Not a second case — the same objects at n=1. A parent with three children is n=3. No separate flow, onboarding path or billing route exists.
 
@@ -273,7 +291,9 @@ class (
   name        text not null,      -- the admin's own words: "6:30 Beginners Batch"
   venue_id    uuid references venue(id),
   rate_amount numeric(10,2),
-  rate_unit   text,               -- per_session | per_month
+  rate_unit   text,               -- per_session | per_month | per_term | per_package
+  rate_count  int,                -- per_term: months in the term.
+                                  -- per_package: sessions in the package. else null.
   starts_on   date not null,
   ends_on     date,               -- null = open-ended
   active      boolean not null default true
@@ -297,6 +317,7 @@ enrollment (
   player_id   uuid not null references player(id),
   rate_amount numeric(10,2),       -- null = inherit from class
   rate_unit   text,                -- null = inherit from class
+  rate_count  int,                 -- null = inherit from class
   is_trial    boolean not null default false,
   started_on  date not null,
   ended_on    date
@@ -325,7 +346,7 @@ session_coach (                    -- the ACTUAL coach set. a SET, never a scala
 attendance (
   session_id         uuid not null references session(id),
   player_id          uuid not null references player(id),
-  status             text not null,   -- present | absent | cancelled_timely
+  status             text not null,   -- present | late | absent | cancelled_timely
   note               text,
   marked_by_coach_id uuid references coach(id),
   marked_at          timestamptz not null default now(),
@@ -333,7 +354,9 @@ attendance (
 )
 ```
 
-**Rate lives on the enrollment, defaulting from the class** — `coalesce(enrollment.rate_amount, class.rate_amount)`. This handles drop-ins inside a monthly batch, sibling discounts, scholarship players and legacy rates without a schema branch.
+**Rate lives on the enrollment, defaulting from the class** — `coalesce(enrollment.rate_amount, class.rate_amount)`, and the same for unit and count. This handles drop-ins inside a monthly batch, sibling discounts, scholarship players and legacy rates without a schema branch.
+
+**Four rate units, because Indian coaching businesses sell four ways.** Per-session and per-month are the common two; term and quarterly fees are normal and are just a longer period; ten-class packs are normal and are consumption-based. Adding these later is a schema migration on live billing data, which is the worst place to discover a missing enum value.
 
 **Coverage is derived, not stored:**
 
@@ -353,7 +376,8 @@ tally_line (
   account_id  uuid not null references account(id),
   player_id   uuid references player(id),      -- null for account-level adjustments
   period      date not null,                    -- first day of the billing month
-  kind        text not null,                    -- session | monthly | adjustment
+  kind        text not null,                    -- session | monthly | term | package
+                                                --  | adjustment
   description text not null,                    -- shown verbatim to the parent
   amount      numeric(10,2) not null,           -- negative for credits and waivers
   session_id  uuid references session(id),
@@ -378,8 +402,10 @@ payment (
 
 **Billing rules, complete:**
 
-- `per_session` → a `session` line is written when attendance is marked `present` or `absent`. Not for `cancelled_timely`.
+- `per_session` → a `session` line is written when attendance is marked `present`, `late` or `absent`. Not for `cancelled_timely`.
 - `per_month` → one `monthly` line per period per active enrollment, on the first. Attendance does not affect it.
+- `per_term` → the same, one `term` line every `rate_count` months. Term and quarterly fees differ from monthly in exactly this and nothing else.
+- `per_package` → one `package` line when a package opens. Sessions consume it on the `per_session` rule; when `rate_count` sessions are consumed the next session opens a new package and writes the next line. **The count remaining rides on the tally** — a parent who has bought ten classes will ask, and should never have to.
 - **The cancellation window carries money meaning only for `per_session`.** For `per_month` it is a headcount signal to the coach. Same interface, different consequence, no extra code.
 - **Adjustments are one primitive, not six features.** Waiving a class, crediting an academy-cancelled session, pro-rating a mid-month join, a sibling discount, goodwill and the free trial are all `kind='adjustment'` with a reason and an approver.
 - **The free first class is a rule that mints an adjustment** — a negative line equal to the first `session` line. **Per player, not per account.** A second child gets their own trial.
@@ -388,7 +414,7 @@ payment (
 ### 6.5 Messaging, actions, views
 
 ```sql
-sender (                          -- §16.3. never a constant, even at n=1.
+sender (                          -- §16.3. global, no academy_id. never a constant.
   phone_e164  text not null,
   waba_id     text not null,
   credentials jsonb not null
@@ -414,7 +440,7 @@ message (
 )
 
 action (                          -- §2.2, the payload rule
-  kind                   text not null,
+  kind                   text not null,    -- operation | steps | <recipe verb>
   payload                jsonb not null,   -- fully resolved. no ids to look up.
   minted_at              timestamptz not null default now(),
   minted_for_contact_id  uuid not null references contact(id),
@@ -433,6 +459,13 @@ view_spec (                       -- §15. minted once, rendered deterministical
 
 **Every interactive button carries an `action.id` as its reply payload.** On tap: load, check expiry and consumption, check the tapping contact matches `minted_for_contact_id`, execute the stored payload, stamp `consumed_at`. **No model call, no re-resolution, no string parsing.**
 
+**`kind` is not a fixed list of verbs.** Two generic kinds make the button surface exactly as wide as the write surface:
+
+- `operation` — a named operation (§14.2) plus its fully resolved arguments
+- `steps` — a `transaction(steps[])` plan (§14.2.1), validated and diff-computed at mint time
+
+Both are authored at compose time, when the model has the context to get them right, and replayed verbatim at tap time. **The freedom is in what can be minted; the safety is that minting and tapping are different moments.** Invariant 2 is untouched. Without this, §4.3's follow-up buttons can only ever demonstrate verbs someone hardcoded, which caps the product's discoverable surface at its tool authors' imagination.
+
 ### 6.6 Jobs
 
 ```sql
@@ -449,6 +482,8 @@ job (
 
 `dedupe_key` is what makes rescheduling and retries safe. Enqueueing the same key twice is a no-op.
 
+**The bot can enqueue jobs for itself** — `kind='agent_task'`, carrying an instruction and the query that feeds it (§13.1). That one row type is what keeps the proactive surface open-ended instead of a fixed list of things code knows to do.
+
 ### 6.7 RLS policy summary
 
 | Role | Sees |
@@ -457,6 +492,8 @@ job (
 | Coach | Own `coach` row including own pay. Sessions they are assigned to, and those rosters and attendance. **Never** another coach's pay, never the academy's money |
 | Account holder | Own account, its players, enrollments, attendance, tally lines, payments. Sessions their players are in. **Never** another family |
 | Player's own contact | As their account holder, minus every `tally_line` and `payment` — money-shaped rows never route to a player number |
+
+`sender`, `job` and `memory_fact` are infrastructure: reached by the runtime's own role, never through a user session. A self-scheduled task (§13.1) is the exception that proves it — it runs under the session of the human whose turn minted it.
 
 Every policy carries a regression test asserting cross-tenant and cross-role reads return zero rows. **Plus one meta-test: fail the build if any table has RLS disabled.** That single assertion catches the most common and most dangerous mistake. Write these as pgTAP tests against the real policies, not through app code.
 
@@ -470,7 +507,7 @@ Every policy carries a regression test asserting cross-tenant and cross-role rea
 
 The unavoidable cost of adoption is **data entry**. Reducing it is the highest-leverage work in the product.
 
-1. **Setup Flow** (§14.6) — the form-shaped part in one screen sequence, because a dozen chat round-trips is a dozen small waits. Business name, category, venues, operating pattern, cancellation window.
+1. **Setup form** on the web surface (§15) — the form-shaped part in one screen, because a dozen chat round-trips is a dozen small waits. Business name, category, venues, operating pattern, cancellation window. One tap out of the chat, once, ever.
 2. **Bring the timetable however it already exists** (§14.5). A photo of the whiteboard. A photo of the paper register. A forwarded spreadsheet. A voice note describing the week. The bot parses, reads back, creates on a tap. **This is the single biggest friction reducer in the product.**
 3. **Coaches** — §8.1. Three facts each, then invites.
 4. **Families** — §9.1. Contacts shared, roster built, nobody messaged.
@@ -485,11 +522,11 @@ End state: a working academy, and **no parent messaged yet** (§2.6).
 ### 7.2 Day-to-day
 
 - **A natural-language CLI over the whole business.** Schedule and move classes, manage coaches and clients, waive a fee, message anyone, ask anything. Reads and writes are both model-authored (§14.2).
-- **Menus as the missing nav bar.** A blank chat box with dozens of capabilities discovers worse than an ugly nav bar. A persistent list-picker — *Schedule / Clients / Money / Coaches / Insights* — is the primary affordance; prose is the fallback; follow-up buttons (§4.3) do the ongoing teaching.
+- **Menus as the missing nav bar.** A blank chat box with dozens of capabilities discovers worse than an ugly nav bar. A persistent list-picker is the primary affordance; prose is the fallback; follow-up buttons (§4.3) do the ongoing teaching. **The items are generated from what this admin actually does** (§5) — *Schedule / Clients / Money / Coaches / Insights* is the cold-start default, and an admin who asks about fees daily and has never opened Insights should see a different list by week three. A fixed taxonomy is the one part of the nav bar worth not copying.
 - **Two bookends, quiet between.** Morning brief led by *Needs you*. Evening digest (§10.2). Between them only genuine escalations interrupt. **The admin's phone is a briefing, not a ticker.**
 - **Proof it's working, pushed not pulled.** The admin will not think to ask whether reminders went out, so the digest carries delivery health unconditionally: *"41 reminders, 40 delivered, 1 failed — [see who]."*
 - **Insights on demand**, rendered as views for anything spatial or dense (§15).
-- **Audit trail and an undo window** on destructive operations. At multi-tenant scale a bot mistake is someone else's business.
+- **Audit trail and an undo window** on destructive operations. At multi-tenant scale a bot mistake is someone else's business. **Undo reverses database writes only.** A sent message cannot be unsent, so undoing an operation that messaged people sends a correction to exactly those people, and says so before it runs — *"I'll put the 14 enrollments back and tell the 14 parents I was wrong."* Anything more is a promise the product cannot keep, and building undo as if it could is how it half-works.
 
 ---
 
@@ -531,9 +568,13 @@ A ladder of single questions, each at its right time, one at a time.
 2. **T-60 — "Coming?"** [`CO-COMING`] `[Yes, I'm coming]` `[Can't make it]` `[Directions]`.
 3. **T-30 — one nudge** [`CO-NUDGE`], only if still silent, saying the quiet part out loud: the admin gets alerted shortly if we still don't know.
 4. **T-15 — the admin is told**, if still uncovered. The coach is not chased further.
-5. **After class — the register** [`CO-REGISTER`]. `[All present]` is a chat button, because that is the majority case and one tap beats loading anything. `[Take register]` opens the Flow (§14.6) — the whole roster on one screen, toggle each, notes inline, one submit.
+5. **After class — the register** [`CO-REGISTER`]. `[All present]` is a chat button, because that is the majority case and one tap beats loading anything. `[Take register]` opens the register page on the web surface (§15) — the whole roster on one screen, toggle each, notes inline, one submit.
 
-**One confirmation is enough.** A coach who taps `[Yes, I'm coming]` is never asked again — no arrival prompt, no second nudge. They will say if something changes. The session is assumed started at `starts_at` and parents are told *"class is starting"*, which is what we actually know.
+**The timings are defaults, not constants.** T-60, T-30, T-15 and `client_reminder_lead_hours` are academy defaults that a person's own record overrides (`person.settings`). A coach who has confirmed at the door forty times running should stop being asked at T-60; a parent who needs a day's notice gets a day. **The bot sets these from observed behavior** (§5) and can say why. One lead time for every family in an academy is a schedule; per-person timings are a manager.
+
+**One confirmation is enough.** A coach who taps `[Yes, I'm coming]` is never asked again — no arrival prompt, no second nudge. They will say if something changes. The session is assumed started at `starts_at`.
+
+**That is a strong default, not a fact about the system.** A coach who has confirmed and then not shown up three times is a different situation, and the bot may check — with a reason it can state. Rules that can never bend make a system stupid in exactly the cases that matter; rules with no default make it chaotic. **Defaults, plus a stated reason for departing from one, is the shape** — and it applies to every "never" in this document that is not an invariant in §2.
 
 **Arrival is never prompted but always accepted.** A coach who says *"I'm here"* or *"starting"* at any point sets `arrived_at`, and parents then hear *"the coach has arrived"* — the stronger claim, because we have evidence for it. This is §4.1's rule 2 in practice.
 
@@ -582,18 +623,17 @@ Coaches leave often and new ones arrive. Routine operations, not exceptional one
 3. One *useful* button, never a consent-shaped one
 4. Frame as service continuity ("class updates have moved here"), never launch — "introducing…" is marketing category
 5. Admin's heads-up goes out hours earlier, bot-drafted and admin-forwarded
-6. **Staged: 10 → check delivery, read and block signals → 50 → check → the rest**
+6. **Staged, as a job with a batch size** (§13) — 10, check delivery, read and block signals, then the rest in batches, halting on a bad signal. Not a campaign system: for a forty-family academy this is two batches
 
 ### 9.2 Day-to-day
 
 - **Reminders worth tapping** [`CL-REMINDER`] — *"Aarav has Beginners Batch tomorrow 6:30 at Green Park"* `[I'll be there]` `[Can't make it]`. **"Can't make it" confirms before it acts**; a pocket mis-tap must never give away a seat.
 - **Book, cancel, reschedule** through buttons and lists first, free text always available. **Scope is always asked: this session, or every week?**
 - **Reschedule is the makeup** — the session moves to another slot of the same class rather than becoming a refund argument.
-- **Class starting / coach arrived** — the weaker or stronger claim depending on what we know (§8.2).
+- **Told when the session is in trouble, not when it is fine.** The claim ladder from §8.2 — *starting* is what we assume, *the coach has arrived* is what we have evidence for — governs what the bot is allowed to say. **It only says it when it carries something the parent doesn't have:** the coach is late, the session is uncovered near its start, or something changed. A parent standing at the court does not need to be told class started; that is the clearest example in the product of a proactive send that fails §2.8, and it spends per-recipient frequency budget on a shared number to do it.
 - **After class, the outcome** [`CL-OUTCOME`]: attended or missed, with the coach's note. An absence arrives as something to fix — `[Rebook]` — not a verdict.
 - **Pay by UPI in the chat.** Receipts and the month's tally in the same thread, line by line.
 - **Progress** — attendance and coach notes, per player.
-- **Feedback right after class** [`CL-FEEDBACK`] — one tap plus optional comment, frequency-capped, flowing to the admin.
 - **A human when it matters** (§14.8).
 
 ---
@@ -610,15 +650,15 @@ A QR code at the court, a "Message us" link on a website or Instagram bio. **Ass
 
 **Name comes free.** The inbound webhook carries `profile.name`, the sender's own WhatsApp display name. Self-set and unverified, and it is the *parent's* name not the child's — but it turns two questions into one.
 
-**The flow:**
+**A conversation, not a wizard.** The most common real first message is *"my daughter is 14 and has played for three years, is your beginners class right for her?"* — and a scripted name → age → pick-a-class sequence has nowhere to put that. This is the highest-stakes conversation in the product, with a stranger, and it ends in one operation rather than being one:
 
 1. Cold inbound → academy resolved → `contact.state = 'prospect'`, `person` created
 2. [`PR-WELCOME`] *"Hi Rajesh! I'm the class manager for Ace TT Academy."* → what's on offer → `[Book a free trial]` `[See the schedule]` `[Talk to Sharwin]`
-3. Trial: child's name and age, pick a class from those with space, confirm
-4. **Auto-confirmed.** `account`, `player` and a trial `enrollment` are created, the session is booked, and the parent is told immediately [`PR-TRIAL-CONFIRMED`]
+3. **The bot talks.** It holds the catalog, the schedule and which classes have room, so it answers what a parent actually asks — is this the right level, what does it cost, where is it, is there anything on Saturday, my son is left-handed does that matter. Whatever it learns along the way is what it needed to know
+4. When the conversation has produced a player and a class, it calls `book_trial(...)` — one transactional operation (§14.2.1) creating `account`, `player`, a trial `enrollment` and the booking, then telling the parent [`PR-TRIAL-CONFIRMED`]. **Auto-confirmed, no admin gate**
 5. The admin is notified after the fact [`AD-NEW-TRIAL`] with `[Undo]` — *"New trial booked — Aarav, 9, Saturday Beginners"*
 
-Zero friction on the funnel; the admin retains an undo rather than a gate.
+Zero friction on the funnel; the admin retains an undo rather than a gate. **Step 3 is the product and the other four are plumbing** — a scripted funnel here converts worse than a human would and is the moment a prospect decides whether this academy is worth their time.
 
 ### 10.2 Synthesized insight
 
@@ -634,7 +674,7 @@ The evening digest is **not a template with slots.** At digest time the bot rece
 
 **Three grounding rules keep it honest**, because an unconstrained model produces confident nonsense:
 
-1. **Every number traces to a query result in the payload.** A figure with no source is stripped by lint (§4.5), not published.
+1. **Every number traces to a query result in the payload.** A prompt rule verified by eval (§17) — see §4.5 for why this cannot be a deterministic lint pass.
 2. **Comparison requires a baseline in the payload.** "Attendance is down" needs last month's figure *present*, not recalled. No baseline, no claim.
 3. **Uncertainty is stated.** *"Might be a pattern, might be coincidence at this size"* beats a confident causal story.
 
@@ -699,7 +739,23 @@ Rail 2 replaces this with gateway webhooks.
 
 ## 12. Message catalog
 
-Scheduled and event-driven messages. **This is not the complete set of what the bot sends** — it composes messages freely (§14.4). These are the ones code decides to send.
+**These are intents, not messages.** Each row names a moment code knows about — a reminder is due, a register is unmarked, a coach hasn't confirmed — and carries defaults: default timing, default buttons, default to sending. **Code guarantees the moment is put in front of the bot. The bot decides what actually happens.**
+
+On any row below it may:
+
+- **suppress** — this family has confirmed every week for four months and never missed; the reminder is noise
+- **merge** — three things happened to one parent today, so they get one message, not three
+- **retime** — this coach needs three hours' notice, not one (§8.2)
+- **re-button** — the useful next step here is not the default one
+- **rewrite** — always, in the academy's own words (§5)
+
+It applies §2.8 to make that call — the same test it applies to messages it composes itself (§14.4). **The defaults are what a competent manager would do knowing nothing about the person. Departing from them, knowing something, is the entire reason a manager beats a cron job.**
+
+**Two limits on that freedom.** Rows marked **fixed** cannot be suppressed — they exist for a reason that is not about engagement, though they may still be reworded and merged. And nothing reaches the wire outside the one send path (§16.3), so throttles, caps and staging apply no matter who decided to send.
+
+**Fixed:** `CL-CANCEL-CONFIRM`, `CL-SESSION-CANCELLED`, `CL-TALLY`, `CL-RECEIPT`, `CO-FINAL-STATEMENT`, `AD-NEW-TRIAL`, `AD-OPT-OUT`.
+
+**This is also not the complete set of what the bot sends** — it composes messages nobody specified (§14.4). These are the moments code knows to raise.
 
 ### 12.1 Client
 
@@ -709,18 +765,17 @@ Scheduled and event-driven messages. **This is not the complete set of what the 
 | `CL-FIRST-CONTACT` | Non-clicker, session <48h | `[See schedule]` `[Stop these]` | Nothing. No nag. |
 | `CL-REMINDER` | `client_reminder_lead_hours` before | `[I'll be there]` `[Can't make it]` | Nothing |
 | `CL-CANCEL-CONFIRM` | Tap of `[Can't make it]` | `[Yes, cancel]` `[Never mind]` | Expires 1h |
-| `CL-CLASS-STARTING` | `starts_at`, coach confirmed | — | — |
-| `CL-COACH-ARRIVED` | `arrived_at` set | — | — |
-| `CL-COACH-LATE` | `running_late` | — | — |
+| `CL-SESSION-TROUBLE` | `running_late`, or uncovered near `starts_at` | — | — |
 | `CL-OUTCOME` | Attendance marked | `[Rebook]` when absent | — |
-| `CL-FEEDBACK` | Appended to outcome, capped | rating + optional note | Nothing |
 | `CL-TALLY` | Month end | `[Pay now]` `[See the lines]` | Dunning takes over |
 | `CL-RECEIPT` | Payment confirmed | — | — |
 | `CL-DUNNING` | Per policy, unpaid | `[Pay now]` `[Already paid]` | Escalates to admin |
 | `CL-SESSION-CANCELLED` | Session cancelled | `[See other slots]` | — |
 | `CL-SESSION-MOVED` | Rescheduled | `[Got it]` | — |
 
-**A coach change is never a standalone message** — one line inside the next `CL-REMINDER`.
+**No "class is starting" or "coach has arrived" message exists.** The claim ladder in §8.2 governs how the bot words things it is already saying; a parent at the court does not need telling that class started (§9.2). `arrived_at` stays as data — it is load-bearing for coverage.
+
+**A coach change is normally one line inside the next `CL-REMINDER`**, never a standalone broadcast, which manufactures anxiety about a routine event. A default, not an absolute: the head coach of twelve years leaving is not a routine event, and the bot may say so directly.
 
 ### 12.2 Prospect
 
@@ -758,7 +813,6 @@ Scheduled and event-driven messages. **This is not the complete set of what the 
 | `AD-RECONCILE` | Payment requested, unconfirmed | `[Yes]` `[Not yet]` |
 | `AD-NEW-TRIAL` | Cold-inbound trial booked | `[Message them]` `[Undo]` |
 | `AD-OPT-OUT` | Someone opted out | `[Call them]` |
-| `AD-VALUE-REPORT` | Month end | — |
 | `AD-DELIVERY-FAILURE` | Send failed | `[Fix number]` `[Ignore]` |
 
 ---
@@ -774,8 +828,8 @@ Scheduled and event-driven messages. **This is not the complete set of what the 
 | `coach_coming` | T-60 per session per coach | `co_coming:<session_id>:<coach_id>` |
 | `coach_nudge` | T-30, skip if confirmed | `co_nudge:<session_id>:<coach_id>` |
 | `admin_escalate_uncovered` | T-15, skip if covered | `ad_uncov:<session_id>` |
-| `class_starting` | `starts_at`, if covered | `starting:<session_id>` |
-| `client_reminder` | Lead hours before | `cl_rem:<session_id>:<player_id>` |
+| `client_session_trouble` | `starts_at`, only if late or uncovered | `trouble:<session_id>` |
+| `client_reminder` | Lead hours before, per-person offset | `cl_rem:<session_id>:<player_id>` |
 | `post_class_register` | `ends_at` | `register:<session_id>` |
 | `register_expiry` | `ends_at` + 2h | `reg_exp:<session_id>` |
 | `client_outcome` | On attendance marked (event) | `outcome:<session_id>:<player_id>` |
@@ -783,9 +837,10 @@ Scheduled and event-driven messages. **This is not the complete set of what the 
 | `admin_evening_digest` | Daily | `ad_digest:<academy_id>:<date>` |
 | `monthly_lines` | 1st of month | `monthly:<enrollment_id>:<period>` |
 | `month_end_tally` | Month end, per account | `tally:<account_id>:<period>` |
-| `month_end_value_report` | Month end, per academy | `value:<academy_id>:<period>` |
 | `dunning` | Per policy | `dun:<account_id>:<period>:<n>` |
-| `memory_curate` | After a turn, async | `mem:<entity_id>:<turn_id>` |
+| `first_contact_batch` | Onboarding staging (§9.1) | `fc:<academy_id>:<batch_n>` |
+| `memory_curate` | When a subject's fact store passes its threshold | `mem:<subject_id>:<n>` |
+| **`agent_task`** | **Whenever the bot schedules itself (§13.1)** | `agent:<academy_id>:<slug>` |
 
 **Rules:**
 
@@ -796,19 +851,51 @@ Scheduled and event-driven messages. **This is not the complete set of what the 
 
 There are **no quiet hours.** Early-morning classes are normal in India, and holding a 5am coach prompt for a 6am class would break the product for exactly the academies that need it most.
 
+### 13.1 `agent_task` — the bot schedules itself
+
+The other kinds are moments *code* knows about. **`agent_task` is the one that makes the proactive surface open-ended**, and without it §3's claim that this bot "notices things nobody asked it to look for" is simply false — a fixed job table can only ever notice the things in it.
+
+```
+job(
+  kind:       'agent_task',
+  run_at:     <when>,
+  dedupe_key: 'agent:<academy_id>:<slug>',
+  payload: {
+    instruction: "Check whether Meera's family came back after the fee waiver.
+                  If they haven't been to a session in two weeks, tell Sharwin.",
+    context:     <the query that gives the task its data>,
+    minted_by:   <turn id>,
+    expires_at:  <when this stops being worth doing>
+  }
+)
+```
+
+At run time this is an ordinary turn: the query runs, the instruction and its results go to the model, and it decides — **including deciding to do nothing, which is the common and correct outcome.** A task that fires and stays quiet is the system working.
+
+**Four bounds, all of which already exist elsewhere in this document:**
+
+- It runs under **a session reconstructed for the person who minted it** — not a stored token, which would still be live weeks later, and not a service role. Roles are re-checked at run time, so a task minted by a coach who has since been ended simply cannot run. **RLS caps it at what that human could see today**, and a self-scheduled task can never reach further than the conversation that created it
+- **Anything it sends goes through the one send path** (§16.3) and passes §2.8, so caps, throttles and frequency limits apply exactly as they do everywhere else
+- **`expires_at` is required.** A watch with no expiry is a leak; the runtime rejects a task without one
+- **A cap per academy on live tasks, and they are visible.** The admin can ask *"what are you watching?"*, get the list, and drop any of them with a button
+
+**This is a whole product surface for one row type.** *"Remind me Thursday."* *"Keep an eye on Saturday Advanced."* *"Check if she's paid by Friday."* *"Tell me if that coach is late again."* None of those needs a feature, a table, or a deploy.
+
 ---
 
 ## 14. Interaction architecture
 
 ### 14.1 A general agent on guardrailed primitives
 
-Five generic primitives, not a catalog of hand-built features:
+Seven generic primitives, not a catalog of hand-built features:
 
 - **Read** — the model authors queries over the schema it knows. Any question answerable from the data is answerable, with no new code.
 - **Write** — model-authored, with the effect computed before commit (§14.2).
+- **Transact** — several writes and their consequences composed by the model into one atomic step (§14.2.1).
 - **Message** — compose and send freely (§14.4).
 - **Money** — payment links, mandates, reconciliation, adjustments.
-- **UI** — buttons, lists, two Flows, and the web surface (§15).
+- **UI** — buttons, lists, and the web surface (§15).
+- **Schedule** — the bot enqueues work for itself (§13.1).
 
 Safety is **structural, not behavioral.** The floor being solid is what lets the model be free above it.
 
@@ -817,7 +904,7 @@ Safety is **structural, not behavioral.** The floor being solid is what lets the
 **Reads.** The model writes SELECTs. What makes it safe:
 
 - **RLS enforces.** A query reaching for another tenant returns zero rows
-- **A read-only role** for model-authored queries: `SELECT` only, no functions, no DDL
+- **A read-only role** for model-authored queries: `SELECT` only, no DDL, no volatile or user-defined functions. **Aggregates, window functions and date maths are explicitly allowed** — forbidding `sum`, `count` and `date_trunc` would block every question the admin surface exists to answer
 - **Statement timeout and row caps** — 5s, 10k rows. A model can write an accidental cartesian join
 - **Scope is always shown.** *"Across 4 classes, 38 players, Aug 1–31"* — so an obviously wrong denominator is visible. Plausible-wrong answers, not security, are the real risk here
 
@@ -849,13 +936,40 @@ Postgres gives this natively, so the bot **knows** its blast radius rather than 
 
 Three further bounds: **RLS caps the blast radius** at what that human could have done by hand; **an audit trail records intent** alongside the statement; **an undo window** covers destructive operations.
 
-**Named operations still exist** for anything with multi-step consequences that must not half-complete (§2.5) — `end_coach`, `cancel_session`, `move_class`, `waive`. The model chooses which operation; the operation guarantees what happens. Everything else it can author.
+### 14.2.1 `transaction(steps[])` — model-composed atomicity
+
+Invariant 5 says multi-step consequences live in transactions. The obvious implementation — one hand-written named operation per consequence chain — caps the product at however many verbs someone wrote and makes every new chain a code change. That is the exact failure §14.1 exists to avoid, moved one level down.
+
+**So the model composes the steps and the runtime guarantees the properties.** A step is a write, a message, an adjustment, a scheduled task, or a named operation:
+
+```
+transaction([
+  { write:    "update enrollment set ended_on = '2026-08-31' where id = ..." },
+  { adjust:   { account_id: ..., amount: -1200, reason: "unused August sessions",
+                approved_by: <admin> } },
+  { message:  { to: <parent>, body: <composed>, buttons: [...] } },
+  { message:  { to: <coach>,  body: <composed> } },
+  { schedule: { kind: 'agent_task', run_at: ..., payload: {...} } }
+])
+```
+
+For every plan, whatever its steps, the runtime guarantees:
+
+- **Atomicity.** All steps commit or none do. A cancel that credits and notifies cannot half-complete
+- **One diff, computed before commit** (§2.3) — the blast radius of the whole plan, not of a step
+- **Messages are staged, not sent, until commit.** A rolled-back transaction has messaged nobody. This is the property hand-written operations get wrong most often, and it is the reason this belongs in the runtime rather than in each operation
+- **RLS applies to every step**, so a plan cannot reach past what its author could have done by hand
+- **The whole plan is one audit entry**, carrying the intent that produced it
+
+**Named operations become recipes, not gates.** `end_coach`, `cancel_session`, `move_class`, `waive` still exist and are still the right thing to reach for — they are known-good plans with known-good copy, cheaper and more consistent than composing from scratch, and their signatures sit in the cached prefix (§4.4) so choosing one is free. **But they are no longer the only way to do something multi-step.** A consequence chain nobody anticipated — end this enrollment, credit the unused half-month, tell the parent, tell the coach, check back in a fortnight — does not need a deploy.
 
 ### 14.3 Recipes
 
-Common actions get **promoted into precoded recipes** — saved compositions of the same primitives: a pre-resolved plan, pre-built UI, a prompt fragment not re-derived each time. Booking, cancelling, confirming, attendance, dunning and menu navigation run this way: instant, near-free, and **visually consistent** — the same well-made shapes every time, not an improvised UI per conversation.
+Common actions get **promoted into recipes** — saved compositions of the same primitives: a pre-resolved plan, pre-built UI, a prompt fragment not re-derived each time. Booking, cancelling, confirming, attendance, dunning and menu navigation run this way: instant, near-free, and **visually consistent** — the same well-made shapes every time, not an improvised UI per conversation.
 
-**Recipes optimize; they never gate.** A request no recipe matches falls through to the primitives — that is the design working. Instrumentation is the profiler: whatever the model keeps re-deriving becomes the next recipe.
+**A recipe is captured model output, not hand-written code.** The model composes a plan once; it is validated, reviewed, and frozen as the canonical version of that action. This matters more than it sounds. A recipe written by hand slowly diverges from what the model would now do, so the product gets *worse* at exactly its most common actions as the model gets better — the opposite of what you want, and invisible until someone compares the two paths. Captured plans cannot diverge, because they are the same artifact.
+
+**Recipes optimize; they never gate.** A request no recipe matches falls through to the primitives — that is the design working. Instrumentation is the profiler: whatever the model keeps re-deriving becomes the next recipe, and promoting one is a review step, not a deploy.
 
 ### 14.4 Composed messages
 
@@ -896,11 +1010,8 @@ If the audio is unclear the bot says so plainly rather than guessing — §2.4 a
 
 - **Every link is a button.** Nothing URL-shaped is pasted into message text.
 - **UI is an offer, never a gate.** Never *require* a form for something chat could do. The correct shape: *"Done — Aarav's out Tuesday. Want to set up the rest of his absences? `[Open form]` — or just tell me."* Both paths work; the form is a shortcut, never a toll.
-- **Two published Flows, and only two:**
-  - `setup` — admin onboarding, where a dozen chat round-trips would be a dozen small waits
-  - `register` — the highest-frequency form-shaped moment in the product; the whole roster on one screen beats "reply 2 4" and fifteen round trips, every single session
-- **Everything else form-shaped goes to the web surface** (§15), which has no publish latency, no versioning burden and no ceiling. A Flow is a published, versioned artifact requiring the encrypted data-exchange endpoint — worth it only for stable, high-frequency shapes.
-- **Flows are parameterized components.** The model fills slots; it never authors Flow JSON freehand, and it cannot — a Flow is sent by reference to a published artifact, not composed inline.
+- **Everything form-shaped goes to the web surface** (§15): admin setup, the register, anything dense. It has no publish latency, no versioning burden and no ceiling.
+- **No WhatsApp Flows.** A Flow is a published, versioned artifact requiring an RSA keypair and an encrypted data-exchange endpoint, and over a signed link it buys exactly one thing: the user never leaves WhatsApp. The two candidates were `setup`, which runs **once per tenant, ever**, and `register`, which a signed link serves at the cost of one tap. Neither justifies the subsystem, and cutting it removes a whole encryption surface from the build. **Revisit only if the register's tap-out is measurably costing completions** — that is the one place the argument could turn.
 
 ### 14.7 Window and templates
 
@@ -926,18 +1037,23 @@ Not a fallback — the escape valve for any UI WhatsApp cannot express, with no 
 
 **Access:** a signed link behind a labeled button, carrying a short-TTL JWT with `academy_id` and `person_id` claims that Postgres policies read. **The magic link is the session.** No login, no navigation — the chat is the navigation.
 
-**The component library**, each with a declared data contract:
+**The component library is a registry, not a fixed list.** Each component declares a data contract; adding one is a file, and the model discovers what exists from the registry rather than from a list baked into its prompt.
 
 | Component | Takes | Used for |
 |---|---|---|
-| `calendar` | sessions with time, title, venue | the week, the month |
 | `table` | rows, column defs, optional totals | everything; the universal fallback |
+| `prose` | markdown | synthesized commentary (§10.2) |
+| `form` | fields, current values, a submit action | setup, the register, anything form-shaped (§14.6) |
+| `calendar` | sessions with time, title, venue | the week, the month |
 | `people-list` | people with a status badge | rosters, unpaid families, coach lists |
+| `detail` | one entity's fields | a player, a class, a coach |
 | `stat-cards` | label, value, optional delta | collections, attendance rate, headcount |
 | `timeline` | ordered events | a day, a player's history |
-| `chart` | series | trends only — bar and line, nothing more |
-| `detail` | one entity's fields | a player, a class, a coach |
-| `prose` | markdown | synthesized commentary (§10.2) |
+| `chart` | a validated chart grammar | anything worth plotting |
+
+**The first three ship in phase 9; the rest land when a real question is badly served by `table`.** `form` is not optional — it is what replaced the two Flows, and setup and the register both depend on it.
+
+**`chart` takes a grammar, not a chart type.** "Bar and line, nothing more" is a ceiling on what an admin can be shown, imposed for no safety reason — a declarative grammar (Vega-Lite-shaped: marks, encodings, transforms) is validated and rendered by trusted code exactly like every other component. **The boundary that matters is markup, not expressiveness.**
 
 **The model never authors markup.** It authors a **view spec** — JSON naming components, arrangement, and the queries filling each — validated against a schema and rendered by trusted code. Same pattern as action-minting, same reason: model-authored HTML in a browser is an injection surface a multi-tenant product cannot have.
 
@@ -998,7 +1114,7 @@ Each carries **structured parameters holding real content** — `"{academy}: {ev
 
 ## 17. The emulator
 
-**The main deliverable of phase 1**, because it is simultaneously the dev surface, the test harness, the eval system and the sales demo — and because it is exactly what happens in production.
+**The main deliverable of phase 1**, because it is simultaneously the dev surface, the test harness and the eval system — and because it is exactly what happens in production. It demos well, and that is a consequence, never a requirement that drives its polish.
 
 Real WhatsApp is hostile to develop against: real numbers, approved templates, tier limits, and one shared number where a test blast is a production incident.
 
@@ -1009,7 +1125,7 @@ Real WhatsApp is hostile to develop against: real numbers, approved templates, t
 - **One shared clock** across all panes, advanced on demand — jump to T-60 and watch `CO-COMING` fire, jump to evening for the digest
 - **Live updates.** The cover-claim race is only testable if pane B visibly updates when you tap in pane A. Refresh-on-action doesn't test it
 - **An event log**: every send with template-vs-in-window, cost, tier consumption, sender number
-- **Failure injection**: sends fail, numbers block, Flows don't load. Unreachable in normal development, and where production actually breaks
+- **Failure injection**: sends fail, numbers block, web links expire mid-form, media fetches time out. Unreachable in normal development, and where production actually breaks
 - **One transport interface, two implementations.** The bot addresses an abstract transport; Cloud API is production, the emulator is development. **If the emulator can't render a message, it doesn't ship.** Building this first is what stops Meta API calls from scattering through the codebase
 
 **Simulation hooks ship in phase 1; agent simulation lands as soon as there are behaviors to exercise.** The substrate — deterministic seeds, run recording, replay, the transport — is built up front so simulation drops in without rework.
@@ -1021,7 +1137,15 @@ Real WhatsApp is hostile to develop against: real numbers, approved templates, t
 - **A judge agent reviews the transcript**: where did the user get confused, hit a dead end, repeat themselves, get a wrong answer, or receive a message failing §2.8
 - **Diffable runs.** Run the same seeded scenario before and after a change and see what moved. This is the only practical regression test for a conversational product
 
-Constraint: **pixel-honesty.** "Looks right in the emulator" and "looks right in WhatsApp" must be the same claim.
+**It is a primitive WhatsApp, not a replica.** Bubbles, buttons, lists and media render recognisably and that is enough — the emulator's job is behavioral fidelity, not visual fidelity, and pixel-matching WhatsApp is an unbounded polish sink with no test value.
+
+**Structural honesty is the constraint that matters:**
+
+- If a message cannot render in the emulator, it does not ship
+- Message length, button counts and list limits obey the real API's limits, so something that works here works there
+- Template-vs-in-window, and which sender number went out, are always visible
+
+The visual question is answered once, cheaply, by phase 1's acceptance criterion — the same message rendered to a real test number.
 
 ---
 
@@ -1038,12 +1162,19 @@ Most coaching businesses in India are one person: one `person` with both `academ
 | `CO-PAYABLES` | **Gone.** They are the business |
 | `CO-DAY` + `AD-MORNING-BRIEF` | **Merged** into one message in one chat |
 | `AD-EVENING-DIGEST` | **Kept**, shorter |
-| `CL-CLASS-STARTING` | **Kept.** Its job is telling waiting parents |
+| `CL-SESSION-TROUBLE` | **Kept.** A solo admin running late still needs parents told |
 | `CO-REGISTER` | **Kept unchanged.** It is the meter and the coaching record |
 
 Roughly 60% of the coach surface disappears. **Nobody is ever asked to confirm something to themselves, and no escalation about the coach pings the coach.**
 
-**Detection:** exactly one `active` coach whose `person_id` is also in `academy_admin`. Recompute on coach add/end; never cache it in settings.
+**Detection is not a mode.** Two general rules, checked on the send path for every outbound message, produce the whole table above:
+
+1. **Never ask someone to confirm something to themselves.** Drop any message whose recipient is also its subject and whose only content is a confirmation request
+2. **Never escalate about a person to that person.** Route an escalation to someone who is not its subject, or drop it
+
+Implemented there, the solo case falls out for free — **and so do the cases a tenant-level flag misses**: the two-coach academy where one of them is the admin, the head coach who is also an admin, the admin covering a session themselves this week. **Eight `if solo` branches would each have to be right; one suppression check has to be right once.**
+
+The derived condition — exactly one `active` coach whose `person_id` is also in `academy_admin` — is still worth computing, but for **shaping** rather than gating: merging the coach day into the morning brief, and not offering cover to a set of one. Recompute on coach add/end; never cache it in settings.
 
 **Why the model is multi-coach anyway:** a coach *set* and derived coverage cost nearly nothing to build and cannot be retrofitted. Solo is a strict subset — flows hide; a coordination layer cannot be added later to a model that assumed one coach.
 
@@ -1058,18 +1189,18 @@ Each phase has an acceptance criterion. Do not start a phase before its predeces
 | # | Phase | Contents | Done when |
 |---|---|---|---|
 | 0 | **Foundations** | Schema (§6). RLS policies + pgTAP regression tests. `job` table and runner with a drivable clock. Transport interface. Sender routing table | Cross-tenant and cross-role reads return zero rows. Build fails if any table lacks RLS. A job enqueued twice runs once |
-| 1 | **Emulator** | §17 — world, contact tray, arbitrary panes, live updates, clock, event log, seeds, recording, failure injection | A message renders identically in emulator and on a real test number. Clock advance fires a scheduled job. A run replays deterministically |
-| 2 | **Agent loop** | Primitives (§14.1), action minting, write-diff preview (§14.2), layered context and cache (§4), memory (§5), one recipe end to end | A tap executes with no model call. An expired action refuses. A multi-row write shows its diff before commit. Cache hit rate is measurable |
-| 3 | **Catalog & sessions** | Classes, slots, enrollments, `materialize_sessions`, setup Flow | A class created in the Flow produces correct sessions three weeks out |
-| 4 | **Coach day** | §8.2 ladder, register Flow, coverage derivation, cover offers, unprompted actions | Full ladder observable by advancing the clock. Uncovered escalation fires. A confirmed coach is never asked twice. "I'm here" works with no prompt |
+| 1 | **Emulator** | §17 — world, contact tray, arbitrary panes, live updates, clock, event log, seeds, recording, failure injection | A message renders correctly in the emulator and on a real test number. Clock advance fires a scheduled job. A run replays deterministically |
+| 2 | **Agent loop** | Primitives (§14.1), `transaction(steps[])` (§14.2.1), `agent_task` (§13.1), action minting incl. `operation` and `steps` kinds, write-diff preview, layered context (§4), memory store and hot set (§5), one recipe captured end to end | A tap executes with no model call. An expired action refuses. A multi-row write shows its diff before commit. **A rolled-back transaction has messaged nobody.** A self-scheduled task fires, runs under its minter's RLS, and expires |
+| 3 | **Catalog & sessions** | Classes, slots, enrollments, all four `rate_unit`s, `materialize_sessions`, setup on the web surface | A class created in setup produces correct sessions three weeks out, and editing a slot rematerialises future sessions without losing cancellations or marked attendance |
+| 4 | **Coach day** | §8.2 ladder with per-person timings, register page, coverage derivation, cover offers, unprompted actions | Full ladder observable by advancing the clock. Uncovered escalation fires. A confirmed coach is never asked twice. "I'm here" works with no prompt. A per-person override changes when a prompt fires |
 | 5 | **Client day** | Reminders, cancel with scope, outcomes, class-starting relay | Cancel inside window writes `cancelled_timely`, outside writes `absent`. Mis-tap protection confirmed |
 | 6 | **Onboarding funnels** | Coach invite (§8.1), client Steps 1–3 (§9.1), staged first contact, templates submitted | Deep link → prefilled send → resolve on sight → `CO-INVITE-CONFIRM`. Staging halts on a bad signal |
 | 7 | **Money** | Rates, tally lines, adjustments, Rail 1 links, reconciliation, dunning | A month of mixed per-session and per-month enrollments produces a correct line-by-line tally with a waiver applied |
-| 8 | **Admin day** | Brief and digest as synthesis (§10.2), NL CLI, follow-up buttons, delivery-status answers, audit and undo | *"Did Meera get the reminder?"* answers from real status. A digest number with no source is stripped by lint |
-| 9 | **Web views** | Component library, view-spec minting, signed links, JWT→RLS | A rendered calendar loads from a bot link with no login and expires correctly. An invalid spec falls back to `table` |
+| 8 | **Admin day** | Brief and digest as synthesis (§10.2), NL CLI, follow-up buttons, delivery-status answers, audit and undo | *"Did Meera get the reminder?"* answers from real status. Undoing a messaging operation sends corrections to exactly the people who were told. Every number in a generated digest traces to a query result in its payload |
+| 9 | **Web views** | `table`, `prose`, `form`, view-spec minting, signed links, JWT→RLS, the component registry | A form submitted from a bot link writes with no login and expires correctly. An invalid spec falls back to `table`. A component added to the registry is usable with no prompt change |
 | 10 | **Multimodal** | Media pipeline, image parsing, native audio, read-back | A photographed timetable becomes a proposed week the admin confirms. A Hinglish voice note resolves a player name against the roster |
 | 11 | **Prospect funnel** | Cold inbound (§10.1), auto-confirmed trials, admin undo | A stranger with a QR link books a trial end to end; the admin can undo it |
-| 12 | **Agent simulation** | Personas, goals, judge agent, diffable runs (§17) | A simulated week surfaces a real defect, and a code change shows as a run diff |
+| 12 | **Agent simulation** | Personas, goals, judge agent, diffable runs (§17) | Ten seeded persona runs complete and produce a judge report. The same seed replays identically. A deliberately introduced regression shows up in a run diff |
 | 13 | **Rail 2** | Partner onboarding, mandates, in-chat checkout, webhooks | A mandate collects a tally with no admin action |
 
 ---
@@ -1084,7 +1215,11 @@ Each phase has an acceptance criterion. Do not start a phase before its predeces
 | Coach-assignment automation | The admin knows who coaches Tuesday. Clash-checking and cover offers are enough |
 | Capacity limits and waitlists | Sound essential, almost never fire in a well-run academy |
 | Skill levels | A class is a time, a place and people. Levels are the admin's naming |
-| Split households | One player, two accounts, split payment. Real but rare |
+| Split households | One player, two accounts, split payment. Real but rare — **and a schema retrofit** (`player.account_id` becomes a join table), so §18's argument for building the coach *set* up front partly applies. Deferred with that cost named rather than hidden |
+| WhatsApp Flows | The web surface serves both candidates. The Flow subsystem — RSA keys, an encrypted data-exchange endpoint, published artifacts — is not worth one avoided tap (§14.6) |
+| Explicit prompt-cache handles | Implicit caching until phase 8's instrumentation shows the spend (§4.4) |
+| Parent feedback ratings | The admin sees every parent at pickup. A coach's note on attendance already carries the signal, and a rating prompt spends frequency budget to learn what a conversation would tell you |
+| Monthly value report | Its only job was reminding the admin the product is worth paying for. The evening digest already carries proof, and this was the one message in the catalog that failed §2.8 |
 | Automatic contact archival | Out of scope. A digest line — *"6 contacts silent for 3 months"* — costs nothing and the admin decides |
 | Global opt-out | Per-academy only |
 | Quiet hours | Removed. Early classes are normal; holding a 5am prompt breaks the product for the academies that need it most |
@@ -1100,4 +1235,4 @@ Each phase has an acceptance criterion. Do not start a phase before its predeces
 1. **Final name.** "Class Manager" is the name every parent sees in their chat header — a branding decision, not config. Its one real virtue: it says *class*, not *academy*.
 2. **The sender number's country code.** A local number is materially better for first-contact trust; it also carries KYC and local-entity requirements. **Gates parent-funnel conversion, so decide before phase 6.**
 3. **Category scope at launch.** The model — classes, sessions, players, rates — generalizes past sport to music, dance and tuition without change. How much genericizing before tenant #2 rather than after is open. **"Academy" is the word that does not generalize, which is why it appears nowhere a user can see it.**
-4. **Model tiering.** A cheaper model for clients and coaches, the strong one for admins and synthesis, is the presumed split. Decide against live cost data from phase 2's instrumentation.
+4. **Model tiering.** A cheaper model for clients and coaches, the strong one for admins and synthesis, is the presumed split. **It cuts against the product.** Parents and coaches are ~95% of the humans this talks to and are where "it feels like a bot" gets decided; the admin — who has menus, buttons and a web surface — needs the model least. Decide against live cost data from phase 2's instrumentation, and if the split happens, keep the strong model on first contact, the prospect conversation (§10.1), and anyone unhappy.

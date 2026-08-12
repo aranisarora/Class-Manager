@@ -1,0 +1,164 @@
+/**
+ * lib/messaging/compose.ts — buttons become actions, then the message goes out.
+ *
+ * This is where §4.3 is paid for. "After every action the bot takes, it offers the natural
+ * next step as a button" — and every one of those buttons is an `action` row minted here,
+ * fully resolved, before the message exists (§2.2). The tap replays it; nothing is inferred
+ * at tap time.
+ *
+ * It is also where §17's structural honesty is enforced ahead of the wire: the message is
+ * checked against the real Cloud API limits **and rejected if it does not fit**, never
+ * truncated. Truncating a 21-character button title to 20 produces a message that renders,
+ * so nobody finds out the compose step is wrong; rejecting it puts a `limit_violation` row
+ * in the event log with the exact reason. "If a message cannot render in the emulator, it
+ * does not ship."
+ */
+
+import { mintAction } from '@/lib/actions'
+import type { ActionPayload } from '@/lib/actions'
+import type { SessionCtx } from '@/lib/db'
+import { idem, newId } from '@/lib/ids'
+import { CATALOG, isCatalogId } from './catalog'
+import type { CatalogId } from './catalog'
+import { send } from './send'
+import type { Button, ListRow, ListSection, OutboundMessage, SendOutcome } from './types'
+import { validateOutbound } from './types'
+
+export type ComposeSpec = {
+  toContactId: string
+  body: string
+  header?: string
+  footer?: string
+  buttons?: { title: string; action: ActionPayload }[]
+  list?: {
+    buttonText: string
+    sections: { title: string; rows: { title: string; description?: string; action: ActionPayload }[] }[]
+  }
+  catalogId?: CatalogId | null
+  fixed?: boolean
+  subjectPersonIds?: string[]
+  isConfirmationRequest?: boolean
+  isEscalation?: boolean
+  preLaunchOk?: boolean
+  media?: OutboundMessage['media']
+  /**
+   * Additive (safe to omit). Supply one where the same moment must produce one message
+   * however many times it is raised — a job that reruns, a retry after a crash. Omitted, a
+   * fresh key is generated, because two deliberate replies are two messages.
+   */
+  idempotencyKey?: string
+  /** Additive: overrides the catalog row's action TTL. Defaults to the row's, then 24h. */
+  ttlMinutes?: number
+  /** Additive: forces a specific §16.2 template out of window (usually the catalog decides). */
+  templateName?: OutboundMessage['templateName']
+  /** Additive: named template parameters, when the caller knows better than the defaults. */
+  templateParams?: Record<string, string>
+}
+
+/** Mints an action per button, then hands a well-formed OutboundMessage to `send`. */
+export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promise<SendOutcome> {
+  const entry = spec.catalogId && isCatalogId(spec.catalogId) ? CATALOG[spec.catalogId] : null
+
+  const idempotencyKey =
+    spec.idempotencyKey ??
+    idem(spec.catalogId ?? 'composed', spec.toContactId, newId())
+
+  const fixed = spec.fixed ?? entry?.fixed ?? false
+
+  const base: Omit<OutboundMessage, 'buttons' | 'list'> = {
+    toContactId: spec.toContactId,
+    body: spec.body,
+    header: spec.header,
+    footer: spec.footer,
+    media: spec.media,
+    catalogId: spec.catalogId ?? null,
+    templateName: spec.templateName ?? null,
+    idempotencyKey,
+    subjectPersonIds: spec.subjectPersonIds ?? [],
+    isConfirmationRequest: spec.isConfirmationRequest,
+    isEscalation: spec.isEscalation,
+    fixed,
+    preLaunchOk: spec.preLaunchOk,
+    templateParams: spec.templateParams,
+  }
+
+  // Validate the shape BEFORE minting: an unrenderable message must not leave a trail of
+  // live action rows behind it. The placeholder ids stand in for the ones we would mint, so
+  // the check sees the message it would actually have produced.
+  const provisional: OutboundMessage = {
+    ...base,
+    buttons: spec.buttons?.map((b, i) => ({ actionId: `pending-${i}`, title: b.title })),
+    list: spec.list
+      ? {
+          buttonText: spec.list.buttonText,
+          sections: spec.list.sections.map((s, si) => ({
+            title: s.title,
+            rows: s.rows.map((r, ri) => ({
+              actionId: `pending-${si}-${ri}`,
+              title: r.title,
+              description: r.description,
+            })),
+          })),
+        }
+      : undefined,
+  }
+
+  const violations = validateOutbound(provisional)
+  if (violations.length) {
+    // Loud in dev (§17), and recorded: `send`'s gate 5 writes the row so the event log shows
+    // a suppressed message with a reason instead of a message that silently never happened.
+    console.error(
+      `[compose] refusing to mint actions for a message that cannot render: ${violations.join('; ')}`,
+    )
+    return send(ctx, provisional)
+  }
+
+  const ttlMinutes = spec.ttlMinutes ?? entry?.actionTtlMinutes
+
+  let buttons: Button[] | undefined
+  if (spec.buttons?.length) {
+    buttons = []
+    for (const b of spec.buttons) {
+      const actionId = await mintAction(ctx, {
+        payload: b.action,
+        forContactId: spec.toContactId,
+        ttlMinutes,
+      })
+      buttons.push({ actionId, title: b.title })
+    }
+  }
+
+  let list: OutboundMessage['list']
+  if (spec.list) {
+    const sections: ListSection[] = []
+    for (const s of spec.list.sections) {
+      const rows: ListRow[] = []
+      for (const r of s.rows) {
+        const actionId = await mintAction(ctx, {
+          payload: r.action,
+          forContactId: spec.toContactId,
+          ttlMinutes,
+        })
+        rows.push({ actionId, title: r.title, description: r.description })
+      }
+      sections.push({ title: s.title, rows })
+    }
+    list = { buttonText: spec.list.buttonText, sections }
+  }
+
+  return send(ctx, { ...base, buttons, list })
+}
+
+/**
+ * The §12 path: raise a catalog moment with its default buttons already wired to payloads.
+ * The defaults are what a competent manager would do knowing nothing about the person — the
+ * bot is expected to depart from them knowing something, which is why this takes the payloads
+ * rather than inventing them.
+ */
+export async function composeCatalog(
+  ctx: SessionCtx,
+  catalogId: CatalogId,
+  spec: Omit<ComposeSpec, 'catalogId'>,
+): Promise<SendOutcome> {
+  return composeAndSend(ctx, { ...spec, catalogId })
+}

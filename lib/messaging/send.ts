@@ -1,0 +1,669 @@
+/**
+ * lib/messaging/send.ts — the one path to the wire (§16.3).
+ *
+ * "No unthrottled send function exists in the codebase. Not 'we shouldn't call one' — one
+ * send path, everything through it, no helper that skips the queue. This is what makes it
+ * safe to give the model a message primitive."
+ *
+ * Ten gates, in order. Every one of them **records its decision on a `message` row** instead
+ * of dropping the message on the floor: a suppression nobody can see is indistinguishable
+ * from a bug, and the emulator's event log is where §18 and §2.8 are actually inspected
+ * (§17). The row carries `suppressed_reason`, the body that would have gone, the window
+ * state and the cost — so "why didn't the parent get that?" is answered by looking, not by
+ * reasoning about code.
+ *
+ * Two of the gates are §18's whole implementation. "Eight `if solo` branches would each have
+ * to be right; one suppression check has to be right once" — these are that check, and they
+ * also catch what a tenant-level solo flag misses: the two-coach academy where one is the
+ * admin, the head coach who is also an admin, the admin covering a session this week.
+ *
+ * Time is `app.now()` throughout. The window, the rolling caps and every stamp are measured
+ * against the drivable clock, or advancing it in the emulator would prove nothing (§17).
+ */
+
+import { withSession } from '@/lib/db'
+import type { SessionCtx, Tx } from '@/lib/db'
+import { CATALOG, isCatalogId } from './catalog'
+import { TEMPLATES, sanitizeParam, renderTemplate, isTemplateName } from './templates'
+import type { TemplateName } from './templates'
+import { getTransport } from './transport'
+import type { TransportRequest, TransportResult } from './transport'
+import { cacheSenderCredentials } from './transport-cloud'
+import { isInWindowAt } from './window'
+import {
+  COST_PAISE,
+  validateOutbound,
+  msgError,
+  type ConversationCategory,
+  type MessageStatus,
+  type OutboundMessage,
+  type SendOutcome,
+  type SuppressReason,
+} from './types'
+
+/** §16.3 guardrails. Defaults; an academy may raise or lower them in `academy.settings`. */
+export const DEFAULT_RECIPIENT_CAP_24H = 6
+export const DEFAULT_TENANT_CAP_24H = 400
+
+type Row = {
+  contact_id: string
+  person_id: string
+  person_name: string
+  phone_e164: string
+  wa_id: string | null
+  contact_state: string
+  opted_out_at: Date | null
+  last_inbound_at: Date | null
+  academy_id: string
+  academy_name: string
+  onboarding_state: string
+  settings: Record<string, unknown> | null
+  sender_id: string
+  sender_phone: string
+  sender_credentials: unknown
+  now_at: Date
+}
+
+type Prepared =
+  | { kind: 'suppressed'; reason: SuppressReason; messageId: string | null }
+  | {
+      kind: 'send'
+      messageId: string
+      row: Row
+      inWindow: boolean
+      asTemplate: TemplateName | null
+      costPaise: number
+      wire: OutboundMessage
+      injectedFault: 'send_fail' | 'number_blocked' | null
+    }
+
+/**
+ * `markStatus` is handed a wire id with no tenant on it, and every `message` policy is
+ * pinned to `app.academy_id()` — there is no cross-tenant read to resolve one with, by
+ * design. The send path remembers what it sent, so a transport callback in the same process
+ * resolves without one; callers that already know the tenant should pass it, or use
+ * `markStatusById`, which takes a session.
+ */
+const waIndex = new Map<string, { academyId: string; messageId: string }>()
+const WA_INDEX_MAX = 5000
+
+function rememberWaMessage(waMessageId: string, academyId: string, messageId: string): void {
+  if (waIndex.size >= WA_INDEX_MAX) {
+    // Oldest first — Map preserves insertion order, and a callback for a message sent
+    // 5000 sends ago resolves from the database instead.
+    const oldest = waIndex.keys().next()
+    if (!oldest.done) waIndex.delete(oldest.value)
+  }
+  waIndex.set(waMessageId, { academyId, messageId })
+}
+
+function serviceCtx(ctx: SessionCtx): SessionCtx {
+  return { role: 'service', academyId: ctx.academyId }
+}
+
+function capFrom(settings: Record<string, unknown> | null, key: string, fallback: number): number {
+  const caps = (settings?.['send_caps'] ?? null) as Record<string, unknown> | null
+  const v = caps && typeof caps === 'object' ? caps[key] : undefined
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN
+  return Number.isFinite(n) && n >= 0 ? n : fallback
+}
+
+const GENERIC_EVENT: Record<TemplateName, string> = {
+  session_reminder: 'a session coming up',
+  session_change: 'a change to your schedule',
+  session_outcome: 'how the session went',
+  payment_due: 'an update on your account',
+  coach_schedule: 'an update to your schedule',
+  coach_prompt: 'something needs your reply',
+  admin_alert: 'something needs your attention',
+  admin_digest: 'an update from your academy',
+}
+
+/**
+ * §16.2: the parameters carry real content or the template is the vague-clickbait pattern
+ * Meta re-categorises as marketing. So the fill is the academy's name, the specific thing
+ * that happened (the catalog row's own phrase), and the message the bot actually composed —
+ * never "you have an update".
+ */
+function buildTemplateParams(
+  template: TemplateName,
+  msg: OutboundMessage,
+  row: Row,
+): Record<string, string> {
+  const entry = msg.catalogId && isCatalogId(msg.catalogId) ? CATALOG[msg.catalogId] : null
+  const detail = (msg.body ?? '').trim()
+  const defaults: Record<string, string> = {
+    academy: row.academy_name,
+    who: row.person_name,
+    event: entry?.templateEvent ?? GENERIC_EVENT[template],
+    detail: detail ? sanitizeParam(detail) : 'Open this chat for the details.',
+  }
+  return { ...defaults, ...(msg.templateParams ?? {}) }
+}
+
+/**
+ * Out of window the message becomes a window-opener (§14.7): the approved template body
+ * carries it, and at most one button survives — a template's quick-reply title is fixed at
+ * approval time, so the title is replaced while the **minted action id** is kept, which is
+ * what keeps §2.2 intact across the window boundary.
+ */
+function asTemplateMessage(msg: OutboundMessage, template: TemplateName, row: Row): OutboundMessage {
+  const params = buildTemplateParams(template, msg, row)
+  const def = TEMPLATES[template]
+  const first = msg.buttons?.[0]
+  return {
+    ...msg,
+    body: renderTemplate(template, params),
+    header: undefined,
+    footer: undefined,
+    list: undefined,
+    buttons: first ? [{ actionId: first.actionId, title: def.quickReply }] : undefined,
+    templateName: template,
+    templateParams: params,
+  }
+}
+
+function messagePayload(msg: OutboundMessage, extra: Record<string, unknown>): string {
+  return JSON.stringify({
+    header: msg.header ?? null,
+    footer: msg.footer ?? null,
+    buttons: msg.buttons ?? null,
+    list: msg.list ?? null,
+    media: msg.media ?? null,
+    subject_person_ids: msg.subjectPersonIds ?? [],
+    is_confirmation_request: Boolean(msg.isConfirmationRequest),
+    is_escalation: Boolean(msg.isEscalation),
+    fixed: Boolean(msg.fixed),
+    pre_launch_ok: Boolean(msg.preLaunchOk),
+    ...extra,
+  })
+}
+
+async function insertMessage(
+  tx: Tx,
+  o: {
+    row: Row
+    msg: OutboundMessage
+    status: MessageStatus
+    inWindow: boolean
+    template: TemplateName | null
+    category: ConversationCategory | null
+    costPaise: number
+    suppressedReason: SuppressReason | null
+    idempotencyKey: string | null
+    body: string
+    payload: string
+  },
+): Promise<string> {
+  const rows = await tx<{ id: string }[]>`
+    insert into message (
+      academy_id, contact_id, sender_id, direction, catalog_id, template_name,
+      body, payload, media_url, status, queued_at, in_window, conversation_category,
+      cost_paise, suppressed_reason, idempotency_key
+    ) values (
+      ${o.row.academy_id}, ${o.row.contact_id}, ${o.row.sender_id}, 'outbound',
+      ${o.msg.catalogId ?? null}, ${o.template},
+      ${o.body}, ${o.payload}::text::jsonb, ${o.msg.media?.url ?? null}, ${o.status}, app.now(),
+      ${o.inWindow}, ${o.category}, ${o.costPaise}, ${o.suppressedReason}, ${o.idempotencyKey}
+    )
+    returning id`
+  return rows[0].id
+}
+
+/**
+ * Record a suppression as a row, then return it. §12: the bot is allowed to stay quiet, and
+ * this is what makes staying quiet auditable rather than invisible.
+ *
+ * The two cap gates deliberately release the idempotency key: a capped message is "not now",
+ * not "not ever", so the same key may be attempted again once the rolling window moves. Every
+ * other suppression is a decision, and keeping the key means the decision is made once.
+ */
+/**
+ * Which of the eight §16.2 categories carries an unsolicited message to this person,
+ * when the sender did not name one. Roles compose (§6.2), so this reads in priority
+ * order: what someone is *most* likely being written to about out of the blue.
+ */
+async function roleTemplate(tx: Tx, row: Row): Promise<TemplateName | null> {
+  try {
+    const r = await tx<{ is_admin: boolean; is_coach: boolean; is_client: boolean }[]>`
+      select
+        exists (select 1 from academy_admin aa
+                 where aa.person_id = ${row.person_id} and aa.academy_id = ${row.academy_id}) as is_admin,
+        exists (select 1 from coach co
+                 where co.person_id = ${row.person_id} and co.academy_id = ${row.academy_id}
+                   and co.ended_on is null) as is_coach,
+        exists (select 1 from account ac
+                 where ac.holder_person_id = ${row.person_id} and ac.academy_id = ${row.academy_id})
+          or exists (select 1 from player pl
+                      where pl.person_id = ${row.person_id} and pl.academy_id = ${row.academy_id}) as is_client`
+    const who = r[0]
+    if (!who) return null
+    if (who.is_coach) return 'coach_schedule'
+    if (who.is_admin) return 'admin_alert'
+    if (who.is_client) return 'session_change'
+    return null
+  } catch {
+    // Never let the fallback itself be the reason a message fails; the gate above
+    // then suppresses with a reason, which is the honest outcome.
+    return null
+  }
+}
+
+async function suppress(
+  tx: Tx,
+  row: Row,
+  msg: OutboundMessage,
+  reason: SuppressReason,
+  inWindow: boolean,
+): Promise<Prepared> {
+  const releasesKey = reason === 'recipient_frequency_cap' || reason === 'tenant_send_cap'
+  const messageId = await insertMessage(tx, {
+    row,
+    msg,
+    status: 'failed',
+    inWindow,
+    template: null,
+    category: null,
+    costPaise: 0,
+    suppressedReason: reason,
+    idempotencyKey: releasesKey ? null : msg.idempotencyKey,
+    body: msg.body ?? '',
+    payload: messagePayload(msg, {
+      suppressed: reason,
+      idempotency_key: msg.idempotencyKey,
+      retryable: releasesKey,
+    }),
+  })
+  return { kind: 'suppressed', reason, messageId }
+}
+
+/**
+ * The single send path. Every message the product emits — catalog row, composed message,
+ * model-authored reply, job output — comes through here.
+ */
+export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendOutcome> {
+  const svc = serviceCtx(ctx)
+
+  const prepared: Prepared = await withSession(svc, async (tx): Promise<Prepared> => {
+    const rows = await tx<Row[]>`
+      select c.id              as contact_id,
+             c.person_id       as person_id,
+             p.full_name       as person_name,
+             c.phone_e164      as phone_e164,
+             c.wa_id           as wa_id,
+             c.state           as contact_state,
+             c.opted_out_at    as opted_out_at,
+             c.last_inbound_at as last_inbound_at,
+             a.id              as academy_id,
+             a.name            as academy_name,
+             a.onboarding_state as onboarding_state,
+             a.settings        as settings,
+             s.id              as sender_id,
+             s.phone_e164      as sender_phone,
+             s.credentials     as sender_credentials,
+             app.now()         as now_at
+        from contact c
+        join person  p on p.id = c.person_id
+        join academy a on a.id = c.academy_id
+        join sender  s on s.id = a.sender_id
+       where c.id = ${msg.toContactId}
+         and c.academy_id = ${ctx.academyId}`
+
+    // ── Gate 1 · the contact, and opt-out ─────────────────────────────────────
+    // Opt-out is per academy, never global (§16.3), and it outranks everything below,
+    // including `fixed`: a fixed row exists so the business keeps a promise, not so it
+    // can message someone who asked it to stop.
+    if (rows.length === 0) {
+      return { kind: 'suppressed', reason: 'no_contact', messageId: null }
+    }
+    const row = rows[0]
+    const now = row.now_at instanceof Date ? row.now_at : new Date(row.now_at)
+    const inWindow = isInWindowAt({ last_inbound_at: row.last_inbound_at }, now)
+
+    if (row.opted_out_at || row.contact_state === 'opted_out') {
+      return suppress(tx, row, msg, 'opted_out', inWindow)
+    }
+
+    const subjects = msg.subjectPersonIds ?? []
+    const aboutRecipient = subjects.includes(row.person_id)
+
+    // ── Gate 2 · §18 rule 1 ───────────────────────────────────────────────────
+    // "Never ask someone to confirm something to themselves." The solo coach asked to
+    // confirm they are coming to their own class is week-one churn, and this is the one
+    // check that removes it — along with the head coach who is also an admin.
+    if (aboutRecipient && msg.isConfirmationRequest) {
+      return suppress(tx, row, msg, 'self_confirmation', inWindow)
+    }
+
+    // ── Gate 3 · §18 rule 2 ───────────────────────────────────────────────────
+    // "Never escalate about a person to that person." Routing it elsewhere is the
+    // caller's job; dropping it is this gate's.
+    if (aboutRecipient && msg.isEscalation) {
+      return suppress(tx, row, msg, 'escalation_about_self', inWindow)
+    }
+
+    // ── Gate 4 · §2.6 ─────────────────────────────────────────────────────────
+    // "Nothing is sent during onboarding until the admin says go. Building the roster
+    // messages nobody." Flows that legitimately message before launch — the admin's own
+    // setup conversation, the coach invite read-back — set `preLaunchOk`.
+    if (row.onboarding_state !== 'live' && !msg.preLaunchOk) {
+      return suppress(tx, row, msg, 'pre_launch', inWindow)
+    }
+
+    // ── Gate 5 · the real API's limits (§17) ──────────────────────────────────
+    // Rejected, never truncated. A 21-character button title is a compose bug; cutting it
+    // to 20 ships the bug. "If a message cannot render in the emulator, it does not ship."
+    const violations = validateOutbound(msg)
+    if (violations.length) {
+      console.error(
+        `[send] limit violation for contact ${msg.toContactId}: ${violations.join('; ')}`,
+      )
+      return suppress(tx, row, msg, 'limit_violation', inWindow)
+    }
+
+    // ── Gates 6 & 7 · §16.3 caps ──────────────────────────────────────────────
+    // Two caps because they protect two different things: the per-recipient cap stops a
+    // parent getting eight messages because eight things happened, the per-tenant cap
+    // stops one heavy academy spending the shared number's tier capacity. `fixed` rows
+    // are exempt from being blocked — they still count, because they were still read.
+    if (!msg.fixed) {
+      const counts = await tx<{ recipient_24h: number; tenant_24h: number }[]>`
+        select
+          (select count(*)::int from message m
+            where m.contact_id = ${row.contact_id}
+              and m.direction = 'outbound'
+              and m.suppressed_reason is null
+              and m.queued_at > app.now() - interval '24 hours')  as recipient_24h,
+          (select count(*)::int from message m
+            where m.academy_id = ${row.academy_id}
+              and m.direction = 'outbound'
+              and m.suppressed_reason is null
+              and m.queued_at > app.now() - interval '24 hours')  as tenant_24h`
+
+      const recipientCap = capFrom(row.settings, 'per_recipient_24h', DEFAULT_RECIPIENT_CAP_24H)
+      const tenantCap = capFrom(row.settings, 'per_tenant_24h', DEFAULT_TENANT_CAP_24H)
+
+      if (counts[0].recipient_24h >= recipientCap) {
+        return suppress(tx, row, msg, 'recipient_frequency_cap', inWindow)
+      }
+      if (counts[0].tenant_24h >= tenantCap) {
+        return suppress(tx, row, msg, 'tenant_send_cap', inWindow)
+      }
+    }
+
+    // ── Gate 8 · window and template (§14.7, §16.2) ───────────────────────────
+    // In window: free-form, no template, no approval, no tier cost. Out of window: one of
+    // the eight categories carries it, or it does not go at all.
+    let asTemplate: TemplateName | null = null
+    let wire = msg
+    let category: ConversationCategory = 'free_window'
+
+    if (!inWindow) {
+      const wanted =
+        (msg.templateName && isTemplateName(msg.templateName) ? msg.templateName : null) ??
+        (msg.catalogId && isCatalogId(msg.catalogId) ? CATALOG[msg.catalogId].template : null) ??
+        // §14.4 — the bot composes messages nobody specified, so a composed message
+        // has no catalog row to read a template off. Out of window that used to mean
+        // it simply did not go: a coach who has never messaged in would not be told
+        // their class was cancelled, and the only trace was a suppression row.
+        //
+        // The eight §16.2 templates are *categories of unsolicited contact*, not
+        // per-feature messages, so the recipient's role already determines which one
+        // carries it. Falling back on role keeps every send inside the approved eight
+        // — it widens nothing, and it closes a hole where a real message vanished.
+        (await roleTemplate(tx, row))
+
+      if (!wanted) {
+        return suppress(tx, row, msg, 'out_of_window_no_template', inWindow)
+      }
+      try {
+        wire = asTemplateMessage(msg, wanted, row)
+      } catch (e) {
+        console.error(`[send] template ${wanted} could not render: ${(e as Error).message}`)
+        return suppress(tx, row, msg, 'out_of_window_no_template', inWindow)
+      }
+      asTemplate = wanted
+      category = TEMPLATES[wanted].category as ConversationCategory
+    }
+
+    const costPaise = COST_PAISE[category]
+
+    // ── Gate 9 · idempotency ──────────────────────────────────────────────────
+    // Required on every outbound (§6.5). The same reminder raised twice by two jobs is
+    // one message, and the caller gets back the row that already exists.
+    const existing = await tx<{ id: string }[]>`
+      select id from message where idempotency_key = ${msg.idempotencyKey}`
+    if (existing.length) {
+      return { kind: 'suppressed', reason: 'duplicate_idempotency', messageId: existing[0].id }
+    }
+
+    // Failure injection (§17). Read here, applied at the wire below, so the row is
+    // genuinely queued and then genuinely fails — the ladder is never skipped.
+    const faults = await tx<{ kind: string; rate: number }[]>`
+      select kind, rate::float8 as rate
+        from sim_fault
+       where active = true and kind in ('send_fail','number_blocked')`
+    let injectedFault: 'send_fail' | 'number_blocked' | null = null
+    for (const f of faults) {
+      if (Math.random() < (Number(f.rate) || 1)) {
+        injectedFault = f.kind as 'send_fail' | 'number_blocked'
+        if (injectedFault === 'number_blocked') break
+      }
+    }
+
+    // ── Gate 10 · queue it, then hand it to the wire ──────────────────────────
+    const messageId = await insertMessage(tx, {
+      row,
+      msg: wire,
+      status: 'queued',
+      inWindow,
+      template: asTemplate,
+      category,
+      costPaise,
+      suppressedReason: null,
+      idempotencyKey: msg.idempotencyKey,
+      body: wire.body ?? '',
+      payload: messagePayload(wire, {
+        template_params: wire.templateParams ?? null,
+        original_body: asTemplate ? (msg.body ?? '') : null,
+        original_buttons: asTemplate ? (msg.buttons ?? null) : null,
+        original_list: asTemplate ? (msg.list ?? null) : null,
+      }),
+    })
+
+    return {
+      kind: 'send',
+      messageId,
+      row,
+      inWindow,
+      asTemplate,
+      costPaise,
+      wire,
+      injectedFault,
+    }
+  }).catch(async (e: unknown): Promise<Prepared> => {
+    // A racing insert on the unique idempotency key: the other writer won, and one message
+    // is exactly the point of the key.
+    if ((e as { code?: string }).code === '23505') {
+      const found = await withSession(svc, async (tx) => {
+        const r = await tx<{ id: string }[]>`
+          select id from message where idempotency_key = ${msg.idempotencyKey}`
+        return r.length ? r[0].id : null
+      })
+      return { kind: 'suppressed', reason: 'duplicate_idempotency', messageId: found }
+    }
+    throw e
+  })
+
+  if (prepared.kind === 'suppressed') {
+    return { status: 'suppressed', reason: prepared.reason, messageId: prepared.messageId }
+  }
+
+  const { messageId, row, inWindow, asTemplate, costPaise, wire, injectedFault } = prepared
+
+  // §17 failure injection: the wire refuses without ever being called.
+  if (injectedFault) {
+    const reason =
+      injectedFault === 'number_blocked'
+        ? 'number_blocked (injected): the recipient has blocked this number'
+        : 'send_fail (injected): the transport rejected the message'
+    await stampFailed(svc, messageId, reason)
+    return { status: 'failed', reason, messageId }
+  }
+
+  // Per-sender credentials (§16.3), handed to the transport rather than read by it.
+  cacheSenderCredentials(row.sender_phone, row.sender_credentials)
+
+  const req: TransportRequest = {
+    senderPhoneE164: row.sender_phone,
+    toPhoneE164: row.phone_e164,
+    toWaId: row.wa_id,
+    message: wire,
+    asTemplate,
+  }
+
+  const result: TransportResult = await getTransport()
+    .send(req)
+    .catch((e: unknown): TransportResult => ({
+      ok: false,
+      error: `transport threw: ${(e as Error).message}`,
+      permanent: false,
+    }))
+
+  if (!result.ok) {
+    await stampFailed(svc, messageId, result.error)
+    return { status: 'failed', reason: result.error, messageId }
+  }
+
+  const waMessageId = result.waMessageId
+
+  await withSession(svc, async (tx) => {
+    await tx`
+      update message
+         set status = 'sent',
+             sent_at = app.now(),
+             wa_message_id = ${waMessageId}
+       where id = ${messageId}
+         and status = 'queued'`
+  })
+
+  rememberWaMessage(waMessageId, ctx.academyId, messageId)
+
+  // §2.4: 'sent' is the strongest claim available right now. Delivered and read arrive
+  // later through `markStatus`, or they never arrive and the bot never claims them.
+  return {
+    status: 'sent',
+    messageId,
+    waMessageId,
+    inWindow,
+    template: asTemplate,
+    costPaise,
+  }
+}
+
+async function stampFailed(svc: SessionCtx, messageId: string, reason: string): Promise<void> {
+  await withSession(svc, async (tx) => {
+    await tx`
+      update message
+         set status = 'failed', failed_reason = ${reason}
+       where id = ${messageId}
+         and status in ('queued','sent')`
+  })
+}
+
+const RANK: Record<Exclude<MessageStatus, 'failed'>, number> = {
+  queued: 0,
+  sent: 1,
+  delivered: 2,
+  read: 3,
+}
+
+/**
+ * Move a message along the ladder. §2.4 in code: `queued ≠ sent ≠ delivered ≠ read`, and it
+ * only ever moves forward — a late 'sent' callback arriving after 'read' must not un-read
+ * the message, and a delivered message can no longer fail.
+ *
+ * `read` implies `delivered`, so the earlier stamps are filled in rather than left null; the
+ * bot may only say "delivered" where `delivered_at` exists (§4.5 lint downgrades the rest).
+ */
+export async function markStatusById(
+  ctx: SessionCtx,
+  messageId: string,
+  status: 'sent' | 'delivered' | 'read' | 'failed',
+  reason?: string,
+): Promise<void> {
+  const svc = serviceCtx(ctx)
+  await withSession(svc, async (tx) => {
+    if (status === 'failed') {
+      await tx`
+        update message
+           set status = 'failed', failed_reason = ${reason ?? 'failed'}
+         where id = ${messageId}
+           and direction = 'outbound'
+           and status in ('queued','sent')`
+      return
+    }
+
+    const rank = RANK[status]
+    await tx`
+      update message
+         set status = ${status},
+             sent_at      = case when sent_at is null then app.now() else sent_at end,
+             delivered_at = case when ${rank}::int >= 2 and delivered_at is null then app.now()
+                                 else delivered_at end,
+             read_at      = case when ${rank}::int >= 3 and read_at is null then app.now()
+                                 else read_at end
+       where id = ${messageId}
+         and direction = 'outbound'
+         and status <> 'failed'
+         and (case status
+                when 'queued'    then 0
+                when 'sent'      then 1
+                when 'delivered' then 2
+                when 'read'      then 3
+                else 99 end) < ${rank}::int`
+  })
+}
+
+/**
+ * Marks delivery/read from a transport callback (or the emulator's "mark read").
+ *
+ * A wire id carries no tenant, and every `message` policy is pinned to `app.academy_id()` —
+ * there is deliberately no cross-tenant read to resolve one with. The send path remembers
+ * what it sent, which covers transport callbacks in the same process; a caller that already
+ * knows the tenant (the emulator's read endpoint does) should pass `academyId`, or call
+ * `markStatusById` with its session.
+ */
+export async function markStatus(
+  waMessageId: string,
+  status: 'sent' | 'delivered' | 'read' | 'failed',
+  reason?: string,
+  academyId?: string,
+): Promise<void> {
+  const known = waIndex.get(waMessageId)
+  const tenant = academyId ?? known?.academyId
+  if (!tenant) {
+    throw msgError(
+      'unknown_wa_message',
+      `cannot resolve the tenant for ${waMessageId}: message RLS is pinned to app.academy_id(). ` +
+        `Pass academyId, or use markStatusById with the session that owns the thread.`,
+    )
+  }
+
+  const ctx: SessionCtx = { role: 'service', academyId: tenant }
+  const messageId =
+    known?.messageId ??
+    (await withSession(ctx, async (tx) => {
+      const r = await tx<{ id: string }[]>`
+        select id from message where wa_message_id = ${waMessageId}`
+      return r.length ? r[0].id : null
+    }))
+
+  if (!messageId) return
+  await markStatusById(ctx, messageId, status, reason)
+}
+
+/** §17 event-log helper: the cost of a category, without re-deriving the table. */
+export function costOf(category: ConversationCategory): number {
+  return COST_PAISE[category]
+}

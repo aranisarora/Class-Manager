@@ -1,0 +1,179 @@
+/**
+ * lib/format.ts — how numbers, times and names reach a human (CONTRACTS §11).
+ *
+ * Pure. No database, no clock, no node builtins — the emulator and the web
+ * surface render with these too, so this file has to be safe on the client.
+ *
+ * Everything user-facing is rendered in `academy.timezone`; the caller passes
+ * it in rather than this file guessing.
+ */
+
+import { DateTime } from 'luxon'
+
+export type TimeInput = Date | string | number | DateTime
+
+const DEFAULT_ZONE = 'Asia/Kolkata'
+const ISO_DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+const CLOCK_ONLY = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/
+
+function toDateTime(value: TimeInput, tz: string): DateTime {
+  const zone = tz || DEFAULT_ZONE
+  if (DateTime.isDateTime(value)) return value.setZone(zone)
+  if (value instanceof Date) return DateTime.fromJSDate(value, { zone })
+  if (typeof value === 'number') return DateTime.fromMillis(value, { zone })
+
+  const raw = String(value).trim()
+
+  // A `date` column: 'YYYY-MM-DD' is a calendar day in the academy's zone, not
+  // UTC midnight. Reading it as UTC is how a Saturday class lands on Friday.
+  if (ISO_DATE_ONLY.test(raw)) return DateTime.fromISO(raw, { zone })
+
+  // A `time` column: 'HH:MM[:SS]' has no day. Anchor it to today so the
+  // formatter has something to work with; only the clock part is ever read.
+  const clock = CLOCK_ONLY.exec(raw)
+  if (clock) {
+    return DateTime.now().setZone(zone).set({
+      hour: Number(clock[1]),
+      minute: Number(clock[2]),
+      second: clock[3] ? Number(clock[3]) : 0,
+      millisecond: 0,
+    })
+  }
+
+  return DateTime.fromISO(raw, { zone, setZone: false })
+}
+
+/**
+ * ₹1,200 · ₹1,20,000 · ₹450.50 · -₹300
+ * Indian grouping, and paise only when there are paise.
+ */
+export function formatINR(amount: number | string | null | undefined, opts: { paise?: boolean; sign?: boolean } = {}): string {
+  const n = typeof amount === 'number' ? amount : Number(amount ?? 0)
+  if (!Number.isFinite(n)) return '₹0'
+
+  const rounded = Math.round(n * 100) / 100
+  const showPaise = opts.paise ?? Math.round(rounded * 100) % 100 !== 0
+  const digits = showPaise ? 2 : 0
+
+  const body = new Intl.NumberFormat('en-IN', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(Math.abs(rounded))
+
+  const sign = rounded < 0 ? '-' : opts.sign && rounded > 0 ? '+' : ''
+  return `${sign}₹${body}`
+}
+
+/** 6:30 pm · 8 am — the idiom the spec writes in, minutes dropped when :00. */
+export function formatTime(value: TimeInput, tz: string = DEFAULT_ZONE): string {
+  return clockOf(toDateTime(value, tz))
+}
+
+function clockOf(dt: DateTime): string {
+  if (!dt.isValid) return ''
+  const meridiem = dt.hour < 12 ? 'am' : 'pm'
+  return `${bareClock(dt)} ${meridiem}`
+}
+
+function bareClock(dt: DateTime): string {
+  const hour12 = dt.hour % 12 === 0 ? 12 : dt.hour % 12
+  return dt.minute === 0 ? `${hour12}` : `${hour12}:${String(dt.minute).padStart(2, '0')}`
+}
+
+/**
+ * Sat 15 Aug · 15 Aug 2027 (year only when it is not the reference year)
+ * `relativeTo` turns the next two days into "today" and "tomorrow" — pass the
+ * clock's now, never `new Date()`.
+ */
+export function formatDate(
+  value: TimeInput,
+  tz: string = DEFAULT_ZONE,
+  opts: { relativeTo?: TimeInput; weekday?: boolean; year?: boolean } = {},
+): string {
+  const dt = toDateTime(value, tz)
+  if (!dt.isValid) return ''
+
+  if (opts.relativeTo !== undefined) {
+    const refDay = toDateTime(opts.relativeTo, tz).startOf('day')
+    const days = dt.startOf('day').diff(refDay, 'days').days
+    if (days === 0) return 'today'
+    if (days === 1) return 'tomorrow'
+    if (days === -1) return 'yesterday'
+  }
+
+  const showWeekday = opts.weekday ?? true
+  const ref = opts.relativeTo === undefined ? undefined : toDateTime(opts.relativeTo, tz)
+  const showYear = opts.year ?? (ref ? dt.year !== ref.year : false)
+
+  const parts: string[] = []
+  if (showWeekday) parts.push(dt.toFormat('ccc'))
+  parts.push(`${dt.day} ${dt.toFormat('LLL')}`)
+  if (showYear) parts.push(String(dt.year))
+  return parts.join(' ')
+}
+
+/**
+ * Sat 15 Aug, 8–10 am · Sat 15 Aug, 11 am – 1 pm · 15–17 Aug · 28 Aug – 3 Sep
+ * One day with two times reads as a session; two days read as a stretch.
+ */
+export function formatDateRange(from: TimeInput, to: TimeInput, tz: string = DEFAULT_ZONE, opts: { relativeTo?: TimeInput } = {}): string {
+  const a = toDateTime(from, tz)
+  const b = toDateTime(to, tz)
+  if (!a.isValid) return ''
+  if (!b.isValid) return formatDate(a, tz, opts)
+
+  if (a.hasSame(b, 'day')) {
+    const day = formatDate(a, tz, opts)
+    const sameMeridiem = a.hour < 12 === b.hour < 12
+    const times = sameMeridiem
+      ? `${bareClock(a)}–${bareClock(b)} ${b.hour < 12 ? 'am' : 'pm'}`
+      : `${clockOf(a)} – ${clockOf(b)}`
+    const hasTime = !(a.hour === 0 && a.minute === 0 && b.hour === 0 && b.minute === 0)
+    return hasTime ? `${day}, ${times}` : day
+  }
+
+  const sameYear = a.year === b.year
+  if (sameYear && a.month === b.month) {
+    return `${a.day}–${b.day} ${b.toFormat('LLL')}${sameYear ? '' : ` ${b.year}`}`
+  }
+  const left = sameYear ? `${a.day} ${a.toFormat('LLL')}` : `${a.day} ${a.toFormat('LLL')} ${a.year}`
+  const right = sameYear ? `${b.day} ${b.toFormat('LLL')}` : `${b.day} ${b.toFormat('LLL')} ${b.year}`
+  return `${left} – ${right}`
+}
+
+/** 1 session · 3 sessions · 2 people (pass the irregular when there is one). */
+export function pluralise(n: number, singular: string, plural?: string): string {
+  const word = Math.abs(n) === 1 ? singular : plural ?? `${singular}s`
+  return `${n} ${word}`
+}
+
+/** The word alone, when the count is already in the sentence. */
+export function plural(n: number, singular: string, pluralForm?: string): string {
+  return Math.abs(n) === 1 ? singular : pluralForm ?? `${singular}s`
+}
+
+/**
+ * "Meera, Aarav, Kiran, +11 more" — §14.2's exact shape once the list runs
+ * past `max`. Short lists read naturally instead: "Meera and Aarav".
+ */
+export function joinNames(names: readonly string[], max = 3): string {
+  const list = names.map((n) => String(n ?? '').trim()).filter((n) => n.length > 0)
+  if (list.length === 0) return ''
+  if (list.length === 1) return list[0]
+
+  if (list.length <= max) {
+    return `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`
+  }
+  return `${list.slice(0, max).join(', ')}, +${list.length - max} more`
+}
+
+/** 98765 43210 — how an Indian number is read aloud. Never used for matching. */
+export function formatPhone(e164: string): string {
+  const digits = String(e164 ?? '').replace(/[^0-9]/g, '')
+  if (digits.length === 12 && digits.startsWith('91')) {
+    const local = digits.slice(2)
+    return `${local.slice(0, 5)} ${local.slice(5)}`
+  }
+  if (digits.length === 10) return `${digits.slice(0, 5)} ${digits.slice(5)}`
+  return e164
+}
