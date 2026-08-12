@@ -58,6 +58,20 @@ export type OutboundMessage = {
   isEscalation?: boolean
   /** §12 "fixed" rows: cannot be suppressed by policy, only reworded/merged. */
   fixed?: boolean
+  /**
+   * True when this message answers something this person just said — the reply inside a turn
+   * they started, or the ack for a button they tapped.
+   *
+   * §16.3's per-recipient frequency limit exists to stop "a parent getting eight messages
+   * because eight things happened". A reply is not one of those eight things: it exists only
+   * because someone asked for it, so it cannot be the interruption the cap is defending
+   * against. Counting it does no harm; *blocking* it silences the bot mid-conversation and,
+   * worse, silently eats confirmation prompts — the plan is computed, the button is minted,
+   * and the person sees nothing.
+   *
+   * Set by `composeAndSend` from the acting session, never by hand.
+   */
+  solicited?: boolean
   /** Set by onboarding flows that are allowed to send before `academy.onboarding_state='live'`. */
   preLaunchOk?: boolean
   /**

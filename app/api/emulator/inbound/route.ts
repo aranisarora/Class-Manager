@@ -10,7 +10,14 @@ const Body = z
     contactId: z.string().uuid(),
     text: z.string().min(1).max(4096).optional(),
     actionId: z.string().uuid().optional(),
-    mediaUrl: z.string().min(1).max(2048).optional(),
+    /**
+     * A URL *or* a `data:` URI carrying the bytes. The old 2048 ceiling was written for the
+     * former and rejected the latter outright: a real attachment is a base64 data URI tens of
+     * thousands of characters long, so every voice note and photo failed the body check
+     * before it reached the media pipeline. ~24M characters ≈ an 18MB file, which covers
+     * every size WhatsApp itself accepts.
+     */
+    mediaUrl: z.string().min(1).max(24_000_000).optional(),
     mediaMimeType: z.string().min(1).max(255).optional(),
   })
   .refine((b) => Boolean(b.text || b.actionId || b.mediaUrl), {

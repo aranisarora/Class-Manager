@@ -7,12 +7,20 @@
  */
 
 import { useMemo, useState } from 'react'
-import { fmtDuration, useEmulator, windowState, type EmuContact } from '@/lib/emulator/state'
-import { Chip, Empty, ROLE_SHORT, ROLE_TONE, STATE_TONE, cx } from './ui'
+import {
+  fmtDuration,
+  fmtTime,
+  useEmulator,
+  usePrimaryTimezone,
+  windowState,
+  type EmuContact,
+} from '@/lib/emulator/state'
+import { Btn, Chip, Empty, ROLE_SHORT, ROLE_TONE, STATE_TONE, Spinner, cx } from './ui'
 
 function ContactRow({ c, open, activity }: { c: EmuContact; open: boolean; activity: number }) {
   const { state, actions } = useEmulator()
   const win = windowState(c, state.clock.nowIso)
+  const tz = usePrimaryTimezone()
   return (
     <button
       type="button"
@@ -48,8 +56,31 @@ function ContactRow({ c, open, activity }: { c: EmuContact; open: boolean; activ
           {c.optedOutAt ? <Chip tone="danger">opted out</Chip> : null}
           {!c.isPrimary ? <Chip tone="quiet" title="a second number for the same person">2nd no.</Chip> : null}
         </span>
+        {/* The last thing said, the way a chat list shows it — so which threads have
+            history, and what state each one was left in, is visible without opening
+            twelve panes. */}
+        {c.lastMessageBody ? (
+          <span className="mt-0.5 flex items-baseline gap-1">
+            <span className="font-mono text-[9px] text-zinc-600">
+              {c.lastMessageDirection === 'inbound' ? '←' : '→'}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[10px] text-zinc-500">
+              {c.lastMessageBody.replace(/\s+/g, ' ').trim()}
+            </span>
+            {c.lastMessageAt ? (
+              <span className="shrink-0 font-mono text-[9px] text-zinc-600">
+                {fmtTime(c.lastMessageAt, tz)}
+              </span>
+            ) : null}
+          </span>
+        ) : null}
         <span className="mt-0.5 flex items-center gap-1.5 font-mono text-[9px] text-zinc-600">
           <span className="truncate">{c.phone ?? '—'}</span>
+          {c.messageCount > 0 ? (
+            <span title="messages in this thread, both directions">{c.messageCount} msg</span>
+          ) : (
+            <span className="text-zinc-700">no history</span>
+          )}
           <span className={win.open ? 'text-emerald-500/80' : 'text-amber-600/80'}>
             {win.open ? `window ${fmtDuration(win.msLeft)}` : 'window closed'}
           </span>
@@ -59,9 +90,94 @@ function ContactRow({ c, open, activity }: { c: EmuContact; open: boolean; activ
   )
 }
 
+/**
+ * Add a person to the world without reseeding it. The role is wired for real — a client gets
+ * an account, a player and an enrollment; a coach gets a coach row — because a contact with
+ * no rows behind it can only be talked to, not tested.
+ */
+function NewContactForm({ onDone }: { onDone: () => void }) {
+  const { state, actions } = useEmulator()
+  const [name, setName] = useState('')
+  const [role, setRole] = useState<'client' | 'coach' | 'admin' | 'prospect'>('client')
+  const [academyId, setAcademyId] = useState(state.academies[0]?.id ?? '')
+  const [phone, setPhone] = useState('')
+  const busy = !!state.busy['contact/new']
+
+  const academy = academyId || state.academies[0]?.id || ''
+  const submit = async () => {
+    if (!name.trim() || !academy || busy) return
+    await actions.createTestContact({
+      academyId: academy,
+      name: name.trim(),
+      role,
+      ...(phone.trim() ? { phone: phone.trim() } : {}),
+    })
+    setName('')
+    setPhone('')
+    onDone()
+  }
+
+  return (
+    <div className="space-y-1 border-b border-zinc-800 bg-zinc-950/60 px-2 py-1.5">
+      <input
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void submit()
+          if (e.key === 'Escape') onDone()
+        }}
+        placeholder="name — e.g. Test Parent"
+        className="w-full rounded border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-emerald-700 focus:outline-none"
+      />
+      <div className="flex gap-1">
+        <select
+          value={role}
+          onChange={(e) => setRole(e.target.value as typeof role)}
+          className="min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-950 px-1.5 py-1 text-[11px] text-zinc-300 focus:border-emerald-700 focus:outline-none"
+        >
+          <option value="client">client — account + player + enrollment</option>
+          <option value="coach">coach — active</option>
+          <option value="admin">admin</option>
+          <option value="prospect">prospect — no rows, cold inbound</option>
+        </select>
+      </div>
+      <div className="flex gap-1">
+        <select
+          value={academy}
+          onChange={(e) => setAcademyId(e.target.value)}
+          className="min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-950 px-1.5 py-1 text-[11px] text-zinc-300 focus:border-emerald-700 focus:outline-none"
+        >
+          {state.academies.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+        <input
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          placeholder="number (optional)"
+          className="w-[110px] rounded border border-zinc-800 bg-zinc-950 px-1.5 py-1 font-mono text-[10px] text-zinc-300 placeholder:text-zinc-600 focus:border-emerald-700 focus:outline-none"
+        />
+      </div>
+      <div className="flex items-center gap-1">
+        <Btn size="xs" tone="primary" disabled={busy || !name.trim() || !academy} onClick={() => void submit()}>
+          {busy ? <Spinner /> : 'add'}
+        </Btn>
+        <Btn size="xs" tone="ghost" onClick={onDone}>
+          cancel
+        </Btn>
+        <span className="ml-auto font-mono text-[9px] text-zinc-600">cleared by the next reseed</span>
+      </div>
+    </div>
+  )
+}
+
 export function ContactTray() {
   const { state, actions } = useEmulator()
   const [q, setQ] = useState('')
+  const [adding, setAdding] = useState(false)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
 
   const groups = useMemo(() => {
@@ -108,13 +224,25 @@ export function ContactTray() {
             {state.panes.length} open · {state.contacts.length} total
           </span>
         </div>
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="filter by name, number, role…"
-          className="mt-1.5 w-full rounded border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-emerald-700 focus:outline-none"
-        />
+        <div className="mt-1.5 flex items-center gap-1">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="filter by name, number, role…"
+            className="min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-emerald-700 focus:outline-none"
+          />
+          <Btn
+            size="xs"
+            active={adding}
+            title="add a test contact to this world — no reseed needed"
+            onClick={() => setAdding((s) => !s)}
+          >
+            + new
+          </Btn>
+        </div>
       </div>
+
+      {adding ? <NewContactForm onDone={() => setAdding(false)} /> : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {!state.contacts.length ? (

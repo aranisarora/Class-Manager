@@ -65,6 +65,13 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
 
   const fixed = spec.fixed ?? entry?.fixed ?? false
 
+  // §16.3 — a message going back to the person who is talking to us is solicited by
+  // construction, and the acting session is what proves it: a turn runs as `role:'user'` for
+  // the contact who messaged, while jobs, digests and escalations run as `role:'service'`
+  // with no contact at all. So proactive traffic cannot acquire this flag by accident, and a
+  // message the model sends to a *third* party during someone's turn does not get it either.
+  const solicited = ctx.role !== 'service' && ctx.contactId === spec.toContactId
+
   const base: Omit<OutboundMessage, 'buttons' | 'list'> = {
     toContactId: spec.toContactId,
     body: spec.body,
@@ -78,6 +85,7 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
     isConfirmationRequest: spec.isConfirmationRequest,
     isEscalation: spec.isEscalation,
     fixed,
+    solicited,
     preLaunchOk: spec.preLaunchOk,
     templateParams: spec.templateParams,
   }

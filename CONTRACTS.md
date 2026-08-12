@@ -212,6 +212,14 @@ export type OutboundMessage = {
   isEscalation?: boolean
   /** §12 "fixed" rows: cannot be suppressed by policy, only reworded/merged. */
   fixed?: boolean
+  /**
+   * Additive. True when this message answers something the recipient just said — the reply in
+   * a turn they started, or a tap's ack. Set by `composeAndSend` from the acting session
+   * (`role:'user'` + matching `contactId`), never by a caller. Exempts the message from gate
+   * 6's per-recipient frequency cap, which counts interruptions: an answer to a question is
+   * not one, and capping it silences the bot mid-conversation. The per-tenant cap still applies.
+   */
+  solicited?: boolean
   /** Set by onboarding flows that are allowed to send before `academy.onboarding_state='live'`. */
   preLaunchOk?: boolean
 }
@@ -592,7 +600,9 @@ Routes (all owned by **API**, all thin — logic lives in `lib/`):
 | `GET /api/emulator/state` | | academies, contacts, clock, faults |
 | `GET /api/emulator/thread?contactId=` | | one pane's messages |
 | `GET /api/emulator/stream` | SSE | pushes `{type:'message'|'clock'|'job'|'turn'}` events |
-| `POST /api/emulator/inbound` | `{contactId, text?, actionId?, mediaUrl?}` | **the webhook equivalent** |
+| `POST /api/emulator/inbound` | `{contactId, text?, actionId?, mediaUrl?, mediaMimeType?}` | **the webhook equivalent** |
+| `POST /api/emulator/contact` | `{academyId, name, role, phone?}` | add a test contact to a live world |
+| `GET /api/emulator/memory?contactId=` | | §5 — the hot set and the fact record |
 | `POST /api/emulator/clock` | `{advanceMs?|setToIso?|reset?|toNextEvent?}` | advance, then run due jobs |
 | `POST /api/emulator/tick` | | run due jobs now |
 | `POST /api/emulator/fault` | `{kind, active, rate}` | failure injection |

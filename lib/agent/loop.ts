@@ -87,6 +87,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
   let modelName: string | undefined
   let promptTokens = 0
   let outputTokens = 0
+  let cachedTokens = 0
   let replyText = ''
 
   const identity = await resolveIdentity(input.contactId)
@@ -134,6 +135,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       modelName = m.model
       promptTokens = m.promptTokens
       outputTokens = m.outputTokens
+      cachedTokens = m.cachedTokens
       replyText = m.text
       if (m.error) error = m.error
     }
@@ -149,6 +151,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     model: modelName,
     promptTokens,
     outputTokens,
+    cachedTokens,
     latencyMs: Date.now() - startedMs,
     error,
   })
@@ -332,6 +335,7 @@ async function modelTurn(
   model?: string
   promptTokens: number
   outputTokens: number
+  cachedTokens: number
   error?: string
 }> {
   const outcomes: SendOutcome[] = []
@@ -395,6 +399,10 @@ async function modelTurn(
   let model: string | undefined
   let promptTokens = 0
   let outputTokens = 0
+  // §4.4 — a subset of promptTokens, not an addition to it. Summed over the tool
+  // rounds below, because it is the *ratio* over the whole turn that says whether the
+  // stable prefix is still earning its keep.
+  let cachedTokens = 0
   let repliedInTool = false
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -408,6 +416,7 @@ async function modelTurn(
     model = res.model
     promptTokens += res.usage.promptTokens
     outputTokens += res.usage.outputTokens
+    cachedTokens += res.usage.cachedTokens
     text = res.text ?? ''
 
     if (!res.functionCalls.length) break
@@ -464,6 +473,7 @@ async function modelTurn(
       })
       promptTokens += forced.usage.promptTokens
       outputTokens += forced.usage.outputTokens
+      cachedTokens += forced.usage.cachedTokens
       text = forced.text ?? ''
     } catch {
       /* fall through to the plain apology below */
@@ -504,7 +514,7 @@ async function modelTurn(
     )
   }
 
-  return { outcomes, toolCalls, text, model, promptTokens, outputTokens }
+  return { outcomes, toolCalls, text, model, promptTokens, outputTokens, cachedTokens }
 }
 
 /** `data:<mime>;base64,<payload>` → the two halves Gemini's inlineData wants. */
@@ -579,6 +589,7 @@ async function writeTurn(o: {
   model?: string
   promptTokens: number
   outputTokens: number
+  cachedTokens: number
   latencyMs: number
   error?: string
 }): Promise<void> {
@@ -586,7 +597,7 @@ async function writeTurn(o: {
     await withSession({ role: 'service', academyId: o.identity.academyId }, async (tx) => {
       await tx.unsafe(
         `insert into turn (id, academy_id, contact_id, person_id, role_acted, input, output, model,
-                           prompt_tokens, output_tokens, latency_ms, error)
+                           prompt_tokens, output_tokens, cached_tokens, latency_ms, error)
          values (${uid(o.turnId)}, ${uid(o.identity.academyId)}, ${uid(o.identity.contact.id)},
                  ${uid(o.identity.person.id)}, ${lit(o.identity.roles.join('+'))},
                  ${jsonLit({
@@ -597,7 +608,7 @@ async function writeTurn(o: {
                    task: o.input.task?.instruction ?? null,
                  })},
                  ${jsonLit(o.output)}, ${lit(o.model ?? null)}, ${lit(o.promptTokens)}, ${lit(o.outputTokens)},
-                 ${lit(o.latencyMs)}, ${lit(o.error ?? null)})`,
+                 ${lit(o.cachedTokens)}, ${lit(o.latencyMs)}, ${lit(o.error ?? null)})`,
       )
     })
   } catch {
@@ -751,7 +762,16 @@ will never think to ask whether the reminders went out. Then who is unpaid.`
 
     // The morning brief is silent when there is nothing.
     if (!parsed.send || !body) {
-      await writeSynthTurn(academyId, turnId, kind, admins[0], { sent: false }, model, Date.now() - startedMs)
+      await writeSynthTurn(
+        academyId,
+        turnId,
+        kind,
+        admins[0],
+        { sent: false },
+        model,
+        Date.now() - startedMs,
+        res.usage,
+      )
       return { turnId, sent: [], toolCalls: 0 }
     }
 
@@ -778,6 +798,7 @@ will never think to ask whether the reminders went out. Then who is unpaid.`
       { sent: true, statuses: outcomes.map((o) => o.status) },
       model,
       Date.now() - startedMs,
+      res.usage,
     )
   } catch (e) {
     error = e instanceof Error ? e.message : String(e)
@@ -902,6 +923,13 @@ async function synthesisPayload(svc: SessionCtx, academyId: string): Promise<Rec
   })
 }
 
+/**
+ * The brief and the digest are the only MODEL_SYNTH calls in the product — the most
+ * expensive single call it makes, twice a day per academy. They were the one model path
+ * writing a turn row with no token columns at all, so they were invisible in every cost
+ * and cache reading taken from `turn`. Usage is passed through now for the same reason
+ * §4.4 exists: an unmeasured prefix is an unbounded bill.
+ */
 async function writeSynthTurn(
   academyId: string,
   turnId: string,
@@ -910,14 +938,17 @@ async function writeSynthTurn(
   output: unknown,
   model: string | undefined,
   latencyMs: number,
+  usage?: { promptTokens: number; outputTokens: number; cachedTokens: number },
 ): Promise<void> {
   try {
     await withSession({ role: 'service', academyId }, async (tx) => {
       await tx.unsafe(
-        `insert into turn (id, academy_id, contact_id, person_id, role_acted, input, output, model, latency_ms)
+        `insert into turn (id, academy_id, contact_id, person_id, role_acted, input, output, model,
+                           prompt_tokens, output_tokens, cached_tokens, latency_ms)
          values (${uid(turnId)}, ${uid(academyId)}, ${admin.contact_id ? uid(admin.contact_id) : 'null'},
                  ${uid(admin.person_id)}, 'admin', ${jsonLit({ synthesis: kind })}, ${jsonLit(output)},
-                 ${lit(model ?? null)}, ${lit(latencyMs)})`,
+                 ${lit(model ?? null)}, ${lit(usage?.promptTokens ?? 0)}, ${lit(usage?.outputTokens ?? 0)},
+                 ${lit(usage?.cachedTokens ?? 0)}, ${lit(latencyMs)})`,
       )
     })
   } catch {

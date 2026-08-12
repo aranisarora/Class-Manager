@@ -366,6 +366,12 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     // parent getting eight messages because eight things happened, the per-tenant cap
     // stops one heavy academy spending the shared number's tier capacity. `fixed` rows
     // are exempt from being blocked — they still count, because they were still read.
+    //
+    // So is a *solicited* reply, for the same reason and with the same treatment. The
+    // recipient cap counts interruptions; an answer to a question this person just asked is
+    // not one, and blocking it turns "eight things happened" protection into a bot that
+    // stops mid-sentence once someone has had a busy day. The per-tenant cap still applies —
+    // that one protects the shared number's capacity, which a reply spends like anything else.
     if (!msg.fixed) {
       const counts = await tx<{ recipient_24h: number; tenant_24h: number }[]>`
         select
@@ -383,7 +389,7 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
       const recipientCap = capFrom(row.settings, 'per_recipient_24h', DEFAULT_RECIPIENT_CAP_24H)
       const tenantCap = capFrom(row.settings, 'per_tenant_24h', DEFAULT_TENANT_CAP_24H)
 
-      if (counts[0].recipient_24h >= recipientCap) {
+      if (!msg.solicited && counts[0].recipient_24h >= recipientCap) {
         return suppress(tx, row, msg, 'recipient_frequency_cap', inWindow)
       }
       if (counts[0].tenant_24h >= tenantCap) {

@@ -23,6 +23,7 @@ import {
 } from '@/lib/emulator/state'
 import { Bubble } from './Bubble'
 import { Composer } from './Composer'
+import { MemoryPanel } from './MemoryPanel'
 import { Btn, Chip, Empty, ROLE_SHORT, ROLE_TONE, STATE_TONE, Spinner, cx } from './ui'
 
 function ListSheet({
@@ -101,6 +102,7 @@ export function Pane({ contactId, index, count }: { contactId: string; index: nu
   const academy = useAcademyById(contact?.academyId)
   const thread = useThread(contactId)
   const [sheet, setSheet] = useState<EmuMessage | null>(null)
+  const [showMemory, setShowMemory] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
   const nearBottom = useRef(true)
 
@@ -167,6 +169,15 @@ export function Pane({ contactId, index, count }: { contactId: string; index: nu
           ))}
           {contact.isSolo ? <Chip tone="warn" title="§18 — admin and coach are the same person">solo</Chip> : null}
           <span className="ml-auto flex items-center gap-0.5">
+            <Btn
+              size="xs"
+              tone="ghost"
+              active={showMemory}
+              title="what the bot knows about this person (§5) — the prompt's hot set and the record behind it"
+              onClick={() => setShowMemory((s) => !s)}
+            >
+              🧠
+            </Btn>
             <Btn size="xs" tone="ghost" title="move left" disabled={index === 0} onClick={() => actions.movePane(contactId, -1)}>
               ‹
             </Btn>
@@ -265,11 +276,13 @@ export function Pane({ contactId, index, count }: { contactId: string; index: nu
         ))}
       </div>
 
+      {showMemory ? <MemoryPanel contactId={contactId} /> : null}
+
       <Composer
         busy={!!state.busy[`send:${contactId}`]}
         optedOut={!!contact.optedOutAt}
         onSendText={(text) => void actions.sendText(contactId, text)}
-        onSendMedia={(url, caption) => void actions.sendMedia(contactId, url, caption)}
+        onSendMedia={(media, caption) => void actions.sendMedia(contactId, media, caption)}
         onMarkRead={() => lastOutbound && void actions.markRead(contactId, lastOutbound.id)}
         markReadDisabled={!lastOutbound || !!state.busy[`read:${lastOutbound?.id}`]}
       />

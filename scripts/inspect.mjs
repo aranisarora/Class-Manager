@@ -19,9 +19,12 @@ const [ace] = await sql.begin(async (tx) => {
 
 console.log('\n=== last 12 turns ===')
 for (const t of await svc(ace.id, `select role_acted, left(coalesce(input->>'text',input::text),40) as inp,
-    left(coalesce(output->>'reply',output::text),70) as outp, model, prompt_tokens, output_tokens, latency_ms, left(coalesce(error,''),120) as err
+    left(coalesce(output->>'reply',output::text),70) as outp, model, prompt_tokens, output_tokens, cached_tokens,
+    latency_ms, left(coalesce(error,''),120) as err
   from turn order by created_at desc limit 12`)) {
-  console.log(`${(t.role_acted ?? '?').padEnd(7)} in="${t.inp}" out="${String(t.outp).replace(/\n/g, ' ')}" ${t.latency_ms}ms ${t.prompt_tokens}/${t.output_tokens} ${t.err ? 'ERR: ' + t.err : ''}`)
+  // §4.4 — prompt/output/cache-hit. A big prompt at 0% means the stable prefix was billed in full.
+  const cache = t.prompt_tokens > 0 ? `${Math.round((t.cached_tokens / t.prompt_tokens) * 100)}% cached` : '—'
+  console.log(`${(t.role_acted ?? '?').padEnd(7)} in="${t.inp}" out="${String(t.outp).replace(/\n/g, ' ')}" ${t.latency_ms}ms ${t.prompt_tokens}/${t.output_tokens} ${cache} ${t.err ? 'ERR: ' + t.err : ''}`)
 }
 
 console.log('\n=== last 15 messages (Ace) ===')

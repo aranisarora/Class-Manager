@@ -39,6 +39,7 @@ import { now, reset as resetClock, nextEventAt } from '@/lib/clock'
 import { newId } from '@/lib/ids'
 import { resolveInbound } from '@/lib/identity'
 import { runTurn, type TurnOutput } from '@/lib/agent/loop'
+import { CURATE_THRESHOLD } from '@/lib/agent/memory'
 import { markStatus } from '@/lib/messaging/send'
 import type { Role } from '@/lib/types'
 
@@ -969,6 +970,9 @@ export type WorldContact = {
   inWindow: boolean
   messageCount: number
   lastMessageAt: string | null
+  /** Chat-list preview: the last thing actually said in this thread, and by which side. */
+  lastMessageBody: string | null
+  lastMessageDirection: 'inbound' | 'outbound' | null
 }
 
 export type WorldSession = {
@@ -1096,11 +1100,25 @@ export async function worldState(): Promise<WorldState> {
                exists (select 1 from player pl
                         where pl.academy_id = c.academy_id and pl.person_id = c.person_id) as is_player,
                (select count(*) from message m where m.contact_id = c.id) as message_count,
-               (select max(m.queued_at) from message m where m.contact_id = c.id) as last_message_at
+               (select max(m.queued_at) from message m where m.contact_id = c.id) as last_message_at,
+               -- The tray is a chat list, so it needs what a chat list shows: the last thing
+               -- said and who said it. Ordered by queued_at then created_at, matching the
+               -- thread's own ordering, so the preview is never a different message from the
+               -- one at the bottom of the pane. Suppressed rows are skipped — they reached
+               -- nobody, and showing one as the latest would be the fiction §2.4 forbids.
+               last.body as last_message_body,
+               last.direction as last_message_direction
         from contact c
         join person p on p.id = c.person_id
+        left join lateral (
+          select m.body, m.direction
+          from message m
+          where m.contact_id = c.id and m.suppressed_reason is null
+          order by m.queued_at desc, m.created_at desc
+          limit 1
+        ) last on true
         where c.academy_id = ${academyId}::uuid
-        order by p.full_name`
+        order by last_message_at desc nulls last, p.full_name`
 
       const upcoming = await tx`
         select se.id, se.starts_at, se.ends_at, se.status, c.name as class_name,
@@ -1167,6 +1185,13 @@ export async function worldState(): Promise<WorldState> {
           inWindow: last !== null && nowD.getTime() - new Date(last).getTime() < WINDOW_MS,
           messageCount: Number(c.message_count),
           lastMessageAt: isoOrNull(c.last_message_at),
+          lastMessageBody: (c.last_message_body as string) ?? null,
+          lastMessageDirection:
+            c.last_message_direction === 'inbound'
+              ? 'inbound'
+              : c.last_message_direction === 'outbound'
+                ? 'outbound'
+                : null,
         }
       }),
       upcoming: a.upcoming.map((s) => ({
@@ -1310,6 +1335,7 @@ export async function threadFor(contactId: string): Promise<Thread | null> {
 
     const c = found.head
     const last = isoOrNull(c.last_inbound_at)
+    const lastDelivered = [...found.messages].reverse().find((m) => !m.suppressed_reason)
     return {
       contact: {
         id: String(c.id),
@@ -1332,6 +1358,14 @@ export async function threadFor(contactId: string): Promise<Thread | null> {
         inWindow: last !== null && nowD.getTime() - new Date(last).getTime() < WINDOW_MS,
         messageCount: found.messages.length,
         lastMessageAt: isoOrNull(found.messages[found.messages.length - 1]?.queued_at),
+        // Same rule as the tray's: the last message that actually went somewhere.
+        lastMessageBody: (lastDelivered?.body as string) ?? null,
+        lastMessageDirection:
+          lastDelivered?.direction === 'inbound'
+            ? 'inbound'
+            : lastDelivered?.direction === 'outbound'
+              ? 'outbound'
+              : null,
       },
       academy: {
         id: String(c.academy_id),
@@ -1408,6 +1442,8 @@ export type WorldEvent =
       model: string | null
       promptTokens: number | null
       outputTokens: number | null
+      /** §4.4 — the slice of promptTokens the implicit cache served. */
+      cachedTokens: number | null
       latencyMs: number | null
       error: string | null
     }
@@ -1475,7 +1511,7 @@ async function turnEvents(academyId: string, since: string, limit: number): Prom
     const rows = await tx`
       select t.id, t.created_at, t.academy_id, a.name as academy_name, t.contact_id,
              p.full_name as contact_name, t.role_acted, t.model, t.prompt_tokens,
-             t.output_tokens, t.latency_ms, t.error
+             t.output_tokens, t.cached_tokens, t.latency_ms, t.error
       from turn t
       join academy a on a.id = t.academy_id
       left join person p on p.id = t.person_id
@@ -1494,6 +1530,7 @@ async function turnEvents(academyId: string, since: string, limit: number): Prom
       model: (t.model as string) ?? null,
       promptTokens: t.prompt_tokens === null || t.prompt_tokens === undefined ? null : Number(t.prompt_tokens),
       outputTokens: t.output_tokens === null || t.output_tokens === undefined ? null : Number(t.output_tokens),
+      cachedTokens: t.cached_tokens === null || t.cached_tokens === undefined ? null : Number(t.cached_tokens),
       latencyMs: t.latency_ms === null || t.latency_ms === undefined ? null : Number(t.latency_ms),
       error: (t.error as string) ?? null,
     }))
@@ -1531,6 +1568,242 @@ async function jobEvents(since: string, limit: number): Promise<WorldEvent[]> {
       }
     })
   })
+}
+
+// =============================================================================
+// TEST CONTACTS — ad-hoc people, added to a live world without reseeding it.
+// =============================================================================
+
+export type NewTestContact = {
+  academyId: string
+  name: string
+  /** A role to wire up, so the contact is testable the moment it exists. */
+  role: 'client' | 'coach' | 'admin' | 'prospect'
+  /** Omitted, a free number in the +9199xxxxxxxx test range is picked. */
+  phone?: string
+}
+
+export type TestContactResult = {
+  contactId: string
+  personId: string
+  academyId: string
+  name: string
+  phone: string
+  role: NewTestContact['role']
+  /** The class a new client was enrolled into, when the academy had one. */
+  enrolledIn: string | null
+}
+
+/**
+ * `POST /api/emulator/contact` — one new person on a real number, wired to a real role.
+ *
+ * Deliberately NOT part of `seedWorld`: the seeded world is deterministic and every id in it
+ * is a hash of a stable string (§17), so bolting ad-hoc people onto it must not disturb that.
+ * These get `newId()` and survive until the next reseed, which is exactly the lifetime a
+ * throwaway test user should have.
+ *
+ * The role is wired rather than merely labelled, because a contact with no rows behind it
+ * tests almost nothing: a client with no account cannot be billed, a coach with no `coach`
+ * row cannot be offered cover. A client is created in the §6.2 n=1 shape — holder and player
+ * are the same person — which is a real case the product must support, not a convenience.
+ */
+export async function createTestContact(input: NewTestContact): Promise<TestContactResult> {
+  const name = input.name.trim()
+  if (!name) throw new Error('a test contact needs a name')
+
+  const nowD = await now()
+
+  return withSession(svc(input.academyId), async (tx) => {
+    const academy = await tx`select id, timezone from academy where id = ${input.academyId}::uuid`
+    if (academy.length === 0) throw new Error('no such academy in this world')
+
+    let phone = input.phone?.trim() ?? ''
+    if (phone && !phone.startsWith('+')) phone = `+${phone}`
+    if (!phone) {
+      // The +9199… block is reserved for these, so a test number is recognisable as one
+      // and can never collide with a seeded contact (+919845…).
+      const taken = await tx<{ phone_e164: string }[]>`
+        select phone_e164 from contact
+        where academy_id = ${input.academyId}::uuid and phone_e164 like '+9199%'`
+      const used = new Set(taken.map((t) => t.phone_e164))
+      for (let i = 1; i < 1000 && !phone; i++) {
+        const candidate = `+9199${String(i).padStart(8, '0')}`
+        if (!used.has(candidate)) phone = candidate
+      }
+      if (!phone) throw new Error('the test number range is full — reseed the world')
+    }
+
+    const clash = await tx`
+      select id from contact
+      where academy_id = ${input.academyId}::uuid and phone_e164 = ${phone}`
+    if (clash.length > 0) throw new Error(`${phone} already belongs to a contact in this academy`)
+
+    const personId = newId()
+    const contactId = newId()
+
+    await tx`
+      insert into person (id, academy_id, full_name, notes)
+      values (${personId}::uuid, ${input.academyId}::uuid, ${name}, 'test contact')`
+
+    // §11.2 — a prospect has not registered; everyone else was put here by the admin, which
+    // is what `registered` means. Neither is `engaged`: that is earned by messaging in, and
+    // the inbound trigger promotes them the moment they do.
+    const state = input.role === 'prospect' ? 'prospect' : 'registered'
+
+    await tx`
+      insert into contact (id, academy_id, person_id, phone_e164, wa_id, state, role_hint)
+      values (${contactId}::uuid, ${input.academyId}::uuid, ${personId}::uuid, ${phone},
+              ${phone.replace(/\D/g, '')}, ${state}, ${`test ${input.role}`})`
+
+    let enrolledIn: string | null = null
+
+    if (input.role === 'client') {
+      const accountId = newId()
+      const playerId = newId()
+      await tx`
+        insert into account (id, academy_id, holder_person_id, display_name)
+        values (${accountId}::uuid, ${input.academyId}::uuid, ${personId}::uuid, ${name})`
+      await tx`
+        insert into player (id, academy_id, account_id, person_id)
+        values (${playerId}::uuid, ${input.academyId}::uuid, ${accountId}::uuid, ${personId}::uuid)`
+
+      // Into the first active class that actually runs, so there are sessions to remind
+      // about, cancel and bill. An academy with no classes yet simply gets a bare client.
+      const [cls] = await tx<{ id: string; name: string }[]>`
+        select c.id, c.name from class c
+        where c.academy_id = ${input.academyId}::uuid and c.active
+          and exists (select 1 from class_slot cs where cs.class_id = c.id)
+        order by c.starts_on
+        limit 1`
+      if (cls) {
+        await tx`
+          insert into enrollment (id, academy_id, class_id, player_id, started_on)
+          values (${newId()}::uuid, ${input.academyId}::uuid, ${cls.id}::uuid, ${playerId}::uuid,
+                  ${nowD.toISOString().slice(0, 10)}::date)`
+        enrolledIn = cls.name
+      }
+    }
+
+    if (input.role === 'coach') {
+      await tx`
+        insert into coach (id, academy_id, person_id, status, invited_at, onboarded_at)
+        values (${newId()}::uuid, ${input.academyId}::uuid, ${personId}::uuid, 'active',
+                app.now(), app.now())`
+    }
+
+    if (input.role === 'admin') {
+      await tx`
+        insert into academy_admin (id, academy_id, person_id)
+        values (${newId()}::uuid, ${input.academyId}::uuid, ${personId}::uuid)`
+    }
+
+    return {
+      contactId,
+      personId,
+      academyId: input.academyId,
+      name,
+      phone,
+      role: input.role,
+      enrolledIn,
+    }
+  })
+}
+
+// =============================================================================
+// MEMORY — what the bot knows about this person, and where the record ends.
+// =============================================================================
+
+export type MemoryFactRow = {
+  id: string
+  subjectKind: 'academy' | 'person'
+  fact: string
+  source: string | null
+  createdAt: string
+  retiredAt: string | null
+  supersedes: string | null
+  /** True when a later fact points at this one. The correction, not this row, is current. */
+  superseded: boolean
+}
+
+export type ContactMemory = {
+  contact: { id: string; name: string; personId: string }
+  academy: { id: string; name: string; memory: string | null }
+  person: { id: string; name: string; memory: string | null }
+  facts: MemoryFactRow[]
+  /** §5 — curation is scheduled every `threshold` facts, so the hot set can lag the record. */
+  curate: { threshold: number; personFacts: number; academyFacts: number }
+}
+
+/**
+ * `GET /api/emulator/memory?contactId=` — §5 made visible.
+ *
+ * Two different things, deliberately shown side by side rather than merged, because collapsing
+ * them is the bug §5 exists to prevent: `memory` on `academy`/`person` is a **bounded hot set**
+ * — a cache of what is currently worth carrying in the prompt — while `memory_fact` is the
+ * append-only **record**. A fact that has dropped out of the hot set is not forgotten, and a
+ * hot set that looks thin is not evidence of amnesia. Corrections show as supersessions rather
+ * than edits, so "the bot still thinks X" is answerable by looking.
+ */
+export async function memoryFor(contactId: string): Promise<ContactMemory | null> {
+  for (const academyId of await worldAcademyIds()) {
+    const found = await withSession(svc(academyId), async (tx) => {
+      const head = await tx`
+        select c.id as contact_id, c.person_id, p.full_name, p.memory as person_memory,
+               a.id as academy_id, a.name as academy_name, a.memory as academy_memory
+        from contact c
+        join person p on p.id = c.person_id
+        join academy a on a.id = c.academy_id
+        where c.id = ${contactId}::uuid`
+      if (head.length === 0) return null
+
+      const personId = String(head[0].person_id)
+      const facts = await tx`
+        select f.id, f.subject_kind, f.fact, f.source, f.created_at, f.retired_at, f.supersedes,
+               exists (select 1 from memory_fact later where later.supersedes = f.id) as superseded
+        from memory_fact f
+        where f.academy_id = ${academyId}::uuid
+          and (
+            (f.subject_kind = 'person'  and f.subject_id = ${personId}::uuid) or
+            (f.subject_kind = 'academy' and f.subject_id = ${academyId}::uuid)
+          )
+        order by f.created_at desc`
+      return { head: head[0], facts }
+    })
+    if (!found) continue
+
+    const h = found.head
+    const facts: MemoryFactRow[] = found.facts.map((f) => ({
+      id: String(f.id),
+      subjectKind: f.subject_kind === 'academy' ? 'academy' : 'person',
+      fact: String(f.fact),
+      source: (f.source as string) ?? null,
+      createdAt: new Date(f.created_at as string).toISOString(),
+      retiredAt: isoOrNull(f.retired_at),
+      supersedes: f.supersedes ? String(f.supersedes) : null,
+      superseded: Boolean(f.superseded),
+    }))
+
+    return {
+      contact: { id: String(h.contact_id), name: String(h.full_name), personId: String(h.person_id) },
+      academy: {
+        id: String(h.academy_id),
+        name: String(h.academy_name),
+        memory: (h.academy_memory as string) ?? null,
+      },
+      person: {
+        id: String(h.person_id),
+        name: String(h.full_name),
+        memory: (h.person_memory as string) ?? null,
+      },
+      facts,
+      curate: {
+        threshold: CURATE_THRESHOLD,
+        personFacts: facts.filter((f) => f.subjectKind === 'person').length,
+        academyFacts: facts.filter((f) => f.subjectKind === 'academy').length,
+      },
+    }
+  }
+  return null
 }
 
 /** `GET /api/emulator/events?since=` — the event log, oldest first. */
@@ -1706,6 +1979,11 @@ export type InboundResult =
 
 function guessMime(url: string, given?: string): string {
   if (given) return given
+  // A `data:` URI states its own type, and it has no extension to fall back on — without
+  // this, every attachment from the emulator reached the model as octet-stream, which is
+  // the one type Gemini cannot read (§14.5 wants audio to arrive AS audio).
+  const data = /^data:([^;,]+)[;,]/i.exec(url)
+  if (data) return data[1] as string
   const u = url.toLowerCase()
   if (u.endsWith('.png')) return 'image/png'
   if (u.endsWith('.jpg') || u.endsWith('.jpeg')) return 'image/jpeg'

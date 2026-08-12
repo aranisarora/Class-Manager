@@ -145,6 +145,11 @@ export type EmuContact = {
   isPrimary: boolean
   isSolo: boolean
   note: string | null
+  /** Chat-list preview — how many messages this thread holds and the last thing said. */
+  messageCount: number
+  lastMessageAt: string | null
+  lastMessageBody: string | null
+  lastMessageDirection: 'inbound' | 'outbound' | null
 }
 
 export type EmuClock = {
@@ -517,6 +522,13 @@ export function normalizeContact(raw: Raw): EmuContact | null {
     isPrimary: bool(pick(raw, 'is_primary', 'isPrimary')) ?? true,
     isSolo: bool(pick(raw, 'is_solo', 'isSolo')) ?? false,
     note: str(pick(raw, 'note', 'notes', 'label')),
+    messageCount: num(pick(raw, 'message_count', 'messageCount')) ?? 0,
+    lastMessageAt: iso(pick(raw, 'last_message_at', 'lastMessageAt')),
+    lastMessageBody: str(pick(raw, 'last_message_body', 'lastMessageBody')),
+    lastMessageDirection: ((): 'inbound' | 'outbound' | null => {
+      const d = str(pick(raw, 'last_message_direction', 'lastMessageDirection'))
+      return d === 'inbound' || d === 'outbound' ? d : null
+    })(),
   }
 }
 
@@ -1145,9 +1157,20 @@ export type EmulatorActions = {
   resetClock: () => Promise<void>
   tick: () => Promise<void>
   sendText: (contactId: string, text: string) => Promise<void>
-  sendMedia: (contactId: string, mediaUrl: string, caption?: string) => Promise<void>
+  sendMedia: (
+    contactId: string,
+    media: { url: string; mimeType: string; filename?: string },
+    caption?: string,
+  ) => Promise<void>
   tapAction: (contactId: string, actionId: string, label?: string) => Promise<void>
   markRead: (contactId: string, messageId: string) => Promise<void>
+  /** Adds a throwaway person to the live world and opens them as a pane. */
+  createTestContact: (input: {
+    academyId: string
+    name: string
+    role: 'client' | 'coach' | 'admin' | 'prospect'
+    phone?: string
+  }) => Promise<void>
   setFault: (kind: FaultKind, active: boolean, rate: number) => Promise<void>
   setFilters: (patch: Partial<EventFilters>) => void
   toggle: (key: 'showTray' | 'showLog') => void
@@ -1482,9 +1505,16 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
           await afterMutation(contactId)
         }),
 
-      sendMedia: (contactId, mediaUrl, caption) =>
+      sendMedia: (contactId, media, caption) =>
         withBusy(`send:${contactId}`, async () => {
-          await post('/api/emulator/inbound', { contactId, mediaUrl, ...(caption ? { text: caption } : {}) })
+          // The mime type travels with the bytes. A data URI has no extension for the server
+          // to sniff, and §14.5 turns on the type being right — audio must arrive as audio.
+          await post('/api/emulator/inbound', {
+            contactId,
+            mediaUrl: media.url,
+            mediaMimeType: media.mimeType,
+            ...(caption ? { text: caption } : {}),
+          })
           await afterMutation(contactId)
         }),
 
@@ -1501,6 +1531,24 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
         withBusy(`read:${messageId}`, async () => {
           await post('/api/emulator/read', { messageId })
           await Promise.all([refreshThread(contactId), refreshEvents()])
+        }),
+
+      createTestContact: (input) =>
+        withBusy('contact/new', async () => {
+          const res = (await post('/api/emulator/contact', input)) as Raw
+          const contact = (pick(res, 'contact') as Raw) ?? null
+          const id = str(pick(contact, 'id', 'contactId'))
+          // The world has to be re-read before the pane can render the new contact — it is
+          // not in `state.contacts` until then, and a pane for an unknown contact renders
+          // the "not in this world" card.
+          await refreshState()
+          if (id) dispatch({ type: 'pane/open', contactId: id })
+          const where = str(pick(contact, 'enrolledIn')) ?? null
+          notify(
+            'ok',
+            `${str(pick(contact, 'name')) ?? 'contact'} added on ${str(pick(contact, 'phone')) ?? 'a test number'}` +
+              (where ? ` · enrolled in ${where}` : ''),
+          )
         }),
 
       setFault: (kind, active, rate) =>

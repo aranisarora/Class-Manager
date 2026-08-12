@@ -68,8 +68,16 @@ Open a pane per contact from the tray, then:
 6. **Watch the event log** — every send with template-vs-in-window, its cost, the sender number,
    every suppression with its reason, every job, every model call with tokens and latency.
 7. **Turn on a fault** — `send_fail`, `number_blocked`, `link_expired`, `model_error`.
-8. **Run a simulation** at `/emulator/sim`, or headless:
-   `npx tsx scripts/sim.ts --contact <uuid> --persona busy-parent --seed s1`
+8. **Send a file.** `📎 attach` takes anything on your disk — drop it on the composer or paste a
+   screenshot. Audio reaches the model as audio (§14.5); there is no transcription step.
+9. **Ask what it knows.** The 🧠 button on a pane shows §5 both ways: the bounded hot set the
+   prompt actually carries, and the append-only fact record behind it, with corrections marked as
+   supersessions rather than edits.
+10. **Add your own people.** `+ new` in the tray creates a contact in the live world without a
+    reseed, wired for real — a client gets an account, a player and an enrollment in the first
+    class, so reminders and tallies work on them immediately. The next reseed clears them.
+11. **Run a simulation** at `/emulator/sim`, or headless:
+    `npx tsx scripts/sim.ts --contact <uuid> --persona busy-parent --seed s1`
 
 ## Checks
 
@@ -139,7 +147,13 @@ supabase/migrations/      29 tables, RLS on every one
   are written and correct but never exercised.
 - **Rail 2** (payment gateway, mandates, in-chat checkout) is deferred per §19 phase 13. Rail 1 —
   UPI handle, admin attestation, reconciliation, dunning — works.
-- **Explicit prompt-cache handles** are deferred per §4.4; `academy.prompt_cache_handle` exists
-  and stays null. Implicit caching does the work.
+- **`academy.prompt_cache_handle` stays null, deliberately.** Implicit caching turned out *not* to
+  do the work — measured across turns it served 0 cached tokens, hitting only between hops inside
+  one turn — so `lib/agent/gemini.ts` now takes an explicit `CachedContent` for the stable prefix
+  and a warm turn serves ~93% of its prompt from cache. The handle lives in the process, not on the
+  academy: the prefix is deliberately academy-independent, so one cache serves every tenant and
+  per-tenant rows would buy N copies of the same thing. It is created only when a second call
+  arrives within five minutes, because cache storage costs more per hour than a quiet academy
+  saves. The event log's `cached` chip is the check — amber at 0%.
 - Model quality varies turn to turn, as it will: the structural guarantees hold every time, but
   which tool the model reaches for first does not. The simulation harness exists to measure that.

@@ -36,6 +36,65 @@ const KIND_TONE: Record<EventKind, string> = {
   system: 'neutral',
 }
 
+function fmtTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : `${n}`
+}
+
+/**
+ * §4.4 made observable. The stable prefix — doctrine, schema, the nine behavior modules,
+ * the operation signatures, the catalog — is ~50k tokens on the front of every call, and
+ * cached input bills at a quarter of the rate. So the ratio here is the whole economics of
+ * the layering: a turn showing 0% either paid four times over for that prefix, or the prefix
+ * stopped being byte-identical and nobody noticed.
+ *
+ * Which is why 0% is rendered loudly rather than hidden. Below the provider's minimum
+ * cacheable size there is nothing to cache and nothing to worry about, so that case says so
+ * instead of crying wolf.
+ */
+const MIN_CACHEABLE_TOKENS = 4096
+
+function CacheChip({
+  promptTokens,
+  cachedTokens,
+  model,
+}: {
+  promptTokens: number | null
+  cachedTokens: number | null
+  model: string | null
+}) {
+  // No model, no prompt: a tap or a replay, which cached nothing because it asked nothing.
+  if (!model || !promptTokens) return null
+
+  const cached = cachedTokens ?? 0
+  const pct = Math.round((cached / promptTokens) * 100)
+
+  if (cached === 0) {
+    const tiny = promptTokens < MIN_CACHEABLE_TOKENS
+    return (
+      <Chip
+        tone={tiny ? 'quiet' : 'warn'}
+        title={
+          tiny
+            ? `prompt was ${promptTokens} tokens — under the ~${MIN_CACHEABLE_TOKENS} the provider will cache, so there is nothing to hit`
+            : `no cache hit on a ${fmtTokens(promptTokens)} prompt — the stable prefix was re-billed at full rate. ` +
+              'Either the prefix drifted (§4.4 wants it byte-identical) or this was the first call of a cold window.'
+        }
+      >
+        {tiny ? 'uncacheable' : '0% cached'}
+      </Chip>
+    )
+  }
+
+  return (
+    <Chip
+      tone={pct >= 50 ? 'window' : 'warn'}
+      title={`${cached} of ${promptTokens} prompt tokens served from cache, billed at ~25% of the input rate (§4.4)`}
+    >
+      {pct}% cached
+    </Chip>
+  )
+}
+
 function Row({ e }: { e: EmuEvent }) {
   const { state, actions } = useEmulator()
   const tz = usePrimaryTimezone()
@@ -126,11 +185,11 @@ function Row({ e }: { e: EmuEvent }) {
           <>
             {e.model ? <Chip tone="admin">{e.model}</Chip> : null}
             {e.promptTokens !== null || e.outputTokens !== null ? (
-              <Chip tone="quiet" title="prompt / output / cached tokens">
-                {e.promptTokens ?? 0} → {e.outputTokens ?? 0}
-                {e.cachedTokens ? ` · ${e.cachedTokens} cached` : ''}
+              <Chip tone="quiet" title="prompt → output tokens (output includes thinking)">
+                {fmtTokens(e.promptTokens ?? 0)} → {fmtTokens(e.outputTokens ?? 0)}
               </Chip>
             ) : null}
+            <CacheChip promptTokens={e.promptTokens} cachedTokens={e.cachedTokens} model={e.model} />
             {e.ms !== null ? <Chip tone="quiet">{Math.round(e.ms)}ms</Chip> : null}
             {e.toolCalls !== null ? <Chip tone="quiet">{e.toolCalls} tools</Chip> : null}
           </>
@@ -158,6 +217,8 @@ function Totals({ events }: { events: EmuEvent[] }) {
     let jobsFailed = 0
     let turns = 0
     let tokens = 0
+    let promptTokens = 0
+    let cachedTokens = 0
     for (const e of events) {
       if (e.kind === 'send') {
         sends++
@@ -170,22 +231,34 @@ function Totals({ events }: { events: EmuEvent[] }) {
       } else if (e.kind === 'turn') {
         turns++
         tokens += (e.promptTokens ?? 0) + (e.outputTokens ?? 0)
+        promptTokens += e.promptTokens ?? 0
+        cachedTokens += e.cachedTokens ?? 0
       }
     }
-    return { sends, templates, paise, suppressed, jobsRan, jobsFailed, turns, tokens }
+    // Weighted by tokens, not averaged over turns: one 128k call that missed costs more
+    // than four small ones that hit, and a per-turn mean would hide that.
+    const cachePct = promptTokens > 0 ? Math.round((cachedTokens / promptTokens) * 100) : null
+    return { sends, templates, paise, suppressed, jobsRan, jobsFailed, turns, tokens, promptTokens, cachePct }
   }, [events])
 
   return (
-    <div className="grid grid-cols-4 gap-px border-b border-zinc-800 bg-zinc-800/60 font-mono text-[9px]">
+    <div className="grid grid-cols-5 gap-px border-b border-zinc-800 bg-zinc-800/60 font-mono text-[9px]">
       {[
-        { k: 'sends', v: `${t.sends}`, s: `${t.templates} on template` },
-        { k: 'spend', v: fmtPaise(t.paise), s: 'conversations opened' },
-        { k: 'suppressed', v: `${t.suppressed}`, s: 'never reached the wire' },
-        { k: 'jobs', v: `${t.jobsRan}`, s: t.jobsFailed ? `${t.jobsFailed} failed` : 'none failed' },
+        { k: 'sends', v: `${t.sends}`, s: `${t.templates} on template`, tone: 'text-zinc-200' },
+        { k: 'spend', v: fmtPaise(t.paise), s: 'conversations opened', tone: 'text-zinc-200' },
+        { k: 'suppressed', v: `${t.suppressed}`, s: 'never reached the wire', tone: 'text-zinc-200' },
+        { k: 'jobs', v: `${t.jobsRan}`, s: t.jobsFailed ? `${t.jobsFailed} failed` : 'none failed', tone: 'text-zinc-200' },
+        {
+          k: 'cached',
+          v: t.cachePct === null ? '—' : `${t.cachePct}%`,
+          s: t.cachePct === null ? 'no model calls yet' : `of ${fmtTokens(t.promptTokens)} prompt`,
+          // §4.4 — a low rate on a 50k prefix is a bill, so it reads as one.
+          tone: t.cachePct === null ? 'text-zinc-500' : t.cachePct >= 50 ? 'text-emerald-300' : 'text-orange-300',
+        },
       ].map((c) => (
-        <div key={c.k} className="bg-zinc-900 px-1.5 py-1">
+        <div key={c.k} className="bg-zinc-900 px-1.5 py-1" title="totals over the events currently shown">
           <div className="text-zinc-600">{c.k}</div>
-          <div className="text-[12px] text-zinc-200">{c.v}</div>
+          <div className={cx('text-[12px]', c.tone)}>{c.v}</div>
           <div className="truncate text-zinc-600">{c.s}</div>
         </div>
       ))}
