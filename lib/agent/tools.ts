@@ -13,11 +13,12 @@ import { now } from '@/lib/clock'
 import { newId } from '@/lib/ids'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { CATALOG, type CatalogId } from '@/lib/messaging/catalog'
-import { LIMITS, type SendOutcome } from '@/lib/messaging/types'
+import { LIMITS, type SendOutcome, type SuppressReason } from '@/lib/messaging/types'
 import { AGENT_TASK_CAP, dedupe, enqueue, liveAgentTasks } from '@/lib/jobs'
 import { signLink, linkUrl } from '@/lib/web/jwt'
 import { ViewSpecSchema } from '@/lib/web/registry'
 import type { Identity } from '@/lib/types'
+import { lint } from './lint'
 import { searchFacts, writeFact } from './memory'
 import type { ToolDecl } from './gemini'
 import { executePlan, needsPreview, parseSteps, previewPlan, type PlanStep } from './plan'
@@ -42,6 +43,47 @@ export type ToolCtx = {
  * Declarations
  * ------------------------------------------------------------------------- */
 
+/**
+ * Steps cross the wire as a JSON string, not as a declared array of objects.
+ *
+ * This is not a style choice. A plan step is a five-way union whose branches nest
+ * three and four deep — a message carrying buttons carrying action payloads, a
+ * schedule carrying a free-form job payload — and Vertex's function-call decoder
+ * returns MALFORMED_FUNCTION_CALL on it more often than not once the model tries
+ * to build a real one. Measured against the live prompt: two of three attempts came
+ * back malformed, zero output tokens, no candidate, no error anyone could read.
+ *
+ * The failure was invisible in a way that mattered: with every tool available the
+ * model would quietly fall back to `read` instead, so reads always worked and
+ * writes intermittently did nothing — which is exactly the symptom that looked
+ * like a stalling model, an invented tool name, or an empty apology.
+ *
+ * A string has no shape to malform. Validation does not move: `PlanStepSchema`
+ * (lib/agent/plan.ts) is still the only thing that decides what a step is, and it
+ * already rejected everything a JSON-schema declaration would have.
+ */
+const STEPS_PARAM = {
+  type: 'string',
+  description:
+    'A JSON array of steps, as a string. Each element has EXACTLY ONE of these keys:\n' +
+    '  {"write": "<one SQL statement: insert/update/delete>"}\n' +
+    '  {"operation": {"name": "<operation name>", "args": {…}}}\n' +
+    '  {"adjust": {"account_id", "amount", "reason", "player_id"?, "period"?, "description"?}}\n' +
+    '  {"message": {"to_contact_id"|"to_person_id", "body", "catalog_id"?, "subject_person_ids"?, "buttons"?: [{"title","action"}]}}\n' +
+    '  {"schedule": {"kind", "run_at", "dedupe_key", "payload": {…}}}\n' +
+    'Steps run one after another inside ONE transaction, so a later step sees rows an ' +
+    'earlier step created. You will not know the id of something you just inserted — do ' +
+    'not guess one and do not leave the link empty. Select it back:\n' +
+    '  [{"write":"insert into venue (academy_id, name) values (app.academy_id(), \'Green Park\')"},\n' +
+    '   {"write":"insert into class (academy_id, name, venue_id, starts_on) values (app.academy_id(), \'Evening\', ' +
+    '(select id from venue where name = \'Green Park\' and academy_id = app.academy_id()), date \'2026-08-20\')"}]\n' +
+    'An operation whose argument is an id you do not have is the wrong tool for that step — ' +
+    'write the SQL instead, so the id can be a subquery.\n' +
+    'Example: [{"operation":{"name":"create_class","args":{"name":"Evening","starts_on":"2026-08-20",' +
+    '"slots":[{"weekday":1,"start_time":"18:00","end_time":"19:00"}]}}}]',
+}
+
+/** Retained for the parse side and for documentation of the step shape. */
 const stepSchema = {
   type: 'object',
   description:
@@ -110,6 +152,55 @@ const stepSchema = {
   },
 }
 
+/**
+ * Steps arrive as a JSON string (see `STEPS_PARAM`), but a model that has seen the
+ * older shape — or that simply ignores the instruction — may still send an array.
+ * Both are accepted: rejecting a correct plan on a formatting technicality is the
+ * kind of strictness that costs a turn and teaches nobody anything.
+ */
+function decodeSteps(raw: unknown): unknown {
+  if (Array.isArray(raw)) return raw
+  if (typeof raw !== 'string') return raw ?? []
+  const text = raw.trim()
+  if (!text) return []
+  try {
+    return JSON.parse(text)
+  } catch (e) {
+    throw new Error(
+      `steps was a string but not valid JSON (${e instanceof Error ? e.message : String(e)}). ` +
+        'It must parse as a JSON array of step objects.',
+    )
+  }
+}
+
+/**
+ * What each gate means, in words the model can act on. Every one of these is a
+ * decision the runtime made on purpose — the useful response is to change course,
+ * never to send the message again.
+ */
+const SUPPRESSION_HELP: Record<SuppressReason, string> = {
+  opted_out: 'This person asked this academy to stop messaging them. Nothing reaches them. Tell the admin if it matters.',
+  self_confirmation: 'This message asks someone to confirm something about themselves. Send it to whoever actually decides, not to its subject.',
+  escalation_about_self: 'This raises a concern about the person it is addressed to. Route it to an admin instead.',
+  pre_launch: 'This academy has not launched, so its roster is not messaged yet. Only the admin can be written to during setup.',
+  recipient_frequency_cap: 'This person has already had their day\'s worth of unprompted messages. An answer to something they just asked is exempt; an interruption is not.',
+  tenant_send_cap: 'This academy has hit its 24-hour send ceiling on the shared number. Nothing more goes out today.',
+  out_of_window_no_template: 'The 24-hour window with this person is closed, so only one of the template categories can reach them. Free text cannot.',
+  duplicate_idempotency: 'This exact message was already sent once. It is not sent twice.',
+  repeat: 'They were told this, word for word, moments ago. Saying it again teaches them nothing — say what changed, or say nothing.',
+  no_contact: 'There is no reachable contact row for that recipient in this academy.',
+  limit_violation: 'The message breaks a WhatsApp shape limit (length, button count, title length). Rebuild it smaller — this one could not render.',
+}
+
+/**
+ * The label on the nav-bar door. Kept under `LIMITS.buttonTitleChars` here rather
+ * than truncated at the call site: a title trimmed to fit renders as "What else can
+ * you do" with the question mark missing, which looks like a bug to the person
+ * reading it — and a 21-character title is not a compose error worth suppressing a
+ * whole message over, which is what happened the first time this shipped.
+ */
+export const MENU_BUTTON_TITLE = 'What can you do?'
+
 export const TOOL_DECLS: ToolDecl[] = [
   {
     name: 'read',
@@ -132,7 +223,7 @@ export const TOOL_DECLS: ToolDecl[] = [
       type: 'object',
       properties: {
         intent: { type: 'string', description: 'What this plan is for, in the user\'s terms. Goes in the audit trail.' },
-        steps: { type: 'array', items: stepSchema },
+        steps: STEPS_PARAM,
       },
       required: ['intent', 'steps'],
     },
@@ -397,9 +488,14 @@ export async function runTool(
     case 'plan': {
       let steps: PlanStep[]
       try {
-        steps = parseSteps(args?.steps ?? [])
+        steps = parseSteps(decodeSteps(args?.steps))
       } catch (e) {
-        return { result: { error: `those steps are not valid: ${e instanceof Error ? e.message : String(e)}` } }
+        return {
+          result: {
+            error: `those steps are not valid: ${e instanceof Error ? e.message : String(e)}`,
+            hint: 'steps is a JSON array, as a string. Each element has exactly one of: write, operation, adjust, message, schedule. Fix the shape rather than resending it.',
+          },
+        }
       }
       if (!steps.length) return { result: { error: 'a plan needs at least one step' } }
       const preview = await previewPlan(ctx.session, steps)
@@ -550,12 +646,35 @@ export async function runTool(
                 : { title: b.title, action: b?.action ?? { kind: 'noop', ack: 'Left as it was — nothing changed.' } },
             )
           }
+          // A confirmation with no way to decline is not a confirmation. The model
+          // reliably writes the yes and forgets the no — asked to add a coach it
+          // offered `[Yes, confirm]` alone — which leaves declining to be typed as
+          // prose, on the one interaction where the tap is the whole point.
+          const declines = (b: any) => b?.action?.kind === 'noop' || /^(cancel|no\b|don'?t|leave)/i.test(b?.title ?? '')
+          if (buttons && buttons.length < LIMITS.buttons && !buttons.some(declines)) {
+            buttons.push({ title: 'Cancel', action: { kind: 'noop', ack: 'Left as it was — nothing changed.' } })
+          }
         }
+      }
+
+      // §5 — "a persistent list-picker is the primary affordance; prose is the
+      // fallback". The picker was built, role-aware and reordered by memory, and
+      // was reachable only by tapping a button carrying `{kind:'menu'}` — which
+      // nothing ever minted. Across every message the product had ever sent, not
+      // one menu action existed, so the nav bar had no door. This is the door: a
+      // reply that would otherwise ship bare carries one, which costs a person
+      // nothing and is the only thing that teaches them what else there is.
+      if (to === ctx.identity.contact.id && !buttons?.length && !args?.list) {
+        buttons = [{ title: MENU_BUTTON_TITLE, action: { kind: 'menu', menu: 'root' } }]
       }
 
       const outcome = await composeAndSend(ctx.session, {
         toContactId: to,
-        body: String(args?.body ?? ''),
+        // §4.5 ran on exactly one path — the loop's own trailing message — and this
+        // is the path the model actually uses, so most outbound text was never
+        // linted at all. Uuids, table names, ISO timestamps and doctrine references
+        // were one `reply` call away from a customer's phone the whole time.
+        body: lint(String(args?.body ?? ''), ctx.identity),
         header: args?.header ? String(args.header) : undefined,
         footer: args?.footer ? String(args.footer) : undefined,
         buttons,
@@ -565,6 +684,21 @@ export async function runTool(
         subjectPersonIds: Array.isArray(args?.subject_person_ids) ? args.subject_person_ids : undefined,
       })
       ctx.outcomes?.push(outcome)
+      if (outcome.status === 'suppressed') {
+        // A bare `{status:'suppressed'}` reads as "that didn't work, try again", and
+        // the observed behaviour was exactly that: the same message re-sent, then a
+        // shorter version, then a bare "Hi!" — three dropped messages and a wasted
+        // turn. A gate is a decision, not a transient failure, so it says so.
+        return {
+          result: {
+            status: 'suppressed',
+            reason: outcome.reason,
+            explanation: SUPPRESSION_HELP[outcome.reason] ?? 'This message was not delivered.',
+            retry: false,
+            note: 'Sending this again, or a reworded version, will be dropped the same way. Do not resend. If the person is owed an answer, the way to give it is to fix the reason, not to repeat the message.',
+          },
+        }
+      }
       return { result: { status: outcome.status, ...('reason' in outcome ? { reason: outcome.reason } : {}) } }
     }
 
@@ -760,7 +894,32 @@ export async function runTool(
       }
     }
 
-    default:
-      return { result: { error: `there is no tool called ${name}` } }
+    default: {
+      // A dead end here costs the whole turn. The model called `PlanSteps` eight
+      // times in a row against `there is no tool called PlanSteps` — a true sentence
+      // that contains nothing to act on, so the only move left was to try it again.
+      // An error that carries the way out is the difference between a mis-named call
+      // and a burnt turn.
+      const known = TOOL_DECLS.map((d) => d.name)
+      const lowered = name.toLowerCase().replace(/[^a-z]/g, '')
+      const nearest =
+        known.find((k) => k === lowered) ??
+        known.find((k) => lowered.startsWith(k) || lowered.endsWith(k)) ??
+        known.find((k) => lowered.includes(k))
+      return {
+        result: {
+          error: `there is no tool called "${name}"`,
+          available: known,
+          ...(nearest
+            ? {
+                didYouMean: nearest,
+                hint: `Call "${nearest}" instead — same intent, and its parameters are in the declaration above. Calling "${name}" again will fail identically.`,
+              }
+            : {
+                hint: 'Use one of the names in `available`, exactly as written — they are lowercase and never camelCase. Calling this name again will fail identically.',
+              }),
+        },
+      }
+    }
   }
 }

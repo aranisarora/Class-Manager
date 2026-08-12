@@ -202,13 +202,6 @@ export function ClockBar() {
 
       <div className="ml-auto flex items-center gap-2">
         {busy ? <Spinner /> : null}
-        <a
-          href="/emulator/sim"
-          className="rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-700 hover:text-white"
-          title="agent simulation — the same world, driven by a persona"
-        >
-          sim →
-        </a>
         <ConnectionDot />
         <Btn size="xs" active={state.showTray} onClick={() => actions.toggle('showTray')} title="toggle the contact tray">
           tray

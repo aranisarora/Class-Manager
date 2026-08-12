@@ -294,11 +294,6 @@ export default async function Home() {
             the scheduled ladder, inject failures, and read every send in the event log with its
             template-vs-in-window state, cost and sender number.
           </Door>
-          <Door href="/emulator/sim" kicker="Simulation" title="Personas, goals, a judge, diffable runs">
-            Point an uncooperative persona at a goal and let it type. A judge agent reads the
-            transcript for confusion, dead ends and wrong answers; the same seed replays identically,
-            so a regression shows up as a diff.
-          </Door>
         </section>
 
         <footer className="border-t border-line-soft pt-5">

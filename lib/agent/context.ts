@@ -195,7 +195,12 @@ function formatQueryResults(v: unknown): string {
  */
 export async function variableTail(
   id: Identity,
-  extra?: { clockNote?: string; taskInstruction?: string; queryResults?: unknown },
+  extra?: {
+    clockNote?: string
+    taskInstruction?: string
+    queryResults?: unknown
+    recentLookups?: string
+  },
 ): Promise<string> {
   const tz = id.academy.timezone || 'Asia/Kolkata'
   const at = await now()
@@ -315,6 +320,20 @@ export async function variableTail(
   if (createdOn) {
     const age = Math.max(0, daysBetween(createdOn, local.date))
     out.push(`# How much to synthesise\n\n${mixInstruction(age)}`)
+  }
+
+  // --- what you already looked up --------------------------------------------
+  // History is rebuilt from message *text*, and §4.5 forbids ids in message text,
+  // so every id a previous turn fetched was gone by the next one — while the tools
+  // still demanded ids. That gap is where invented uuids came from: the slot had to
+  // be filled and there was nothing to fill it from. These are the real rows.
+  if (extra?.recentLookups) {
+    out.push(
+      `# What you looked up earlier in this conversation\n\n` +
+        `Your own queries and their real results, newest first. Ids here are the only ids you may use — ` +
+        `if what you need is not here, run the query again. Never write a uuid you have not read.\n\n` +
+        extra.recentLookups,
+    )
   }
 
   // --- the situation ---------------------------------------------------------

@@ -188,7 +188,6 @@ export async function resetWorld(): Promise<void> {
   // session is pinned to is irrelevant.
   await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
     await tx`delete from job`
-    await tx`delete from sim_run`
     await tx`delete from sim_fault`
     await tx`delete from sender`
     await tx`insert into sim_clock (singleton, offset_ms, frozen_at) values (true, 0, null)
@@ -1592,6 +1591,98 @@ export type TestContactResult = {
   role: NewTestContact['role']
   /** The class a new client was enrolled into, when the academy had one. */
   enrolledIn: string | null
+}
+
+/**
+ * A brand new business, at `setup`, with nothing in it but its owner.
+ *
+ * The seeded worlds are 45-day-old academies with a full roster, which is the state
+ * the product spends most of its life in — but never the state it *starts* in, and
+ * §10.1's first week is where a business decides whether to keep using this. There
+ * was no way to reach that state before: `seedWorld` builds a live academy and
+ * `createTestContact` needs one to exist. So this creates the shell and stops, and
+ * everything else — venues, classes, coaches, families — has to arrive through
+ * conversation, which is the thing worth testing.
+ *
+ * `onboarding_state = 'setup'` is load-bearing: the digest and brief handlers skip a
+ * non-live academy, so a business being set up is not woken at 07:00 by a report
+ * about nothing.
+ */
+export async function createAcademy(input: {
+  name: string
+  adminName: string
+  adminPhone?: string
+  timezone?: string
+  category?: string
+}): Promise<{
+  academyId: string
+  adminContactId: string
+  adminPersonId: string
+  adminPhone: string
+  onboardingState: string
+}> {
+  const academyId = newId()
+  const personId = newId()
+  const contactId = newId()
+  const tz = input.timezone ?? 'Asia/Kolkata'
+  const nowD = await now()
+
+  // One shared sender across every tenant, exactly as production has one number.
+  await withSession(svc(academyId), async (tx) => {
+    await tx`
+      insert into sender (id, phone_e164, waba_id, credentials, label)
+      values (${SENDER_ID}::uuid, ${SENDER_PHONE}, 'WABA-EMULATOR-0001', '{}'::jsonb, ${SENDER_LABEL})
+      on conflict (id) do nothing`
+  })
+
+  let phone = (input.adminPhone ?? '').trim()
+  if (phone && !phone.startsWith('+')) phone = `+${phone}`
+
+  await withSession(svc(academyId), async (tx) => {
+    if (!phone) {
+      const taken = await tx<{ phone_e164: string }[]>`
+        select phone_e164 from contact where phone_e164 like '+9199%'`
+      const used = new Set(taken.map((t) => t.phone_e164))
+      for (let i = 1; i < 1000 && !phone; i++) {
+        const candidate = `+9199${String(i).padStart(8, '0')}`
+        if (!used.has(candidate)) phone = candidate
+      }
+      if (!phone) throw new Error('the test number range is full')
+    }
+
+    await tx.unsafe(
+      `insert into academy (id, name, category, timezone, cancellation_window_hours,
+         client_reminder_lead_hours, morning_brief_at, evening_digest_at, rail, upi_handle,
+         sender_id, memory, settings, created_on, onboarding_state)
+       values ($1::uuid,$2,$3,$4,24,14,'07:00','21:00','rail1',null,$5::uuid,null,'{}'::jsonb,$6::date,'setup')`,
+      [academyId, input.name.trim(), input.category ?? 'sport', tz, SENDER_ID, nowD.toISOString().slice(0, 10)] as never[],
+    )
+
+    await tx`
+      insert into person (id, academy_id, full_name)
+      values (${personId}::uuid, ${academyId}::uuid, ${input.adminName.trim()})`
+
+    // `engaged` is earned by messaging in, so the owner starts `registered` like
+    // anyone the admin adds — including, here, themselves.
+    await tx`
+      insert into contact (id, academy_id, person_id, phone_e164, wa_id, state, role_hint, is_primary)
+      values (${contactId}::uuid, ${academyId}::uuid, ${personId}::uuid, ${phone},
+              ${phone.replace(/\D/g, '')}, 'registered', 'admin', true)`
+
+    await tx`
+      insert into academy_admin (id, academy_id, person_id)
+      values (${newId()}::uuid, ${academyId}::uuid, ${personId}::uuid)`
+  })
+
+  academyIdCache = null
+
+  return {
+    academyId,
+    adminContactId: contactId,
+    adminPersonId: personId,
+    adminPhone: phone,
+    onboardingState: 'setup',
+  }
 }
 
 /**

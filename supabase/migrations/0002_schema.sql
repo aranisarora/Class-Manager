@@ -437,19 +437,6 @@ create table if not exists sim_fault (       -- failure injection
   unique (kind)
 );
 
-create table if not exists sim_run (         -- seeds, recordings, judge reports
-  id           uuid primary key default gen_random_uuid(),
-  created_at   timestamptz not null default now(),
-  seed         text not null,
-  label        text,
-  started_at   timestamptz not null default now(),
-  ended_at     timestamptz,
-  transcript   jsonb,
-  judge_report jsonb,
-  persona      jsonb,
-  goal         text
-);
-
 -- -----------------------------------------------------------------------------
 -- §21.4 / §14.3 — turn instrumentation. What the model kept re-deriving is what
 -- becomes the next recipe; model tiering is decided against this table.
@@ -564,7 +551,6 @@ alter table audit_entry   enable row level security;
 alter table recipe        enable row level security;
 alter table sim_clock     enable row level security;
 alter table sim_fault     enable row level security;
-alter table sim_run       enable row level security;
 alter table turn          enable row level security;
 
 -- =============================================================================

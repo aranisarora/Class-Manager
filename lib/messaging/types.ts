@@ -104,6 +104,8 @@ export type SuppressReason =
   | 'tenant_send_cap'
   | 'out_of_window_no_template'
   | 'duplicate_idempotency'
+  /** Byte-identical to the last thing this person was told, moments ago. */
+  | 'repeat'
   | 'no_contact'
   | 'limit_violation'
 

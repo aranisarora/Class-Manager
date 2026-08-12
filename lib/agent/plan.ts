@@ -486,44 +486,100 @@ const VERB: Record<TableDiff['op'], string> = {
   delete: 'remove',
 }
 
+/** The same three, after the fact. */
+const VERB_DONE: Record<TableDiff['op'], string> = {
+  insert: 'added',
+  update: 'changed',
+  delete: 'removed',
+}
+
+/** Tables whose singular is not the table name with the s taken off. */
+const SINGULARS: Record<string, string> = {
+  attendance: 'attendance mark',
+  class_slot: 'weekly slot',
+  tally_line: 'charge',
+  contact: 'phone number',
+  account: 'family account',
+  session_coach: 'coach assignment',
+  class_coach: 'coach assignment',
+  memory_fact: 'remembered fact',
+  audit_entry: 'audit entry',
+  enrollment: 'enrolment',
+}
+
+/**
+ * Table names are not English, and this sentence is read by a person.
+ *
+ * The summary is quoted back to whoever is confirming — sometimes verbatim, since
+ * the model pastes it into its own message — so "that'll add 2 persons, add 1
+ * contact and add 1 account" arrives on someone's phone as a database schema with
+ * the underscores taken out. Every row here is the word the business would use.
+ */
 const PLURALS: Record<string, string> = {
   class: 'classes',
-  attendance: 'attendance rows',
-  tally_line: 'tally lines',
+  person: 'people',
+  contact: 'phone numbers',
+  account: 'family accounts',
+  player: 'players',
+  attendance: 'attendance marks',
+  tally_line: 'charges',
   session_coach: 'coach assignments',
   class_coach: 'coach assignments',
-  class_slot: 'slots',
+  class_slot: 'weekly slots',
   academy_admin: 'admins',
   memory_fact: 'remembered facts',
   audit_entry: 'audit entries',
+  enrollment: 'enrolments',
+  session: 'sessions',
+  venue: 'venues',
+  payment: 'payments',
 }
 
 function plural(table: string, n: number): string {
-  if (PLURALS[table]) return PLURALS[table]
-  return n === 1 ? table.replace(/_/g, ' ') : `${table.replace(/_/g, ' ')}s`
+  const one = table.replace(/_/g, ' ')
+  // A count of one is singular whatever the table is called. "add 1 classes" is
+  // the kind of sentence that tells a person they are reading machine output.
+  if (n === 1) return SINGULARS[table] ?? one
+  return PLURALS[table] ?? `${one}s`
 }
 
-function buildSummary(diffs: TableDiff[], state: RunState): string {
+/**
+ * The same numbers read two ways, and which one you get is not cosmetic.
+ *
+ * A preview is a proposal — "that'll change 14 enrollments" — and a receipt is a
+ * fact — "changed 14 enrollments". Reusing the preview wording after the commit
+ * left people unable to tell whether the thing they had just approved had actually
+ * happened, which is the one question a receipt exists to answer.
+ */
+function buildSummary(diffs: TableDiff[], state: RunState, tense: 'preview' | 'done' = 'preview'): string {
+  const done = tense === 'done'
   const parts = [...diffs]
     .filter((d) => d.count > 0)
     .sort((a, b) => b.count - a.count)
     .slice(0, 3)
-    .map((d) => `${VERB[d.op]} ${d.count} ${plural(d.table, d.count)}`)
+    .map((d) => `${(done ? VERB_DONE : VERB)[d.op]} ${d.count} ${plural(d.table, d.count)}`)
 
   let head: string
-  if (parts.length === 0) head = 'Nothing changes in the data'
-  else if (parts.length === 1) head = `That'll ${parts[0]}`
-  else head = `That'll ${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+  if (parts.length === 0) head = done ? 'Nothing changed' : 'Nothing changes in the data'
+  else if (parts.length === 1) head = done ? capitalise(parts[0] as string) : `That'll ${parts[0]}`
+  else {
+    const joined = `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+    head = done ? capitalise(joined) : `That'll ${joined}`
+  }
 
   const note = state.notes.filter(Boolean).join('; ')
   let s = note ? `${head} — ${note}.` : `${head}.`
 
-  if (state.staged.length === 1) s += ' 1 person hears about it.'
-  else if (state.staged.length > 1) s += ` ${state.staged.length} people hear about it.`
+  if (state.staged.length === 1) s += done ? ' 1 person has been told.' : ' 1 person hears about it.'
+  else if (state.staged.length > 1) {
+    s += done ? ` ${state.staged.length} people have been told.` : ` ${state.staged.length} people hear about it.`
+  }
   if (state.scheduled.length === 1) s += " I'll check back once."
-  else if (state.scheduled.length > 1) s += ` ${state.scheduled.length} follow-ups get scheduled.`
+  else if (state.scheduled.length > 1) s += ` ${state.scheduled.length} follow-ups are scheduled.`
   return s
 }
+
+const capitalise = (s: string) => (s ? s[0]!.toUpperCase() + s.slice(1) : s)
 
 function previewOf(m: MessageStep): string {
   const b = m.body.replace(/\s+/g, ' ').trim()
@@ -585,6 +641,7 @@ export async function executePlan(
     const merged = diffs.length ? diffs : synthDiffs(state.exec)
     const outcomes = await flushOutbox(ctx, state.staged, auditId)
     await recordAudit(ctx, auditId, intent, steps, merged, state, outcomes)
+    const receipt = buildSummary(merged, state, 'done')
     return {
       ok: true,
       auditId,
@@ -593,7 +650,7 @@ export async function executePlan(
       totalRows: merged.reduce((n, d) => n + d.count, 0),
       stagedMessages: state.staged.map((m) => ({ toContactId: m.toContactId, preview: previewOf(m) })),
       scheduled: state.scheduled,
-      summary: buildSummary(merged, state),
+      summary: receipt,
     }
   } catch (e) {
     return { ...failed(state, e), auditId, outcomes: [] }
@@ -714,6 +771,12 @@ async function flushOutbox(
         isEscalation: m.is_escalation,
         fixed: m.fixed ?? entry?.fixed ?? false,
         preLaunchOk: m.pre_launch_ok,
+        // §16.3 — this path sends as `svc` because it mints actions and touches
+        // infrastructure, but the *message* is still a reply to the person whose
+        // turn this is. Losing that distinction here made every plan's read-back
+        // an unsolicited interruption, so a confirmation could be dropped by the
+        // frequency cap while the plan it confirmed had already run.
+        solicited: ctx.role !== 'service' && 'contactId' in ctx && ctx.contactId === m.toContactId,
       }
       outcomes.push(await send(svc, msg))
     } catch (e) {

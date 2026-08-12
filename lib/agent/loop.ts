@@ -23,7 +23,7 @@ import { lint, stablePrefix, variableTail } from './context'
 import { hotSet } from './memory'
 import { executePlan, type PlanStep } from './plan'
 import { jsonLit, lit, uid, type OperationName } from './operations'
-import { runTool, TOOL_DECLS, type ToolCtx } from './tools'
+import { runTool, TOOL_DECLS, MENU_BUTTON_TITLE, type ToolCtx } from './tools'
 import { matchRecipe } from './recipes'
 
 export type TurnInput = {
@@ -40,6 +40,8 @@ export type TurnOutput = { turnId: string; sent: SendOutcome[]; toolCalls: numbe
 
 const MAX_TOOL_ROUNDS = 8
 const HISTORY = 16
+/** How many past turns to mine for reads. Small: the newest lookups are the live ones. */
+const LOOKUP_TURNS = 4
 
 /* ------------------------------------------------------------------------- *
  * §4.3 — after every action, the natural next step as a button. On a button
@@ -89,6 +91,8 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
   let outputTokens = 0
   let cachedTokens = 0
   let replyText = ''
+  let trace: ToolTrace[] = []
+  let rounds = 0
 
   const identity = await resolveIdentity(input.contactId)
   if (!identity) {
@@ -122,9 +126,19 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         text = consumed.payload.text
         goToModel = true
       } else {
+        // A tap makes no model call, so without this the turn row for the most
+        // consequential thing a person can do — committing a plan — was blank.
+        const tappedAt = Date.now()
         const res = await executeAction(session, identity, consumed.payload, turnId)
         outcomes.push(...res.outcomes)
         replyText = res.summary
+        trace.push({
+          round: 0,
+          name: `tap:${consumed.payload.kind}`,
+          ms: Date.now() - tappedAt,
+          args: traceValue(consumed.payload, 4000),
+          result: traceValue({ summary: res.summary, sent: res.outcomes.map((o) => o.status) }, 2000),
+        })
       }
     }
 
@@ -137,6 +151,8 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       outputTokens = m.outputTokens
       cachedTokens = m.cachedTokens
       replyText = m.text
+      trace = [...trace, ...m.trace]
+      rounds = m.rounds
       if (m.error) error = m.error
     }
   } catch (e) {
@@ -154,6 +170,8 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     cachedTokens,
     latencyMs: Date.now() - startedMs,
     error,
+    trace,
+    rounds,
   })
 
   if (error) {
@@ -246,8 +264,13 @@ async function executeAction(
     outcomes.push(
       await composeAndSend(session, {
         toContactId: identity.contact.id,
-        body: res.summary,
-        buttons: follow.length ? follow.slice(0, LIMITS.buttons) : undefined,
+        // Runtime-composed, but it still lands on a phone: the receipt is built from
+        // table names and operation notes, and both leak — "2 persons", "(§2.6)".
+        // Everything user-facing goes through the same lint, whoever wrote it.
+        body: lint(res.summary, identity),
+        buttons: follow.length
+          ? follow.slice(0, LIMITS.buttons)
+          : [{ title: MENU_BUTTON_TITLE, action: { kind: 'menu', menu: 'root' } }],
       }),
     )
   }
@@ -323,6 +346,34 @@ async function sendMenu(session: SessionCtx, identity: Identity, which: string):
  * The model rounds
  * ------------------------------------------------------------------------- */
 
+/**
+ * One line of the turn's flight recorder. `args` carries the SQL verbatim
+ * because "what did it actually read" is the question a wrong answer raises,
+ * and reconstructing it from the reply is guesswork.
+ */
+export type ToolTrace = {
+  round: number
+  name: string
+  ms: number
+  args?: unknown
+  result?: unknown
+  error?: string
+}
+
+/** Long strings are evidence, not payload — keep the shape, cap the size. */
+function traceValue(v: unknown, limit: number): unknown {
+  if (v === null || v === undefined) return v ?? null
+  if (typeof v === 'string') return v.length > limit ? `${v.slice(0, limit)}… (+${v.length - limit} chars)` : v
+  if (typeof v !== 'object') return v
+  try {
+    const s = JSON.stringify(v)
+    if (s.length <= limit) return v
+    return `${s.slice(0, limit)}… (+${s.length - limit} chars)`
+  } catch {
+    return String(v)
+  }
+}
+
 async function modelTurn(
   session: SessionCtx,
   identity: Identity,
@@ -336,6 +387,8 @@ async function modelTurn(
   promptTokens: number
   outputTokens: number
   cachedTokens: number
+  trace: ToolTrace[]
+  rounds: number
   error?: string
 }> {
   const outcomes: SendOutcome[] = []
@@ -348,11 +401,15 @@ async function modelTurn(
     outcomes,
   }
 
-  const clock = inZone(await now(), identity.academy.timezone)
+  const [clock, lookups] = await Promise.all([
+    now().then((at) => inZone(at, identity.academy.timezone)),
+    recentLookups(identity),
+  ])
   const tail = await variableTail(identity, {
     clockNote: `It is ${clock.label} (${clock.date} ${clock.time}) in ${identity.academy.timezone}.`,
     taskInstruction: input.task?.instruction,
     queryResults: input.task?.queryResults,
+    recentLookups: lookups,
   })
 
   const situation: string[] = [tail]
@@ -404,8 +461,15 @@ async function modelTurn(
   // stable prefix is still earning its keep.
   let cachedTokens = 0
   let repliedInTool = false
+  const trace: ToolTrace[] = []
+  let rounds = 0
+  let forcedError: string | undefined
+  /** Calls that failed once already this turn, by name+args. */
+  const failedCalls = new Map<string, number>()
+  let stalled = false
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    rounds = round + 1
     const res = await generate({
       system,
       contents,
@@ -419,7 +483,25 @@ async function modelTurn(
     cachedTokens += res.usage.cachedTokens
     text = res.text ?? ''
 
-    if (!res.functionCalls.length) break
+    if (!res.functionCalls.length) {
+      // A round that produced neither a tool call nor a word is the shape of every
+      // turn that dies quietly, and it used to leave no trace at all. The reason the
+      // candidate stopped is the whole diagnosis, so it is recorded here rather than
+      // inferred later from a missing reply.
+      if (!text.trim()) {
+        trace.push({
+          round: round + 1,
+          name: '(model returned nothing)',
+          ms: res.ms,
+          // On MALFORMED_FUNCTION_CALL the parts sometimes carry the fragment the
+          // model was trying to emit, which is the only clue to WHICH tool it was
+          // reaching for — the call itself never arrives.
+          args: traceValue(res.modelParts, 2000),
+          error: `finishReason: ${res.finishReason ?? 'unknown'} · ${res.usage.outputTokens} output tokens`,
+        })
+      }
+      break
+    }
 
     // Echo the model's own parts back verbatim so Gemini 3 thought signatures
     // survive the round trip.
@@ -430,14 +512,68 @@ async function modelTurn(
       toolCalls++
       if (call.name === 'reply') repliedInTool = true
       let out: { result: unknown; note?: string }
+      const calledAt = Date.now()
+      let threw: string | undefined
+
+      // A call that already failed, repeated byte for byte, will fail byte for byte
+      // again — the world did not move between two rounds of the same turn. Left
+      // alone this burns every remaining round: eight identical calls, 93 seconds and
+      // 165k tokens for one mis-typed tool name, ending in an apology. The loop is
+      // the only place that can see the repetition, so it is the place that stops it.
+      const signature = `${call.name}:${JSON.stringify(call.args ?? {})}`
+      const priorFailures = failedCalls.get(signature) ?? 0
+      if (priorFailures > 0) {
+        out = {
+          result: {
+            error: 'you already made this exact call in this turn and it failed with the same arguments',
+            repeatedCall: call.name,
+            hint:
+              priorFailures === 1
+                ? 'Nothing has changed since, so it will keep failing. Read the earlier error, change the call, or stop and tell them what you need.'
+                : 'Stop retrying. Say plainly what you were trying to do and what is in the way.',
+          },
+        }
+        failedCalls.set(signature, priorFailures + 1)
+        trace.push({
+          round: round + 1,
+          name: call.name,
+          ms: 0,
+          args: traceValue(call.args, 500),
+          error: `blocked: identical call already failed ${priorFailures}x this turn`,
+        })
+        responses.push({ functionResponse: { name: call.name, response: { result: out.result } } })
+        if (priorFailures >= 2) {
+          stalled = true
+          break
+        }
+        continue
+      }
+
       try {
         out = await runTool(call.name, call.args, toolCtx)
       } catch (e) {
+        threw = e instanceof Error ? (e.stack ?? e.message) : String(e)
         out = { result: { error: e instanceof Error ? e.message : String(e) } }
       }
+      const failed =
+        Boolean(threw) ||
+        (out.result !== null && typeof out.result === 'object' && 'error' in (out.result as object))
+      if (failed) failedCalls.set(signature, 1)
+      trace.push({
+        round: round + 1,
+        name: call.name,
+        ms: Date.now() - calledAt,
+        args: traceValue(call.args, 4000),
+        result: traceValue(out.result, 4000),
+        ...(threw ? { error: threw.slice(0, 2000) } : {}),
+      })
       responses.push({ functionResponse: { name: call.name, response: { result: out.result } } })
     }
     contents.push({ role: 'user', parts: responses })
+
+    // Out of the loop, not out of the turn: the recovery round below still gets to
+    // put what was learned into words, which beats an apology that explains nothing.
+    if (stalled) break
 
     if (round === MAX_TOOL_ROUNDS - 1) {
       // Out of rounds. Say so plainly rather than going quiet.
@@ -463,7 +599,11 @@ async function modelTurn(
               {
                 text:
                   'Answer them now, in plain words, using only what those results actually say. ' +
-                  'No tools left to call. If the results do not answer it, say so plainly (§4.1 rule 10).',
+                  'No tools left to call. If the results do not answer it, say so plainly (§4.1 rule 10).\n\n' +
+                  'You have no tools in this round, so nothing you describe can happen. Do not say what ' +
+                  'you are about to do, are going to do, or will now set up — this is the last thing sent, ' +
+                  'and a promise here is a promise nothing keeps. State what you found, or say plainly ' +
+                  'that you have not done it yet and ask for the one thing you need to.',
               },
             ],
           },
@@ -475,13 +615,31 @@ async function modelTurn(
       outputTokens += forced.usage.outputTokens
       cachedTokens += forced.usage.cachedTokens
       text = forced.text ?? ''
-    } catch {
-      /* fall through to the plain apology below */
+      if (!text.trim()) {
+        forcedError = `the recovery call returned an empty candidate (finish: ${forced.finishReason ?? 'unknown'})`
+      }
+    } catch (e) {
+      // Swallowing this was how a dead turn became "ask me again": the reason the
+      // model produced nothing never reached the turn row, so every one of these
+      // looked like a transient glitch worth retrying. It is recorded now.
+      forcedError = e instanceof Error ? (e.stack ?? e.message) : String(e)
     }
+    trace.push({
+      round: rounds + 1,
+      name: '(recovery: answer without tools)',
+      ms: 0,
+      ...(forcedError ? { error: forcedError.slice(0, 2000) } : { result: 'produced an answer' }),
+    })
   }
 
   if (!text.trim() && !repliedInTool && outcomes.length === 0) {
-    text = "Sorry — I looked that up but couldn't get an answer together. Ask me again and I'll have another go."
+    // Two different failures wearing one sentence. "Try again" is only honest when
+    // trying again could work; a turn that burned every round needs to say so, and
+    // one that broke needs to not pretend it is waiting on the person.
+    text =
+      rounds >= MAX_TOOL_ROUNDS
+        ? "I went round in circles on that one and didn't get to an answer. Can you tell me the short version of what you need?"
+        : "Something broke on my side working that out — it isn't you, and repeating it won't help. I've flagged it."
   }
 
   if (text.trim() && !repliedInTool) {
@@ -503,6 +661,10 @@ async function modelTurn(
         buttons.push({ title: `Show me all ${meta!.totalRows}`, action: { kind: 'reply', text: 'show me everyone that affects' } })
       }
       buttons.push({ title: 'Cancel', action: { kind: 'noop', ack: 'Left as it was — nothing changed.' } })
+    } else {
+      // Same door as the `reply` tool mints (§5): no plan to confirm still means
+      // something to offer, and a bare paragraph is where discovery goes to die.
+      buttons = [{ title: MENU_BUTTON_TITLE, action: { kind: 'menu', menu: 'root' } }]
     }
 
     outcomes.push(
@@ -514,7 +676,18 @@ async function modelTurn(
     )
   }
 
-  return { outcomes, toolCalls, text, model, promptTokens, outputTokens, cachedTokens }
+  return {
+    outcomes,
+    toolCalls,
+    text,
+    model,
+    promptTokens,
+    outputTokens,
+    cachedTokens,
+    trace,
+    rounds,
+    ...(forcedError ? { error: forcedError } : {}),
+  }
 }
 
 /** `data:<mime>;base64,<payload>` → the two halves Gemini's inlineData wants. */
@@ -543,6 +716,56 @@ async function recentHistory(session: SessionCtx, identity: Identity): Promise<G
       .map((r) => ({ role: r.direction === 'inbound' ? ('user' as const) : ('model' as const), parts: [{ text: r.body }] }))
   } catch {
     return []
+  }
+}
+
+/**
+ * The reads this conversation already did, newest first, for the variable tail.
+ *
+ * `recentHistory` above carries what was *said*. This carries what was *found* —
+ * and they are not the same thing, because §4.5 strips ids out of everything said.
+ * Without this, a turn that needs an id fetched two messages ago has no legitimate
+ * source for it, and the observed behaviour was to invent one that parses.
+ *
+ * Bounded on purpose: the newest reads, capped, in the uncached tail. Failed calls
+ * are included — knowing a query errored is worth more than silence about it.
+ */
+async function recentLookups(identity: Identity): Promise<string | undefined> {
+  const BUDGET = 6000
+  try {
+    const rows = await withSession({ role: 'service', academyId: identity.academyId }, async (tx) => {
+      return (await tx.unsafe(
+        `select created_at, tool_calls from turn
+          where contact_id = ${uid(identity.contact.id)}
+            and academy_id = ${uid(identity.academyId)}
+            and jsonb_array_length(coalesce(tool_calls, '[]'::jsonb)) > 0
+          order by created_at desc limit ${LOOKUP_TURNS}`,
+      )) as unknown as { created_at: Date; tool_calls: ToolTrace[] }[]
+    })
+
+    const blocks: string[] = []
+    let used = 0
+    for (const row of rows) {
+      for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
+        // A `read` is the only call whose *result* is reference data. A write's
+        // result is an outcome, and replaying outcomes as if they were facts is
+        // how a bot tells someone something happened twice.
+        if (call.name !== 'read') continue
+        const query = String((call.args as any)?.query ?? '').replace(/\s+/g, ' ').trim()
+        if (!query) continue
+        const result = typeof call.result === 'string' ? call.result : JSON.stringify(call.result ?? null)
+        const block =
+          `- ${query}\n  → ${result.length > 1400 ? `${result.slice(0, 1400)}… (truncated)` : result}` +
+          (call.error ? `\n  ! failed: ${call.error.split('\n')[0]}` : '')
+        if (used + block.length > BUDGET) return blocks.length ? blocks.join('\n') : undefined
+        blocks.push(block)
+        used += block.length
+      }
+    }
+    return blocks.length ? blocks.join('\n') : undefined
+  } catch {
+    // Continuity is an improvement on the turn, never a precondition for it.
+    return undefined
   }
 }
 
@@ -592,12 +815,15 @@ async function writeTurn(o: {
   cachedTokens: number
   latencyMs: number
   error?: string
+  trace?: ToolTrace[]
+  rounds?: number
 }): Promise<void> {
   try {
     await withSession({ role: 'service', academyId: o.identity.academyId }, async (tx) => {
       await tx.unsafe(
         `insert into turn (id, academy_id, contact_id, person_id, role_acted, input, output, model,
-                           prompt_tokens, output_tokens, cached_tokens, latency_ms, error)
+                           prompt_tokens, output_tokens, cached_tokens, latency_ms, error,
+                           tool_calls, rounds)
          values (${uid(o.turnId)}, ${uid(o.identity.academyId)}, ${uid(o.identity.contact.id)},
                  ${uid(o.identity.person.id)}, ${lit(o.identity.roles.join('+'))},
                  ${jsonLit({
@@ -608,7 +834,8 @@ async function writeTurn(o: {
                    task: o.input.task?.instruction ?? null,
                  })},
                  ${jsonLit(o.output)}, ${lit(o.model ?? null)}, ${lit(o.promptTokens)}, ${lit(o.outputTokens)},
-                 ${lit(o.cachedTokens)}, ${lit(o.latencyMs)}, ${lit(o.error ?? null)})`,
+                 ${lit(o.cachedTokens)}, ${lit(o.latencyMs)}, ${lit(o.error ?? null)},
+                 ${jsonLit(o.trace ?? [])}, ${lit(o.rounds ?? null)})`,
       )
     })
   } catch {
@@ -874,15 +1101,41 @@ async function synthesisPayload(svc: SessionCtx, academyId: string): Promise<Rec
               having coalesce(sum(tl.amount), 0) - coalesce((select sum(pay.amount) from payment pay
                         where pay.account_id = ac.id and pay.status = 'confirmed'), 0) > 0
                order by 3 desc limit 20`)
-    const delivery = await one(`select count(*) filter (where status in ('sent','delivered','read')) as sent,
-                    count(*) filter (where status = 'delivered' or status = 'read') as delivered,
+    // Delivery health is about messages to the BUSINESS's people. Two things were
+    // wrong here, and together they produced a brief that reported an outage that
+    // had not happened and a mailout that had never been sent.
+    //
+    // First, `failed` and `suppressed` overlapped: a suppressed row carries status
+    // 'failed' too, so every gated message was counted twice and reported as "14
+    // failed and another 14 suppressed" — the same fourteen rows, described as an
+    // unusual failure rate "with the contact numbers or the account itself".
+    //
+    // Second, the admin's own conversation was in the denominator. Their thread is
+    // the operator using the tool, not traffic to families, and counting it meant a
+    // quiet academy whose owner had been testing looked like a business mid-mailout.
+    // A brief that narrates the plumbing as news is worse than one that says nothing.
+    const delivery = await one(`select count(*) filter (where suppressed_reason is null
+                                              and status in ('sent','delivered','read')) as sent,
+                    count(*) filter (where status in ('delivered','read')) as delivered,
                     count(*) filter (where status = 'read') as read,
-                    count(*) filter (where status = 'failed') as failed,
-                    count(*) filter (where suppressed_reason is not null) as suppressed,
+                    count(*) filter (where suppressed_reason is null and status = 'failed') as failed,
+                    count(*) filter (where suppressed_reason is not null) as gated,
                     coalesce(sum(cost_paise), 0) as cost_paise
-               from message
-              where academy_id = ${A} and direction = 'outbound'
-                and queued_at > app.now() - interval '24 hours'`)
+               from message m
+              where m.academy_id = ${A} and m.direction = 'outbound'
+                and m.queued_at > app.now() - interval '24 hours'
+                and not exists (select 1 from contact c
+                                  join academy_admin aa on aa.person_id = c.person_id
+                                                       and aa.academy_id = c.academy_id
+                                 where c.id = m.contact_id)`)
+    // Named apart so the two can never be read as one number again: a gate is a
+    // decision this system made on purpose, a failure is the network saying no.
+    const gated_by_reason = await many(`select m.suppressed_reason as reason, count(*) as n
+               from message m
+              where m.academy_id = ${A} and m.direction = 'outbound'
+                and m.suppressed_reason is not null
+                and m.queued_at > app.now() - interval '24 hours'
+              group by 1 order by 2 desc`)
     const attendance_30d = await many(`select c.name as class_name,
                      count(*) filter (where att.status in ('present','late')) as attended,
                      count(*) as marked
@@ -914,7 +1167,14 @@ async function synthesisPayload(svc: SessionCtx, academyId: string): Promise<Rec
         coaches_invited_but_not_onboarded: coaches_not_onboarded,
       },
       money: { unpaid_accounts: unpaid },
-      delivery_last_24h: delivery,
+      delivery_last_24h: {
+        ...delivery,
+        note:
+          "Messages to families and coaches only — the admin's own thread is excluded, and " +
+          '`gated` counts messages this system chose not to send (see gated_by_reason), which ' +
+          'is not a delivery failure and must never be reported as one.',
+      },
+      gated_by_reason,
       attendance_last_30d_by_class: attendance_30d,
       attendance_previous_30d_by_class: attendance_prev_30d,
       new_trials_last_7d: new_trials_7d,

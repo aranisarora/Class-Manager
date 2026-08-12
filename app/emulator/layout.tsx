@@ -10,8 +10,7 @@ export const dynamic = 'force-dynamic'
 
 /**
  * Dark ground for everything under /emulator. Deliberately does not constrain height:
- * the instrument itself claims the viewport (see `page.tsx`), while nested routes such as
- * `/emulator/sim` scroll normally.
+ * the instrument itself claims the viewport (see `page.tsx`), while nested routes scroll normally.
  */
 export default function EmulatorLayout({ children }: { children: ReactNode }) {
   return (

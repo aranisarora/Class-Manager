@@ -61,6 +61,7 @@ type Row = {
   sender_id: string
   sender_phone: string
   sender_credentials: unknown
+  is_admin: boolean
   now_at: Date
 }
 
@@ -199,12 +200,13 @@ async function insertMessage(
     insert into message (
       academy_id, contact_id, sender_id, direction, catalog_id, template_name,
       body, payload, media_url, status, queued_at, in_window, conversation_category,
-      cost_paise, suppressed_reason, idempotency_key
+      cost_paise, suppressed_reason, idempotency_key, solicited
     ) values (
       ${o.row.academy_id}, ${o.row.contact_id}, ${o.row.sender_id}, 'outbound',
       ${o.msg.catalogId ?? null}, ${o.template},
       ${o.body}, ${o.payload}::text::jsonb, ${o.msg.media?.url ?? null}, ${o.status}, app.now(),
-      ${o.inWindow}, ${o.category}, ${o.costPaise}, ${o.suppressedReason}, ${o.idempotencyKey}
+      ${o.inWindow}, ${o.category}, ${o.costPaise}, ${o.suppressedReason}, ${o.idempotencyKey},
+      ${Boolean(o.msg.solicited)}
     )
     returning id`
   return rows[0].id
@@ -301,6 +303,9 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
              s.id              as sender_id,
              s.phone_e164      as sender_phone,
              s.credentials     as sender_credentials,
+             exists (select 1 from academy_admin aa
+                      where aa.academy_id = c.academy_id
+                        and aa.person_id  = c.person_id) as is_admin,
              app.now()         as now_at
         from contact c
         join person  p on p.id = c.person_id
@@ -346,8 +351,39 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     // "Nothing is sent during onboarding until the admin says go. Building the roster
     // messages nobody." Flows that legitimately message before launch — the admin's own
     // setup conversation, the coach invite read-back — set `preLaunchOk`.
-    if (row.onboarding_state !== 'live' && !msg.preLaunchOk) {
+    //
+    // The admin is that first exception by definition, not by remembering a flag. Leaving
+    // it to callers meant the owner of a brand-new academy could not be answered at all:
+    // every reply in the setup conversation was dropped as pre-launch traffic, so the one
+    // conversation that has to work before launch was the only one that could not. The
+    // roster is still silent — a client or coach is not an admin.
+    if (row.onboarding_state !== 'live' && !msg.preLaunchOk && !row.is_admin) {
       return suppress(tx, row, msg, 'pre_launch', inWindow)
+    }
+
+    // ── Gate 4b · saying it twice ─────────────────────────────────────────────
+    // A person who is told the same thing twice learns nothing the second time and
+    // trusts the sender slightly less. This has happened on every path that can send
+    // more than once in a turn: a model calling `reply` twice with the same body, a
+    // retry after a suppression it did not understand, a plan whose read-back repeats
+    // its own preview. Every one of those is a different bug; all of them arrive here,
+    // so the guard belongs here rather than in each of them.
+    //
+    // Byte-identical only, and only within a few minutes: a reminder that legitimately
+    // recurs weekly is not a repeat, and near-identical wording is the model's business,
+    // not this gate's.
+    if (msg.body.trim().length > 0) {
+      const dupe = await tx<{ id: string }[]>`
+        select id from message
+         where contact_id = ${row.contact_id}
+           and direction = 'outbound'
+           and suppressed_reason is null
+           and body = ${msg.body}
+           and queued_at > app.now() - interval '5 minutes'
+         limit 1`
+      if (dupe.length > 0) {
+        return suppress(tx, row, msg, 'repeat', inWindow)
+      }
     }
 
     // ── Gate 5 · the real API's limits (§17) ──────────────────────────────────
@@ -389,7 +425,13 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
       const recipientCap = capFrom(row.settings, 'per_recipient_24h', DEFAULT_RECIPIENT_CAP_24H)
       const tenantCap = capFrom(row.settings, 'per_tenant_24h', DEFAULT_TENANT_CAP_24H)
 
-      if (!msg.solicited && counts[0].recipient_24h >= recipientCap) {
+      // The admin is not a recipient to be protected, they are the operator. This cap
+      // exists so a parent does not get eight messages because eight things happened;
+      // an owner running their business through this passes six before breakfast, and
+      // capping them means their own tool goes silent on them mid-task — which is
+      // exactly how a confirmed plan lost its confirmation card and executed unseen.
+      // The per-tenant cap below still applies: that one protects the shared number.
+      if (!msg.solicited && !row.is_admin && counts[0].recipient_24h >= recipientCap) {
         return suppress(tx, row, msg, 'recipient_frequency_cap', inWindow)
       }
       if (counts[0].tenant_24h >= tenantCap) {

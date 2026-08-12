@@ -40,6 +40,7 @@ export function lint(text: string, id: Identity, evidence?: DeliveryEvidence): s
     return `[[LINK${parked.length - 1}]]`
   })
 
+  out = stripDoctrineRefs(out)
   out = stripIdentifiers(out, id)
   out = rewriteTimestamps(out, tz)
   out = downgradeClaims(out, evidence)
@@ -47,6 +48,30 @@ export function lint(text: string, id: Identity, evidence?: DeliveryEvidence): s
 
   out = out.replace(/\[\[LINK(\d+)\]\]/g, (_m, i: string) => parked[Number(i)] ?? '')
   return tidy(out)
+}
+
+// -----------------------------------------------------------------------------
+// 0. doctrine references
+// -----------------------------------------------------------------------------
+
+/**
+ * The whole spec is in the prompt, so its section numbers are part of the model's
+ * working vocabulary — and they leak. A parent was told "nobody is messaged (§2.6)";
+ * an internal citation, on WhatsApp, cited at someone who has never seen the
+ * document. It is the same class as a uuid in a message: correct, and not English.
+ *
+ * Runs before the identifier pass so a stripped "(§14.2)" cannot leave stray
+ * punctuation for the later passes to tidy around.
+ */
+function stripDoctrineRefs(text: string): string {
+  return text
+    // "(§2.6)" / "[§14.2.1]" / "(see §4.3)" — the whole bracket goes.
+    .replace(/[([]\s*(?:see\s+)?§+\s*\d+(?:\.\d+)*\s*[)\]]/gi, '')
+    // "§16.3" bare, and "per §7.2" / "under §7.2" with its preposition.
+    .replace(/\b(?:per|under|see|as per)\s+§+\s*\d+(?:\.\d+)*/gi, '')
+    .replace(/§+\s*\d+(?:\.\d+)*/g, '')
+    // "rule 10" only when it was hanging off a section reference we just removed.
+    .replace(/\s+,/g, ',')
 }
 
 // -----------------------------------------------------------------------------
@@ -61,7 +86,7 @@ const TABLES = [
   'academy_admin', 'memory_fact', 'class', 'class_slot', 'class_coach',
   'enrollment', 'session', 'session_coach', 'attendance', 'tally_line',
   'payment', 'sender', 'message', 'action', 'view_spec', 'job', 'audit_entry',
-  'recipe', 'turn', 'sim_clock', 'sim_fault', 'sim_run',
+  'recipe', 'turn', 'sim_clock', 'sim_fault',
 ]
 
 /** Table names with no natural English reading of their own. */
@@ -76,7 +101,6 @@ const TABLE_WORDS: Record<string, string> = {
   audit_entry: 'change record',
   sim_clock: 'clock',
   sim_fault: 'fault',
-  sim_run: 'run',
 }
 
 function stripIdentifiers(text: string, id: Identity): string {
@@ -171,9 +195,46 @@ const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frida
 const ISO =
   /\b(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?\s*(Z|[+-]\d{2}:?\d{2})?)?\b/g
 
+/**
+ * The idiom pass the ISO pass never covered.
+ *
+ * The rule is "their timezone and their idiom — 'tomorrow 6:30pm', 'Sat 8am'", and
+ * an ISO string is only the most obvious way to break it. A model writing English
+ * reaches for "Monday, August 17th at 6:00 PM", which is not wrong, not an ISO
+ * timestamp, and not how anyone in Bangalore writes a time to a parent. It arrives
+ * looking like software.
+ */
+function localiseEnglishDates(text: string): string {
+  const MONTHS_LONG: Record<string, string> = {
+    january: 'Jan', february: 'Feb', march: 'Mar', april: 'Apr', may: 'May', june: 'Jun',
+    july: 'Jul', august: 'Aug', september: 'Sep', october: 'Oct', november: 'Nov', december: 'Dec',
+  }
+  return (
+    text
+      // "6:00 PM" -> "6pm", "6:30 PM" -> "6:30pm". Also "6 PM".
+      .replace(/\b(\d{1,2}):(\d{2})\s*([APap])\.?[Mm]\.?/g, (_m, h, mm, ap) =>
+        `${Number(h)}${mm === '00' ? '' : `:${mm}`}${ap.toLowerCase()}m`,
+      )
+      .replace(/\b(\d{1,2})\s+([APap])\.?[Mm]\.?/g, (_m, h, ap) => `${Number(h)}${ap.toLowerCase()}m`)
+      // "August 17th" / "August 17, 2026" -> "17 Aug"
+      .replace(
+        /\b([A-Z][a-z]{2,8})\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*\d{4})?/g,
+        (whole, month: string, day: string) => {
+          const short = MONTHS_LONG[month.toLowerCase()]
+          return short ? `${Number(day)} ${short}` : whole
+        },
+      )
+      // "Monday, 17 Aug" -> "Mon 17 Aug"
+      .replace(
+        /\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?=\d{1,2}\s+[A-Z][a-z]{2}\b)/g,
+        (_m, day: string) => `${day.slice(0, 3)} `,
+      )
+  )
+}
+
 function rewriteTimestamps(text: string, tz: string): string {
   const today = inZone(nowSync(), tz)
-  return text.replace(ISO, (whole, y, mo, d, hh, mm, _ss, off) => {
+  return localiseEnglishDates(text).replace(ISO, (whole, y, mo, d, hh, mm, _ss, off) => {
     if (hh === undefined) {
       // A calendar date. Converting a bare date between zones would move the day,
       // so it is formatted where it stands.

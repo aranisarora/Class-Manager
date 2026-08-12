@@ -85,10 +85,6 @@ drop policy if exists sim_fault_cm_service_all on sim_fault;
 create policy sim_fault_cm_service_all on sim_fault
   for all to cm_service using (true) with check (true);
 
-drop policy if exists sim_run_cm_service_all on sim_run;
-create policy sim_run_cm_service_all on sim_run
-  for all to cm_service using (true) with check (true);
-
 drop policy if exists academy_cm_service_all on academy;
 create policy academy_cm_service_all on academy
   for all to cm_service
@@ -812,5 +808,5 @@ create policy view_spec_cm_user_select on view_spec
 --   audit_entry — §7.2; surfaced to the admin through the runtime, not by
 --                 direct read, because undo is an operation and not a row edit
 --   recipe      — §14.3
---   sim_clock / sim_fault / sim_run — §17
+--   sim_clock / sim_fault — §17
 -- -----------------------------------------------------------------------------
