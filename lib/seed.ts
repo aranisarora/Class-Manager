@@ -41,6 +41,7 @@ import { resolveInbound } from '@/lib/identity'
 import { runTurn, type TurnOutput } from '@/lib/agent/loop'
 import { CURATE_THRESHOLD } from '@/lib/agent/memory'
 import { markStatus } from '@/lib/messaging/send'
+import { splitFlowResponse } from '@/lib/messaging/flows'
 import type { Role } from '@/lib/types'
 
 // -----------------------------------------------------------------------------
@@ -3038,20 +3039,7 @@ export async function inboundFromContact(input: {
 
     // Unpacked exactly as `processChangeValue` unpacks a real webhook, so the
     // emulator and the wire hand `ingestInbound` the same two values.
-    let flowData: Record<string, unknown> | undefined
-    let flowToken: string | undefined
-    if (input.flowResponse) {
-      try {
-        const { flow_token, ...fields } = JSON.parse(input.flowResponse) as Record<string, unknown>
-        flowToken = typeof flow_token === 'string' ? flow_token : undefined
-        flowData = fields
-      } catch {
-        // Unreachable: the route rejects a `flowResponse` that is not JSON with a 400
-        // before this is called. Left as a throw rather than a silent skip so a future
-        // caller that skips that check finds out immediately.
-        throw new Error('flowResponse is not valid JSON')
-      }
-    }
+    const { token: flowToken, data: flowData } = splitFlowResponse(input.flowResponse)
 
     return ingestInbound({
       fromPhoneE164: String(found.phone_e164),
@@ -3212,22 +3200,11 @@ async function processChangeValue(v: MetaChangeValue, part: string): Promise<str
     if (!m.from) continue
     if (onlyMessage && String(m.id) !== onlyMessage) continue
 
-    // A Flow submission is a tap that carries answers: the token IS the action id.
+    // A Flow submission is a tap that carries answers: the token IS the action id. Same
+    // unpack the emulator's inbound route uses, so the surface this is actually exercised
+    // on cannot drift from the one that reaches production.
     const nfm = m.interactive?.nfm_reply
-    let flowData: Record<string, unknown> | undefined
-    let flowToken: string | undefined
-    if (nfm?.response_json) {
-      try {
-        const parsed = JSON.parse(nfm.response_json) as Record<string, unknown>
-        const { flow_token, ...fields } = parsed
-        flowToken = typeof flow_token === 'string' ? flow_token : undefined
-        flowData = fields
-      } catch {
-        // Malformed JSON from the wire. Left undefined so this lands as an ordinary
-        // inbound message rather than a silently discarded one — the person still
-        // said something, and going quiet on them is the worse failure.
-      }
-    }
+    const { token: flowToken, data: flowData } = splitFlowResponse(nfm?.response_json)
 
     const actionId =
       m.interactive?.button_reply?.id ?? m.interactive?.list_reply?.id ?? flowToken ?? m.button?.payload

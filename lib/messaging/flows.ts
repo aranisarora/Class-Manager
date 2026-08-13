@@ -106,6 +106,21 @@ const ONBOARDING_SETUP_JSON: FlowJson = {
       id: 'SETUP',
       title: 'Your business',
       terminal: true,
+      /**
+       * Declared because the screen REFERENCES them. `${data.x}` is not free-form: a
+       * screen must declare every dynamic property it reads, as JSON Schema, with an
+       * `__example__` Meta uses to validate the layout at publish time. Referencing an
+       * undeclared property is a publish rejection, which would have arrived as an API
+       * error at the moment somebody first tried to ship this — the failure furthest
+       * from the person who could fix it.
+       *
+       * Both are prefilled from what the runtime already knows when it sends the
+       * message, so the first field is right rather than empty.
+       */
+      data: {
+        name: { type: 'string', __example__: 'Baseline Badminton' },
+        category: { type: 'string', __example__: 'Badminton' },
+      },
       layout: {
         type: 'SingleColumnLayout',
         children: [
@@ -278,6 +293,33 @@ export function validateFlowJson(flow: FlowJson): string[] {
       }
     }
 
+    /**
+     * Every `${data.x}` this screen reads has to be declared in the screen's own `data`,
+     * as JSON Schema with an `__example__`. Meta validates the layout against those
+     * examples at publish, so an undeclared reference is a rejection — and it would
+     * arrive as an API error the first time somebody tried to ship the flow, which is
+     * the furthest possible point from the person who could fix it. The shipped
+     * onboarding flow had exactly this defect: it prefilled `${data.name}` and declared
+     * nothing.
+     *
+     * `${form.x}` is deliberately not checked here — it is resolved against the form
+     * component names, which the loop below already validates for uniqueness.
+     */
+    const declared = new Set(Object.keys(screen.data ?? {}))
+    for (const ref of JSON.stringify(children).matchAll(/\$\{data\.([A-Za-z0-9_]+)\}/g)) {
+      const key = ref[1] as string
+      if (!declared.has(key)) {
+        bad.push(`screen ${screen.id} reads \${data.${key}} and does not declare it`)
+      }
+    }
+    for (const [key, schema] of Object.entries(screen.data ?? {})) {
+      // The example is what Meta renders the screen against; without it the property is
+      // declared but unvalidatable, and publish complains about the screen, not the key.
+      if (!schema || typeof schema !== 'object' || !('__example__' in schema)) {
+        bad.push(`screen ${screen.id} declares data.${key} with no __example__`)
+      }
+    }
+
     const names = new Set<string>()
     for (const c of children) {
       if (!c.type) bad.push(`screen ${screen.id} has a component with no type`)
@@ -306,6 +348,40 @@ const FORM_COMPONENTS = new Set([
   'TextInput', 'TextArea', 'Dropdown', 'RadioButtonsGroup', 'CheckboxGroup',
   'OptIn', 'DatePicker', 'PhotoPicker', 'DocumentPicker',
 ])
+
+/**
+ * Split an `nfm_reply.response_json` into the token and the answers.
+ *
+ * ONE definition, because there are two doors: the Cloud webhook, which gets it from
+ * `interactive.nfm_reply.response_json`, and the emulator's inbound route, which is
+ * handed the identical string. Those were two hand-rolled `JSON.parse` + destructure
+ * blocks in the same file, and two implementations of one event is the defect this
+ * codebase has hit more than any other — the register screen wrote attendance with its
+ * own SQL for most of the product's life and produced no money for any of it. A
+ * divergence here would be worse than that one, because the emulator is the ONLY place
+ * this is ever exercised, so the emulator would be the half that stayed right.
+ *
+ * Never throws. A malformed body means the person still said something, and going quiet
+ * on them is the worse failure — the caller falls through and treats it as an ordinary
+ * inbound message.
+ */
+export function splitFlowResponse(
+  responseJson: string | null | undefined,
+): { token?: string; data?: Record<string, unknown> } {
+  if (!responseJson) return {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(responseJson)
+  } catch {
+    return {}
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  const { flow_token, ...fields } = parsed as Record<string, unknown>
+  return {
+    token: typeof flow_token === 'string' && flow_token ? flow_token : undefined,
+    data: fields,
+  }
+}
 
 /**
  * Parse what came back from a Flow, by flow id.
