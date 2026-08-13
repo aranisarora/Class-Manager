@@ -96,7 +96,23 @@ export type PlanStep =
     }
   | { message: MessageStep }
   | { schedule: { kind: JobKind; run_at: string; dedupe_key: string; payload: Record<string, unknown> } }
-  | { note: string }
+  /**
+   * The one part of a plan written in the business's own words, and for a
+   * `personal` audience it becomes the WHOLE receipt — `buildSummary` drops the row
+   * arithmetic and says `Done — <note>.`
+   *
+   * That is why `personal` exists beside it. Every note in the registry is written
+   * about a third party, because operations are normally described TO an operator:
+   * `onboard_coach` says "they are set up and will get their day from now on". Send
+   * that to the coach who just tapped `[Looks right]` and the last message of their
+   * onboarding talks about them as if they were not there — *"Done — they are set up"*.
+   * Driven, on a real coach's first run.
+   *
+   * So an operation whose subject can BE the recipient carries both voices. Optional
+   * on purpose: most operations can only ever be described to an operator, and
+   * forcing a second string on those would be noise that rots.
+   */
+  | { note: string; personal?: string }
 
 export type TableDiff = {
   table: string
@@ -370,6 +386,8 @@ type RunState = {
   staged: Staged[]
   scheduled: { kind: string; run_at: string }[]
   notes: string[]
+  /** The same notes in the voice used when the recipient is the subject. */
+  personalNotes: string[]
   exec: { table: string; op: 'insert' | 'update' | 'delete'; count: number }[]
 }
 
@@ -405,6 +423,7 @@ async function runSteps(
   for (const step of steps) {
     if ('note' in step) {
       state.notes.push(step.note)
+      state.personalNotes.push(step.personal ?? step.note)
       continue
     }
 
@@ -651,7 +670,9 @@ function buildSummary(
   // "N people have been told" goes with it: who else heard is an operator's
   // question, and to the person being told about themselves it reads as surveillance.
   if (done && audience === 'personal') {
-    const note = state.notes.filter(Boolean).join('; ')
+    // `personalNotes` falls back to `notes` per step, so an operation that never
+    // speaks to its own subject is unaffected.
+    const note = state.personalNotes.filter(Boolean).join('; ')
     const changed = diffs.some((d) => d.count > 0)
     if (!changed) return 'Nothing changed.'
     return note ? `Done — ${note}.` : 'Done.'
@@ -696,7 +717,7 @@ function previewOf(m: MessageStep): string {
  * ------------------------------------------------------------------------- */
 
 function emptyState(): RunState {
-  return { staged: [], scheduled: [], notes: [], exec: [] }
+  return { staged: [], scheduled: [], notes: [], personalNotes: [], exec: [] }
 }
 
 /**

@@ -1792,7 +1792,12 @@ const declineCoach: OperationDef = {
     const when = whenLabel(s.starts_at, a.timezone, today)
 
     const steps: PlanStep[] = [
-      { note: `${s.class_name} ${when} loses one coach${stillCovered ? ', still covered' : ', now uncovered'}` },
+      {
+        note: `${s.class_name} ${when} loses one coach${stillCovered ? ', still covered' : ', now uncovered'}`,
+        // Said to the coach who just declined. What happens to the session's coverage
+        // is the admin's question, not theirs.
+        personal: `you're off ${s.class_name} ${when}${stillCovered ? ' — it is still covered' : " — I'll find cover"}`,
+      },
       {
         write: `update session_coach set declined_at = app.now(), confirmed_at = null
                  where session_id = ${uid(s.id)} and coach_id = ${uid(coachId)}`,
@@ -1885,7 +1890,7 @@ const claimCover: OperationDef = {
     }
 
     const steps: PlanStep[] = [
-      { note: `${s.class_name} ${when} is covered` },
+      { note: `${s.class_name} ${when} is covered`, personal: `you've got ${s.class_name} ${when}` },
       {
         // The race is settled by the database, not by the model: the row lock
         // serialises two taps, and `requireRows` aborts the loser's whole plan
@@ -2335,7 +2340,10 @@ const optOut: OperationDef = {
         where c.id = ${uid(contactId)} and c.academy_id = ${uid(ctx.academyId)}`,
     )
     const steps: PlanStep[] = [
-      { note: `${c?.full_name ?? 'that number'} stops hearing from ${a.name}` },
+      {
+        note: `${c?.full_name ?? 'that number'} stops hearing from ${a.name}`,
+        personal: `you won't hear from ${a.name} again`,
+      },
       {
         write: `update contact set opted_out_at = app.now(), state = 'opted_out'
                  where id = ${uid(contactId)} and academy_id = ${uid(ctx.academyId)}`,
@@ -2397,7 +2405,10 @@ const setTiming: OperationDef = {
     const settings: Record<string, unknown> = { [args.key]: args.value }
     if (args.reason) settings[`${args.key}_why`] = args.reason
     return [
-      { note: `${args.key.replace(/_/g, ' ')} for this person is now ${args.value ?? 'the academy default'}` },
+      {
+        note: `${args.key.replace(/_/g, ' ')} for this person is now ${args.value ?? 'the academy default'}`,
+        personal: `${args.key.replace(/_/g, ' ')} for you is now ${args.value ?? 'the usual'}`,
+      },
       {
         write: `update person set settings = coalesce(settings, '{}'::jsonb) || ${jsonLit(settings)}
                  where id = ${uid(personId)} and academy_id = ${uid(ctx.academyId)}`,
@@ -2753,7 +2764,13 @@ const onboardCoach: OperationDef = {
                  where id = ${uid(coachId)} and academy_id = ${uid(ctx.academyId)} and ended_on is null`,
         requireRows: 1,
       },
-      { note: 'they are set up and will get their day from now on' },
+      // This one is almost always read by the coach themselves — it is what
+      // `[Looks right]` returns on their first run — and the operator voice made the
+      // last message of their onboarding talk about them as if they were not there.
+      {
+        note: 'they are set up and will get their day from now on',
+        personal: "you're all set — I'll send you your day from here on",
+      },
     ]
   },
 }
