@@ -100,6 +100,23 @@ There is no group/private/batch/one-off distinction. A private class has one
 enrollment. A camp is a class whose date range is a week. A batch is a class that
 repeats. session.venue_id overrides class.venue_id when set.
 
+**Who is on a session's register — use this, do not rebuild it.**
+
+app.session_roster(academy_id, session_id, class_id, starts_at, class_name,
+  enrollment_id, is_trial, player_id, player_name, account_id,
+  attendance_status /* null until marked */, marked_at)
+  -- one row per player due at that session
+
+  select player_id, player_name, attendance_status
+    from app.session_roster where session_id = '<id>'
+
+That join is enrollment → player → person, narrowed by the enrollment's date
+range against the session's own date in the academy's timezone, and it is the
+same join every time. Written by hand it is four tables and a date predicate,
+and the commonest mistake is enrollment.active, which does not exist — active is
+a column on player. The view already excludes inactive players and enrollments
+that had not started or had already ended on the day.
+
 ## Money
 
 tally_line(account_id uuid, player_id uuid null, period date /* 1st of the billing

@@ -192,11 +192,38 @@ function buildTemplateParams(
  * approval time, so the title is replaced while the **minted action id** is kept, which is
  * what keeps §2.2 intact across the window boundary.
  */
+/**
+ * Would tapping this action change something?
+ *
+ * Read straight off the stored `action` row, because by the time a message
+ * reaches `send` a button is only `{ actionId, title }` — the payload that says
+ * what it does was left behind at mint. `operation` and `steps` commit; every
+ * other kind either replays through the agent, opens a screen, or acknowledges.
+ *
+ * A missing or unreadable row counts as committing. This decides whether a
+ * button may ride an approved template with somebody else's label on it, and the
+ * safe answer to "I don't know what this does" is "then it does not go out".
+ */
+async function committingButton(tx: Tx, actionId: string | undefined): Promise<boolean> {
+  if (!actionId) return false
+  try {
+    const rows = await tx<{ payload: { kind?: string } | null }[]>`
+      select payload from action where id = ${actionId}::uuid limit 1`
+    const kind = rows[0]?.payload?.kind
+    if (!kind) return true
+    return kind === 'operation' || kind === 'steps'
+  } catch {
+    return true
+  }
+}
+
 function asTemplateMessage(
   msg: OutboundMessage,
   template: TemplateName,
   row: Row,
   who: string,
+  /** True when the first button would commit — see `committingButton`. */
+  firstCommits: boolean,
 ): OutboundMessage {
   const params = buildTemplateParams(template, msg, row, who)
   const def = TEMPLATES[template]
@@ -216,7 +243,28 @@ function asTemplateMessage(
     // window. The link is not lost — the template is a window-opener (§14.7), and the
     // rich interaction happens in-window, for free, after one tap.
     link: undefined,
-    buttons: first ? [{ actionId: first.actionId, title: def.quickReply }] : undefined,
+    // **A committing button may not ride a template.** A template's quick-reply
+    // title is fixed at approval time, so out of window the label is replaced
+    // while the minted action id is kept — and nothing checked what that action
+    // did. The reconcile rung first fires 48h after a payment request, so out of
+    // window is the NORMAL case for it: an admin was to be shown "…₹2,400 was
+    // requested from Priya on 5 August and still isn't confirmed. Did it come
+    // in?" with exactly one button, labelled **Open**, which runs
+    // `confirm_payment` with no preview — money marked received, a receipt sent
+    // to the family, and `[Not yet]` dropped because it was buttons[1]. The same
+    // shape put `mark_attendance` all-present behind "Open" on a coach's register.
+    //
+    // §14.7 says an out-of-window message is a WINDOW-OPENER: the tap buys the
+    // in-window interaction. That is only true of a tap that decides nothing.
+    // Since the label cannot be made to match the action here, the action goes
+    // rather than the label.
+    //
+    // **What this takes away:** out of window, a consequential choice loses its
+    // tap and the person has to reply. That is the honest cost — the body still
+    // asks the question, any reply opens the window, and the real buttons follow
+    // with their own labels. A button that lies is worse than a button that is
+    // absent, and this one lied about money.
+    buttons: first && !firstCommits ? [{ actionId: first.actionId, title: def.quickReply }] : undefined,
     templateName: template,
     templateParams: params,
   }
@@ -608,7 +656,13 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
         return suppress(tx, row, msg, 'out_of_window_no_template', inWindow)
       }
       try {
-        wire = asTemplateMessage(msg, wanted, row, await subjectName(tx, msg, row))
+        wire = asTemplateMessage(
+          msg,
+          wanted,
+          row,
+          await subjectName(tx, msg, row),
+          await committingButton(tx, msg.buttons?.[0]?.actionId),
+        )
       } catch (e) {
         console.error(`[send] template ${wanted} could not render: ${(e as Error).message}`)
         return suppress(tx, row, msg, 'out_of_window_no_template', inWindow)

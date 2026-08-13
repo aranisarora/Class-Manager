@@ -95,20 +95,53 @@ async function resolveAcademy(tx, arg) {
 
 try {
   const out = await sql.begin(async (tx) => {
-    await tx.unsafe(`set local role cm_${role}`)
+    // **Resolve first, THEN drop the role.** This used to `set local role` before
+    // looking anything up, so with `--role user` the contact lookup was itself
+    // RLS-refused — no GUCs were set yet — and `--as <id> --role user` died with
+    // "no contact <id>" for every id in the database. The only combination that
+    // ever ran was the one that keeps the service role, which is precisely the
+    // combination that does NOT show what a person can see. A harness that
+    // answers the wrong question and looks like it answered the right one is R7
+    // wearing a test harness's clothes, same as `rls-check` skipping its hardest
+    // sections and still printing "0 failed".
+    // Resolution needs the service role: `app.list_academies()` and `contact`
+    // are both closed to the login role, and to `cm_user` without GUCs.
+    await tx.unsafe('set local role cm_service')
     const academyId = await resolveAcademy(tx, academyArg)
+    // Set immediately: `contact` is tenant-scoped even for the service role, so
+    // the lookup below finds nothing until `app.academy_id` is in place.
     if (academyId) await tx`select set_config('app.academy_id', ${academyId}, true)`
     if (asContact) {
       // Mirrors what lib/db.ts sets for a person-scoped session, so `--as` shows
       // what that contact's own policies allow rather than what exists.
-      const [ct] = await tx.unsafe(
-        `select c.id, c.person_id, c.academy_id from public.contact c where c.id = '${asContact.replace(/'/g, "''")}'`,
-      )
+      //
+      // `contact` is tenant-scoped even for the service role, so a bare `--as`
+      // with no `--academy` can only find the contact by trying each tenant in
+      // turn — which is what `drive` does too. Without this, `--as` alone (the
+      // form DRIVING.md documents) reported "no contact <id>" for every id.
+      const lit = asContact.replace(/'/g, "''")
+      const find = async () =>
+        (
+          await tx.unsafe(
+            `select c.id, c.person_id, c.academy_id from public.contact c where c.id = '${lit}'`,
+          )
+        )[0]
+      let ct = await find()
+      if (!ct && !academyId) {
+        for (const a of await tx.unsafe('select id from app.list_academies()')) {
+          await tx`select set_config('app.academy_id', ${a.id}, true)`
+          ct = await find()
+          if (ct) break
+        }
+      }
       if (!ct) throw new Error(`no contact ${asContact}`)
       await tx`select set_config('app.academy_id', ${ct.academy_id}, true)`
       await tx`select set_config('app.person_id', ${ct.person_id}, true)`
       await tx`select set_config('app.contact_id', ${ct.id}, true)`
     }
+    // Last, so everything above ran with enough privilege to resolve, and the
+    // query itself runs with exactly the privilege being asked about.
+    await tx.unsafe(`set local role cm_${role}`)
     return tx.unsafe(query)
   })
 

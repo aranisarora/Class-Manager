@@ -178,6 +178,22 @@ if (A.holder) {
      where exists (select 1 from coach_public cp where cp.person_id = pe.id)`)
   report(!staff.error && staff[0]?.n > 0,
     'account holder still sees the coaches of their child’s classes', staff.error ?? `n=${staff[0]?.n}`)
+
+  // `app.session_roster` (0022) is the register join, written once so the model
+  // stops rebuilding it. It is `security_invoker`, so it inherits every policy
+  // below it — but a view is exactly the shape that quietly stops doing that if
+  // somebody recreates it without the option, and the failure would be silent
+  // and total: every classmate's name to every parent. Checked here rather than
+  // trusted.
+  const roster = await asUser(a.id, A.holder.person_id, A.holder.contact_id, `
+    select count(*)::int as n
+      from app.session_roster r
+     where r.player_id not in (
+       select pl.id from player pl join account ac on ac.id = pl.account_id
+        where ac.holder_person_id = '${A.holder.person_id}')`)
+  report(!roster.error && roster[0]?.n === 0,
+    'account holder sees 0 other children through app.session_roster',
+    roster.error ?? `n=${roster[0]?.n}`)
 }
 if (A.coach) {
   const roster = await asUser(a.id, A.coach.person_id, A.coach.contact_id,
@@ -187,6 +203,14 @@ if (A.coach) {
   const att = await asUser(a.id, A.coach.person_id, A.coach.contact_id,
     `select count(*)::int as n from attendance`)
   report(!att.error && att[0]?.n > 0, 'coach still sees that roster’s attendance', att.error ?? `n=${att[0]?.n}`)
+
+  // The other half of the 0022 check above: scoping a view down until it leaks
+  // nothing is easy if it also returns nothing. A coach must still get the whole
+  // register out of it, or the view is worse than the join it replaced.
+  const viaView = await asUser(a.id, A.coach.person_id, A.coach.contact_id,
+    `select count(*)::int as n from app.session_roster`)
+  report(!viaView.error && viaView[0]?.n > 0,
+    'coach still sees their register through app.session_roster', viaView.error ?? `n=${viaView[0]?.n}`)
 }
 
 // --- infrastructure is unreachable from a user session -----------------------------------
