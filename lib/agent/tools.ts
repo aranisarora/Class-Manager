@@ -22,7 +22,7 @@ import type { Identity } from '@/lib/types'
 import { lint } from './lint'
 import { searchFacts, writeFact } from './memory'
 import type { ToolDecl } from './gemini'
-import { executePlan, needsPreview, parseSteps, previewPlan, type PlanStep } from './plan'
+import { audienceFor, executePlan, needsPreview, parseSteps, previewPlan, type PlanStep } from './plan'
 import { checkActionPayload, checkSteps } from './steps'
 import { jsonLit, lit, uid, OPERATIONS, operationSignature, type OperationName } from './operations'
 import { parametersFor } from './schema-json'
@@ -54,6 +54,25 @@ export type ToolCtx = {
   executed?: { op: string; args: Record<string, unknown>; wrote?: { table: string; op: string; after: any[] }[] }[]
   /** Who this turn has already put a message in front of, and it landed. */
   repliedTo?: Set<string>
+  /**
+   * What this turn actually said to the person whose turn it is.
+   *
+   * The loop treated the model's *trailing prose* as the reply, which is right only
+   * when the model ends by talking. Whenever it answered through `reply`/`message`
+   * instead — which is what it does whenever there are buttons, a list or a link —
+   * the trailing text is empty, and everything downstream was told the turn said
+   * nothing. `writeTurn` recorded an empty reply, and reflection was handed
+   * `You replied: (nothing)` about a turn that had just answered correctly.
+   *
+   * That is not reflection misjudging: it reasoned correctly from a premise the
+   * runtime got wrong, scheduled a follow-up for the unanswered greeting, and the
+   * job re-sent an onboarding message to a coach who had already confirmed. R3 —
+   * the runtime knew and did not say.
+   *
+   * Filled at the one place a message is recorded as having landed, so no future
+   * send path can forget to.
+   */
+  saidToUser?: string[]
   /**
    * Plans that actually committed this turn, with the audit row each produced.
    *
@@ -1306,7 +1325,7 @@ export async function runTool(
        * It also removes a whole round from the commonest write turn in the product.
        */
       if (!gate) {
-        const res = await executePlan(ctx.session, steps, String(args?.intent ?? 'a plan that needed no confirmation'))
+        const res = await executePlan(ctx.session, steps, String(args?.intent ?? 'a plan that needed no confirmation'), audienceFor(ctx.identity))
         ctx.outcomes?.push(...res.outcomes)
         if (!res.ok) return { result: { ok: false, executed: false, error: res.error } }
         ctx.worked = true
@@ -1384,7 +1403,7 @@ export async function runTool(
         }
       }
 
-      const res = await executePlan(ctx.session, steps, String(args?.intent ?? 'committed a previewed plan'))
+      const res = await executePlan(ctx.session, steps, String(args?.intent ?? 'committed a previewed plan'), audienceFor(ctx.identity))
       ctx.pendingPlans.delete(handle)
       ctx.pendingMeta?.delete(handle)
       ctx.outcomes?.push(...res.outcomes)
@@ -1434,7 +1453,7 @@ export async function runTool(
           note: preview.summary,
         }
       }
-      const res = await executePlan(ctx.session, steps, String(args?.intent ?? opName))
+      const res = await executePlan(ctx.session, steps, String(args?.intent ?? opName), audienceFor(ctx.identity))
       ctx.outcomes?.push(...res.outcomes)
       if (!res.ok) return { result: { ok: false, executed: false, error: res.error } }
       // The rows, not just the arguments: a follow-up that has to re-derive the id of
@@ -1571,8 +1590,28 @@ export async function runTool(
         }
       }
 
-      // Does this message's own sentence match what this turn actually did?
-      if (to === ctx.identity.contact.id && !ctx.promiseChecked) {
+      /**
+       * Does this message's own sentence match what this turn actually did?
+       *
+       * **Every recipient, not only the one talking.** This read
+       * `to === ctx.identity.contact.id`, so the product's one structural honesty
+       * check inspected the reply going back to whoever had just typed and nothing
+       * else. Messages composed *to a third party* — "tell the Saturday parents the
+       * venue moved", a coach told his class was covered, a parent told a payment
+       * landed — went out unchecked. That is precisely the traffic §14.4 says makes
+       * this a manager rather than a notifier, and it is the traffic where the
+       * recipient has least context to notice a claim is wrong: the person talking
+       * can see the turn, a parent two hops away cannot.
+       *
+       * A guarantee that depends on which recipient the model picked is not a
+       * guarantee (R4). `ctx.worked` and `ctx.committed` are properties of the whole
+       * turn, so the check was never recipient-specific — only its condition was.
+       *
+       * `promiseChecked` still fires at most once per turn, and that is deliberate:
+       * it buys the model one round to make the sentence true, not an argument.
+       * Silencing somebody is worse than telling them something slightly wrong.
+       */
+      if (!ctx.promiseChecked) {
         const claim = unbackedClaim(String(args?.body ?? ''))
         // Past tense needs something to be TRUE; a promise needs something to be in
         // motion. A previewed plan satisfies the second and not the first.
@@ -1659,13 +1698,18 @@ export async function runTool(
         list = { buttonText: fitTitle(list.buttonText || 'Choose', EXTRA_LIMITS.listButtonTextChars), sections }
       }
 
+      // §4.5 ran on exactly one path — the loop's own trailing message — and this
+      // is the path the model actually uses, so most outbound text was never
+      // linted at all. Uuids, table names, ISO timestamps and doctrine references
+      // were one `reply` call away from a customer's phone the whole time.
+      //
+      // Hoisted out of the call so `saidToUser` below records the sentence the person
+      // reads rather than the one the model drafted.
+      const linted = lint(body, ctx.identity)
+
       const outcome = await composeAndSend(ctx.session, {
         toContactId: to,
-        // §4.5 ran on exactly one path — the loop's own trailing message — and this
-        // is the path the model actually uses, so most outbound text was never
-        // linted at all. Uuids, table names, ISO timestamps and doctrine references
-        // were one `reply` call away from a customer's phone the whole time.
-        body: lint(body, ctx.identity),
+        body: linted,
         header: args?.header ? String(args.header) : undefined,
         footer: args?.footer ? String(args.footer) : undefined,
         buttons,
@@ -1676,7 +1720,11 @@ export async function runTool(
         subjectPersonIds: Array.isArray(args?.subject_person_ids) ? args.subject_person_ids : undefined,
       })
       ctx.outcomes?.push(outcome)
-      if (outcome.status === 'sent' || outcome.status === 'queued') ctx.repliedTo?.add(to)
+      if (outcome.status === 'sent' || outcome.status === 'queued') {
+        ctx.repliedTo?.add(to)
+        // The body as the person will read it, not the model's draft.
+        if (to === ctx.identity.contact.id && linted.trim()) ctx.saidToUser?.push(linted.trim())
+      }
       if (outcome.status === 'suppressed') {
         // A bare `{status:'suppressed'}` reads as "that didn't work, try again", and
         // the observed behaviour was exactly that: the same message re-sent, then a

@@ -98,6 +98,137 @@ function check(label: string, ok: boolean, detail: unknown): Check {
   return { label, ok, detail: typeof detail === 'string' ? detail : JSON.stringify(detail) }
 }
 
+/* -------------------------------------------------------------------------- *
+ * Invariants — run after EVERY case, whatever the case was about
+ *
+ * The obvious way to keep a harness honest is a case per bug, and it is the way
+ * that rots: the file grows monotonically, each case exercises one sentence, and
+ * after a dozen rounds nobody runs the thing because it takes an hour. It also
+ * tests the wrong thing — a case reproduces the *instance*, and every finding in
+ * FINDINGS.md is filed as a class precisely because the instance is not the point.
+ *
+ * These are statements about the world that must hold no matter what was said.
+ * They cost one query each, they run against whatever state the arc has built by
+ * then, and a defect anywhere in the class trips them — including from a sentence
+ * nobody thought to write a case for. Four findings from the last round are caught
+ * here by three checks, none of which mentions the sentence that produced it.
+ *
+ * The bar for adding one: it must be a property of the data or the outbound
+ * record, true for every business, checkable in SQL, and false today only if
+ * something is actually wrong. Anything needing a specific prompt is a case, not
+ * an invariant — and should probably fold into one of the five that exist.
+ * -------------------------------------------------------------------------- */
+
+const INVARIANTS: { label: string; run: (q: Sql) => Promise<Check> }[] = [
+  {
+    // F6. A class whose slots are all Saturday cannot begin on a Sunday, or its
+    // first week silently does not exist — the calendar looks right and the
+    // sessions are simply absent.
+    label: 'every class starts on one of its own weekdays',
+    run: async (q) => {
+      const bad = await q(`
+        select c.name, c.starts_on::text,
+               extract(dow from c.starts_on)::int as start_dow,
+               array_agg(distinct cs.weekday order by cs.weekday) as slot_days
+          from class c join class_slot cs on cs.class_id = c.id
+         group by c.id, c.name, c.starts_on
+        having not (extract(dow from c.starts_on)::int = any(array_agg(cs.weekday)))`)
+      return check('every class starts on one of its own weekdays', bad.length === 0, bad)
+    },
+  },
+  {
+    // F7. One human is one person row. Two rows with the same name in one
+    // business is either a duplicate or two people the product cannot tell
+    // apart — both are defects and neither has ever been visible.
+    label: 'no two people share a name',
+    run: async (q) => {
+      const bad = await q(`
+        select lower(btrim(full_name)) as name, count(*)::int as n
+          from person group by 1 having count(*) > 1`)
+      return check('no two people share a name', bad.length === 0, bad)
+    },
+  },
+  {
+    // F7 again, from the other side: a player and their account holder being the
+    // same human is the self-payer, which is correct. A player whose person has
+    // the same NAME as the holder but a different id is the bug.
+    label: 'no player is a duplicate of their own account holder',
+    run: async (q) => {
+      const bad = await q(`
+        select ph.full_name as player, ah.full_name as holder
+          from player pl
+          join person ph on ph.id = pl.person_id
+          join account a on a.id = pl.account_id
+          join person ah on ah.id = a.holder_person_id
+         where ph.id <> ah.id
+           and lower(btrim(ph.full_name)) = lower(btrim(ah.full_name))`)
+      return check('no player is a duplicate of their own account holder', bad.length === 0, bad)
+    },
+  },
+  {
+    // F4/F5. Repetition is invisible in a transcript read one message at a time
+    // and obvious in one query. Scoped to what actually went out.
+    label: 'nobody was told the same thing twice',
+    run: async (q) => {
+      const bad = await q(`
+        select contact_id, left(body, 60) as body, count(*)::int as n
+          from message
+         where direction = 'outbound' and suppressed_reason is null and btrim(body) <> ''
+         group by contact_id, body having count(*) > 1`)
+      return check('nobody was told the same thing twice', bad.length === 0, bad)
+    },
+  },
+  {
+    // F8. Operator vocabulary is correct for an admin and wrong for everybody
+    // else, and the receipt is minted once and replayed to whoever taps. This
+    // catches the shape rather than the string: a row count opening a sentence.
+    label: 'no row-counting receipt reached a non-admin',
+    run: async (q) => {
+      const bad = await q(`
+        select p.full_name, left(m.body, 80) as body
+          from message m
+          join contact ct on ct.id = m.contact_id
+          join person p on p.id = ct.person_id
+         where m.direction = 'outbound' and m.suppressed_reason is null
+           and m.body ~* '^(changed|added|removed|updated) [0-9]+ '
+           and not exists (select 1 from academy_admin aa where aa.person_id = ct.person_id)`)
+      return check('no row-counting receipt reached a non-admin', bad.length === 0, bad)
+    },
+  },
+  {
+    // §2.2 and §14.6. A JSON blob in the prose and a link pasted as text are the
+    // two ways a message arrives looking broken; both are structural, so both
+    // belong here rather than in anybody's eyes.
+    //
+    // wa.me and friends are exempt, and that is not a loophole: §8.1's invite is a
+    // link the admin FORWARDS, so there the text is the artifact and a button would
+    // destroy it. Same predicate as `isForwardableLink` in `messaging/types.ts` —
+    // if that one changes, this must too, which is the cost of stating it twice and
+    // is cheaper than a harness that fails on every correct invite.
+    label: 'no message carries raw structure or a bare url',
+    run: async (q) => {
+      const bad = await q(`
+        select left(body, 80) as body from message
+         where direction = 'outbound' and suppressed_reason is null
+           and (body like '%"buttons"%'
+                or body ~* 'https?://(?!wa\\.me|api\\.whatsapp\\.com|chat\\.whatsapp\\.com)')`)
+      return check('no message carries raw structure or a bare url', bad.length === 0, bad)
+    },
+  },
+]
+
+async function runInvariants(q: Sql): Promise<Check[]> {
+  const out: Check[] = []
+  for (const inv of INVARIANTS) {
+    try {
+      out.push(await inv.run(q))
+    } catch (e) {
+      out.push(check(inv.label, false, `invariant query failed: ${(e as Error)?.message ?? String(e)}`))
+    }
+  }
+  return out
+}
+
 const CASES: Case[] = [
   {
     name: 'setup-small',
@@ -396,6 +527,10 @@ async function runChild(model: string): Promise<void> {
       } catch (e) {
         checks = [check('expectation query failed', false, (e as Error)?.message ?? String(e))]
       }
+      // Every case pays for the invariants, so a defect introduced by one sentence
+      // is caught by whichever case happens to run after it — which is the point:
+      // nobody has to predict which prompt will break which rule.
+      checks = [...checks, ...(await runInvariants(q))]
 
       records.push({
         model,
