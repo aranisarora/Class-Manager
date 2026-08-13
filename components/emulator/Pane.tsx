@@ -17,6 +17,7 @@ import {
   useAcademyById,
   useContactById,
   useEmulator,
+  useLiveNowIso,
   useThread,
   windowState,
   type EmuMessage,
@@ -24,6 +25,7 @@ import {
 import { Bubble } from './Bubble'
 import { Composer } from './Composer'
 import { MemoryPanel } from './MemoryPanel'
+import { MoneyPanel } from './MoneyPanel'
 import { Btn, Chip, Empty, ROLE_SHORT, ROLE_TONE, STATE_TONE, Spinner, cx } from './ui'
 
 function ListSheet({
@@ -103,11 +105,14 @@ export function Pane({ contactId, index, count }: { contactId: string; index: nu
   const thread = useThread(contactId)
   const [sheet, setSheet] = useState<EmuMessage | null>(null)
   const [showMemory, setShowMemory] = useState(false)
+  const [showMoney, setShowMoney] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
   const nearBottom = useRef(true)
 
   const tz = academy?.timezone ?? 'Asia/Kolkata'
-  const nowIso = state.clock.nowIso
+  // Ticking, not the last value a route happened to return: the window countdown and every
+  // action's ttl are the two things in this pane that are only true at an instant (§14.7, §2.2).
+  const nowIso = useLiveNowIso()
   const win = windowState(contact, nowIso)
 
   useLayoutEffect(() => {
@@ -127,6 +132,9 @@ export function Pane({ contactId, index, count }: { contactId: string; index: nu
     () => [...thread.messages].reverse().find((m) => m.direction === 'outbound' && m.status !== 'suppressed'),
     [thread.messages],
   )
+
+  const nextRung: 'delivered' | 'read' | null =
+    lastOutbound?.status === 'sent' ? 'delivered' : lastOutbound?.status === 'delivered' ? 'read' : null
 
   const grouped = useMemo(() => {
     const out: { day: string; items: EmuMessage[] }[] = []
@@ -178,6 +186,15 @@ export function Pane({ contactId, index, count }: { contactId: string; index: nu
             >
               🧠
             </Btn>
+            <Btn
+              size="xs"
+              tone="ghost"
+              active={showMoney}
+              title="the tally and what is owed (§6.4), and — for an admin — the control that attests a rail 1 payment (§11.5)"
+              onClick={() => setShowMoney((s) => !s)}
+            >
+              ₹
+            </Btn>
             <Btn size="xs" tone="ghost" title="move left" disabled={index === 0} onClick={() => actions.movePane(contactId, -1)}>
               ‹
             </Btn>
@@ -217,6 +234,16 @@ export function Pane({ contactId, index, count }: { contactId: string; index: nu
         <div className="flex items-center gap-2 border-t border-zinc-800/70 px-2 py-1 font-mono text-[9px] text-zinc-500">
           <span title="the contact's own number">{contact.phone ?? 'no number'}</span>
           <span className="text-zinc-700">→</span>
+          {/* §16.3's accepted trade-off, where it is actually paid: this is the name at the top
+              of this person's chat, and it is the shared number's, not the academy's. Open two
+              academies side by side and both panes say the same thing here — which is exactly
+              why the academy's name has to lead every message body. */}
+          <span
+            className="truncate text-zinc-400"
+            title="what this contact sees as the chat's name — one number, many academies (§16.3)"
+          >
+            {academy?.senderLabel ?? 'Class Manager'}
+          </span>
           <span title="the sender number this academy routes through (§16.3)">{academy?.senderPhone ?? 'sender ?'}</span>
           <span className="ml-auto" title="timestamps render in the academy's timezone">
             {tz}
@@ -269,7 +296,7 @@ export function Pane({ contactId, index, count }: { contactId: string; index: nu
                 busyTap={(actionId) => !!state.busy[`tap:${actionId}`]}
                 onTap={(actionId, label) => void actions.tapAction(contactId, actionId, label)}
                 onOpenList={setSheet}
-                onMarkRead={(messageId) => void actions.markRead(contactId, messageId)}
+                onAdvanceStatus={(messageId, status) => void actions.advanceStatus(contactId, messageId, status)}
               />
             ))}
           </div>
@@ -277,14 +304,20 @@ export function Pane({ contactId, index, count }: { contactId: string; index: nu
       </div>
 
       {showMemory ? <MemoryPanel contactId={contactId} /> : null}
+      {showMoney ? <MoneyPanel contactId={contactId} tz={tz} /> : null}
 
       <Composer
         busy={!!state.busy[`send:${contactId}`]}
         optedOut={!!contact.optedOutAt}
         onSendText={(text) => void actions.sendText(contactId, text)}
         onSendMedia={(media, caption) => void actions.sendMedia(contactId, media, caption)}
-        onMarkRead={() => lastOutbound && void actions.markRead(contactId, lastOutbound.id)}
-        markReadDisabled={!lastOutbound || !!state.busy[`read:${lastOutbound?.id}`]}
+        // The newest outbound message's next rung, so the ladder can be walked from the
+        // composer without hunting for the right bubble (§2.4).
+        nextRung={nextRung}
+        onAdvanceStatus={() => {
+          if (lastOutbound && nextRung) void actions.advanceStatus(contactId, lastOutbound.id, nextRung)
+        }}
+        advanceDisabled={!lastOutbound || !nextRung || !!state.busy[`read:${lastOutbound?.id}`]}
       />
 
       {sheet ? (

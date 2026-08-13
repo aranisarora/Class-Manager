@@ -2,7 +2,7 @@
  * lib/agent/context.ts — the layered prompt (§4).
  *
  * STABLE PREFIX  (byte-identical across turns; changes only with schema or modules)
- *   core doctrine · schema · nine behavior modules · operation signatures · catalog
+ *   core doctrine · schema · every behavior module · operation signatures · catalog
  * VARIABLE TAIL  (never cached)
  *   who this is · academy · memory hot sets · today · situation · query results
  *
@@ -69,15 +69,23 @@ function readDoc(relPath: string): string {
   )
 }
 
+/**
+ * "the nine behavior modules" was read on every turn and was false: eleven are
+ * loaded, and have been since `onboarding` and `watching` were added. A count is
+ * the one thing here that goes stale silently — nothing checks it, and the model
+ * has no way to tell a miscount from a module it has been told to ignore. So it
+ * names no number, and `BEHAVIOR_MODULES` stays the only place the set is stated.
+ */
 const PREAMBLE = `You are Class Manager: the manager for a coaching business, working inside WhatsApp.
 
 You are not a notification system. You are expected to notice things nobody asked
 you to look for, compose messages nobody specified, and answer questions nobody
 anticipated. The structure around you exists to make that safe, not to prevent it.
 
-What follows never changes: doctrine, the schema you author SQL against, the nine
-behavior modules, the operations you can reach for, and the moments code will put
-in front of you. Everything about this particular conversation comes after it.
+What follows never changes: doctrine, the schema you author SQL against, the
+behavior modules — all of them — the operations you can reach for, and the moments
+code will put in front of you. Everything about this particular conversation comes
+after it.
 
 Doctrine wins over a behavior module. A behavior module wins over your instinct.
 The database wins over all of it.`
@@ -133,6 +141,14 @@ choose from. Two of them applying at once is normal.`,
    * then be the same information a second time, in the weaker form, so only the
    * framing stays — *when* to reach for an operation is a judgement the prefix
    * should still shape; *what to call the arguments* is the schema's job.
+   *
+   * The same argument retires the "reach for the operation rather than a raw
+   * INSERT, because create_class is the only thing that schedules the sessions"
+   * sentence that used to close this block. It is stated twice inside this one
+   * cached block already — once on the `plan` tool's `steps` description, where
+   * the model is actually choosing between a step and an INSERT, and once per
+   * operation in each declaration's own consequence line. Both sit at the decode
+   * point; this one sat 50k characters upstream of it and was paid for anyway.
    */
   parts.push(
     `# Operations
@@ -145,26 +161,21 @@ staged messages.
 ${
   OPERATION_TOOLS
     ? `
-Each one is a tool you can call directly, and its arguments are on the tool. An
-operation carries consequences raw SQL does not — create_class is the only thing
-that schedules the sessions — so reach for the operation over an INSERT whenever
-one fits.`
+Each one is a tool you can call directly, and its arguments are on the tool.`
     : `
 ${operationSignatures().trim()}`
 }`,
   )
 
-  parts.push(
-    `# Moments code raises
-
-Code guarantees the moment reaches you; you decide what actually happens. On any
-row you may suppress, merge, retime, re-button or rewrite — the defaults are what
-a competent manager would do knowing nothing about the person, and departing from
-them, knowing something, is the entire reason you beat a cron job. Rows marked
-fixed cannot be suppressed, only reworded or merged.
-
-${catalogDigest().trim()}`,
-  )
+  /**
+   * No framing paragraph of its own: `catalogDigest()` opens with one, and the two
+   * said the same thing — suppress, merge, retime, re-button, always rewrite; FIXED
+   * cannot be suppressed — in adjacent blocks separated by a blank line. The digest's
+   * version is the one that survived, because it carries the concrete parenthetical
+   * for each verb ("this coach needs three hours, not one") rather than the verb list
+   * alone, and the one sentence it was missing has moved into it.
+   */
+  parts.push(catalogDigest().trim())
 
   parts.push(CACHE_BOUNDARY)
 
@@ -484,6 +495,14 @@ export async function variableTail(
   out.push(who.join('\n'))
 
   // --- ids, for SQL only -----------------------------------------------------
+  //
+  // The ids only. The paragraph that used to close this block — RLS scopes reads,
+  // zero rows is not a permissions problem, every INSERT sets academy_id itself —
+  // is `SCHEMA_DOC`'s RLS bullet almost word for word, and `SCHEMA_DOC` is in the
+  // CACHED prefix while this is in the tail. The tail is rebuilt and re-billed at
+  // full price on every single round, so a sentence living in both places is paid
+  // for twice and cached once. Everything down here has to be something the prefix
+  // structurally cannot hold: this person, this business, this clock.
   const ids = [
     `## Ids for your SQL (never write these into a message)`,
     ``,
@@ -493,10 +512,6 @@ export async function variableTail(
   if (id.coachId) ids.push(`coach_id = ${id.coachId}`)
   if (id.accountIds.length) ids.push(`account_id in (${id.accountIds.join(', ')})`)
   if (id.playerIds.length) ids.push(`player_id in (${id.playerIds.join(', ')})`)
-  ids.push(
-    ``,
-    `RLS already scopes every query to what this person may see, so you never add a tenant filter by hand when READING, and zero rows means zero rows — not a permissions problem. Writing is the other way round: every row you INSERT must set academy_id = app.academy_id() itself.`,
-  )
   out.push(ids.join('\n'))
 
   // --- the academy -----------------------------------------------------------
@@ -534,7 +549,16 @@ export async function variableTail(
   }
 
   // --- memory hot sets (§5) --------------------------------------------------
-  const mem: string[] = [`# Memory`, ``]
+  //
+  // The facts themselves, and nothing about how memory works. The paragraph that
+  // used to close this block — bounded hot set, search the fact store before
+  // saying you don't know, write after replying, correct by superseding — is in
+  // the cached prefix twice over already: `SCHEMA_DOC` says academy.memory and
+  // person.memory are a cache rebuilt from `memory_fact` and that a correction
+  // inserts a superseding row, and `lib/behaviors/feedback.md` says to reach past
+  // the hot set rather than say you don't know. Restating it here bought nothing
+  // and was billed on every round, because the tail is never cached.
+  const mem: string[] = [`# Memory`]
   mem.push(
     academyMemory
       ? `## About this business\n${academyMemory}`
@@ -554,9 +578,6 @@ export async function variableTail(
         .join('; ')}. Use their vocabulary and never introduce your own.`,
     )
   }
-  mem.push(
-    `This is a bounded hot set, not everything you know. Facts are kept in full and stay searchable — if this conversation reaches for something you are not carrying, search the fact store before saying you don't know. Write new facts after replying, never instead of replying, and correct one by superseding it rather than editing.`,
-  )
   out.push(mem.join('\n\n'))
 
   // --- now -------------------------------------------------------------------

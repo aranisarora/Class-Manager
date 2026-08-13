@@ -11,15 +11,29 @@ import {
   fmtDuration,
   fmtTime,
   useEmulator,
+  useLiveNowIso,
   usePrimaryTimezone,
   windowState,
   type EmuContact,
 } from '@/lib/emulator/state'
 import { Btn, Chip, Empty, ROLE_SHORT, ROLE_TONE, STATE_TONE, Spinner, cx } from './ui'
 
-function ContactRow({ c, open, activity }: { c: EmuContact; open: boolean; activity: number }) {
-  const { state, actions } = useEmulator()
-  const win = windowState(c, state.clock.nowIso)
+function ContactRow({
+  c,
+  open,
+  activity,
+  nowIso,
+}: {
+  c: EmuContact
+  open: boolean
+  activity: number
+  nowIso: string
+}) {
+  const { actions } = useEmulator()
+  // The ticking now, passed in from the tray rather than read here: one timer for the whole
+  // list instead of one per contact, and no row can claim a window is open minutes after it
+  // closed (§14.7).
+  const win = windowState(c, nowIso)
   const tz = usePrimaryTimezone()
   return (
     <button
@@ -239,6 +253,7 @@ function NewAcademyForm({ onDone }: { onDone: () => void }) {
 
 export function ContactTray() {
   const { state, actions } = useEmulator()
+  const nowIso = useLiveNowIso()
   const [q, setQ] = useState('')
   const [adding, setAdding] = useState(false)
   const [addingAcademy, setAddingAcademy] = useState(false)
@@ -270,8 +285,10 @@ export function ContactTray() {
           timezone: 'Asia/Kolkata',
           onboardingState: 'live',
           senderPhone: null,
+          senderLabel: null,
           category: null,
           rail: null,
+          upiHandle: null,
         },
         contacts: byAcademy.get(id) ?? [],
       })
@@ -385,6 +402,7 @@ export function ContactTray() {
                         c={c}
                         open={state.panes.includes(c.id)}
                         activity={state.activity[c.id] ?? 0}
+                        nowIso={nowIso}
                       />
                     ))
                   ) : (

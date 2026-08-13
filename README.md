@@ -5,7 +5,9 @@ book, pay and get reminded; coaches get their day and mark attendance with taps;
 business in natural language.
 
 Built from [`product-spec.md`](./product-spec.md), which remains the authority on behavior.
-[`CONTRACTS.md`](./CONTRACTS.md) is the build spine — module boundaries and exact signatures.
+[`DRIVING.md`](./DRIVING.md) is how you drive it and find real defects — the ten roots
+every failure so far has been an instance of, what to measure, and the traps that make a
+bad run look like a good one.
 
 **The emulator is the product surface in this build.** Meta Cloud API setup is deliberately not
 wired; the transport abstraction is real and `lib/messaging/transport-cloud.ts` is written
@@ -22,13 +24,25 @@ npm run dev
 
 Then open **http://localhost:3000/emulator**.
 
-The database is already provisioned, migrated and seeded. To rebuild the world:
+`.env.local` and `.secrets/` are required and both are gitignored — eleven keys, validated
+by `lib/env.ts`, covering the database, Vertex credentials, the two model names, the link
+signing secret and the transport. Without them nothing runs, and in a fresh worktree the
+failure looks like model errors rather than a missing file: every turn comes back with an
+error, no tools and an empty reply. Copy `.env.local`, `.secrets/` and `node_modules`
+(a junction is fine) into any worktree before driving it.
+
+The schema lives in `supabase/migrations/`. Applying it and building a world:
 
 ```bash
+npm run db:push       # every migration in filename order; re-running is a no-op
 npm run seed          # both academies (default)
 npm run seed ace      # Ace TT Academy only
 npm run seed solo     # Nadam Vocal only — the solo case (§18)
 ```
+
+Or build a business from empty by talking to it — `+ business` in the tray, or
+`npm run drive -- academy "X" --admin "Y"`. Both write the four rows onboarding starts
+from and **message nobody**; nothing goes out until the academy is set live.
 
 ## The world you get
 
@@ -39,7 +53,7 @@ becomes something you can watch rather than something you're told (§16).
 |---|---|---|
 | Admin | Sharwin Rao | **Lakshmi Subramanian — also the coach** |
 | Coaches | Arjun (active), Priya (active), Ravi (invited, never onboarded) | — (§18: she is the business) |
-| Classes | Beginners Batch `per_month`, Saturday Advanced `per_session`, Sunday Camp `per_package` | Tuesday Beginners, Saturday Kriti — both `per_month` |
+| Classes | 6:30 Beginners Batch `per_month`, Saturday Advanced `per_session`, Sunday Camp `per_package` | Tuesday Beginners, Saturday Kriti — both `per_month` |
 | Families | 8 accounts / 10 players | 6 students |
 
 Three of those are load-bearing test fixtures, not decoration:
@@ -67,32 +81,41 @@ Open a pane per contact from the tray, then:
    it's taken. The panes update live over SSE, so the race is real.
 6. **Watch the event log** — every send with template-vs-in-window, its cost, the sender number,
    every suppression with its reason, every job, every model call with tokens and latency.
-7. **Turn on a fault** — `send_fail`, `number_blocked`, `link_expired`, `model_error`.
+7. **Turn on a fault** — `send_fail`, `number_blocked`, `media_timeout`, `link_expired`,
+   `model_error`.
 8. **Send a file.** `📎 attach` takes anything on your disk — drop it on the composer or paste a
    screenshot. Audio reaches the model as audio (§14.5); there is no transcription step.
 9. **Ask what it knows.** The 🧠 button on a pane shows §5 both ways: the bounded hot set the
    prompt actually carries, and the append-only fact record behind it, with corrections marked as
    supersessions rather than edits.
-10. **Add your own people.** `+ new` in the tray creates a contact in the live world without a
+10. **Add your own people.** `+ person` in the tray creates a contact in the live world without a
     reseed, wired for real — a client gets an account, a player and an enrollment in the first
     class, so reminders and tallies work on them immediately. The next reseed clears them.
-11. **Drive it from the command line** — `npm run drive` is the harness, and it posts
-    to this same API. `drive score` prints the seven axes as numbers; `drive link`
-    reaches the web screens without waiting for the bot to offer one. See
-    [`FINDINGS.md`](./FINDINGS.md).
+11. **Make a business from empty.** `+ business` writes an academy at `setup`, its admin and
+    nothing else, and messages nobody. Everything after that — classes, coaches, families — is
+    built by talking to it.
+12. **Drive it from the command line** — `npm run drive` is the harness, and it posts
+    to this same API. `drive say` prints the reply, the buttons and every query that turn
+    ran; `drive link` reaches the web screens without waiting for the bot to offer one.
+    [`DRIVING.md`](./DRIVING.md) is the method.
 
 ## Checks
 
 ```bash
-npx tsc --noEmit              # typecheck
+npm run typecheck             # tsc --noEmit
 node scripts/rls-check.mjs    # the security boundary
-npm run drive -- score        # the seven axes, as numbers
+npm run drive -- score        # five of the seven axes, straight off the tables
+npx tsx scripts/probe-model.ts   # the real loop through a scripted arc, plus SQL invariants
 ```
 
 `rls-check` is the spec's phase-0 acceptance criterion: cross-tenant and cross-role reads return
 zero rows, and the build fails if any table has RLS disabled. **Seed a fixture before you trust
 it** — with an empty world it skips its cross-role and family-privacy sections and still reports
 "0 failed".
+
+`drive score` prints axes 1 and 3–6; axis 7 is `drive cost`, and axis 2 — was it the *right*
+thing, done right? — is not derivable and has to be read out of `audit_entry`. What the seven
+axes are and what each one fails to cover is [`DRIVING.md`](./DRIVING.md).
 
 ---
 
@@ -116,19 +139,24 @@ plan, captures before/after images through a snapshot trigger, and rolls back. T
 blast radius instead of estimating it. **Messages are staged until commit** — a rolled-back
 transaction has messaged nobody.
 
-**One send path (§16.3).** Ten gates in order: opt-out, the two §18 suppression rules, pre-launch
-silence, API limits, per-recipient frequency, per-tenant cap, window-or-template, idempotency,
-then the wire. A suppressed message is *recorded with its reason*, never silently dropped, which
-is why the event log can show you what didn't go and why.
+**One send path (§16.3).** Gates in order: opt-out, the two §18 suppression rules, pre-launch
+silence, the repeat gate, API limits, per-recipient frequency, per-tenant cap,
+window-or-template, idempotency, then the wire. The repeat gate drops a byte-identical body sent
+to the same person inside five minutes when they asked for it and six hours when they did not —
+a proactive generator saying the same sentence twice in a working day is a defect every time.
+A suppressed message is *recorded with its reason*, never silently dropped, which is why the
+event log can show you what didn't go and why.
 
 **The solo case falls out of two rules, not eight branches (§18).** Never ask someone to confirm
 something to themselves; never escalate about a person to that person. Both are checked on the
 send path, so Nadam Vocal works without a single `if (solo)`.
 
-**Layered context (§4).** A byte-identical stable prefix — doctrine, schema, nine behavior
-modules, operation signatures, the message catalog — then a variable tail carrying memory, roles
-and the clock. Behavior lives at the lowest layer that can hold it: the database refuses what it
-can, operations carry their own consequences, and only what's left is prompt.
+**Layered context (§4).** A byte-identical stable prefix — doctrine, schema, eleven behavior
+modules (§4.2's nine, plus `onboarding` and `watching`), operation framing, the message catalog,
+and one typed declaration per operation — then a
+variable tail carrying memory, roles, the clock and a census of what exists, read under the
+asking person's own RLS. Behavior lives at the lowest layer that can hold it: the database
+refuses what it can, operations carry their own consequences, and only what's left is prompt.
 
 ## Layout
 
@@ -136,13 +164,14 @@ can, operations carry their own consequences, and only what's left is prompt.
 lib/db.ts                 the session boundary — roles, GUCs, model queries
 lib/clock.ts              the drivable clock (app.now())
 lib/agent/                prompt layering, tools, plans, operations, the loop
-lib/behaviors/*.md        the nine §4.2 modules, always in context
+lib/behaviors/*.md        eleven behavior modules, all of them always in context
 lib/messaging/            the catalog, templates, window, transports, the one send path
 lib/jobs/                 20 job kinds, each re-checking its own precondition
 lib/web/                  signed links, the component registry, view specs
 app/emulator/             the world, tray, panes, clock, event log, faults
 app/w/[token]/            setup, the register, rendered views — no login
 supabase/migrations/      29 tables, RLS on every one
+scripts/drive.ts          the harness — talk to it, then read the tables back
 ```
 
 ## Known gaps
@@ -150,7 +179,14 @@ supabase/migrations/      29 tables, RLS on every one
 - **Meta Cloud API is not connected**, by design. `transport-cloud.ts` and `app/api/webhook`
   are written and correct but never exercised.
 - **Rail 2** (payment gateway, mandates, in-chat checkout) is deferred per §19 phase 13. Rail 1 —
-  UPI handle, admin attestation, reconciliation, dunning — works.
+  UPI handle, admin attestation, reconciliation, dunning — is built and has **never been driven
+  end to end**. The seeded world ships attendance, tally lines and payments as fixture rows, so
+  the read side has something to answer from; what has never happened is the product *producing*
+  any of them. No register has ever been marked through the product, and `client_outcome`,
+  `monthly_lines`, `month_end_tally`, `dunning`, `reconcile`, `first_contact_batch`,
+  `memory_curate` and `coach_not_onboarded` — eight of the twenty job kinds — have never fired in
+  any recorded drive. Treat that half as unverified, not as working. Driving it is the first thing
+  [`DRIVING.md`](./DRIVING.md) is for.
 - **`academy.prompt_cache_handle` stays null, deliberately.** Implicit caching turned out *not* to
   do the work — measured across turns it served 0 cached tokens, hitting only between hops inside
   one turn — so `lib/agent/gemini.ts` now takes an explicit `CachedContent` for the stable prefix
@@ -161,8 +197,14 @@ supabase/migrations/      29 tables, RLS on every one
   saves. The event log's `cached` chip is the check — amber at 0%.
 - **There is no agent-simulation harness**, and the README used to claim one. Personas, a judge
   agent and diffable runs (§17, phase 12) were built and removed as over-engineered; `npm run
-  drive` is the harness now, and a person driving it is the eval. `drive score` is what turns
-  that from an impression into numbers.
+  drive` is the harness now, and a person driving it is the eval. `drive score` and
+  [`DRIVING.md`](./DRIVING.md) are what turn that from an impression into numbers.
+- **The recipe loop is not connected end to end.** Capture, generalisation and application are
+  each written and each correct; `applyRecipe` has no callers, and what fires today pastes a
+  matched plan into the variable tail as prose for the model to re-compose rather than replaying
+  it. So the round saving §14.3 promises is a hope that the model copies well, not a structural
+  guarantee.
 - Model quality varies turn to turn, as it will: the structural guarantees hold every time, but
   which tool the model reaches for first does not. Given the same sentence twice, one turn
-  created the class and one asked first — that variance is what §14.3's recipes exist to remove.
+  created the class and one asked first — that variance is what §14.3's recipes exist to remove,
+  once the line above is closed.

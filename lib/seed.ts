@@ -146,6 +146,23 @@ export async function worldAcademyIds(o: { refresh?: boolean } = {}): Promise<st
 
 type Col = readonly [name: string, cast: string]
 
+/**
+ * A `::jsonb` cast on a **parameter** does not do what it reads like.
+ *
+ * postgres.js types a parameter from its JS value and, seeing a `jsonb` target, sends a
+ * string as a JSON *string* — so `$1::jsonb` with `'{"a":1}'` stores the six-character
+ * scalar `"{\"a\":1}"`, not an object. `jsonb_typeof` says `string`, every `->>'key'`
+ * returns null, and nothing raises: the row is there, the column is populated, and every
+ * read of it silently finds nothing. That is how `person.settings` in both seeded worlds
+ * came to hold a string — so Priya's "prompt me two hours ahead", the one preference the
+ * fixture exists to demonstrate, has never once been read by the code that looks for it.
+ *
+ * `::text::jsonb` forces the text→jsonb parse, which is why `lib/actions.ts` and
+ * `lib/messaging/send.ts` both spell it that way. Rewritten here rather than in each
+ * column list, because getting it right twenty times is not a plan.
+ */
+const jsonSafe = (cast: string): string => (cast === '::jsonb' ? '::text::jsonb' : cast)
+
 async function bulk(
   tx: Tx,
   table: string,
@@ -164,7 +181,7 @@ async function bulk(
           .map((c) => {
             const v = r[c[0]]
             params.push(v === undefined ? null : v)
-            return `$${params.length}${c[1]}`
+            return `$${params.length}${jsonSafe(c[1])}`
           })
           .join(', ') +
         ')',
@@ -421,8 +438,11 @@ export async function seedWorld(scenario: Scenario = 'both'): Promise<SeedResult
   const firstAcademyId = WORLD_ACADEMY_IDS[targets[0]]
   await withSession(svc(firstAcademyId), async (tx) => {
     await tx.unsafe(
+      // `::text::jsonb`, not `::jsonb` — see `jsonSafe`. Stored as a jsonb string,
+      // `cacheSenderCredentials` reads a non-object and returns early, so §16.3's
+      // per-sender credentials are silently never cached.
       `insert into sender (id, phone_e164, waba_id, credentials, label)
-       values ($1::uuid, $2, $3, $4::jsonb, $5)
+       values ($1::uuid, $2, $3, $4::text::jsonb, $5)
        on conflict (id) do nothing`,
       [
         SENDER_ID,
@@ -734,7 +754,7 @@ async function seedAce(base: Date): Promise<AcademySummary> {
       `insert into academy (id, name, category, timezone, cancellation_window_hours,
          client_reminder_lead_hours, morning_brief_at, evening_digest_at, rail, upi_handle,
          sender_id, memory, settings, created_on, onboarding_state)
-       values ($1::uuid,$2,$3,$4,$5::int,$6::int,$7::time,$8::time,$9,$10,$11::uuid,$12,$13::jsonb,$14::date,$15)`,
+       values ($1::uuid,$2,$3,$4,$5::int,$6::int,$7::time,$8::time,$9,$10,$11::uuid,$12,$13::text::jsonb,$14::date,$15)`,
       [
         A, 'Ace TT Academy', 'table tennis', tz, 24, 14, '07:00', '21:00', 'rail1', 'sharwin@upi',
         SENDER_ID,
@@ -985,7 +1005,7 @@ async function seedNadam(base: Date): Promise<AcademySummary> {
       `insert into academy (id, name, category, timezone, cancellation_window_hours,
          client_reminder_lead_hours, morning_brief_at, evening_digest_at, rail, upi_handle,
          sender_id, memory, settings, created_on, onboarding_state)
-       values ($1::uuid,$2,$3,$4,$5::int,$6::int,$7::time,$8::time,$9,$10,$11::uuid,$12,$13::jsonb,$14::date,$15)`,
+       values ($1::uuid,$2,$3,$4,$5::int,$6::int,$7::time,$8::time,$9,$10,$11::uuid,$12,$13::text::jsonb,$14::date,$15)`,
       [
         A, 'Nadam Vocal', 'carnatic vocal', tz, 24, 14, '06:30', '20:30', 'rail1', 'lakshmi@upi',
         SENDER_ID,
@@ -1963,6 +1983,646 @@ export async function createTestContact(input: NewTestContact): Promise<TestCont
 }
 
 // =============================================================================
+// LIFECYCLE STAGES — a business at each point in its life, built on demand.
+//
+// Exactly two states were ever seedable: a 45-day-old academy in full flight
+// (`seedWorld`) and an empty shell with one admin (`createAcademy`). Everything
+// between them — a roster typed in but no sessions yet, sessions materialised but
+// nobody confirmed, a live business a fortnight old — could only be reached by
+// driving a conversation for an hour first, so in practice nobody ever tested
+// them. §10.1's first week is where a business decides whether to keep using
+// this, and it was the least examined part of the product.
+//
+// And **no seeded world contained a single message**. Every path that reads
+// history — the prompt's recent-conversation window, the 24h window rules, the
+// digest's "what happened today", `showTurn`, the affordance metrics — had only
+// ever been run against a world with none, which is the one shape that cannot
+// catch a mistake in any of them. `mature` exists for that: real messages in both
+// directions, real turns with tool traces, minted actions both tapped and
+// untapped, a suppressed row, an out-of-window template.
+//
+// One business per call, and the rest of the world is left alone: unlike
+// `seedWorld`, nothing here truncates. Re-running the same stage rebuilds the
+// same business (every id is `detId`), so a stage is a fixture you can return to.
+// =============================================================================
+
+export const STAGES = ['empty', 'setup', 'roster', 'ready', 'live', 'mature'] as const
+export type Stage = (typeof STAGES)[number]
+
+export type StagePerson = { contactId: string; personId: string; name: string; phone: string }
+export type StageResult = {
+  stage: Stage
+  academyId: string
+  name: string
+  adminContactId: string | null
+  contacts: { admin: StagePerson[]; coach: StagePerson[]; client: StagePerson[] }
+  counts: Record<string, number>
+}
+
+const MESSAGE_COLS = [['id', '::uuid'], ['academy_id', '::uuid'], ['contact_id', '::uuid'], ['sender_id', '::uuid'], ['direction', ''], ['catalog_id', ''], ['template_name', ''], ['body', ''], ['payload', '::jsonb'], ['media_url', ''], ['status', ''], ['queued_at', '::timestamptz'], ['sent_at', '::timestamptz'], ['delivered_at', '::timestamptz'], ['read_at', '::timestamptz'], ['in_window', '::boolean'], ['solicited', '::boolean'], ['reply_to_action_id', '::uuid'], ['idempotency_key', ''], ['conversation_category', ''], ['cost_paise', '::int'], ['suppressed_reason', '']] as const
+const TURN_COLS = [['id', '::uuid'], ['academy_id', '::uuid'], ['contact_id', '::uuid'], ['person_id', '::uuid'], ['role_acted', ''], ['input', '::jsonb'], ['output', '::jsonb'], ['model', ''], ['prompt_tokens', '::int'], ['cached_tokens', '::int'], ['output_tokens', '::int'], ['latency_ms', '::int'], ['rounds', '::int'], ['tool_calls', '::jsonb'], ['error', '']] as const
+const ACTION_COLS = [['id', '::uuid'], ['academy_id', '::uuid'], ['kind', ''], ['payload', '::jsonb'], ['minted_at', '::timestamptz'], ['minted_for_contact_id', '::uuid'], ['expires_at', '::timestamptz'], ['consumed_at', '::timestamptz'], ['consumed_by_contact_id', '::uuid']] as const
+
+/** How far along each stage is. Every stage contains the ones before it. */
+const REACHED: Record<Stage, number> = { empty: 0, setup: 1, roster: 2, ready: 3, live: 4, mature: 5 }
+
+/** A different plausible business per stage, so two of them are never confusable in a log. */
+const STAGE_NAME: Record<Stage, string> = {
+  empty: 'Sunrise Swim',
+  setup: 'Kadam Athletics',
+  roster: 'Bluewave Badminton',
+  ready: 'Crescent Karate',
+  live: 'Orchid Dance',
+  mature: 'Sixteen Strings Music',
+}
+
+const ONBOARDING_AT: Record<Stage, string> = {
+  empty: 'setup', setup: 'setup', roster: 'roster', ready: 'ready', live: 'live', mature: 'live',
+}
+
+/**
+ * A phone block of this business's own, derived from its slug.
+ *
+ * A number known to two academies is §10.1's ambiguous case, and from then on every
+ * message from it resolves to nobody — so two stage businesses sharing one is not a
+ * cosmetic clash, it is a broken world that looks like a broken product. The +9197 block
+ * is used by nothing else (`seedWorld` uses +91984501/2, ad-hoc test contacts +9199).
+ */
+function stagePhoneBlock(slug: string): string {
+  const digits = detId('stage-phone', slug).replace(/\D/g, '')
+  return digits.slice(0, 4).padEnd(4, '0')
+}
+
+/** A business at a named point in its life. Idempotent: the same slug rebuilds the same one. */
+export async function seedStage(
+  stage: Stage,
+  o: { slug?: string; name?: string; timezone?: string } = {},
+): Promise<StageResult> {
+  const slug = (o.slug ?? stage).trim().toLowerCase()
+  const A = detId('stage', slug)
+  const tz = o.timezone ?? 'Asia/Kolkata'
+  const name = (o.name ?? STAGE_NAME[stage]).trim()
+  const reached = REACHED[stage]
+  const nowDT = DateTime.fromJSDate(await now(), { zone: tz })
+  const ts = (d: DateTime): string => isoOf(d)
+  const period = monthOf(nowDT)
+  const monthLabel = nowDT.toFormat('LLLL yyyy')
+
+  const P = (s: string) => detId('stage', slug, 'person', s)
+  const C = (s: string) => detId('stage', slug, 'contact', s)
+  const ACCT = (s: string) => detId('stage', slug, 'account', s)
+  const PL = (s: string) => detId('stage', slug, 'player', s)
+  const CO = (s: string) => detId('stage', slug, 'coach', s)
+  const CLS = (s: string) => detId('stage', slug, 'class', s)
+  const VEN = (s: string) => detId('stage', slug, 'venue', s)
+  const ACT = (s: string) => detId('stage', slug, 'action', s)
+  const MSG = (s: string) => detId('stage', slug, 'message', s)
+  const TURN = (s: string) => detId('stage', slug, 'turn', s)
+
+  // Rebuild rather than accumulate: a fixture you cannot return to is not a fixture.
+  await withSession(svc(A), async (tx) => {
+    await tx`delete from academy where id = ${A}::uuid`
+  })
+
+  // One shared sender across every tenant, exactly as production has one number.
+  await withSession(svc(A), async (tx) => {
+    await tx`
+      insert into sender (id, phone_e164, waba_id, credentials, label)
+      values (${SENDER_ID}::uuid, ${SENDER_PHONE}, 'WABA-EMULATOR-0001',
+              '{"transport":"emulator","phone_number_id":"PNID-EMULATOR-0001","access_token":"emulator-only-no-real-token"}'::jsonb,
+              ${SENDER_LABEL})
+      on conflict (id) do nothing`
+  })
+
+  const block = stagePhoneBlock(slug)
+  const phone = (i: number) => `+9197${block}${String(i).padStart(4, '0')}`
+
+  const cast = {
+    admin: { slug: 'nandini', name: 'Nandini Rao', phone: phone(1) },
+    coaches: [
+      { slug: 'imran', name: 'Imran Qureshi', phone: phone(2), status: 'active', pay: 400 },
+      { slug: 'tara', name: 'Tara Sethi', phone: phone(3), status: 'invited', pay: null },
+    ],
+    families: [
+      { slug: 'bhavna', name: 'Bhavna Menon', phone: phone(4), child: { slug: 'ira', name: 'Ira Menon' } },
+      { slug: 'sameer', name: 'Sameer Khan', phone: phone(5), child: { slug: 'zaid', name: 'Zaid Khan' } },
+      // §6.2 at n=1: the holder is the player. Real, and the case most often forgotten.
+      { slug: 'ritu', name: 'Ritu Malhotra', phone: phone(6), child: null },
+    ],
+  }
+
+  const classes = [
+    {
+      slug: 'evening', name: 'Evening Beginners', rate: 2000, unit: 'per_month', count: null as number | null,
+      slots: [
+        { weekday: 1, start: '18:30', end: '19:30' },
+        { weekday: 3, start: '18:30', end: '19:30' },
+      ],
+      coaches: ['imran'],
+    },
+    {
+      slug: 'squad', name: 'Saturday Squad', rate: 350, unit: 'per_session', count: null as number | null,
+      slots: [{ weekday: 6, start: '08:00', end: '09:30' }],
+      coaches: ['imran', 'tara'],
+    },
+  ]
+
+  const enrollments = [
+    { cls: 'evening', player: 'ira' },
+    { cls: 'evening', player: 'zaid' },
+    { cls: 'squad', player: 'ira' },
+    { cls: 'squad', player: 'ritu' },
+  ]
+  const accountOfPlayer: Record<string, string> = { ira: 'bhavna', zaid: 'sameer', ritu: 'ritu' }
+  const playerName: Record<string, string> = { ira: 'Ira Menon', zaid: 'Zaid Khan', ritu: 'Ritu Malhotra' }
+
+  const hasAdmin = reached >= REACHED.setup
+  const hasRoster = reached >= REACHED.roster
+  const hasSessions = reached >= REACHED.ready
+  const hasPast = reached >= REACHED.live
+  const hasHistory = reached >= REACHED.mature
+
+  // The business is as old as its own contents claim: a `roster` business created
+  // 45 days ago that has never run a class is not a state the product produces.
+  const ageDays = reached <= REACHED.setup ? 0 : reached === REACHED.roster ? 2 : reached === REACHED.ready ? 5 : hasHistory ? 40 : 16
+  const pastDays = hasHistory ? 28 : hasPast ? 7 : 0
+
+  // ---- sessions, attendance, money ----------------------------------------
+  const sessionRows: Record<string, unknown>[] = []
+  const sessionCoachRows: Record<string, unknown>[] = []
+  const attendanceRows: Record<string, unknown>[] = []
+  const tallyRows: Record<string, unknown>[] = []
+  let completed = 0
+  let firstUpcomingSessionId: string | null = null
+
+  if (hasSessions) {
+    for (const cls of classes) {
+      const classId = CLS(cls.slug)
+      const startsOn = nowDT.minus({ days: Math.max(ageDays, pastDays) })
+      const occ = occurrences(classId, tz, cls.slots, nowDT.minus({ days: pastDays }), nowDT.plus({ days: 21 }), startsOn)
+      const roster = enrollments.filter((e) => e.cls === cls.slug).map((e) => e.player)
+
+      for (const s of occ) {
+        const isPast = s.starts.toMillis() < nowDT.toMillis()
+        sessionRows.push({
+          id: s.id, academy_id: A, class_id: classId, venue_id: null,
+          starts_at: ts(s.starts), ends_at: ts(s.ends),
+          status: isPast ? 'completed' : 'scheduled', cancel_reason: null,
+        })
+        if (isPast) completed++
+        else if (!firstUpcomingSessionId && cls.slug === 'evening') firstUpcomingSessionId = s.id
+
+        for (const coachSlug of cls.coaches) {
+          // Future rows are deliberately unanswered: §8.2's ladder needs something to
+          // fire on, and `drive confirm` needs something to answer.
+          sessionCoachRows.push({
+            id: detId('session_coach', s.id, CO(coachSlug)), academy_id: A, session_id: s.id,
+            coach_id: CO(coachSlug),
+            confirmed_at: isPast ? ts(s.starts.minus({ hours: 10 })) : null,
+            declined_at: null,
+            arrived_at: isPast ? ts(s.starts.minus({ minutes: 5 })) : null,
+            running_late: false,
+          })
+        }
+
+        if (isPast) {
+          for (const p of roster) {
+            const status = p === 'zaid' && s.starts.weekday % 7 === 3 ? 'absent' : 'present'
+            attendanceRows.push({
+              id: detId('attendance', s.id, PL(p)), academy_id: A, session_id: s.id, player_id: PL(p),
+              status, note: status === 'absent' ? 'Told us the morning of' : null,
+              marked_by_coach_id: CO(cls.coaches[0] as string), marked_at: ts(s.ends),
+            })
+            if (cls.unit === 'per_session') {
+              tallyRows.push({
+                id: detId('tally', s.id, PL(p)), academy_id: A, account_id: ACCT(accountOfPlayer[p] as string),
+                player_id: PL(p), period: monthOf(s.starts), kind: 'session',
+                description: `${cls.name} - ${s.starts.toFormat('d LLL')}`,
+                amount: cls.rate, session_id: s.id, reason: null, approved_by: null,
+              })
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (hasPast) {
+    for (const e of enrollments) {
+      const cls = classes.find((c) => c.slug === e.cls)
+      if (cls?.unit !== 'per_month') continue
+      tallyRows.push({
+        id: detId('tally', 'monthly', period, CLS(cls.slug), PL(e.player)), academy_id: A,
+        account_id: ACCT(accountOfPlayer[e.player] as string), player_id: PL(e.player),
+        period, kind: 'monthly', description: `${cls.name} - ${monthLabel}`,
+        amount: cls.rate, session_id: null, reason: null, approved_by: null,
+      })
+    }
+  }
+
+  const owedBy = (acct: string): number =>
+    tallyRows.filter((t) => t.account_id === ACCT(acct)).reduce((n, t) => n + Number(t.amount), 0)
+
+  const paymentRows: Record<string, unknown>[] = []
+  if (hasPast) {
+    paymentRows.push({
+      id: detId('stage', slug, 'payment', 'bhavna'), academy_id: A, account_id: ACCT('bhavna'),
+      amount: owedBy('bhavna'), rail: 'rail1', method: 'upi', reference: 'UPI/2026/ST/70118',
+      status: 'confirmed', requested_at: ts(nowDT.minus({ days: 5 })),
+      confirmed_at: ts(nowDT.minus({ days: 4 })), confirmed_by: P('nandini'), evidence_url: null,
+    })
+    // Left `requested` on purpose: this is what `reconcile` chases and what
+    // `drive pay confirm` finishes, and no seeded world had one that could be.
+    paymentRows.push({
+      id: detId('stage', slug, 'payment', 'sameer'), academy_id: A, account_id: ACCT('sameer'),
+      amount: owedBy('sameer'), rail: 'rail1', method: 'upi', reference: null,
+      status: 'requested', requested_at: ts(nowDT.minus({ days: 2 })),
+      confirmed_at: null, confirmed_by: null, evidence_url: null,
+    })
+  }
+  if (hasHistory) {
+    // A payment that failed is not a payment that is late, and the two were reported as
+    // one thing for want of a single row anywhere that had ever failed.
+    paymentRows.push({
+      id: detId('stage', slug, 'payment', 'ritu'), academy_id: A, account_id: ACCT('ritu'),
+      amount: 350, rail: 'rail1', method: 'upi', reference: 'UPI/2026/ST/70233',
+      status: 'failed', requested_at: ts(nowDT.minus({ days: 9 })),
+      confirmed_at: null, confirmed_by: null, evidence_url: null,
+    })
+  }
+
+  const history = hasHistory
+    ? buildStageHistory({
+        academyId: A, name, tz, nowDT, ids: { C, P, ACT, MSG, TURN, CLS },
+        sessionId: firstUpcomingSessionId, coachId: CO('imran'), accountName: 'Sameer Khan',
+      })
+    : { actions: [], messages: [], turns: [] }
+
+  // ---- write ---------------------------------------------------------------
+  await withSession(svc(A), async (tx) => {
+    await tx.unsafe(
+      `insert into academy (id, name, category, timezone, cancellation_window_hours,
+         client_reminder_lead_hours, morning_brief_at, evening_digest_at, rail, upi_handle,
+         sender_id, memory, settings, created_on, onboarding_state)
+       values ($1::uuid,$2,$3,$4,24,14,'07:00','21:00','rail1',$5,$6::uuid,$7,'{}'::jsonb,$8::date,$9)`,
+      [
+        A, name, 'sport', tz,
+        hasRoster ? 'nandini@upi' : null,
+        SENDER_ID,
+        hasHistory
+          ? 'Nandini runs it alone and answers in the evenings. Fees come by UPI to nandini@upi and she confirms each one herself.'
+          : null,
+        dayOf(nowDT.minus({ days: ageDays })),
+        ONBOARDING_AT[stage],
+      ] as never[],
+    )
+
+    if (!hasAdmin) return
+
+    const people: Record<string, unknown>[] = [
+      { id: P('nandini'), academy_id: A, full_name: cast.admin.name, notes: 'Runs the business.', memory: null, settings: '{}' },
+    ]
+    const contacts: Record<string, unknown>[] = [
+      {
+        id: C('nandini'), academy_id: A, person_id: P('nandini'), phone_e164: cast.admin.phone,
+        wa_id: cast.admin.phone.replace('+', ''), profile_name: 'Nandini', is_primary: true,
+        state: hasHistory ? 'engaged' : 'registered', opted_out_at: null,
+        last_inbound_at: hasHistory ? ts(nowDT.minus({ hours: 3 })) : null, role_hint: 'admin',
+      },
+    ]
+
+    if (hasRoster) {
+      for (const co of cast.coaches) {
+        people.push({ id: P(co.slug), academy_id: A, full_name: co.name, notes: null, memory: null, settings: '{}' })
+        contacts.push({
+          id: C(co.slug), academy_id: A, person_id: P(co.slug), phone_e164: co.phone,
+          wa_id: co.phone.replace('+', ''), profile_name: null, is_primary: true,
+          state: hasHistory && co.slug === 'imran' ? 'engaged' : 'registered', opted_out_at: null,
+          last_inbound_at: hasHistory && co.slug === 'imran' ? ts(nowDT.minus({ hours: 6 })) : null,
+          role_hint: 'coach',
+        })
+      }
+      for (const f of cast.families) {
+        people.push({ id: P(f.slug), academy_id: A, full_name: f.name, notes: null, memory: null, settings: '{}' })
+        if (f.child) {
+          people.push({ id: P(f.child.slug), academy_id: A, full_name: f.child.name, notes: null, memory: null, settings: '{}' })
+        }
+        contacts.push({
+          id: C(f.slug), academy_id: A, person_id: P(f.slug), phone_e164: f.phone,
+          wa_id: f.phone.replace('+', ''), profile_name: null, is_primary: true,
+          state: hasHistory && f.slug === 'bhavna' ? 'engaged' : 'registered', opted_out_at: null,
+          last_inbound_at: hasHistory && f.slug === 'bhavna' ? ts(nowDT.minus({ hours: 20 })) : null,
+          role_hint: 'parent',
+        })
+      }
+    }
+
+    await bulk(tx, 'person', PERSON_COLS, people)
+    await bulk(tx, 'contact', CONTACT_COLS, contacts)
+    await bulk(tx, 'academy_admin', ADMIN_COLS, [
+      { id: detId('stage', slug, 'admin'), academy_id: A, person_id: P('nandini') },
+    ])
+    if (!hasRoster) return
+
+    await bulk(tx, 'venue', VENUE_COLS, [
+      { id: VEN('hall'), academy_id: A, name: 'The Hall', address: '2nd Cross, Jayanagar', notes: null },
+    ])
+    await bulk(tx, 'coach', COACH_COLS, cast.coaches.map((co) => ({
+      id: CO(co.slug), academy_id: A, person_id: P(co.slug), pay_amount: co.pay,
+      pay_unit: co.pay ? 'per_session' : null, status: co.status,
+      invited_at: ts(nowDT.minus({ days: Math.min(ageDays, 3) })),
+      onboarded_at: co.status === 'active' ? ts(nowDT.minus({ days: Math.min(ageDays, 2) })) : null,
+      ended_on: null,
+    })))
+    await bulk(tx, 'account', ACCOUNT_COLS, cast.families.map((f) => ({
+      id: ACCT(f.slug), academy_id: A, holder_person_id: P(f.slug), display_name: f.name,
+    })))
+    await bulk(tx, 'player', PLAYER_COLS, cast.families.map((f) => ({
+      id: PL(f.child?.slug ?? f.slug), academy_id: A, account_id: ACCT(f.slug),
+      person_id: P(f.child?.slug ?? f.slug), active: true,
+    })))
+    await bulk(tx, 'class', CLASS_COLS, classes.map((cl) => ({
+      id: CLS(cl.slug), academy_id: A, name: cl.name, venue_id: VEN('hall'),
+      rate_amount: cl.rate, rate_unit: cl.unit, rate_count: cl.count,
+      starts_on: dayOf(nowDT.minus({ days: Math.max(ageDays, pastDays) })), ends_on: null, active: true,
+    })))
+    await bulk(tx, 'class_slot', SLOT_COLS, classes.flatMap((cl) =>
+      cl.slots.map((s) => ({
+        id: detId('stage', slug, 'slot', cl.slug, String(s.weekday), s.start), academy_id: A,
+        class_id: CLS(cl.slug), weekday: s.weekday, start_time: s.start, end_time: s.end,
+      })),
+    ))
+    await bulk(tx, 'class_coach', CLASS_COACH_COLS, classes.flatMap((cl) =>
+      cl.coaches.map((co) => ({
+        id: detId('stage', slug, 'class_coach', cl.slug, co), academy_id: A,
+        class_id: CLS(cl.slug), coach_id: CO(co),
+      })),
+    ))
+    await bulk(tx, 'enrollment', ENROLLMENT_COLS, enrollments.map((e) => ({
+      id: detId('stage', slug, 'enrollment', e.cls, e.player), academy_id: A, class_id: CLS(e.cls),
+      player_id: PL(e.player), rate_amount: null, rate_unit: null, rate_count: null,
+      is_trial: false, started_on: dayOf(nowDT.minus({ days: Math.max(1, Math.max(ageDays, pastDays) - 1) })), ended_on: null,
+    })))
+
+    await bulk(tx, 'session', SESSION_COLS, sessionRows)
+    await bulk(tx, 'session_coach', SESSION_COACH_COLS, sessionCoachRows)
+    await bulk(tx, 'attendance', ATTENDANCE_COLS, attendanceRows)
+    await bulk(tx, 'tally_line', TALLY_COLS, tallyRows)
+    await bulk(tx, 'payment', PAYMENT_COLS, paymentRows)
+
+    if (!hasHistory) return
+    await bulk(tx, 'memory_fact', FACT_COLS, [
+      { id: detId('stage', slug, 'fact', '1'), academy_id: A, subject_kind: 'academy', subject_id: A, fact: 'Nandini confirms every UPI payment herself', source: 'onboarding' },
+      { id: detId('stage', slug, 'fact', '2'), academy_id: A, subject_kind: 'person', subject_id: P('bhavna'), fact: 'Bhavna answers late in the evening, never during the day', source: 'observed' },
+      { id: detId('stage', slug, 'fact', '3'), academy_id: A, subject_kind: 'person', subject_id: P('imran'), fact: 'Imran taps rather than types', source: 'observed' },
+    ])
+    // Actions first: an inbound tap carries `reply_to_action_id`, which is a foreign key.
+    await bulk(tx, 'action', ACTION_COLS, history.actions)
+    await bulk(tx, 'message', MESSAGE_COLS, history.messages)
+    await bulk(tx, 'turn', TURN_COLS, history.turns)
+  })
+
+  academyIdCache = null // the world just gained a business
+
+  const person = (slugName: string, full: string, ph: string): StagePerson => ({
+    contactId: C(slugName), personId: P(slugName), name: full, phone: ph,
+  })
+
+  return {
+    stage,
+    academyId: A,
+    name,
+    adminContactId: hasAdmin ? C('nandini') : null,
+    contacts: {
+      admin: hasAdmin ? [person('nandini', cast.admin.name, cast.admin.phone)] : [],
+      coach: hasRoster ? cast.coaches.map((co) => person(co.slug, co.name, co.phone)) : [],
+      client: hasRoster ? cast.families.map((f) => person(f.slug, f.name, f.phone)) : [],
+    },
+    counts: {
+      people: hasAdmin ? 1 + (hasRoster ? cast.coaches.length + cast.families.length + cast.families.filter((f) => f.child).length : 0) : 0,
+      classes: hasRoster ? classes.length : 0,
+      sessions: sessionRows.length,
+      completed,
+      attendance: attendanceRows.length,
+      tallyLines: tallyRows.length,
+      payments: paymentRows.length,
+      messages: history.messages.length,
+      turns: history.turns.length,
+      actions: history.actions.length,
+    },
+  }
+}
+
+/**
+ * A fortnight of conversation, written the way the send path writes it.
+ *
+ * Shape matters more than volume here. `message.payload` is built by
+ * `messagePayload` in the send path with every key present — buttons, list, link, media
+ * — so anything reading a seeded row has to see the same keys or it is being tested
+ * against a shape the product never produces. The set below is chosen to cover what has
+ * never had a row to read: a **list** with tappable rows (the primary affordance, and
+ * nothing has ever tapped one), an inbound tap carrying `reply_to_action_id`, a message
+ * to a THIRD PARTY inside somebody else's exchange, a suppressed row, and an
+ * out-of-window template with a cost against it.
+ */
+function buildStageHistory(o: {
+  academyId: string
+  name: string
+  tz: string
+  nowDT: DateTime
+  ids: {
+    C: (s: string) => string
+    P: (s: string) => string
+    ACT: (s: string) => string
+    MSG: (s: string) => string
+    TURN: (s: string) => string
+    CLS: (s: string) => string
+  }
+  sessionId: string | null
+  coachId: string
+  accountName: string
+}): { actions: Record<string, unknown>[]; messages: Record<string, unknown>[]; turns: Record<string, unknown>[] } {
+  const { academyId: A, nowDT, ids } = o
+  const { C, P, ACT, MSG, TURN } = ids
+  const ts = (d: DateTime): string => isoOf(d)
+  const ago = (h: number) => nowDT.minus({ hours: h })
+
+  const actions: Record<string, unknown>[] = []
+  const messages: Record<string, unknown>[] = []
+  const turns: Record<string, unknown>[] = []
+
+  const action = (
+    key: string,
+    forContact: string,
+    payload: unknown,
+    mintedAt: DateTime,
+    consumedAt: DateTime | null,
+  ): string => {
+    actions.push({
+      id: ACT(key), academy_id: A, kind: (payload as { kind: string }).kind,
+      payload: JSON.stringify(payload), minted_at: ts(mintedAt), minted_for_contact_id: forContact,
+      expires_at: ts(mintedAt.plus({ days: 1 })),
+      consumed_at: consumedAt ? ts(consumedAt) : null,
+      consumed_by_contact_id: consumedAt ? forContact : null,
+    })
+    return ACT(key)
+  }
+
+  /** Every key the send path writes, so a seeded row and a sent row read identically. */
+  const payloadOf = (extra: Record<string, unknown> = {}): string =>
+    JSON.stringify({
+      header: null, footer: null, buttons: null, list: null, link: null, media: null,
+      subject_person_ids: [], is_confirmation_request: false, is_escalation: false,
+      fixed: false, pre_launch_ok: false, ...extra,
+    })
+
+  const say = (o2: {
+    key: string
+    contact: string
+    direction: 'inbound' | 'outbound'
+    at: DateTime
+    body: string | null
+    payload?: string
+    catalogId?: string | null
+    templateName?: string | null
+    inWindow?: boolean
+    solicited?: boolean
+    replyTo?: string | null
+    suppressed?: string | null
+    costPaise?: number
+    category?: string | null
+  }): void => {
+    const outbound = o2.direction === 'outbound'
+    messages.push({
+      id: MSG(o2.key), academy_id: A, contact_id: o2.contact, sender_id: SENDER_ID,
+      direction: o2.direction, catalog_id: o2.catalogId ?? null, template_name: o2.templateName ?? null,
+      body: o2.body, payload: o2.payload ?? payloadOf({ source: outbound ? undefined : 'emulator' }),
+      media_url: null,
+      status: o2.suppressed ? 'queued' : outbound ? 'read' : 'delivered',
+      queued_at: ts(o2.at), sent_at: o2.suppressed ? null : ts(o2.at),
+      delivered_at: o2.suppressed ? null : ts(o2.at.plus({ seconds: 4 })),
+      read_at: o2.suppressed || !outbound ? null : ts(o2.at.plus({ minutes: 3 })),
+      in_window: o2.inWindow ?? true,
+      solicited: o2.solicited ?? !outbound,
+      reply_to_action_id: o2.replyTo ?? null,
+      idempotency_key: `stage:${MSG(o2.key)}`,
+      conversation_category: o2.category ?? (o2.inWindow === false ? 'utility' : 'service'),
+      cost_paise: o2.costPaise ?? 0,
+      suppressed_reason: o2.suppressed ?? null,
+    })
+  }
+
+  const turn = (o2: {
+    key: string
+    contact: string
+    person: string
+    role: string
+    at: DateTime
+    said: string
+    reply: string
+    tools: { round: number; name: string; ms: number; args: unknown; result: unknown }[]
+    rounds: number
+  }): void => {
+    turns.push({
+      id: TURN(o2.key), academy_id: A, contact_id: o2.contact, person_id: o2.person,
+      role_acted: o2.role,
+      input: JSON.stringify({ said: o2.said, source: 'inbound' }),
+      output: JSON.stringify({ reply: o2.reply }),
+      model: 'gemini-3-pro-preview', prompt_tokens: 8200 + o2.rounds * 900,
+      cached_tokens: 6100, output_tokens: 120 + o2.rounds * 40,
+      latency_ms: 1800 + o2.rounds * 700, rounds: o2.rounds,
+      tool_calls: JSON.stringify(o2.tools), error: null,
+    })
+  }
+
+  // --- the admin asks about money, and taps a row in a list ------------------
+  say({ key: 'a1', contact: C('nandini'), direction: 'inbound', at: ago(20), body: "who hasn't paid this month?" })
+  const rowSameer = action('row-sameer', C('nandini'), { kind: 'reply', text: 'Ask Sameer Khan for what he owes' }, ago(20), ago(19.9))
+  const rowRitu = action('row-ritu', C('nandini'), { kind: 'reply', text: 'Ask Ritu Malhotra for what she owes' }, ago(20), null)
+  say({
+    key: 'a2', contact: C('nandini'), direction: 'outbound', at: ago(19.95), solicited: true,
+    body: 'Two families are short this month. Pick one and I will ask them.',
+    payload: payloadOf({
+      list: {
+        buttonText: 'Pick a family',
+        sections: [
+          {
+            title: 'Unpaid',
+            rows: [
+              { title: 'Sameer Khan', description: '₹2,000 · asked 2 days ago', actionId: rowSameer },
+              { title: 'Ritu Malhotra', description: '₹350 · payment failed', actionId: rowRitu },
+            ],
+          },
+        ],
+      },
+    }),
+  })
+  say({ key: 'a3', contact: C('nandini'), direction: 'inbound', at: ago(19.9), body: null, replyTo: rowSameer })
+  say({
+    key: 'a4', contact: C('nandini'), direction: 'outbound', at: ago(19.88), solicited: true,
+    body: 'Asked Sameer Khan for ₹2,000. I will check back in two days.',
+  })
+  turn({
+    key: 't1', contact: C('nandini'), person: P('nandini'), role: 'admin', at: ago(20),
+    said: "who hasn't paid this month?", reply: 'Two families are short this month.',
+    rounds: 2,
+    tools: [
+      {
+        round: 1, name: 'read', ms: 41,
+        args: { query: 'select ac.display_name, sum(t.amount) from tally_line t join account ac on ac.id = t.account_id group by 1' },
+        result: { rows: 3 },
+      },
+      { round: 2, name: 'plan', ms: 12, args: { steps: 1 }, result: { ok: true } },
+    ],
+  })
+
+  // --- the coach is asked, and taps the confirmation -------------------------
+  const confirmId = o.sessionId
+    ? action('confirm', C('imran'), { kind: 'operation', op: 'confirm_coach', args: { session_id: o.sessionId, coach_id: o.coachId } }, ago(30), ago(29.5))
+    : action('confirm', C('imran'), { kind: 'noop', ack: "Noted — you're on it." }, ago(30), ago(29.5))
+  const cantId = action('cant', C('imran'), { kind: 'reply', text: "I can't make Evening Beginners" }, ago(30), null)
+  say({
+    key: 'c1', contact: C('imran'), direction: 'outbound', at: ago(30), solicited: false,
+    catalogId: 'CO-COMING', body: 'Evening Beginners starts today at 6:30pm at The Hall. Coming?',
+    payload: payloadOf({
+      is_confirmation_request: true,
+      buttons: [
+        { title: "Yes, I'm coming", actionId: confirmId },
+        { title: "Can't make it", actionId: cantId },
+      ],
+    }),
+  })
+  say({ key: 'c2', contact: C('imran'), direction: 'inbound', at: ago(29.5), body: null, replyTo: confirmId })
+  say({ key: 'c3', contact: C('imran'), direction: 'outbound', at: ago(29.48), solicited: true, body: "Thanks — you're down for Evening Beginners." })
+
+  // --- a parent messages, and the COACH is told: the third party in the middle
+  say({ key: 'p1', contact: C('bhavna'), direction: 'inbound', at: ago(20.2), body: 'Ira will be 10 minutes late today, coming straight from school' })
+  say({ key: 'p2', contact: C('bhavna'), direction: 'outbound', at: ago(20.18), solicited: true, body: "Noted — I've let Imran know." })
+  say({ key: 'p3', contact: C('imran'), direction: 'outbound', at: ago(20.17), solicited: false, body: 'Heads up: Ira is about ten minutes late today.' })
+  turn({
+    key: 't2', contact: C('bhavna'), person: P('bhavna'), role: 'client', at: ago(20.2),
+    said: 'Ira will be 10 minutes late today', reply: "Noted — I've let Imran know.", rounds: 2,
+    tools: [
+      { round: 1, name: 'read', ms: 33, args: { query: 'select s.id, s.starts_at from session s where s.starts_at > app.now() limit 1' }, result: { rows: 1 } },
+      { round: 2, name: 'plan', ms: 18, args: { steps: 2 }, result: { ok: true } },
+    ],
+  })
+
+  // --- one that never reached anybody, and one that cost money --------------
+  say({
+    key: 's1', contact: C('sameer'), direction: 'outbound', at: ago(18), solicited: false,
+    body: 'A reminder about Saturday Squad tomorrow.', suppressed: 'frequency_cap',
+  })
+  say({
+    key: 's2', contact: C('sameer'), direction: 'outbound', at: ago(2), solicited: false,
+    catalogId: 'CL-TALLY', templateName: 'cl_tally_v1', inWindow: false, costPaise: 88,
+    category: 'utility', body: '₹2,000 is due for this month. UPI: nandini@upi',
+  })
+
+  return { actions, messages, turns }
+}
+
+// =============================================================================
 // MEMORY — what the bot knows about this person, and where the record ends.
 // =============================================================================
 
@@ -2300,10 +2960,13 @@ export async function ingestInbound(input: {
 
     const id = newId()
     const rows = await tx.unsafe(
+      // `$6::text::jsonb`, not `$6::jsonb` — see `jsonSafe`. As a jsonb string this
+      // payload's `actionId`, `source` and `mediaMimeType` are unreachable by any
+      // `->>` a reader writes, on every inbound message the product has ever taken.
       `insert into message (id, academy_id, contact_id, sender_id, direction, body, payload,
                             media_url, wa_message_id, status, queued_at, sent_at, delivered_at,
                             in_window, reply_to_action_id, idempotency_key)
-       values ($1::uuid,$2::uuid,$3::uuid,$4::uuid,'inbound',$5,$6::jsonb,$7,$8,'delivered',
+       values ($1::uuid,$2::uuid,$3::uuid,$4::uuid,'inbound',$5,$6::text::jsonb,$7,$8,'delivered',
                $9::timestamptz,$9::timestamptz,$9::timestamptz,true,$10::uuid,$11)
        on conflict (idempotency_key) do nothing
        returning id`,
@@ -2471,8 +3134,13 @@ export async function queueWebhookEvent(payload: unknown): Promise<{ queued: num
     let n = 0
     for (const key of keys) {
       const rows = await tx.unsafe(
+        // `$4::text::jsonb`, not `$4::jsonb` — see `jsonSafe`. This one was not cosmetic:
+        // `drainWebhookEvents` reads `job.payload.payload` to get the Meta body back, and
+        // against a jsonb string that is `undefined`, so `body.entry ?? []` iterated
+        // nothing and the job was marked `done` having delivered no message at all. Every
+        // real Cloud API inbound would have been queued, drained, and dropped in silence.
         `insert into job (kind, run_at, dedupe_key, status, payload, locked_at, locked_by)
-         values ($1, $2::timestamptz, $3, 'running', $4::jsonb, $2::timestamptz, 'webhook-ingress')
+         values ($1, $2::timestamptz, $3, 'running', $4::text::jsonb, $2::timestamptz, 'webhook-ingress')
          on conflict (dedupe_key) do nothing
          returning id`,
         [WEBHOOK_JOB_KIND, at.toISOString(), key, JSON.stringify({ payload, part: key })] as never[],

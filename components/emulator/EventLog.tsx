@@ -17,6 +17,7 @@ import {
   filterEvents,
   fmtPaise,
   fmtTime,
+  tierOrdinals,
   useEmulator,
   usePrimaryTimezone,
   type EmuEvent,
@@ -95,7 +96,7 @@ function CacheChip({
   )
 }
 
-function Row({ e }: { e: EmuEvent }) {
+function Row({ e, tier }: { e: EmuEvent; tier: number | null }) {
   const { state, actions } = useEmulator()
   const tz = usePrimaryTimezone()
   const [open, setOpen] = useState(false)
@@ -146,9 +147,16 @@ function Row({ e }: { e: EmuEvent }) {
             <Chip tone={e.costPaise ? 'warn' : 'quiet'} title="approximate conversation cost">
               {fmtPaise(e.costPaise)}
             </Chip>
-            {e.tierUsed !== null ? (
-              <Chip tone="catalog" title="business-initiated conversations consumed against the number's tier (§16.1)">
-                tier {e.tierUsed}
+            {(e.tierUsed ?? tier) !== null ? (
+              <Chip
+                tone="catalog"
+                title={
+                  `the ${e.tierUsed ?? tier}${(e.tierUsed ?? tier) === 1 ? 'st' : 'th'} business-initiated conversation ` +
+                  'opened on this number in the trailing 24h of simulated time — what §16.1\'s tier limits count. ' +
+                  'The tier itself is Meta\'s fact about the number, so there is no denominator unless one is emitted.'
+                }
+              >
+                tier {e.tierUsed ?? tier}
                 {e.tierLimit ? `/${e.tierLimit}` : ''}
               </Chip>
             ) : null}
@@ -269,6 +277,9 @@ function Totals({ events }: { events: EmuEvent[] }) {
 export function EventLog() {
   const { state, actions } = useEmulator()
   const filtered = useMemo(() => filterEvents(state), [state])
+  // Computed over every event held, not the filtered view: a conversation an academy filter
+  // hides still consumed capacity on the shared number (§16.1).
+  const tiers = useMemo(() => tierOrdinals(state.events), [state.events])
   const allOn = EVENT_KINDS.every((k) => state.filters.kinds[k])
 
   return (
@@ -338,7 +349,7 @@ export function EventLog() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {filtered.length ? (
-          filtered.slice(0, 400).map((e) => <Row key={e.id} e={e} />)
+          filtered.slice(0, 400).map((e) => <Row key={e.id} e={e} tier={tiers[e.id] ?? null} />)
         ) : (
           <Empty>
             {state.events.length

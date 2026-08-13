@@ -40,22 +40,20 @@ When they ask what you are watching, tell them, and let them drop any of it.
 
 ## Keeping a fact
 
-`remember` is for what should change your behaviour next time. Vocabulary they
-use, a policy that emerged in conversation, a habit, a constraint, a preference.
+`remember` is the other half of this module, on the other trigger in the opening
+line: you have just learned something that should change what you do next time.
+**The obvious ones are the valuable ones** — the word they use for a class, which
+day they always ask about money, that this parent never taps a button and always
+types, that a coach wants three hours' notice rather than one. A turn that learns
+one of those and writes nothing has thrown it away.
 
-- **Facts, not transcripts.** "Calls them batches, not classes" is a fact.
-  "Asked about fees today" is a log line, and the log already has it.
-- **A fact that changes nothing was not worth storing.** Before writing one, say
-  what you would do differently because of it. If the answer is nothing, skip it.
-- **Correct by superseding, never by contradicting.** A newer fact pointing at
-  the one it replaces keeps "why did it think that?" answerable.
-- **The obvious ones are the valuable ones**: the word they use for a class,
-  which day they always ask about money, that this parent never taps a button and
-  always types, that a coach wants three hours' notice rather than one.
-
-Timings are facts that act. When somebody's behaviour tells you their lead time
+Timings are facts that *act*. When somebody's behaviour tells you their lead time
 is wrong — a coach who confirms at the door every week, a parent who needs a
-day — set it, and be able to say why.
+day — set it, rather than only noting it, and be able to say why.
+
+What a fact has to look like, how a correction supersedes rather than edits, and
+where the content gets routed are all in `feedback`. None of it changes because
+the prompt to write one came from here instead.
 
 ## What not to do
 

@@ -7,6 +7,16 @@
  * Nothing in here may be computed, dated, or per-tenant.
  *
  * Changes only when the migrations change.
+ *
+ * **Schema, and only schema.** This had grown a behavior layer — how to talk about
+ * delivery status, that escalations name a session rather than a person, the six
+ * things an adjustment covers, the read tool's timeout and row cap — every line of
+ * which was already stated where it actually binds: on the `read` declaration the
+ * model decodes against, in doctrine, or in the behavior module whose trigger
+ * condition brings it to mind. Restating it here did not make it more true, and the
+ * prefix pays for it on every uncached round. What is left is what an SQL author
+ * cannot get anywhere else: the tables, the columns, the FK graph, the derived
+ * expressions and the billing rules that decide which rows exist.
  */
 export const SCHEMA_DOC = `# Schema
 
@@ -30,8 +40,6 @@ Postgres. You author SQL against these tables directly.
 - **Never call now(), current_date or current_timestamp. Use app.now().** The clock
   is drivable; sql now() ignores it and produces answers that are wrong in test and
   subtly wrong in production.
-- Reads are one statement, SELECT or WITH only. 5s timeout, 10 000 row cap.
-  Aggregates, window functions and date maths are all allowed and expected.
 - Money is numeric(10,2), rupees. Timestamps are timestamptz; render in the
   academy's timezone, never raw.
 
@@ -122,9 +130,6 @@ recipe(name text, trigger_description text, plan jsonb, captured_from, active bo
 turn(contact_id, person_id, role_acted, input jsonb, output jsonb, model,
   prompt_tokens, output_tokens, latency_ms, error)
 
-status is a ladder and each rung is a different claim: queued != sent !=
-delivered != read. Say only the rung the row actually reached.
-
 ## FK graph
 
 contact.person_id, account.holder_person_id, player.person_id, coach.person_id,
@@ -149,9 +154,8 @@ memory_fact.supersedes -> memory_fact, audit_entry.undo_of -> audit_entry
               and sc.declined_at is null
               and (sc.confirmed_at is not null or sc.arrived_at is not null))
 
-**Escalations are about sessions, never people.** "Tomorrow's 6:30 has no
-confirmed coach", never "Arjun hasn't confirmed". A coach dropping out while
-others remain assigned is information, not an alarm, and this expression is why.
+It is a property of the session, which is why a coach dropping out while others
+remain assigned changes nothing it returns.
 
 Views: session_coverage(session_id, academy_id, starts_at, status, covered,
 pending_count, confirmed_count, declined_count) and uncovered_session — the same,
@@ -174,11 +178,9 @@ discounts, scholarship players and legacy rates without a schema branch.
   and writes the next line. The count remaining rides on the tally.
 - The cancellation window carries money meaning only for per_session. For the
   other three it is a headcount signal to the coach.
-- Adjustments are ONE primitive, not six features: waiving a class, crediting an
-  academy-cancelled session, pro-rating a mid-month join, a sibling discount,
-  goodwill and the free trial are all kind='adjustment' with a reason and an
-  approved_by. The free first class is a negative line equal to the first session
-  line, per player, not per account.
+- An adjustment is ONE primitive: kind='adjustment', a negative amount, a reason
+  and an approved_by. There is no waive table, refund object or discount column.
+  The free first class is one of these, per player, not per account.
 
 **Balance for a period** = sum(tally_line.amount) - sum(confirmed payment.amount).
 

@@ -485,17 +485,41 @@ const AUDIENCE_ORDER: CatalogEntry['audience'][] = ['client', 'prospect', 'coach
 /**
  * Rendered into the agent's stable prefix (§4.4), so it must be byte-identical across turns:
  * no timestamps, no ids, no per-academy anything.
+ *
+ * This function owns the whole `# Moments code raises` section now. `stablePrefix()` used
+ * to push its own framing paragraph immediately above this one, saying the same thing in
+ * the same words — suppress, merge, retime, re-button, always rewrite; FIXED cannot be
+ * suppressed — with a blank line between the two copies. Its one idea this header lacked,
+ * that the defaults are what a competent manager would do knowing nothing about the person,
+ * has moved down here, and there is now exactly one framing block for one table.
+ *
+ * The template column is gone for a different reason: it named information the model has no
+ * way to use. Nothing on the tool surface takes a template name — `send.ts` reads the
+ * out-of-window template out of THIS table when a message needs one, and `plan.ts` does the
+ * same for a staged step — so the column was 32 rows of a decision already made in code, at
+ * the point it is made, from the same source of truth. `templateFor()` is how it is read.
+ *
+ * The trigger prose stays, and it was measured before it was kept. Nothing in the product
+ * ever puts a catalog row in front of the model: every one of these moments is raised by a
+ * job handler that composes the message itself and stamps `catalogId` on the way out. So
+ * this digest is the ONLY place the model is told when each moment fires, what code already
+ * does about silence on it, and the policy riding on it — that a parent hears when a session
+ * is in trouble and never when it is fine, that first tap wins on cover, that an uncovered
+ * escalation is never sent to the coach it is about. Cutting it to a keyword would not be
+ * compression; it would delete the only statement of those rules that exists.
  */
 export function catalogDigest(): string {
   const out: string[] = [
-    'MESSAGE CATALOG (§12) — moments code raises, not messages code sends.',
+    '# Moments code raises (§12)',
     '',
-    'Code guarantees each moment reaches you. You decide what happens on it: suppress it',
-    '(this family has confirmed every week for four months), merge it (three things happened',
-    'to one parent today, so they get one message), retime it (this coach needs three hours,',
-    'not one), re-button it (the useful next step here is not the default), and always',
-    'rewrite it in the academy\'s own words. Apply §2.8 every time: would this recipient have',
-    'asked for it?',
+    'Moments, not messages code sends. Code guarantees each one reaches you. You decide what',
+    'happens on it: suppress it (this family has confirmed every week for four months), merge',
+    'it (three things happened to one parent today, so they get one message), retime it (this',
+    'coach needs three hours, not one), re-button it (the useful next step here is not the',
+    'default), and always rewrite it in the academy\'s own words. The defaults below are what a',
+    'competent manager would do knowing nothing about the person; departing from them, knowing',
+    'something, is the entire reason you beat a cron job. Apply §2.8 every time: would this',
+    'recipient have asked for it?',
     '',
     'Two limits. Rows marked FIXED cannot be suppressed — reword and merge them, but they go.',
     'And everything goes through the one send path, so caps, windows and staging apply no',
@@ -503,7 +527,7 @@ export function catalogDigest(): string {
     '',
     'This is not the complete set of what you send. You compose messages nobody specified.',
     '',
-    'ID | TRIGGER | DEFAULT BUTTONS | ON SILENCE | FIXED | OUT-OF-WINDOW TEMPLATE',
+    'ID | TRIGGER | DEFAULT BUTTONS | ON SILENCE | FIXED',
   ]
 
   for (const audience of AUDIENCE_ORDER) {
@@ -512,7 +536,7 @@ export function catalogDigest(): string {
       const e = CATALOG[id]
       if (e.audience !== audience) continue
       const buttons = e.defaultButtons.length ? e.defaultButtons.map((b) => `[${b}]`).join(' ') : '—'
-      out.push(`${e.id} | ${e.trigger} | ${buttons} | ${e.onSilence} | ${e.fixed ? 'FIXED' : '—'} | ${e.template}`)
+      out.push(`${e.id} | ${e.trigger} | ${buttons} | ${e.onSilence} | ${e.fixed ? 'FIXED' : '—'}`)
     }
   }
 

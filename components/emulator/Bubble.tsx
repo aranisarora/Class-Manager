@@ -5,19 +5,24 @@
  * Everything the spec insists must be visible is visible here: the status ticks (§2.4),
  * template-vs-in-window and which of the eight templates carried it (§16.2), the sender
  * number, the cost of the conversation it opened, the catalog moment it came from (§12),
- * whether an action is still tappable (§2.2), and any Cloud API limit it breaks (§17).
+ * whether an action is still tappable and for how long (§2.2), any Cloud API limit it breaks,
+ * and anything on the row the wire would refuse to carry (§17).
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   buttonDisabled,
+  droppedOnTheWire,
+  fmtDuration,
   fmtPaise,
   fmtStamp,
   fmtTime,
   limitViolations,
+  msUntil,
   type EmuButton,
   type EmuEvent,
   type EmuMessage,
+  type MessageStatus,
 } from '@/lib/emulator/state'
 import { Chip, Ticks, cx } from './ui'
 
@@ -34,7 +39,80 @@ const SUPPRESS_LABEL: Record<string, string> = {
   limit_violation: 'breaks a Cloud API limit',
 }
 
-function MediaBlock({ media }: { media: NonNullable<EmuMessage['media']> }) {
+/**
+ * The photographed timetable at full size.
+ *
+ * §7.1 calls a photo of the week's classes the single biggest friction reducer in the
+ * product, and the pane cropped it to a 208px letterbox with `object-cover` — the one image
+ * the whole feature turns on was the one image nobody could read. Fixed rather than fixed,
+ * and one tap away from the whole thing.
+ */
+function Lightbox({ media, onClose }: { media: NonNullable<EmuMessage['media']>; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/85 p-6"
+      onClick={onClose}
+      role="dialog"
+      aria-label={media.filename ?? 'attachment'}
+    >
+      <div className="flex w-full max-w-5xl items-center gap-2 pb-2">
+        <span className="truncate font-mono text-[11px] text-zinc-400">{media.filename ?? media.kind}</span>
+        <a
+          href={media.url}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="ml-auto rounded border border-zinc-700 px-2 py-0.5 font-mono text-[10px] text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+        >
+          open in a tab ↗
+        </a>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded border border-zinc-700 px-2 py-0.5 font-mono text-[10px] text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+        >
+          close (esc)
+        </button>
+      </div>
+      {media.kind === 'video' ? (
+        // eslint-disable-next-line jsx-a11y/media-has-caption
+        <video
+          src={media.url}
+          controls
+          autoPlay
+          onClick={(e) => e.stopPropagation()}
+          className="max-h-[85vh] max-w-full rounded"
+        />
+      ) : (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={media.url}
+          alt={media.filename ?? 'attachment'}
+          onClick={(e) => e.stopPropagation()}
+          className="max-h-[85vh] max-w-full rounded object-contain"
+        />
+      )}
+    </div>
+  )
+}
+
+function MediaBlock({
+  media,
+  dropped,
+  onOpen,
+}: {
+  media: NonNullable<EmuMessage['media']>
+  dropped: string | null
+  onOpen: () => void
+}) {
   const label =
     media.kind === 'image'
       ? 'image'
@@ -43,24 +121,56 @@ function MediaBlock({ media }: { media: NonNullable<EmuMessage['media']> }) {
         : media.kind === 'video'
           ? 'video'
           : 'document'
+
+  // §17 in the one direction it must hold: the emulator may show less than production sends,
+  // never more. A template send has no room for media on the wire, so this draws the hole.
+  if (dropped) {
+    return (
+      <div className="mb-1.5 rounded border border-dashed border-amber-800/70 bg-amber-950/20 px-2 py-1.5">
+        <div className="flex items-center gap-1.5">
+          <Chip tone="warn">DROPPED</Chip>
+          <span className="font-mono text-[9px] text-amber-300/90">{label} not on the wire</span>
+        </div>
+        <p className="mt-1 text-[10px] leading-snug text-amber-200/70">{dropped}</p>
+      </div>
+    )
+  }
+
   return (
     <div className="mb-1.5 overflow-hidden rounded border border-zinc-600/60 bg-zinc-950/60">
       {media.kind === 'image' ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={media.url} alt={media.filename ?? 'attached image'} className="block max-h-52 w-full object-cover" />
+        <button type="button" onClick={onOpen} title="open full size" className="block w-full">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={media.url}
+            alt={media.filename ?? 'attached image'}
+            className="block max-h-56 w-full bg-black/40 object-contain"
+          />
+        </button>
       ) : media.kind === 'audio' ? (
-        <div className="flex items-center gap-2 px-2 py-2">
-          <span className="text-sm">▶</span>
-          <span className="h-1 flex-1 rounded bg-zinc-700">
-            <span className="block h-1 w-1/3 rounded bg-zinc-400" />
-          </span>
-          <span className="font-mono text-[9px] text-zinc-500">0:02</span>
-        </div>
+        // §14.5 — "voice notes go to the model as audio". A driver has to be able to hear
+        // what they just sent, or a mis-recorded Kannada voice note and a correctly recorded
+        // one are the same grey waveform on screen.
+        // eslint-disable-next-line jsx-a11y/media-has-caption
+        <audio src={media.url} controls preload="metadata" className="block h-8 w-full" />
+      ) : media.kind === 'video' ? (
+        // The composer accepts video, the sniffer classifies it and the label names it — and
+        // there was no branch that drew one, so every video fell through to the document row.
+        <button type="button" onClick={onOpen} title="open full size" className="block w-full">
+          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+          <video src={media.url} controls preload="metadata" className="block max-h-56 w-full bg-black/40" />
+        </button>
       ) : (
-        <div className="flex items-center gap-2 px-2 py-2 text-[11px] text-zinc-300">
+        <a
+          href={media.url}
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-2 px-2 py-2 text-[11px] text-zinc-300 hover:bg-zinc-900/60"
+        >
           <span>📄</span>
           <span className="truncate">{media.filename ?? 'attachment'}</span>
-        </div>
+          <span className="ml-auto font-mono text-[9px] text-zinc-600">open ↗</span>
+        </a>
       )}
       <div className="flex items-center justify-between border-t border-zinc-700/50 px-2 py-1">
         <span className="font-mono text-[9px] text-zinc-500">{label}</span>
@@ -82,6 +192,7 @@ function ActionButton({
   busy: boolean
 }) {
   const reason = buttonDisabled(b, nowIso)
+  const left = reason ? null : msUntil(b.expiresAt, nowIso)
   return (
     <button
       type="button"
@@ -97,8 +208,26 @@ function ActionButton({
     >
       <span className="truncate">{b.title}</span>
       {reason ? <span className="font-mono text-[9px] tracking-wide text-zinc-600">· {reason}</span> : null}
+      {/* §2.2's actions carry a ttl, and nothing showed it — so a button that was about to
+          stop working looked exactly like one that would work forever, and the moment it
+          expired could not be watched happening. */}
+      {left !== null ? (
+        <span
+          className={cx('font-mono text-[9px] tracking-wide', left < 10 * 60_000 ? 'text-amber-400' : 'text-zinc-500')}
+          title="how long this minted action stays tappable"
+        >
+          · {fmtDuration(left)} left
+        </span>
+      ) : null}
     </button>
   )
+}
+
+/** §2.4's ladder, one rung at a time. `queued` is not on the wire, so it has nothing to give. */
+function nextRung(status: MessageStatus): 'delivered' | 'read' | null {
+  if (status === 'sent') return 'delivered'
+  if (status === 'delivered') return 'read'
+  return null
 }
 
 export function Bubble({
@@ -109,7 +238,7 @@ export function Bubble({
   senderFallback,
   onTap,
   onOpenList,
-  onMarkRead,
+  onAdvanceStatus,
   busyTap,
 }: {
   m: EmuMessage
@@ -119,12 +248,14 @@ export function Bubble({
   senderFallback: string | null
   onTap: (actionId: string, label: string) => void
   onOpenList: (m: EmuMessage) => void
-  onMarkRead: (messageId: string) => void
+  onAdvanceStatus: (messageId: string, status: 'delivered' | 'read') => void
   busyTap: (actionId: string) => boolean
 }) {
   const [showRaw, setShowRaw] = useState(false)
+  const [lightbox, setLightbox] = useState(false)
   const inbound = m.direction === 'inbound'
   const violations = limitViolations(m)
+  const dropped = droppedOnTheWire(m)
 
   if (m.status === 'suppressed' || m.suppressReason) {
     const reason = m.suppressReason ?? 'suppressed'
@@ -147,24 +278,32 @@ export function Bubble({
   const templateName = m.templateName ?? meta?.templateName ?? null
   const inWindow = m.inWindow ?? meta?.inWindow ?? (templateName ? false : null)
   const sender = m.senderPhone ?? meta?.senderPhone ?? senderFallback
+  const rung = nextRung(m.status)
 
   return (
-    <div className={cx('flex px-2 py-1', inbound ? 'justify-start' : 'justify-end', m.pending && 'opacity-60')}>
-      <div className={cx('relative max-w-[86%] min-w-[120px]', inbound ? 'ml-1.5' : 'mr-1.5')}>
+    /*
+     * A pane stands in for the contact's own handset — the composer says "type as this
+     * contact" — and the sides were the wrong way round: the business's messages sat on the
+     * right, where a person's own replies belong, so every screenshot read as if the parent
+     * had said what the bot said. Inbound (what this contact sends) is theirs and goes right;
+     * outbound (what the academy sends them) arrives on the left.
+     */
+    <div className={cx('flex px-2 py-1', inbound ? 'justify-end' : 'justify-start', m.pending && 'opacity-60')}>
+      <div className={cx('relative max-w-[86%] min-w-[120px]', inbound ? 'mr-1.5' : 'ml-1.5')}>
         {/* tail */}
         <span
           aria-hidden
           className={cx(
             'absolute top-0 h-0 w-0',
             inbound
-              ? '-left-1.5 border-t-[9px] border-l-[9px] border-t-zinc-800 border-l-transparent'
-              : '-right-1.5 border-t-[9px] border-r-[9px] border-t-emerald-900 border-r-transparent',
+              ? '-right-1.5 border-t-[9px] border-r-[9px] border-t-emerald-900 border-r-transparent'
+              : '-left-1.5 border-t-[9px] border-l-[9px] border-t-zinc-800 border-l-transparent',
           )}
         />
         <div
           className={cx(
             'rounded-md px-2 pt-1.5 pb-1 shadow-sm',
-            inbound ? 'rounded-tl-none bg-zinc-800' : 'rounded-tr-none bg-emerald-900',
+            inbound ? 'rounded-tr-none bg-emerald-900' : 'rounded-tl-none bg-zinc-800',
           )}
         >
           {/* §17 — template-vs-in-window is always visible, on every outbound row. */}
@@ -195,7 +334,9 @@ export function Bubble({
             <div className="mb-1 border-b border-white/10 pb-1 text-[12px] font-semibold text-zinc-100">{m.header}</div>
           ) : null}
 
-          {m.media ? <MediaBlock media={m.media} /> : null}
+          {m.media ? (
+            <MediaBlock media={m.media} dropped={dropped} onOpen={() => setLightbox(true)} />
+          ) : null}
 
           {m.body ? (
             <p className="text-[13px] leading-snug whitespace-pre-wrap text-zinc-100">{m.body}</p>
@@ -235,12 +376,23 @@ export function Bubble({
             >
               {fmtTime(m.at, tz)}
             </button>
+            {/* Ticks belong to the sender's own bubble on a real handset. They stay on the
+                academy's side here because they are the instrument for §2.4 — the control
+                that walks a message up the ladder one rung per tap, which is the only way
+                to reach `delivered` by hand. */}
             {!inbound ? (
               <button
                 type="button"
-                onClick={() => onMarkRead(m.id)}
-                title="mark delivered / read — drives §2.4 by hand"
-                className="rounded px-0.5 hover:bg-white/10"
+                disabled={!rung}
+                onClick={() => rung && onAdvanceStatus(m.id, rung)}
+                title={
+                  rung
+                    ? `mark ${rung} — one rung at a time, because queued ≠ sent ≠ delivered ≠ read (§2.4)`
+                    : m.status === 'read'
+                      ? 'read — the top of the ladder'
+                      : 'queued — the transport has not accepted this yet, so there is nothing to advance'
+                }
+                className={cx('rounded px-0.5', rung ? 'hover:bg-white/10' : 'cursor-default opacity-70')}
               >
                 <Ticks status={m.status} />
               </button>
@@ -312,6 +464,7 @@ export function Bubble({
             <div>
               route · {templateName ? `template ${templateName}` : inWindow === false ? 'out of window' : 'in-window'}
             </div>
+            {dropped ? <div className="text-amber-400">wire · {dropped}</div> : null}
             {violations.length ? <div className="text-rose-400">limits · {violations.join(' · ')}</div> : null}
             {m.buttons.map((b) => (
               <div key={b.actionId} className="truncate">
@@ -321,6 +474,10 @@ export function Bubble({
           </div>
         ) : null}
       </div>
+
+      {lightbox && m.media && !dropped ? (
+        <Lightbox media={m.media} onClose={() => setLightbox(false)} />
+      ) : null}
     </div>
   )
 }

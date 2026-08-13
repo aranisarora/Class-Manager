@@ -10,13 +10,16 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import {
+  AUTO_DELIVERY_LABELS,
   fmtDay,
   fmtDuration,
   fmtClockSeconds,
   isoToZonedInput,
   useEmulator,
+  useLiveNowIso,
   usePrimaryTimezone,
   zonedInputToIso,
+  type AutoDelivery,
   type ScenarioMeta,
 } from '@/lib/emulator/state'
 import { Btn, Chip, Spinner, cx } from './ui'
@@ -114,6 +117,41 @@ function WorldPicker() {
   )
 }
 
+/**
+ * §2.4's ladder, running on its own.
+ *
+ * Nothing in this build ever advanced a delivery: the emulator transport hands back a wire id
+ * and stops, so a full run of jobs left every message in the world at `sent` and the delivery
+ * half of §16.3's quality proxies had no realistic input at all. `auto ✓✓` moves messages one
+ * rung per beat; `auto read` additionally opens the chat, which is a person's act and so is a
+ * separate choice rather than something that just happens.
+ */
+function DeliveryPicker() {
+  const { state, actions } = useEmulator()
+  const modes: AutoDelivery[] = ['off', 'delivered', 'read']
+  return (
+    <div className="flex items-center gap-1">
+      <span className="font-mono text-[10px] tracking-widest text-zinc-600 uppercase">delivery</span>
+      <select
+        value={state.autoDelivery}
+        onChange={(e) => actions.setAutoDelivery(e.target.value as AutoDelivery)}
+        title={
+          'manual — nothing moves until you tap the ticks in a pane.\n' +
+          'auto ✓✓ — every accepted message walks sent → delivered on its own.\n' +
+          'auto read — and then delivered → read, as if the recipient opened the chat.'
+        }
+        className="rounded border border-zinc-700 bg-zinc-900 px-1.5 py-1 text-[11px] text-zinc-200 focus:border-emerald-700 focus:outline-none"
+      >
+        {modes.map((m) => (
+          <option key={m} value={m}>
+            {AUTO_DELIVERY_LABELS[m]}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
 export function ClockBar() {
   const { state, actions } = useEmulator()
   const tz = usePrimaryTimezone()
@@ -136,7 +174,11 @@ export function ClockBar() {
    */
   const [dirty, setDirty] = useState(false)
 
-  const nowMs = new Date(state.clock.nowIso).getTime()
+  // The bar's own reading of the clock ticks: a simulated clock frozen at the last route's
+  // answer looks like a stopped clock, and a stopped clock is the first thing a driver
+  // distrusts about an instrument.
+  const liveNowIso = useLiveNowIso()
+  const nowMs = new Date(liveNowIso).getTime()
   const drift = useMemo(() => nowMs - Date.now(), [nowMs])
   const next = state.clock.nextEventAtIso ? new Date(state.clock.nextEventAtIso).getTime() : null
   const busy = !!state.busy.clock || !!state.busy.tick
@@ -165,10 +207,10 @@ export function ClockBar() {
             className="font-mono text-[19px] font-semibold text-emerald-300 tabular-nums"
             title="simulated domain time — everything in this build reads it, nothing reads the wall clock"
           >
-            {fmtClockSeconds(state.clock.nowIso, tz)}
+            {fmtClockSeconds(liveNowIso, tz)}
           </span>
           <span className="mt-0.5 font-mono text-[9px] text-zinc-500">
-            {fmtDay(state.clock.nowIso, tz)} · {tz}
+            {fmtDay(liveNowIso, tz)} · {tz}
           </span>
         </div>
         <div className="flex flex-col gap-0.5">
@@ -252,6 +294,7 @@ export function ClockBar() {
       </div>
 
       <div className="ml-auto flex items-center gap-2">
+        <DeliveryPicker />
         {busy ? <Spinner /> : null}
         <ConnectionDot />
         <Btn size="xs" active={state.showTray} onClick={() => actions.toggle('showTray')} title="toggle the contact tray">
