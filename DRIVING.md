@@ -59,6 +59,34 @@ npm run drive -- score            # before and after, both in your findings
 every query the model ran and what came back — so a wrong answer is diagnosable in one
 command. `drive world` gives you the contact ids everything else takes.
 
+**Then ask the database.** Rule 3 below is the whole method and it needs a tool:
+
+```bash
+node scripts/q.mjs --academy "Ace" "select status, body from message order by created_at desc limit 5"
+node scripts/q.mjs --json --academy "Ace" "select payload from message where direction='outbound'"
+node scripts/q.mjs --as <contactId> "select * from player"   # what THEY can see, under their RLS
+```
+
+It runs as `cm_service` by default, deliberately: its job is to see what a tenant's own
+session might have been *refused*, because a refusal that reads as an empty result is R7
+and the commonest way a bad run looks like a good one. `--w <n>` widens columns.
+
+The whole lifecycle is drivable, and each stage has a command:
+
+```bash
+npm run drive -- class --name "Evening" --day mon,thu --time 18:30-19:30 --rate 2400 --unit per_month
+npm run drive -- new <academyId> --name "…" --role coach --class "Evening" --invite
+npm run drive -- present <coachContact>          # the [All present] chat button
+npm run drive -- month --period 2026-07          # close a period without moving the clock
+npm run drive -- money --period 2026-07|all
+npm run drive -- end coach|player|contact …      # churn
+npm run drive -- waive <accountId> --amount 1200 --reason "…"
+npm run drive -- move --session <id> --to <iso> | --class "…" --day tue --time 19:00-20:00
+npm run drive -- cancel --class "…" --reason "…"
+npm run drive -- deliver [--read]                # the delivery ladder
+npm run drive -- fault send_fail on --rate 1
+```
+
 The web surface is half the product and goes untested unless you reach for it
 deliberately, because its screens arrive as signed links inside messages:
 
@@ -110,11 +138,23 @@ and `coach_nudge` both declined with *"session has already started"*. Use
 `drive clock --next`, which steps to the next scheduled moment, and never step more than
 an hour through a session window.
 
-**`drive tap` can only tap buttons, not list rows.** It reads `payload->'buttons'` and
-skips any message without them, so a `list` message silently falls back to an older
-message's buttons and reports *"there is no button 3 — there are 2"*. If the affordance
-you need is a list row, type the answer and **write down that you had to** — list
-affordance is unmeasured, and that is a harness gap, not a product one.
+**`drive tap` used to answer confidently about the wrong message.** It read
+`payload->'buttons'`, skipped any message without them, and silently fell back to an
+older message — reporting *"there is no button 3 — there are 2"* about a message you had
+not asked about. **Closed:** it now uses one definition of "offered something", taps list
+rows, and when the newest message offers nothing it **refuses and exits 1**, printing what
+it walked past. `--older` is how you say you meant the earlier one.
+
+**Order by `created_at`, not `queued_at`, when you are asking what happened.**
+`queued_at` is stamped from the *sim* clock, and the sim clock moves — so after any
+advance the newest message is not the last row in a `queued_at` sort. A message was
+declared missing this way in the middle of a pass; it was there. Use `queued_at` only
+when the question is what the product thought the time was.
+
+**The sim clock is a global singleton.** Two sessions driving the same database move
+each other's world. If somebody else is working, build your own academy, leave the clock
+where you found it, and prefer `drive month`, which closes a period by running due work
+rather than by moving time.
 
 ---
 
@@ -166,6 +206,20 @@ The `C…` and `F…` codes index a defect ledger that has been retired. They ar
 because the count says how often a root has actually fired and the parentheses say what
 it looked like; the codes themselves resolve only in git history, and nothing depends on
 them. What you need from this table is the class and the "where else to look".
+
+**What is now closed, and what it teaches about the rest.** Three claims that are
+answerable *from the message alone* have structural checks, and none of them needed the
+database:
+
+- a past-tense sentence with no write behind it — on **both** paths a message can leave a
+  turn by, not just the `reply` tool
+- a message that points at a button, link or form and carries none
+- a receipt saying "N people have been told" when the sends were suppressed
+
+The line those three share is the one worth keeping: **a claim the runtime can check
+against its own record is a structural check; a claim that needs the world is not.** "The
+body says 'the button below' and there are no buttons" is the first kind. "His class is at
+6" is the second, and is still open.
 
 ### If you are the one who builds R10's gate
 
@@ -294,11 +348,25 @@ wrong somewhere.
 
 ## Standing decisions, so nobody relitigates them
 
-- **No WhatsApp Flows.** They were rejected for concrete costs — RSA keypair, an
-  encrypted data-exchange endpoint, published versioned artifacts, a Meta review cycle
-  per change — with exactly one condition named for revisiting: *if the register's
-  tap-out is measurably costing completions*. **The register has still never been
-  marked**, so that condition has never been evaluated. Drive it, measure it, then argue.
+- **WhatsApp Flows: yes for onboarding, and the old objection was mostly wrong.** This
+  was recorded as settled against, for four concrete costs — RSA keypair, an encrypted
+  data-exchange endpoint, published versioned artifacts, a Meta review cycle per change.
+  **Three of those four apply only to endpoint-powered Flows.** A *static* Flow — every
+  screen and value known at send time, `flow_action: navigate` — needs no keypair, no
+  `/data` endpoint, no AES-GCM, no health check and no signature validation, and Meta's
+  own guidance is to avoid the endpoint when it is not needed. The honest remaining cost
+  is that the Flow JSON is a versioned artifact published through the Flows API and
+  immutable once published.
+
+  `onboarding_setup` is built and driven (`lib/messaging/flows.ts`). `flow_token` is an
+  `action` row id, so a submission inherits expiry, single consumption and the
+  minted-for-contact check from §2.2 rather than inventing a session concept.
+  `link_screen:"setup"` sent to an admin is now a form in the chat; `register` and
+  `calendar` still send links, and the web setup screen is unchanged.
+
+  **The register is still the open question.** It has now been marked — by chat, and by
+  the `[All present]` button — but nobody has measured whether its tap-out costs
+  completions. That is the argument for a *second* Flow, and it is still unmade.
 - **The web surface is three screens**: `setup`, `register`, `calendar`. Only `table`,
   `prose` and `calendar` are mintable; the other six components still render but the
   model may no longer author them. Put one back when a real question is badly served by

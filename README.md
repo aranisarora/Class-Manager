@@ -104,8 +104,10 @@ Open a pane per contact from the tray, then:
 ```bash
 npm run typecheck             # tsc --noEmit
 node scripts/rls-check.mjs    # the security boundary
-npm run drive -- score        # five of the seven axes, straight off the tables
+node scripts/verify-static.mjs # four absolutes, as a build failure rather than a note
+npm run drive -- score        # all seven axes, straight off the tables
 npx tsx scripts/probe-model.ts   # the real loop through a scripted arc, plus SQL invariants
+node scripts/q.mjs --academy "Ace" "select …"   # ask the database what actually happened
 ```
 
 `rls-check` is the spec's phase-0 acceptance criterion: cross-tenant and cross-role reads return
@@ -139,9 +141,21 @@ plan, captures before/after images through a snapshot trigger, and rolls back. T
 blast radius instead of estimating it. **Messages are staged until commit** — a rolled-back
 transaction has messaged nobody.
 
-**One send path (§16.3).** Gates in order: opt-out, the two §18 suppression rules, pre-launch
-silence, the repeat gate, API limits, per-recipient frequency, per-tenant cap,
-window-or-template, idempotency, then the wire. The repeat gate drops a byte-identical body sent
+**Onboarding is one exchange, not six (§14.6).** A new business is asked for its name, what
+it teaches, where it plays, the cancellation notice and its UPI handle in a single WhatsApp
+Flow — a form inside the chat, no browser and no login. It is a **static** Flow, so there is
+no RSA keypair, no data-exchange endpoint and no encryption anywhere in this product; the
+artifact and the rules Meta applies at publish are in `lib/messaging/flows.ts`. The
+`flow_token` is an `action` row id, so a submission inherits expiry, single consumption and
+the minted-for-contact check from §2.2 rather than inventing a session concept. It commits
+through the same plan builder the setup screen uses, because a second implementation of one
+event is the defect this repo has hit most often.
+
+**One send path (§16.3).** Gates in order: opt-out, the two §18 suppression rules, the lint
+pass, pre-launch silence, the repeat gate, API limits, per-recipient frequency, per-tenant
+cap, window-or-template, idempotency, then the wire. Lint is here rather than at
+`composeAndSend` because `composeAndSend` is not the chokepoint — `plan.ts` reaches `send`
+directly, so every message an operation stages would have missed it. The repeat gate drops a byte-identical body sent
 to the same person inside five minutes when they asked for it and six hours when they did not —
 a proactive generator saying the same sentence twice in a working day is a defect every time.
 A suppressed message is *recorded with its reason*, never silently dropped, which is why the
@@ -177,16 +191,23 @@ scripts/drive.ts          the harness — talk to it, then read the tables back
 ## Known gaps
 
 - **Meta Cloud API is not connected**, by design. `transport-cloud.ts` and `app/api/webhook`
-  are written and correct but never exercised.
+  are written and correct but never exercised. That includes publishing the onboarding Flow:
+  `validateFlowJson` re-checks what Meta checks at publish, and nothing here has ever called
+  the Flows API — creating and publishing a Flow is an account operation, and it belongs with
+  the other Meta calls when this connects to a real number.
+- **Inbound media is never fetched in production.** A Meta media id becomes a placeholder
+  string handed to Vertex as a file URI it cannot resolve, so the spec's "bring the timetable
+  however it exists" is broken on the real transport. The emulator's data-URI path works,
+  which is exactly why driving does not find it.
 - **Rail 2** (payment gateway, mandates, in-chat checkout) is deferred per §19 phase 13. Rail 1 —
-  UPI handle, admin attestation, reconciliation, dunning — is built and has **never been driven
-  end to end**. The seeded world ships attendance, tally lines and payments as fixture rows, so
-  the read side has something to answer from; what has never happened is the product *producing*
-  any of them. No register has ever been marked through the product, and `client_outcome`,
-  `monthly_lines`, `month_end_tally`, `dunning`, `reconcile`, `first_contact_batch`,
-  `memory_curate` and `coach_not_onboarded` — eight of the twenty job kinds — have never fired in
-  any recorded drive. Treat that half as unverified, not as working. Driving it is the first thing
-  [`DRIVING.md`](./DRIVING.md) is for.
+  UPI handle, admin attestation, reconciliation, dunning — is built and the **front half has now
+  run once**: a register was marked from chat, both families were told the outcome, both players
+  were billed for the month, a payment reached `requested` and a `reconcile` was scheduled
+  carrying its tenant. `client_outcome`, `monthly_lines` and `month_end_tally` have fired.
+  **Everything after that is still unrun** — the reconcile ladder to `[Confirm payment]`, the
+  dunning ladder to escalation, `per_package` exhaustion, `per_term`, a waiver through the model,
+  a disputed charge. Treat that half as unverified, not as working; it is item 1 in
+  [`NEXT.md`](./NEXT.md).
 - **`academy.prompt_cache_handle` stays null, deliberately.** Implicit caching turned out *not* to
   do the work — measured across turns it served 0 cached tokens, hitting only between hops inside
   one turn — so `lib/agent/gemini.ts` now takes an explicit `CachedContent` for the stable prefix
