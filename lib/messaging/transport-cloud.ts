@@ -157,6 +157,42 @@ export function buildPayload(req: TransportRequest): Record<string, unknown> {
     }
   }
 
+  // A Flow, like `cta_url`, occupies the message's one action slot — so it is
+  // checked alongside it rather than after the button and list branches.
+  //
+  // `flow_action: 'navigate'` is what makes this a STATIC flow: every screen and
+  // every value is known now, so there is no data-exchange endpoint, no RSA keypair
+  // and no AES-GCM anywhere in this product. `flow_action_payload` is required
+  // whenever the action is `navigate` — it names the screen to open, and its `data`
+  // becomes `${data.key}` on that screen.
+  if (m.flow) {
+    return {
+      ...base,
+      type: 'interactive',
+      interactive: {
+        type: 'flow',
+        ...(header && header.type === 'text' ? { header } : {}),
+        body: { text: m.body },
+        ...(m.footer ? { footer: { text: m.footer } } : {}),
+        action: {
+          name: 'flow',
+          parameters: {
+            flow_message_version: '3',
+            flow_token: m.flow.flowToken,
+            flow_id: m.flow.flowId,
+            flow_cta: m.flow.cta,
+            flow_action: 'navigate',
+            flow_action_payload: {
+              screen: m.flow.screen,
+              ...(m.flow.data && Object.keys(m.flow.data).length ? { data: m.flow.data } : {}),
+            },
+            mode: m.flow.mode ?? 'published',
+          },
+        },
+      },
+    }
+  }
+
   if (m.buttons?.length) {
     return {
       ...base,

@@ -19,9 +19,37 @@ const Body = z
      */
     mediaUrl: z.string().min(1).max(24_000_000).optional(),
     mediaMimeType: z.string().min(1).max(255).optional(),
+    /**
+     * A completed WhatsApp Flow, in the shape the wire actually delivers it: the
+     * literal `nfm_reply.response_json`, which is a JSON **string** carrying
+     * `flow_token` alongside the form's own fields.
+     *
+     * A string, not an object, on purpose. §17's rule is "something that works here
+     * works there", and the difference between those two is exactly the kind of
+     * detail an emulator quietly gets right and production then gets wrong — the
+     * emulator would parse an object happily while the real webhook handed the same
+     * code a string. Taking the harder shape here is what makes the local pass
+     * evidence about production.
+     */
+    flowResponse: z
+      .string()
+      .min(2)
+      .max(64_000)
+      .refine(
+        (s) => {
+          try {
+            const v = JSON.parse(s)
+            return Boolean(v) && typeof v === 'object' && !Array.isArray(v)
+          } catch {
+            return false
+          }
+        },
+        { message: 'flowResponse must be a JSON object encoded as a string, as the wire sends it' },
+      )
+      .optional(),
   })
-  .refine((b) => Boolean(b.text || b.actionId || b.mediaUrl), {
-    message: 'one of text, actionId or mediaUrl is required',
+  .refine((b) => Boolean(b.text || b.actionId || b.mediaUrl || b.flowResponse), {
+    message: 'one of text, actionId, mediaUrl or flowResponse is required',
   })
 
 /**

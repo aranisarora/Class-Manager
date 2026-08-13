@@ -43,6 +43,17 @@ export type ActionPayload =
   | { kind: 'menu'; menu: 'root' | string }
   | { kind: 'noop'; ack: string }
   | { kind: 'handoff'; reason: string; summary: string }
+  /**
+   * A form the person fills in inside WhatsApp. The action is minted with the
+   * message, exactly like a button, and the Flow carries its id as `flow_token`;
+   * the submission arrives later and replays it with the answers attached. That is
+   * what lets a Flow inherit expiry, single consumption and the minted-for-contact
+   * check rather than needing a session concept of its own.
+   *
+   * Only the flow's NAME travels, never a plan: what a submission does is the
+   * runtime's decision, not something a model may author into a button.
+   */
+  | { kind: 'flow'; flow: string }
 
 export const DEFAULT_ACTION_TTL_MINUTES = 1440
 

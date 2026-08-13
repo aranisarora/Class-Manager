@@ -178,6 +178,10 @@ function messagePayload(msg: OutboundMessage, extra: Record<string, unknown>): s
     buttons: msg.buttons ?? null,
     list: msg.list ?? null,
     link: msg.link ?? null,
+    // The emulator's panes, the thread endpoint and the event log all read this row —
+    // it is the store — so an affordance missing here is an affordance nobody can see
+    // or tap, however correctly it went over the wire.
+    flow: msg.flow ?? null,
     media: msg.media ?? null,
     subject_person_ids: msg.subjectPersonIds ?? [],
     is_confirmation_request: Boolean(msg.isConfirmationRequest),

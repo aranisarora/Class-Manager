@@ -22,6 +22,7 @@
 import { z } from 'zod'
 
 import { LIMITS } from '@/lib/messaging/types'
+import { isFlowId } from '@/lib/messaging/flows'
 import { OPERATIONS } from './operations'
 
 /* ------------------------------------------------------------------------- *
@@ -93,6 +94,13 @@ export const ActionPayloadSchema: z.ZodTypeAny = z.lazy(() =>
     // person. Refusing it dropped the button and left the coach with a
     // confirmation they could only agree to.
     z.object({ kind: z.literal('handoff'), reason: z.string().min(1), summary: z.string().min(1) }),
+    // A WhatsApp Flow submission. Checked against the registry for the same reason
+    // an operation name is: the action is replayed with no model in the loop, so a
+    // flow name that does not exist is a form somebody filled in for nothing.
+    z.object({
+      kind: z.literal('flow'),
+      flow: z.string().refine(isFlowId, { message: 'unknown flow' }),
+    }),
   ]),
 )
 

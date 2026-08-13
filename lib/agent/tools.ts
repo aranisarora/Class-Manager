@@ -13,6 +13,7 @@ import { now } from '@/lib/clock'
 import { newId } from '@/lib/ids'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { CATALOG, type CatalogId } from '@/lib/messaging/catalog'
+import { ONBOARDING_SETUP } from '@/lib/messaging/flows'
 import { EXTRA_LIMITS, LIMITS, type SendOutcome, type SuppressReason } from '@/lib/messaging/types'
 import { extractBracketButtons, fitTitle } from '@/lib/messaging/repair'
 import { AGENT_TASK_CAP, dedupe, enqueue, liveAgentTasks } from '@/lib/jobs'
@@ -55,6 +56,25 @@ export type ToolCtx = {
    * model actually takes, not only on the tap path.
    */
   executed?: { op: string; args: Record<string, unknown>; wrote?: { table: string; op: string; after: any[] }[] }[]
+  /**
+   * A screen the model asked for this turn and has not yet attached to anything.
+   *
+   * `view` does not send: it returns the screen with a `send_it_with` line telling
+   * the model to call `reply(link_screen:"…")`. Watched twice on a live onboarding,
+   * the model did the first half and not the second — it called `view(screen:'setup')`
+   * and then composed *"tap the button below to set up the business details"* and
+   * *"you can fill this in on this page"* with **no button, no link and no form on
+   * either message**. The runtime, seeing a bare message, bolted its generic
+   * `[What can you do?]` onto one of them. So the first thing a new owner is ever
+   * told to do referred to an affordance that did not exist.
+   *
+   * A tool whose effect depends on the model remembering a second call in a later
+   * round is a tool that fails whenever it forgets. The runtime already knows
+   * everything it needs — who asked, which screen, for whom — so it attaches it
+   * rather than asking. Same reasoning as `pendingMeta` minting confirmations and
+   * `withFollowUps` attaching the next step.
+   */
+  pendingScreen?: { screen: 'setup' | 'register' | 'calendar'; ref?: string; forContactId: string }
   /** Who this turn has already put a message in front of, and it landed. */
   repliedTo?: Set<string>
   /**
@@ -130,6 +150,54 @@ function unbackedClaim(body: string): 'claimed' | 'promised' | null {
   if (CLAIMED_DONE.test(body)) return 'claimed'
   if (PROMISED_IMMINENT.test(body)) return 'promised'
   return null
+}
+
+/* ------------------------------------------------------------------------- *
+ * "Tap the button below" — and there is no button.
+ *
+ * The same failure as the one above, one layer out: the message does not claim an
+ * ACTION happened, it claims an AFFORDANCE is present. Both were watched on the
+ * first two minutes of a real onboarding, on the first message a new owner ever
+ * receives:
+ *
+ *   "You can tap the button below to set up the business details…"   — no button
+ *   "…you can fill this in on this page."                            — no link
+ *   "No problem — here's that link again."                           — no link
+ *
+ * In all three the runtime then bolted its generic `[What can you do?]` fallback on,
+ * so the owner got a sentence pointing at one thing and a button offering another.
+ *
+ * This is worth checking where general fact-grounding is not, and the difference is
+ * the reason `lint.ts` refuses to do number-grounding as a string rule: that would
+ * need the database to decide, and no string operation can tell "14 enrollments"
+ * from a price. This needs NOTHING outside the message. "Does the body point at an
+ * affordance, and does the message carry one" is answerable from the message alone,
+ * which makes it a structural check rather than a guess.
+ *
+ * Deliberately narrow: only phrases that point at a control on THIS message. "I'll
+ * send you a link" is a promise about a later message and is not matched.
+ * ------------------------------------------------------------------------- */
+
+/** The control words a message can point at. */
+const CONTROL = '(?:button|link|form|screen|page)'
+
+const POINTS_AT_AFFORDANCE = new RegExp(
+  [
+    // "tap the button", "click this link", "use the form"
+    `\\b(?:tap|click|press|hit|open|use)\\s+(?:the\\s+|this\\s+|that\\s+|it\\s+)?${CONTROL}\\b`,
+    // "the button below", "below to set up"
+    `\\b${CONTROL} below\\b`,
+    '\\bbelow to\\b',
+    // "here's the setup screen", "here's that link again"
+    `\\bhere'?s\\s+(?:the|that|your|a)\\s+(?:[\\w-]+\\s+){0,3}${CONTROL}\\b`,
+    // "on this page", "in the form"
+    `\\b(?:on|in)\\s+(?:this|the)\\s+${CONTROL}\\b`,
+  ].join('|'),
+  'i',
+)
+
+function pointsAtMissingAffordance(body: string, hasAffordance: boolean): boolean {
+  return !hasAffordance && POINTS_AT_AFFORDANCE.test(body)
 }
 
 /* ------------------------------------------------------------------------- *
@@ -574,6 +642,10 @@ async function builtInScreen(
   if (which === 'register' && !ref) {
     return { result: { error: "register needs session_id — which session's roster is this?" } }
   }
+
+  // Remembered so the next `reply` in this turn carries it whether or not the model
+  // passes `link_screen`. See `ToolCtx.pendingScreen`.
+  ctx.pendingScreen = { screen: which, ref, forContactId: target.contactId }
 
   // No URL comes back. §14.6 is "every link is a button; nothing URL-shaped is pasted
   // into message text", and this tool used to return the signed token with a note asking
@@ -1655,10 +1727,69 @@ export async function runTool(
         }
       }
 
+      /**
+       * The screen the model asked for, whether or not it remembered to attach it.
+       *
+       * Only when this message carries no affordance of its own: a model that DID
+       * offer buttons has made a deliberate choice and the runtime does not overrule
+       * it. And only to the person the screen was minted for.
+       */
+      const pending =
+        ctx.pendingScreen && ctx.pendingScreen.forContactId === to && !args?.link_screen
+        && !buttons?.length && !args?.list
+          ? ctx.pendingScreen
+          : null
+      if (pending) {
+        args = {
+          ...args,
+          link_screen: pending.screen,
+          ...(pending.ref ? { link_session_id: pending.ref } : {}),
+        }
+        // Once, not on every message the turn sends afterwards.
+        ctx.pendingScreen = undefined
+      }
+
+      /**
+       * `link_screen:"setup"` is answered with a FORM IN THE CHAT, not a link out of it.
+       *
+       * Onboarding asks a new business six things before anything useful can happen, and
+       * the two ways to ask were both bad: six round trips in chat, or one signed URL
+       * that takes somebody out of WhatsApp into a browser on a phone. The Flow is the
+       * third way — the same fields, one exchange, no browser, no login.
+       *
+       * The link is not gone. It stays for `register` and `calendar`, and for a setup
+       * screen an admin asks for later, when the wider form (the venue list, operating
+       * pattern, brief and digest times) is worth the trip out. What changes is the
+       * default at the one moment that decides whether a business ever gets set up.
+       *
+       * Only for the admin themselves: `flow_token` is an action minted for one contact,
+       * and the setup screen is the admin's by the check in `builtInScreen`.
+       */
+      const wantsSetup = String(args?.link_screen ?? '').trim() === 'setup'
+      const setupFlow =
+        wantsSetup && to === ctx.identity.contact.id && ctx.identity.roles.includes('admin')
+          ? {
+              flow: ONBOARDING_SETUP.id,
+              // Prefilled so the first field is already right rather than empty — the
+              // business has a name from the moment it was created.
+              data: { name: ctx.identity.academy.name, category: ctx.identity.academy.category ?? '' },
+            }
+          : undefined
+
       // §14.6 — a link is a button, and it is the only action its message can carry, so
       // it is resolved before the backstops below decide the message is bare.
-      const link = await linkFor(ctx, args, to)
+      const link = setupFlow ? null : await linkFor(ctx, args, to)
       if (link && 'error' in link) return { result: { error: link.error } }
+      if (setupFlow && (buttons?.length || args?.list)) {
+        // The same exclusivity the wire imposes on `cta_url`. Said as a sentence the
+        // model can act on rather than discovered as a suppressed message.
+        return {
+          result: {
+            error: 'a message carries the setup form or reply buttons, never both — that is the wire, not a house rule',
+            hint: 'Send the form on its own; offer anything else on the message after it.',
+          },
+        }
+      }
       if (link) {
         if (buttons?.length || args?.list) {
           return {
@@ -1670,9 +1801,40 @@ export async function runTool(
         }
       }
 
-      if (to === ctx.identity.contact.id) buttons = withFollowUps(buttons, ctx)
+      /**
+       * The body points at a control this message does not have.
+       *
+       * Checked BEFORE the two backstops below, which is the whole point: those bolt a
+       * generic `[What can you do?]` or a menu onto any bare message, so after them the
+       * message technically has a button and the sentence "tap the button below to set
+       * up your business details" still points at nothing that does it. Checking first
+       * is what makes the difference between a message that is wrong and a message that
+       * is wrong AND looks fine.
+       *
+       * Fires at most once per turn, sharing `promiseChecked` with the action-claim
+       * guard for the same reason it exists: one round to make the sentence true, never
+       * an argument. A second attempt always goes out, because silencing somebody is
+       * worse than telling them something slightly wrong.
+       */
+      if (!ctx.promiseChecked) {
+        const hasAffordance = Boolean(link || setupFlow || buttons?.length || args?.list)
+        if (pointsAtMissingAffordance(body, hasAffordance)) {
+          ctx.promiseChecked = true
+          return {
+            result: {
+              error: 'that message points at a button, link or form, and the message carries none',
+              hint:
+                'Either attach it — link_screen:"setup" sends the business form right here in the chat, '
+                + 'link_screen:"register" or "calendar" send those screens, and buttons:[…] offers a next step — '
+                + 'or say the thing plainly instead of pointing at a control that is not there.',
+            },
+          }
+        }
+      }
 
-      if (to === ctx.identity.contact.id && !link && !buttons?.length && !args?.list) {
+      if (to === ctx.identity.contact.id && !setupFlow) buttons = withFollowUps(buttons, ctx)
+
+      if (to === ctx.identity.contact.id && !link && !setupFlow && !buttons?.length && !args?.list) {
         buttons = closingQuestionButtons(body) ?? [
           { title: MENU_BUTTON_TITLE, action: { kind: 'menu', menu: 'root' } },
         ]
@@ -1736,6 +1898,7 @@ export async function runTool(
         buttons,
         list,
         link: link ?? undefined,
+        flow: setupFlow,
         catalogId,
         fixed: catalogId ? CATALOG[catalogId].fixed : false,
         subjectPersonIds: Array.isArray(args?.subject_person_ids) ? args.subject_person_ids : undefined,

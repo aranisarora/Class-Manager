@@ -16,6 +16,8 @@ import { resolveIdentity } from '@/lib/identity'
 import { consumeAction, type ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { LIMITS, type SendOutcome } from '@/lib/messaging/types'
+import { ONBOARDING_SETUP, parseFlowResponse, type OnboardingSetupValues } from '@/lib/messaging/flows'
+import { buildSetupSteps, summariseSetup } from '@/lib/setup-plan'
 import { signLink, linkUrl, TTL } from '@/lib/web/jwt'
 import type { Identity, Job, Role } from '@/lib/types'
 import { generate, TURN_THINKING, type GenContent } from './gemini'
@@ -40,6 +42,12 @@ export type TurnInput = {
   text?: string
   media?: { url: string; mimeType: string }[]
   actionId?: string
+  /**
+   * The answers from a completed WhatsApp Flow, with `actionId` carrying its
+   * `flow_token`. Present only on a Flow submission, which is a tap that arrives
+   * with data — so it consumes its action exactly like any other tap.
+   */
+  flowData?: Record<string, unknown>
   source: 'inbound' | 'job' | 'sim'
   /** Runtime-internal: a self-scheduled task's instruction and its data (§13.1). */
   task?: { instruction: string; queryResults?: unknown }
@@ -112,7 +120,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         // A tap makes no model call, so without this the turn row for the most
         // consequential thing a person can do — committing a plan — was blank.
         const tappedAt = Date.now()
-        const res = await executeAction(session, identity, consumed.payload, turnId)
+        const res = await executeAction(session, identity, consumed.payload, turnId, input.flowData)
         outcomes.push(...res.outcomes)
         replyText = res.summary
         trace.push({
@@ -276,8 +284,83 @@ async function executeAction(
   identity: Identity,
   payload: ActionPayload,
   turnId: string,
+  flowData?: Record<string, unknown>,
 ): Promise<{ outcomes: SendOutcome[]; summary: string }> {
   const outcomes: SendOutcome[] = []
+
+  /**
+   * A completed WhatsApp Flow.
+   *
+   * What a submission DOES is decided here, by flow id, and never carried in the
+   * action payload — so a form can only ever reach work the runtime chose to put
+   * behind it, the same way `write.service` and `requireRows` are runtime-only
+   * fields. The answers themselves are untrusted input: they are parsed by the
+   * flow's own schema and then run as a plan under the submitter's own RLS
+   * session, which is what makes a Flow no more privileged than a typed sentence.
+   */
+  if (payload.kind === 'flow') {
+    const parsed = parseFlowResponse(payload.flow, flowData ?? {})
+    if (!parsed.ok) {
+      outcomes.push(
+        await composeAndSend(session, {
+          toContactId: identity.contact.id,
+          body: `That form didn't come through cleanly — ${parsed.error}. Tell me the details here instead and I'll set it up.`,
+        }),
+      )
+      return { outcomes, summary: `flow ${payload.flow} rejected: ${parsed.error}` }
+    }
+
+    if (payload.flow === ONBOARDING_SETUP.id) {
+      const v = parsed.values as OnboardingSetupValues
+      // The same builder the setup screen runs. A Flow is a different way to reach
+      // the setup plan, never a second implementation of it.
+      const steps = buildSetupSteps(identity.academyId, {
+        name: v.name,
+        category: v.category || null,
+        cancellationWindowHours: v.cancellation_window_hours,
+        upiHandle: v.upi_handle || null,
+        venues: [{ name: v.venue }],
+      })
+      const res = await executePlan(session, steps, 'Business set up from the onboarding form', audienceFor(identity))
+      if (!res.ok) {
+        outcomes.push(
+          await composeAndSend(session, {
+            toContactId: identity.contact.id,
+            body: /PRECONDITION_FAILED|CHANGED_NOTHING/.test(res.error ?? '')
+              ? 'Only the owner can change the business settings, so I left everything as it was.'
+              : `That didn't save: ${res.error ?? 'something went wrong'}. Nothing was changed.`,
+          }),
+        )
+        return { outcomes, summary: `flow ${payload.flow} failed: ${res.error ?? 'unknown'}` }
+      }
+
+      const summary = summariseSetup({
+        name: v.name,
+        cancellationWindowHours: v.cancellation_window_hours,
+        upiHandle: v.upi_handle || null,
+        venues: [{ name: v.venue }],
+      })
+      outcomes.push(
+        await composeAndSend(session, {
+          toContactId: identity.contact.id,
+          preLaunchOk: true,
+          body:
+            `${summary}\n\n`
+            + 'Next is your timetable — the classes, which days and what times. '
+            + 'A photo of the whiteboard or the paper register is enough; send it here.',
+          buttons: [
+            { title: 'Add a class', action: { kind: 'reply', text: 'Let me tell you my timetable' } },
+          ],
+        }),
+      )
+      return { outcomes, summary }
+    }
+
+    // Unreachable while `FLOWS` has one entry, and deliberately loud rather than
+    // silent if a flow is ever added without a consumer — which is the exact shape
+    // that produced the recipe feature.
+    return { outcomes, summary: `flow ${payload.flow} has no handler` }
+  }
 
   if (payload.kind === 'noop') {
     outcomes.push(await composeAndSend(session, { toContactId: identity.contact.id, body: payload.ack }))

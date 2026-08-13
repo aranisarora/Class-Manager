@@ -28,9 +28,11 @@ export function describeTransportRequest(req: TransportRequest): string {
   const m = req.message
   const shape = req.asTemplate
     ? `template:${req.asTemplate}`
-    : m.link
-      ? 'interactive:cta_url'
-      : m.list
+    : m.flow
+      ? `interactive:flow(${m.flow.flowId}/${m.flow.screen})`
+      : m.link
+        ? 'interactive:cta_url'
+        : m.list
         ? 'interactive:list'
         : m.buttons?.length
           ? `interactive:buttons(${m.buttons.length})`

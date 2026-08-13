@@ -2921,6 +2921,8 @@ export async function ingestInbound(input: {
   profileName?: string
   text?: string
   actionId?: string
+  /** The answers from a completed WhatsApp Flow. `actionId` is its `flow_token`. */
+  flowData?: Record<string, unknown>
   mediaUrl?: string
   mediaMimeType?: string
   waMessageId?: string
@@ -2998,6 +3000,7 @@ export async function ingestInbound(input: {
     contactId,
     text: input.text,
     actionId: input.actionId,
+    flowData: input.flowData,
     media: input.mediaUrl
       ? [{ url: input.mediaUrl, mimeType: guessMime(input.mediaUrl, input.mediaMimeType) }]
       : undefined,
@@ -3017,6 +3020,8 @@ export async function inboundFromContact(input: {
   actionId?: string
   mediaUrl?: string
   mediaMimeType?: string
+  /** The literal `nfm_reply.response_json` — a JSON string, as the wire delivers it. */
+  flowResponse?: string
 }): Promise<InboundResult | { ok: false; notFound: true }> {
   for (const academyId of await worldAcademyIds()) {
     const found = await withSession(svc(academyId), async (tx) => {
@@ -3030,12 +3035,31 @@ export async function inboundFromContact(input: {
       return rows[0] ?? null
     })
     if (!found) continue
+
+    // Unpacked exactly as `processChangeValue` unpacks a real webhook, so the
+    // emulator and the wire hand `ingestInbound` the same two values.
+    let flowData: Record<string, unknown> | undefined
+    let flowToken: string | undefined
+    if (input.flowResponse) {
+      try {
+        const { flow_token, ...fields } = JSON.parse(input.flowResponse) as Record<string, unknown>
+        flowToken = typeof flow_token === 'string' ? flow_token : undefined
+        flowData = fields
+      } catch {
+        // Unreachable: the route rejects a `flowResponse` that is not JSON with a 400
+        // before this is called. Left as a throw rather than a silent skip so a future
+        // caller that skips that check finds out immediately.
+        throw new Error('flowResponse is not valid JSON')
+      }
+    }
+
     return ingestInbound({
       fromPhoneE164: String(found.phone_e164),
       senderPhoneE164: String(found.sender_phone),
       profileName: (found.profile_name as string) ?? String(found.full_name),
       text: input.text,
-      actionId: input.actionId,
+      actionId: input.actionId ?? flowToken,
+      flowData,
       mediaUrl: input.mediaUrl,
       mediaMimeType: input.mediaMimeType,
       source: 'emulator',
@@ -3169,7 +3193,17 @@ async function processChangeValue(v: MetaChangeValue, part: string): Promise<str
       from?: string
       type?: string
       text?: { body?: string }
-      interactive?: { button_reply?: { id?: string }; list_reply?: { id?: string } }
+      interactive?: {
+        button_reply?: { id?: string }
+        list_reply?: { id?: string }
+        /**
+         * A completed WhatsApp Flow. `response_json` is a JSON **string** on the
+         * wire, not an object, and it carries `flow_token` alongside the form's own
+         * fields — so the token is what matches the submission back to the `action`
+         * row that minted it, exactly as `button_reply.id` does for a tap.
+         */
+        nfm_reply?: { name?: string; body?: string; response_json?: string }
+      }
       button?: { payload?: string; text?: string }
       image?: { id?: string; mime_type?: string; caption?: string }
       audio?: { id?: string; mime_type?: string }
@@ -3178,8 +3212,25 @@ async function processChangeValue(v: MetaChangeValue, part: string): Promise<str
     if (!m.from) continue
     if (onlyMessage && String(m.id) !== onlyMessage) continue
 
+    // A Flow submission is a tap that carries answers: the token IS the action id.
+    const nfm = m.interactive?.nfm_reply
+    let flowData: Record<string, unknown> | undefined
+    let flowToken: string | undefined
+    if (nfm?.response_json) {
+      try {
+        const parsed = JSON.parse(nfm.response_json) as Record<string, unknown>
+        const { flow_token, ...fields } = parsed
+        flowToken = typeof flow_token === 'string' ? flow_token : undefined
+        flowData = fields
+      } catch {
+        // Malformed JSON from the wire. Left undefined so this lands as an ordinary
+        // inbound message rather than a silently discarded one — the person still
+        // said something, and going quiet on them is the worse failure.
+      }
+    }
+
     const actionId =
-      m.interactive?.button_reply?.id ?? m.interactive?.list_reply?.id ?? m.button?.payload
+      m.interactive?.button_reply?.id ?? m.interactive?.list_reply?.id ?? flowToken ?? m.button?.payload
     const media = m.image ?? m.audio ?? m.document
     // Binary media lives behind the Graph API, and no Meta call may exist outside
     // transport-cloud.ts — so the media id is carried, not fetched, here.
@@ -3189,8 +3240,9 @@ async function processChangeValue(v: MetaChangeValue, part: string): Promise<str
       fromPhoneE164: toE164(m.from),
       senderPhoneE164: senderPhone,
       profileName,
-      text: m.text?.body ?? m.image?.caption ?? m.button?.text,
+      text: m.text?.body ?? m.image?.caption ?? m.button?.text ?? nfm?.body,
       actionId: actionId ?? undefined,
+      flowData,
       mediaUrl,
       mediaMimeType: media?.mime_type,
       waMessageId: m.id,
