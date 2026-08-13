@@ -3,6 +3,7 @@
  *
  *   node scripts/q.mjs "select * from message order by queued_at desc limit 5"
  *   node scripts/q.mjs --academy "Baseline" "select id, name from class"
+ *   node scripts/q.mjs --all "select status, count(*) from payment group by 1"
  *   node scripts/q.mjs --json "select * from tally_line"
  *   node scripts/q.mjs --file ./some-query.sql
  *
@@ -20,6 +21,37 @@
  * been refused, because a refusal that reads as an empty result is R7 and is the
  * single most common way a bad run looks like a good one. Use `--role readonly`
  * with `--as <contactId>` when you want to see what a *person* can see.
+ *
+ * `cm_service` DOES NOT BYPASS RLS, AND THIS TOOL USED TO PRETEND IT DID
+ * -----------------------------------------------------------------------------
+ * Every `cm_service` policy in 0003 is `academy_id = app.academy_id()`. The
+ * service role is exempt from the *person* half of RLS — `app.is_admin()`,
+ * `app.my_account_ids()`, `app.sees_money()` — and from nothing else. So with no
+ * `--academy`, `app.academy_id()` is null, `academy_id = null` evaluates to NULL,
+ * and **every tenant-scoped table reads empty**.
+ *
+ * That is not a nuisance, it is R7 in the one tool the method uses to falsify
+ * itself. `select count(*) from payment` answered `0` for a database holding
+ * seven payments, and `select count(*) from tally_line` answered `0` for
+ * seventy-eight — with no error, no warning, and a row count that reads exactly
+ * like a fact about the world. The natural cross-tenant question ("has this
+ * product ever written a payment?") is precisely the question it answers wrongly,
+ * and the previous handoff had written down the opposite ("defaults to
+ * --role service, which bypasses RLS"), which teaches the next reader to trust it.
+ *
+ * `job` hid this for as long as it did because `job_cm_service_all` is the one
+ * service policy whose qual is `true` — jobs are cross-tenant by nature — so the
+ * first few questions anyone asks come back correctly populated.
+ *
+ * Two fixes, because the trap has two halves:
+ *   - **Naming a tenant-scoped table with no tenant set now warns**, loudly, on
+ *     stderr, before the rows print. The list of such tables is read out of
+ *     `pg_policies` at run time rather than hardcoded, so a table added later is
+ *     covered without anybody remembering to come back here.
+ *   - **`--all` makes the cross-tenant question a first-class one**: it runs the
+ *     query once per academy with that tenant's GUC set and labels every row with
+ *     the academy it came from. This is what the reader wanted when they left
+ *     `--academy` off.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -62,12 +94,22 @@ const asContact = flag('as')
 const role = flag('role', 'service')
 const file = flag('file')
 const asJson = has('json')
+/** Run the query once per academy, tagging each row with the tenant it came from. */
+const allTenants = has('all')
 /** Column cap. 60 keeps a wide table readable; raise it when the value IS the evidence. */
 const width = Number(flag('w', '60')) || 60
 const query = file ? fs.readFileSync(file, 'utf8') : argv.join(' ')
 
 if (!query.trim()) {
-  console.error('usage: node scripts/q.mjs [--academy <id|name>] [--as <contactId>] [--role service|readonly|user] [--json] "<sql>"')
+  console.error('usage: node scripts/q.mjs [--academy <id|name>] [--all] [--as <contactId>] [--role service|readonly|user] [--json] "<sql>"')
+  process.exit(2)
+}
+if (allTenants && academyArg) {
+  console.error('--all and --academy contradict each other: pick one tenant, or sweep them all.')
+  process.exit(2)
+}
+if (allTenants && asContact) {
+  console.error('--all and --as contradict each other: a contact belongs to exactly one tenant.')
   process.exit(2)
 }
 
@@ -91,6 +133,35 @@ async function resolveAcademy(tx, arg) {
   if (rows.length === 0) throw new Error(`no academy matching ${JSON.stringify(arg)}`)
   if (rows.length > 1) throw new Error(`ambiguous academy ${JSON.stringify(arg)}: ${rows.map((r) => r.name).join(', ')}`)
   return rows[0].id
+}
+
+/**
+ * Which tables the service role can only see through a tenant GUC.
+ *
+ * Read from `pg_policies` rather than written down here, because a hardcoded
+ * list is a promise to update it and nobody ever does — and the failure mode of
+ * a stale list is the silent zero this whole warning exists to stop. A table is
+ * tenant-scoped if its `cm_service` policy mentions `app.academy_id()`; the one
+ * that does not is `job`, whose qual is `true`.
+ */
+async function tenantScopedTables(tx) {
+  const rows = await tx.unsafe(`
+    select distinct tablename
+      from pg_policies
+     where schemaname = 'public'
+       and roles::text like '%cm_service%'
+       and qual like '%app.academy_id()%'
+  `)
+  return rows.map((r) => r.tablename)
+}
+
+/** Does the SQL name any of them? Word-boundary, so `payment` does not match `repayments`. */
+function tablesNamedIn(sqlText, tables) {
+  // Strip string literals first: a table name inside quoted text is data, not a
+  // reference, and flagging `where reason = 'payment received'` would train the
+  // reader to ignore the warning — which is the only way this fix can fail.
+  const bare = sqlText.replace(/'(?:[^']|'')*'/g, "''")
+  return tables.filter((t) => new RegExp(`\\b${t}\\b`, 'i').test(bare))
 }
 
 try {
@@ -139,13 +210,49 @@ try {
       await tx`select set_config('app.person_id', ${ct.person_id}, true)`
       await tx`select set_config('app.contact_id', ${ct.id}, true)`
     }
+    // The tenant-scoped table list is read while still `cm_service`, because
+    // `pg_policies` is readable by anyone but the answer is about this role.
+    const scoped = await tenantScopedTables(tx)
+
+    if (allTenants) {
+      // One pass per tenant, each with that tenant's GUC. The role is dropped
+      // and restored around every pass: the query runs at exactly the privilege
+      // being asked about, and the next `set_config` needs `cm_service` back.
+      const academies = await tx.unsafe('select id, name from app.list_academies() order by name')
+      const swept = []
+      for (const a of academies) {
+        await tx`select set_config('app.academy_id', ${a.id}, true)`
+        await tx.unsafe(`set local role cm_${role}`)
+        const part = await tx.unsafe(query)
+        await tx.unsafe('set local role cm_service')
+        for (const r of part) swept.push({ academy: a.name, ...r })
+      }
+      return { rows: swept, warned: null, sweptCount: academies.length }
+    }
+
+    // Warn BEFORE the rows print, and only when the answer is guaranteed empty:
+    // with no tenant GUC, a tenant-scoped table cannot return a single row, so
+    // this is a statement of fact rather than a guess about intent.
+    const named = academyId ? [] : tablesNamedIn(query, scoped)
+
     // Last, so everything above ran with enough privilege to resolve, and the
     // query itself runs with exactly the privilege being asked about.
     await tx.unsafe(`set local role cm_${role}`)
-    return tx.unsafe(query)
+    return { rows: await tx.unsafe(query), warned: named, sweptCount: 0 }
   })
 
-  const rows = Array.isArray(out) ? out : [out]
+  if (out.warned && out.warned.length > 0) {
+    console.error(
+      `WARNING: no --academy, so ${out.warned.join(', ')} ${out.warned.length === 1 ? 'is' : 'are'} ` +
+      `filtered to nothing by RLS.\n` +
+      `         cm_service is exempt from the person half of RLS, not the tenant half:\n` +
+      `         every service policy is \`academy_id = app.academy_id()\`, and that is null here.\n` +
+      `         Any zero below is the GUC, not the world. Use --academy <name> or --all.`,
+    )
+  }
+  if (out.sweptCount) console.error(`(swept ${out.sweptCount} academies)`)
+
+  const rows = Array.isArray(out.rows) ? out.rows : [out.rows]
   if (asJson) {
     console.log(JSON.stringify(rows, null, 2))
   } else if (rows.length === 0) {

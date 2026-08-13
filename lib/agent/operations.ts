@@ -29,6 +29,7 @@
 import { serviceFrom, withSession, type SessionCtx } from '@/lib/db'
 import {
   FREE_FIRST_CLASS_REASON,
+  billingKey,
   freeFirstClassDescription,
   packageDescription,
 } from '@/lib/billing-keys'
@@ -1548,9 +1549,10 @@ const markAttendance: OperationDef = {
           e.status === 'absent' ? ' (absent)' : ''
         }`
         steps.push({
-          write: `insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount, session_id)
-                  select ${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)}, date ${lit(period)},
-                         'session', ${lit(desc)}, ${moneyLit(amount)}, ${uid(s.id)}
+          write: `insert into tally_line (academy_id, account_id, player_id, class_id, period, kind, description, amount, session_id, dedupe_key)
+                  select ${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)}, ${uid(s.class_id)}, date ${lit(period)},
+                         'session', ${lit(desc)}, ${moneyLit(amount)}, ${uid(s.id)},
+                         ${lit(billingKey.session(r.player_id, s.id))}
                    where not exists (select 1 from tally_line t
                                       where t.session_id = ${uid(s.id)} and t.player_id = ${uid(r.player_id)})`,
           service: true,
@@ -1571,10 +1573,10 @@ const markAttendance: OperationDef = {
               // It used to be 'free first class' here and 'free trial' there, so
               // neither guard could see the other's credit and a trial player who
               // met both paths was credited twice.
-              write: `insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount, reason)
-                      select ${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)}, date ${lit(period)},
+              write: `insert into tally_line (academy_id, account_id, player_id, class_id, period, kind, description, amount, reason, dedupe_key)
+                      select ${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)}, ${uid(s.class_id)}, date ${lit(period)},
                              'adjustment', ${lit(freeFirstClassDescription(r.player_name))}, ${moneyLit(-amount)},
-                             ${lit(FREE_FIRST_CLASS_REASON)}
+                             ${lit(FREE_FIRST_CLASS_REASON)}, ${lit(billingKey.freeFirstClass(r.player_id))}
                        where not exists (select 1 from tally_line t
                                           where t.player_id = ${uid(r.player_id)}
                                             and t.reason = ${lit(FREE_FIRST_CLASS_REASON)})`,
@@ -1588,9 +1590,12 @@ const markAttendance: OperationDef = {
       // rule, and when rate_count are consumed the next one opens a new package.
       if (unit === 'per_package' && billable && amount > 0) {
         const size = r.rate_count && r.rate_count > 0 ? r.rate_count : 10
-        const [pkg] = await q<{ opened_at: string | null }>(
+        // `opened` rides along with `opened_at` because the pack's ordinal is its
+        // identity — see `billingKey.package`. Counting it here costs nothing; the
+        // row was already being read for its timestamp.
+        const [pkg] = await q<{ opened_at: string | null; opened: string }>(
           svc(ctx),
-          `select max(created_at) as opened_at from tally_line
+          `select max(created_at) as opened_at, count(*) as opened from tally_line
             where player_id = ${uid(r.player_id)} and kind = 'package'`,
         )
         const [used] = await q<{ n: string }>(
@@ -1605,9 +1610,16 @@ const markAttendance: OperationDef = {
         const consumed = num(used?.n) + 1
         if (!pkg?.opened_at || consumed > size) {
           steps.push({
-            write: `insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount)
-                    values (${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)}, date ${lit(period)},
-                            'package', ${lit(packageDescription(s.class_name, size))}, ${moneyLit(amount)})`,
+            // `pkg.opened` is how many packs this player already has, so this one
+            // is the next ordinal. Keyed that way, re-running the exhaustion check
+            // cannot open a second copy of the same pack — and `money.ts` computes
+            // the identical key, so the two writers agree by construction rather
+            // than by both spelling a sentence the same way.
+            write: `insert into tally_line (academy_id, account_id, player_id, class_id, period, kind, description, amount, dedupe_key)
+                    values (${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)}, ${uid(s.class_id)}, date ${lit(period)},
+                            'package', ${lit(packageDescription(s.class_name, size))}, ${moneyLit(amount)},
+                            ${lit(billingKey.package(r.player_id, s.class_id, num(pkg?.opened) + 1))})
+                    on conflict (academy_id, dedupe_key) where dedupe_key is not null do nothing`,
             service: true,
           })
         }
@@ -1619,17 +1631,18 @@ const markAttendance: OperationDef = {
       // money undone, which is the whole point of the retroactive tap below.
       if (e.status === 'cancelled_timely' && existingStatus.get(e.player_id) !== 'cancelled_timely') {
         steps.push({
-          write: `insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount, reason)
-                  select ${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)}, date ${lit(period)},
+          // Keyed on (player, session), not on the sentence. The guard used to
+          // compare a description carrying the class name and the date, so
+          // renaming the class made the credit look un-issued and a second one
+          // could be written — the same R5 defect as the monthly line, in the
+          // direction that costs the BUSINESS money rather than the family.
+          write: `insert into tally_line (academy_id, account_id, player_id, class_id, period, kind, description, amount, reason, dedupe_key)
+                  select ${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)}, ${uid(s.class_id)}, date ${lit(period)},
                          'adjustment', ${lit(`Cancelled in time — ${s.class_name} ${zoned(s.starts_at, a.timezone).toFormat('d LLL')}`)},
-                         -t.amount, 'cancelled in time'
+                         -t.amount, 'cancelled in time', ${lit(billingKey.cancelledInTime(r.player_id, s.id))}
                     from tally_line t
                    where t.session_id = ${uid(s.id)} and t.player_id = ${uid(r.player_id)} and t.kind = 'session'
-                     and not exists (select 1 from tally_line x
-                                      where x.player_id = ${uid(r.player_id)} and x.reason = 'cancelled in time'
-                                        and x.description = ${lit(
-                                          `Cancelled in time — ${s.class_name} ${zoned(s.starts_at, a.timezone).toFormat('d LLL')}`,
-                                        )})`,
+                  on conflict (academy_id, dedupe_key) where dedupe_key is not null do nothing`,
           service: true,
         })
       }

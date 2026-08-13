@@ -18,6 +18,7 @@ import type { Job } from '@/lib/types'
 import type { Tx } from '@/lib/db'
 import {
   FREE_FIRST_CLASS_REASON,
+  billingKey,
   freeFirstClassDescription,
   packageDescription,
 } from '@/lib/billing-keys'
@@ -116,7 +117,10 @@ export async function monthlyLines(job: Job): Promise<void> {
 
     if (unit === 'per_month') {
       const description = monthlyDescription(e.class_name, period, tz)
-      await writeLine(tx, academyId, e, period, 'monthly', description, amount)
+      await writeLine(
+        tx, academyId, e, period, 'monthly', description, amount,
+        billingKey.monthly(e.player_id, e.class_id, period),
+      )
       note(`${e.player_name}: ${description} ${formatINR(amount)}`)
       return
     }
@@ -132,7 +136,10 @@ export async function monthlyLines(job: Job): Promise<void> {
       if (elapsed < 0) skip('term has not started')
       if (elapsed % months !== 0) skip(`mid-term (month ${(elapsed % months) + 1} of ${months})`)
       const description = termDescription(e.class_name, period, months, tz)
-      await writeLine(tx, academyId, e, period, 'term', description, amount)
+      await writeLine(
+        tx, academyId, e, period, 'term', description, amount,
+        billingKey.term(e.player_id, e.class_id, period),
+      )
       note(`${e.player_name}: ${description} ${formatINR(amount)}`)
       return
     }
@@ -144,7 +151,13 @@ export async function monthlyLines(job: Job): Promise<void> {
       if (consumed < opened * size) {
         skip(`pack still has ${opened * size - consumed} of ${size} left`)
       }
-      await writeLine(tx, academyId, e, period, 'package', description, amount)
+      // The pack being opened is the (opened + 1)th, and that ordinal is its
+      // identity: a period cannot name a pack, because a busy month can exhaust
+      // two. Re-running this check writes pack N once however often it fires.
+      await writeLine(
+        tx, academyId, e, period, 'package', description, amount,
+        billingKey.package(e.player_id, e.class_id, opened + 1),
+      )
       note(`${e.player_name}: opened ${description} ${formatINR(amount)}`)
       return
     }
@@ -153,25 +166,41 @@ export async function monthlyLines(job: Job): Promise<void> {
   })
 }
 
-/** One line, once. There is no unique constraint for non-session lines, so the
- *  guard is an explicit existence check on what the parent would actually see. */
+/**
+ * One line, once — and now the database is what says so.
+ *
+ * This used to read: "There is no unique constraint for non-session lines, so the
+ * guard is an explicit existence check on what the parent would actually see."
+ * That is precisely the defect. `description` is prose — it carries the class
+ * name and the month's spelling — so the guard compared two sentences and called
+ * them the same charge only when they matched character for character.
+ *
+ * Driven: a family paid August in full, their class was renamed, and the next run
+ * composed a different sentence for the same charge, matched nothing, and billed
+ * them a second time. A settled account became ₹1,200 in arrears — far enough to
+ * enter the dunning ladder, so the product then chases somebody who has paid.
+ *
+ * `dedupe_key` is built from ids (`billingKey.*`), and 0023 puts a unique index on
+ * it. `on conflict do nothing` makes the constraint the guard rather than a
+ * SELECT-then-INSERT, which also closes the race two runners could drive through.
+ * `class_id` is written because the row should record what it is FOR — the reason
+ * the old guard had to read the description at all was that nothing else did.
+ */
 async function writeLine(
   tx: Tx, academyId: string, e: EnrollmentRow, period: string,
   kind: 'monthly' | 'term' | 'package', description: string, amount: number,
+  dedupeKey: string,
 ): Promise<void> {
-  const [existing] = await tx<{ id: string }[]>`
-    select id from tally_line
-     where academy_id = ${academyId} and account_id = ${e.account_id}
-       and player_id = ${e.player_id} and period = ${period}::date
-       and kind = ${kind} and description = ${description}
+  const written = await tx<{ id: string }[]>`
+    insert into tally_line (academy_id, account_id, player_id, class_id, period,
+                            kind, description, amount, dedupe_key)
+    values (${academyId}, ${e.account_id}, ${e.player_id}, ${e.class_id}, ${period}::date,
+            ${kind}, ${description}, ${amount}, ${dedupeKey})
+    on conflict (academy_id, dedupe_key) where dedupe_key is not null
+    do nothing
+    returning id
   `
-  if (existing) skip('line already written')
-
-  await tx`
-    insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount)
-    values (${academyId}, ${e.account_id}, ${e.player_id}, ${period}::date,
-            ${kind}, ${description}, ${amount})
-  `
+  if (written.length === 0) skip('line already written')
 
   /**
    * §6.4's free first class, for the three units that do not bill on attendance.
@@ -195,25 +224,31 @@ async function writeLine(
    */
   if (!e.is_trial) return
 
-  // Both the guard and the write use the shared reason. They used 'free trial'
-  // here and `operations.ts` used 'free first class', so neither path could see
-  // the other's credit and a trial player who met both was credited twice.
-  const [alreadyCredited] = await tx<{ id: string }[]>`
-    select id from tally_line
-     where academy_id = ${academyId} and player_id = ${e.player_id}
-       and kind = 'adjustment' and reason = ${FREE_FIRST_CLASS_REASON}
-     limit 1
-  `
-  if (alreadyCredited) return
-
+  // Both writers spell the reason the same way (lib/billing-keys.ts): it was
+  // 'free trial' here and 'free first class' in `operations.ts`, so neither path
+  // could see the other's credit and a trial player who met both was credited
+  // twice. The key now says the same rule in ids, so the index refuses a second
+  // credit even from a writer that spells the reason a third way.
   await tx`
-    insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount, reason)
-    values (${academyId}, ${e.account_id}, ${e.player_id}, ${period}::date, 'adjustment',
-            ${freeFirstClassDescription(e.player_name)}, ${-amount}, ${FREE_FIRST_CLASS_REASON})
+    insert into tally_line (academy_id, account_id, player_id, class_id, period,
+                            kind, description, amount, reason, dedupe_key)
+    values (${academyId}, ${e.account_id}, ${e.player_id}, ${e.class_id}, ${period}::date, 'adjustment',
+            ${freeFirstClassDescription(e.player_name)}, ${-amount}, ${FREE_FIRST_CLASS_REASON},
+            ${billingKey.freeFirstClass(e.player_id)})
+    on conflict (academy_id, dedupe_key) where dedupe_key is not null
+    do nothing
   `
 }
 
-/** How many packs have been opened, and how many classes have eaten into them. */
+/**
+ * How many packs have been opened, and how many classes have eaten into them.
+ *
+ * `opened` counted rows whose `description` matched the sentence this run would
+ * compose. That is the same R5 defect as the write guard: rename the class and
+ * the count drops to zero, so the next attendance opens — and bills — a pack the
+ * family already has. It counts by `class_id` now. The `description` parameter is
+ * kept only for the rows written before 0023 backfilled a class onto them.
+ */
 async function packageState(
   tx: Tx, academyId: string, e: EnrollmentRow, description: string,
 ): Promise<{ opened: number; consumed: number }> {
@@ -221,7 +256,8 @@ async function packageState(
     select
       (select count(*) from tally_line t
         where t.academy_id = ${academyId} and t.player_id = ${e.player_id}
-          and t.kind = 'package' and t.description = ${description})::int as opened,
+          and t.kind = 'package'
+          and (t.class_id = ${e.class_id} or (t.class_id is null and t.description = ${description})))::int as opened,
       (select count(*) from attendance a
          join session s on s.id = a.session_id
         where a.player_id = ${e.player_id} and s.class_id = ${e.class_id}

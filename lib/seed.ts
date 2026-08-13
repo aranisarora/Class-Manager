@@ -37,6 +37,7 @@ import { DateTime } from 'luxon'
 import { withSession, type SessionCtx, type Tx } from '@/lib/db'
 import { now, reset as resetClock, nextEventAt } from '@/lib/clock'
 import { newId } from '@/lib/ids'
+import { billingKey } from '@/lib/billing-keys'
 import { resolveInbound } from '@/lib/identity'
 import { runTurn, type TurnOutput } from '@/lib/agent/loop'
 import { CURATE_THRESHOLD } from '@/lib/agent/memory'
@@ -400,7 +401,17 @@ const ENROLLMENT_COLS = [['id', '::uuid'], ['academy_id', '::uuid'], ['class_id'
 const SESSION_COLS = [['id', '::uuid'], ['academy_id', '::uuid'], ['class_id', '::uuid'], ['venue_id', '::uuid'], ['starts_at', '::timestamptz'], ['ends_at', '::timestamptz'], ['status', ''], ['cancel_reason', '']] as const
 const SESSION_COACH_COLS = [['id', '::uuid'], ['academy_id', '::uuid'], ['session_id', '::uuid'], ['coach_id', '::uuid'], ['confirmed_at', '::timestamptz'], ['declined_at', '::timestamptz'], ['arrived_at', '::timestamptz'], ['running_late', '::boolean']] as const
 const ATTENDANCE_COLS = [['id', '::uuid'], ['academy_id', '::uuid'], ['session_id', '::uuid'], ['player_id', '::uuid'], ['status', ''], ['note', ''], ['marked_by_coach_id', '::uuid'], ['marked_at', '::timestamptz']] as const
-const TALLY_COLS = [['id', '::uuid'], ['academy_id', '::uuid'], ['account_id', '::uuid'], ['player_id', '::uuid'], ['period', '::date'], ['kind', ''], ['description', ''], ['amount', '::numeric'], ['session_id', '::uuid'], ['reason', ''], ['approved_by', '::uuid']] as const
+/**
+ * `class_id` and `dedupe_key` are here because the seed is a WRITER of money, and
+ * 0023 made "the same charge" a statement about ids. It used to compose its
+ * descriptions with a hyphen (`"<class> - August 2026"`) while
+ * `lib/jobs/handlers/money.ts` composed an em dash, and the guard that was meant
+ * to stop a family being billed twice compared those two sentences — so sixteen
+ * players in the shared world carry two identical August charges that differ only
+ * by one character, ₹32,800 in total. A seed that writes no key would reintroduce
+ * every one of them the first time the billing job ran after a reseed.
+ */
+const TALLY_COLS = [['id', '::uuid'], ['academy_id', '::uuid'], ['account_id', '::uuid'], ['player_id', '::uuid'], ['class_id', '::uuid'], ['period', '::date'], ['kind', ''], ['description', ''], ['amount', '::numeric'], ['session_id', '::uuid'], ['reason', ''], ['approved_by', '::uuid'], ['dedupe_key', '']] as const
 const PAYMENT_COLS = [['id', '::uuid'], ['academy_id', '::uuid'], ['account_id', '::uuid'], ['amount', '::numeric'], ['rail', ''], ['method', ''], ['reference', ''], ['status', ''], ['requested_at', '::timestamptz'], ['confirmed_at', '::timestamptz'], ['confirmed_by', '::uuid'], ['evidence_url', '']] as const
 
 // -----------------------------------------------------------------------------
@@ -675,9 +686,11 @@ async function seedAce(base: Date): Promise<AcademySummary> {
             tallyRows.push({
               id: detId('tally', o.id, PL(playerSlug)), academy_id: A,
               account_id: ACCT(accountOfPlayer.get(playerSlug)!), player_id: PL(playerSlug),
+              class_id: CLS(cls.slug),
               period: monthOf(o.starts), kind: 'session',
               description: `${cls.name} - ${o.starts.toFormat('d LLL')}`,
               amount: cls.rate, session_id: o.id, reason: null, approved_by: null,
+              dedupe_key: billingKey.session(PL(playerSlug), o.id),
             })
           }
         }
@@ -695,8 +708,10 @@ async function seedAce(base: Date): Promise<AcademySummary> {
       tallyRows.push({
         id: detId('tally', 'monthly', period, CLS(cls.slug), PL(e.player)), academy_id: A,
         account_id: ACCT(accountOfPlayer.get(e.player)!), player_id: PL(e.player),
+        class_id: CLS(cls.slug),
         period, kind: 'monthly', description: `${cls.name} - ${monthLabel}`,
         amount: cls.rate, session_id: null, reason: null, approved_by: null,
+        dedupe_key: billingKey.monthly(PL(e.player), CLS(cls.slug), period),
       })
     }
     if (cls.unit === 'per_package') {
@@ -710,9 +725,12 @@ async function seedAce(base: Date): Promise<AcademySummary> {
       tallyRows.push({
         id: detId('tally', 'package', period, CLS(cls.slug), PL(e.player)), academy_id: A,
         account_id: ACCT(accountOfPlayer.get(e.player)!), player_id: PL(e.player),
+        class_id: CLS(cls.slug),
         period, kind: 'package',
         description: `${cls.name} - ${cls.count}-session package (${remaining} of ${cls.count} left)`,
         amount: cls.rate, session_id: null, reason: null, approved_by: null,
+        // The seed opens exactly one pack per player per class, so it is pack 1.
+        dedupe_key: billingKey.package(PL(e.player), CLS(cls.slug), 1),
       })
     }
   }
@@ -720,10 +738,14 @@ async function seedAce(base: Date): Promise<AcademySummary> {
   // §6.4: adjustments are one primitive, not six features.
   tallyRows.push({
     id: detId('tally', 'adjustment', period, 'lata'), academy_id: A,
-    account_id: ACCT('lata'), player_id: PL('rohan'), period, kind: 'adjustment',
+    account_id: ACCT('lata'), player_id: PL('rohan'), class_id: null, period, kind: 'adjustment',
     description: 'Goodwill credit - court unavailable', amount: -400, session_id: null,
     reason: 'Court double-booked on the 5th; Sharwin offered a credit',
     approved_by: P('sharwin'),
+    // A goodwill credit is a decision somebody made, not a recurring charge, so it
+    // carries no key — see `billingKey`. The partial index ignores it, which is
+    // what lets an admin issue two of them on purpose.
+    dedupe_key: null,
   })
 
   const owedBy = (acct: string): number =>
@@ -987,8 +1009,10 @@ async function seedNadam(base: Date): Promise<AcademySummary> {
     tallyRows.push({
       id: detId('tally', 'monthly', period, CLS(cls.slug), PL(e.player)), academy_id: A,
       account_id: ACCT(accountOfPlayer.get(e.player)!), player_id: PL(e.player),
+      class_id: CLS(cls.slug),
       period, kind: 'monthly', description: `${cls.name} - ${monthLabel}`,
       amount: cls.rate, session_id: null, reason: null, approved_by: null,
+      dedupe_key: billingKey.monthly(PL(e.player), CLS(cls.slug), period),
     })
   }
 
@@ -2197,9 +2221,11 @@ export async function seedStage(
             if (cls.unit === 'per_session') {
               tallyRows.push({
                 id: detId('tally', s.id, PL(p)), academy_id: A, account_id: ACCT(accountOfPlayer[p] as string),
-                player_id: PL(p), period: monthOf(s.starts), kind: 'session',
+                player_id: PL(p), class_id: CLS(cls.slug),
+                period: monthOf(s.starts), kind: 'session',
                 description: `${cls.name} - ${s.starts.toFormat('d LLL')}`,
                 amount: cls.rate, session_id: s.id, reason: null, approved_by: null,
+                dedupe_key: billingKey.session(PL(p), s.id),
               })
             }
           }
@@ -2215,8 +2241,10 @@ export async function seedStage(
       tallyRows.push({
         id: detId('tally', 'monthly', period, CLS(cls.slug), PL(e.player)), academy_id: A,
         account_id: ACCT(accountOfPlayer[e.player] as string), player_id: PL(e.player),
+        class_id: CLS(cls.slug),
         period, kind: 'monthly', description: `${cls.name} - ${monthLabel}`,
         amount: cls.rate, session_id: null, reason: null, approved_by: null,
+        dedupe_key: billingKey.monthly(PL(e.player), CLS(cls.slug), period),
       })
     }
   }
