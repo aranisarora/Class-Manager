@@ -1546,7 +1546,7 @@ export async function runTool(
       const planStripped: string[] = []
       steps = stripHumanAssertions(steps, planStripped) as PlanStep[]
       const planIgnored = planStripped.length ? { ignored: humanAssertionNote(planStripped) } : null
-      const preview = await previewPlan(ctx.session, steps)
+      const preview = await previewPlan(ctx.session, steps, String(args?.intent ?? ''))
       if (!preview.ok) return { result: { ok: false, error: preview.error } }
       const handle = newId()
       const gate = needsPreview(preview, steps, {
@@ -1691,7 +1691,7 @@ export async function runTool(
         ? { ignored: humanAssertionNote(stripped.stripped) }
         : null
       const steps: PlanStep[] = [{ operation: { name: opName as any, args: (args?.args ?? {}) as any } }]
-      const preview = await previewPlan(ctx.session, steps)
+      const preview = await previewPlan(ctx.session, steps, String(args?.intent ?? ''))
       if (!preview.ok) return { result: { ok: false, error: preview.error } }
       if (needsPreview(preview, steps, { actorContactId: ctx.identity.contact.id, fromParsedInput: ctx.fromParsedInput })) {
         const handle = newId()

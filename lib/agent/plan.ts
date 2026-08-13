@@ -29,6 +29,7 @@ import { now } from '@/lib/clock'
 import { resolveIdentity } from '@/lib/identity'
 import { attachActionsToMessage, mintAction, type ActionPayload } from '@/lib/actions'
 import { send } from '@/lib/messaging/send'
+import { composeAndSend } from '@/lib/messaging/compose'
 import { repairOutbound } from '@/lib/messaging/repair'
 import { LIMITS, type Button, type OutboundMessage, type SendOutcome } from '@/lib/messaging/types'
 import { CATALOG, type CatalogId } from '@/lib/messaging/catalog'
@@ -853,7 +854,18 @@ function assertSomethingChanged(expanded: PlanStep[], diffs: TableDiff[]): void 
 }
 
 /** BEGIN → run every step → capture the diff → ROLLBACK. Messages never leave the outbox. */
-export async function previewPlan(ctx: SessionCtx, steps: PlanStep[]): Promise<PlanResult> {
+export async function previewPlan(
+  ctx: SessionCtx,
+  steps: PlanStep[],
+  /**
+   * The model's own one-line description of what it is trying to do. Used only
+   * when a plan is refused by permissions: it is what the owner is told somebody
+   * asked for. Business language written by the model, never the SQL — an
+   * escalation that quotes a refused statement is a side channel reporting what
+   * somebody tried.
+   */
+  intent?: string,
+): Promise<PlanResult> {
   const state = emptyState()
   // Hoisted so the catch can tell a refusal from a missing row — that diagnosis
   // needs the steps, and inside the try they are out of scope by the time it throws.
@@ -876,7 +888,7 @@ export async function previewPlan(ctx: SessionCtx, steps: PlanStep[]): Promise<P
       summary: buildSummary(merged, state),
     }
   } catch (e) {
-    return failed(state, e, await hintFor(ctx, e, expanded))
+    return failed(state, e, await hintFor(ctx, e, expanded, state.notes, intent))
   }
 }
 
@@ -887,12 +899,206 @@ export async function previewPlan(ctx: SessionCtx, steps: PlanStep[]): Promise<P
  * so it gets the extra round trip; everything else is diagnosable from the
  * Postgres message alone.
  */
-async function hintFor(ctx: SessionCtx, e: unknown, expanded: PlanStep[]): Promise<string | null> {
+async function hintFor(
+  ctx: SessionCtx,
+  e: unknown,
+  expanded: PlanStep[],
+  /** The plan's own notes — business language, written by the operation, no SQL. */
+  notes: string[] = [],
+  intent?: string,
+): Promise<string | null> {
   if (e instanceof PlanAbort && e.code === 'CHANGED_NOTHING') {
-    const refusal = await refusalHint(ctx, expanded)
+    const refusal = await refusalHint(ctx, expanded, notes, intent)
     if (refusal) return refusal
   }
   return repairHint(ctx, e)
+}
+
+/**
+ * A refusal is not a hint to pass on. It IS the handoff.
+ *
+ * `refusalHint` already establishes, with certainty, the one situation the
+ * product has a mechanism for and never uses: the rows exist, this person asked
+ * to change them, and they are not allowed to. Until now it answered that by
+ * telling the model, in prose, to "offer to pass it to whoever runs the
+ * business."
+ *
+ * Instructions do not close structural gaps, and this is the cleanest evidence
+ * of it in the repo. Driven twice, independently, on two different families:
+ * a parent said "we want to stop lessons after this month", the write was
+ * RLS-refused, the model got this exact hint, and it spent SEVEN rounds before
+ * replying *"I've noted that Meghana will be stopping her Saturday Kriti
+ * lessons after August"* — with **zero audit rows**. Nothing was written, the
+ * family believes they have cancelled, they will be billed on the 1st, and
+ * nobody at the academy ever learned that a customer asked to leave. The
+ * `handoff` tool does exactly the right thing here and has been called 0 times
+ * in 464 tool calls: R8, a door with no sign.
+ *
+ * So the runtime performs it rather than recommending it. §8.3's own rule for
+ * churn is that it "reuses the existing escalation rather than inventing one",
+ * and this is that escalation: the same admin message and the same `memory_fact`
+ * the `handoff` tool writes, raised at the moment the runtime is certain.
+ *
+ * **Deliberately narrow, because "escalate on any refusal" would be worse than
+ * the bug.** RLS refuses malformed writes, mistyped ids and genuine probes, and
+ * turning every "permission denied" into a message to the owner would both spam
+ * them and make the refusal path a side channel reporting what somebody tried.
+ * All four of these must hold: the actor is a person rather than the service
+ * role; a write was attempted; the plan aborted with CHANGED_NOTHING; and the
+ * same writes provably match real rows as the service role. That is not "a query
+ * failed" — it is "a person asked for a change to something real and the product
+ * said no", which is always worth a human knowing.
+ *
+ * **It never sends the SQL.** The summary is the plan's own `note`, which
+ * operations write in the business's words — "Meghana stops Saturday Kriti on
+ * 31 Aug, coming off 3 scheduled sessions". Where there is no note it says
+ * nothing about the attempt beyond that one was made.
+ *
+ * **What this does not decide.** Whether a parent SHOULD be able to end her own
+ * child's enrolment is a policy question the spec does not answer, and inventing
+ * one here would be the memory half of R10 — a business rule nobody chose. This
+ * changes only what happens when the answer is already no: the person is told
+ * the truth and a human is told at all.
+ */
+async function escalateRefusal(
+  ctx: SessionCtx, notes: string[], intent?: string,
+): Promise<boolean> {
+  if (ctx.role !== 'user' || !ctx.personId) return false
+
+  /**
+   * The note is preferred and the intent is the fallback, because a note is
+   * written by an OPERATION in the business's own words — "Meghana stops
+   * Saturday Kriti on 31 Aug, coming off 3 scheduled sessions" — while the intent
+   * is the model's summary of its own plan. Driven, the note was empty every
+   * time: the step that gets refused is usually a raw `write` the model composed
+   * after a named operation had already failed, and a raw write carries no note.
+   * So the owner was told "asked for something only you can do" with nothing
+   * after it, which is true and useless. The intent is what makes the message
+   * actionable.
+   */
+  // Trailing punctuation trimmed because this is spliced mid-sentence: the model
+  // writes its intent as a sentence and the result read "…end of August.. I couldn't".
+  const summary = (notes.filter(Boolean).join('; ') || (intent ?? ''))
+    .slice(0, 400)
+    .replace(/[.\s]+$/, '')
+  try {
+    /**
+     * Two guards, both found by asking what this does when it is NOT a parent.
+     *
+     * **An admin is not escalated to themselves.** `academy_admin` membership is
+     * the test, not the plan: an owner whose write is refused has hit an infra
+     * table with no `cm_user` policy at all (`job`, `audit_entry`, `memory_fact`),
+     * which is a runtime boundary and not a request anybody can grant. Without
+     * this the product would message every owner about the owner, have §18 rule 2
+     * drop each one for being about its own recipient, and still write a
+     * `memory_fact` saying they "asked for something only an admin can do" —
+     * about the admin.
+     *
+     * **And it is raised once.** A turn can fail two plans: the model tries a
+     * named operation, gets refused, composes a raw write, and gets refused
+     * again. The send gate's repeat guard only catches byte-identical bodies, and
+     * these two carry different summaries, so both would reach the owner. Ten
+     * minutes is longer than any turn and far shorter than a second genuine ask.
+     */
+    const blocked = await withSession(serviceFrom(ctx), async (tx) => {
+      const isAdmin = ((await tx.unsafe(
+        `select 1 from academy_admin
+          where academy_id = ${uid(ctx.academyId)} and person_id = ${uid(ctx.personId as string)}`,
+      )) as unknown as unknown[]).length > 0
+      if (isAdmin) return true
+      return ((await tx.unsafe(
+        `select 1 from message
+          where academy_id = ${uid(ctx.academyId)} and catalog_id = 'AD-NEEDS-YOU'
+            and payload->'subject_person_ids' ? ${lit(ctx.personId as string)}
+            and created_at > now() - interval '10 minutes'
+          limit 1`,
+      )) as unknown as unknown[]).length > 0
+    })
+    if (blocked) return false
+
+    const admins = await withSession(serviceFrom(ctx), async (tx) => {
+      const rows = (await tx.unsafe(
+        `select c.id from academy_admin aa
+           join contact c on c.person_id = aa.person_id and c.academy_id = aa.academy_id
+          where aa.academy_id = ${uid(ctx.academyId)} and c.opted_out_at is null
+          order by c.is_primary desc`,
+      )) as unknown as { id: string }[]
+      return rows.map((r) => r.id)
+    })
+    if (admins.length === 0) return false
+
+    const { who, academyName } = await withSession(serviceFrom(ctx), async (tx) => {
+      const p = (await tx.unsafe(
+        `select full_name from person where id = ${uid(ctx.personId as string)}`,
+      )) as unknown as { full_name: string }[]
+      const a = (await tx.unsafe(
+        `select name from academy where id = ${uid(ctx.academyId)}`,
+      )) as unknown as { name: string }[]
+      return { who: p[0]?.full_name ?? 'Someone', academyName: a[0]?.name ?? null }
+    })
+
+    for (const contactId of admins) {
+      await composeAndSend(ctx, {
+        toContactId: contactId,
+        body: (
+          `${who} asked for something only you can do${summary ? `: ${summary}` : ''}. ` +
+          `I couldn't do it for them, so I've told them you'd pick it up.`
+        ).slice(0, LIMITS.bodyChars),
+        isEscalation: true,
+        // Every AD-* row rides `admin_alert`, and without a catalog id an
+        // out-of-window send falls back on the RECIPIENT'S ROLE — so an owner who
+        // also coaches received this as "an update to your schedule" under an
+        // [Open my day] button. An escalation about a customer leaving is not a
+        // change to the reader's timetable. Its own row, because borrowing
+        // AD-ESCALATE-UNCONFIRMED rendered it out of window as "a session is
+        // uncovered", which is a different emergency.
+        catalogId: 'AD-NEEDS-YOU',
+        // §18 rule 2 reads this: an escalation about a person never reaches that
+        // person, so this cannot loop back to the parent who triggered it.
+        subjectPersonIds: [ctx.personId],
+        fixed: true,
+        buttons: [{ title: 'Message them', action: { kind: 'reply', text: `Open a message to ${who}` } }],
+      })
+    }
+
+    /**
+     * The person who asked is NOT told from here, and that is deliberate.
+     *
+     * Sending it here was the first attempt and it was one message too many.
+     * Driven: the runtime said "that's not something I can change from here, I've
+     * passed it to whoever runs Nadam Vocal", and the model — now correctly
+     * informed by the hint — went on to compose something strictly better:
+     * *"That'll be Vedanth's last month in Tuesday Beginners. His final class will
+     * be on Tue 25 Aug. Because that enrollment is already live, I can't stop it
+     * myself — I've passed this to Lakshmi to handle the closing balance and
+     * update the roster."* Every fact in it checks out against the session rows.
+     * The mother received both, and the runtime's blunter version added nothing.
+     *
+     * So the truthful sentence lives at the **fallback** in `loop.ts` instead:
+     * when the model composes a good answer it goes out alone, and when the model
+     * runs out of rounds the person gets the true sentence rather than "I'm going
+     * round in circles". One message either way, and never an apology after an
+     * answer. The loop finds out this happened by looking for the AD-NEEDS-YOU
+     * row this function just wrote — no new state, and it stays true if some
+     * other path starts raising the same escalation.
+     */
+
+    // The same row `handoff` writes. A request that reaches an admin who is busy
+    // must not evaporate when the conversation moves on.
+    await withSession(serviceFrom(ctx), async (tx) => {
+      await tx.unsafe(
+        `insert into memory_fact (academy_id, subject_kind, subject_id, fact, source)
+         values (${uid(ctx.academyId)}, 'person', ${uid(ctx.personId as string)},
+                 ${lit(`Asked for something only an admin can do${summary ? `: ${summary}` : ''}`)},
+                 ${lit(`refusal:${ctx.academyId}`)})`,
+      )
+    })
+    return true
+  } catch {
+    // An escalation is an improvement on the refusal, never a precondition for
+    // reporting it. If this fails the model still gets the hint below.
+    return false
+  }
 }
 
 /**
@@ -935,7 +1141,7 @@ export async function executePlan(
       summary: receipt,
     }
   } catch (e) {
-    return { ...failed(state, e, await hintFor(ctx, e, expanded)), auditId, outcomes: [] }
+    return { ...failed(state, e, await hintFor(ctx, e, expanded, state.notes, intent)), auditId, outcomes: [] }
   }
 }
 
@@ -1010,7 +1216,9 @@ const UNIQUE_DETAIL_RE = /Key \(([^)]+)\)=\(([^)]*)\) already exists/i
  * extra round trip is the cheapest thing in the sequence. Rolled back, so the
  * diagnosis cannot become the write.
  */
-async function refusalHint(ctx: SessionCtx, expanded: PlanStep[]): Promise<string | null> {
+async function refusalHint(
+  ctx: SessionCtx, expanded: PlanStep[], notes: string[] = [], intent?: string,
+): Promise<string | null> {
   if (ctx.role === 'service') return null
   const writes = expanded.filter((s): s is PlanStep & { write: string } => 'write' in s)
   if (!writes.length) return null
@@ -1020,12 +1228,25 @@ async function refusalHint(ctx: SessionCtx, expanded: PlanStep[]): Promise<strin
       for (const w of writes) n += rowCount(await tx.unsafe(w.write))
       return n
     })
-    return matched > 0
-      ? `those rows DO exist — ${matched} of them — and this person is not allowed to change them. The database ` +
-          `refused silently rather than raising. This is not something to retry or reword: say plainly that it is ` +
-          `not something they can change themselves, and offer to pass it to whoever runs the business.`
-      : `the rows genuinely do not exist — the same writes match nothing even with no permissions in the way. ` +
-          `The WHERE is wrong, not the permission. Read the row back and check the id before writing again.`
+    if (matched > 0) {
+      // The escalation happens HERE, not in a sentence asking the model to do it.
+      // See `escalateRefusal` for the two turns that prove the sentence does not work.
+      const raised = await escalateRefusal(ctx, notes, intent)
+      return (
+        `those rows DO exist — ${matched} of them — and this person is not allowed to change them. The database ` +
+        `refused silently rather than raising. This is not something to retry or reword. ` +
+        (raised
+          ? `I have ALREADY told the people who run this business what they asked for, and recorded it. ` +
+            `Tell them plainly that it is not something they can change themselves and that you have passed it ` +
+            `on — do NOT say the thing they asked for has been done, because nothing was written.`
+          : `Say plainly that it is not something they can change themselves, and offer to pass it to whoever ` +
+            `runs the business.`)
+      )
+    }
+    return (
+      `the rows genuinely do not exist — the same writes match nothing even with no permissions in the way. ` +
+      `The WHERE is wrong, not the permission. Read the row back and check the id before writing again.`
+    )
   } catch {
     /* a hint is an improvement on the error, never a precondition for reporting it */
     return null

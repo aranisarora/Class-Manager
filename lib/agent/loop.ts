@@ -63,7 +63,45 @@ export type TurnInput = {
 
 export type TurnOutput = { turnId: string; sent: SendOutcome[]; toolCalls: number; error?: string }
 
-const MAX_TOOL_ROUNDS = 8
+/**
+ * The ceiling on tool rounds, and why it is 5 rather than 8.
+ *
+ * Rounds are the entire cost and latency story — the stable prefix is paid on
+ * every uncached round, so a turn that goes round twice costs twice, and
+ * WhatsApp cannot stream, which means these seconds are seconds of silence.
+ *
+ * Measured over 120 turns across seven academies, `rounds` against "did any tool
+ * call in this turn come back with an error":
+ *
+ *     rounds   turns   with a failed tool call
+ *       0–2      81      0        (0%)
+ *         3      18      9       (50%)
+ *         4       9      6       (67%)
+ *         5       8      8      (100%)
+ *         6       2      1       (50%)
+ *         7       2      2      (100%)
+ *         8       0      —      never reached
+ *
+ * Two things fall out of that. **The cap of 8 had never once been hit**, so it
+ * was not bounding anything — the real ceiling was the model giving up. And
+ * every turn that ran past four rounds was recovering from a failure, not doing
+ * useful work: below three rounds nothing has ever failed, at five everything
+ * has.
+ *
+ * The rounds past four were not buying answers, they were buying more expensive
+ * wrong ones. Both 7-round turns were a parent asking to stop their child's
+ * lessons; both burned seven rounds against an RLS refusal, wrote **zero audit
+ * rows**, and replied "I've noted that she will be stopping" — a sentence the
+ * family reads as done, about a row that never changed.
+ *
+ * **What lowering it takes away.** A turn that would genuinely have recovered on
+ * round 6 or 7 now stops at 5 and says so. The measurement says there were none:
+ * of the four turns that ever ran that long, three ended in a false claim and one
+ * in a shrug. If a real recovery-at-six ever shows up, the fix is to make the
+ * failing tool cheaper to get right — not to buy more rounds, which is paying
+ * full prefix for another guess.
+ */
+const MAX_TOOL_ROUNDS = 5
 const HISTORY = 16
 /** How many past turns to mine for reads. Small: the newest lookups are the live ones. */
 const LOOKUP_TURNS = 4
@@ -937,8 +975,58 @@ async function modelTurn(
     if (toolCtx.repliedTo?.has(identity.contact.id) && toolCtx.pendingPlans.size === 0) break
 
     if (round === MAX_TOOL_ROUNDS - 1) {
-      // Out of rounds. Say so plainly rather than going quiet.
-      text = text || "I'm going round in circles on this one — can you tell me the short version of what you need?"
+      /**
+       * Out of rounds. Say so plainly rather than going quiet — **unless somebody
+       * has already told them something true.**
+       *
+       * `outcomes` and `repliedTo` only see what the TOOLS sent, and the runtime
+       * itself sends too: a plan refused by RLS now tells the person "that's not
+       * something I can change from here, I've passed it to whoever runs
+       * <academy>" from inside `plan.ts`, where neither of those is in scope.
+       *
+       * Driven: a mother asked to stop her son's Saturday lessons, the runtime
+       * answered her honestly and escalated to the owner, the model then failed
+       * to compose anything the honesty guard would accept, and she received a
+       * SECOND message — "I'm going round in circles on this one, can you tell me
+       * the short version of what you need?" — about a request that was perfectly
+       * clear and had already been actioned. An apology after an answer reads as
+       * the answer being withdrawn.
+       *
+       * `message.turn_id` is stamped on every outbound (0015/0019), so "has
+       * anything reached this person this turn" is one query, asked once, on the
+       * last round only. It is the general form: any future runtime-sent message
+       * is covered without anybody remembering this exists.
+       */
+      if (!text) {
+        const seen = await withSession(
+          { role: 'service', academyId: identity.academyId },
+          async (tx) =>
+            (await tx.unsafe(
+              `select
+                 (select count(*) from message
+                   where turn_id = '${turnId}' and contact_id = '${identity.contact.id}'
+                     and direction = 'outbound' and suppressed_reason is null)::int as told,
+                 (select count(*) from message
+                   where turn_id = '${turnId}' and catalog_id = 'AD-NEEDS-YOU')::int as raised`,
+            )) as unknown as { told: number; raised: number }[],
+        ).catch(() => [] as { told: number; raised: number }[])
+        const told = Number(seen[0]?.told ?? 0)
+        const raised = Number(seen[0]?.raised ?? 0)
+
+        if (told > 0) {
+          // Already answered by something the runtime sent. Adding an apology
+          // after an answer reads as the answer being withdrawn.
+        } else if (raised > 0) {
+          // A plan was refused by permissions and the owner has been told. Say
+          // that, rather than blaming the conversation for going in circles —
+          // the request was clear, and it has in fact been actioned.
+          text =
+            "That's not something I can change from here. I've passed it to whoever runs the academy " +
+            "and they'll come back to you."
+        } else {
+          text = "I'm going round in circles on this one — can you tell me the short version of what you need?"
+        }
+      }
     }
   }
 

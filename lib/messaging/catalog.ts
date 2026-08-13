@@ -50,6 +50,7 @@ export type CatalogId =
   | 'AD-RECONCILE'
   | 'AD-NEW-TRIAL'
   | 'AD-OPT-OUT'
+  | 'AD-NEEDS-YOU'
   | 'AD-DELIVERY-FAILURE'
 
 export type CatalogEntry = {
@@ -442,6 +443,22 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
     fixed: true,
     template: 'admin_alert',
     templateEvent: 'someone opted out',
+    actionTtlMinutes: DAY * 3,
+  },
+  'AD-NEEDS-YOU': {
+    id: 'AD-NEEDS-YOU',
+    audience: 'admin',
+    trigger:
+      'Somebody asked the bot for a change their permissions refuse — the rows exist and they are not '
+      + 'allowed to alter them (a parent ending an enrolment is the driven case). Raised by the runtime at '
+      + 'the moment the refusal is established, not by the model deciding to pass it on: the model was asked '
+      + 'to and did not, twice, and the family was told "I have noted it" about a row that never changed. '
+      + 'The person has already been told it is going to you.',
+    defaultButtons: ['Message them'],
+    onSilence: 'Nothing further — the request is also written to memory so it survives the conversation.',
+    fixed: true,
+    template: 'admin_alert',
+    templateEvent: 'someone needs you',
     actionTtlMinutes: DAY * 3,
   },
   'AD-DELIVERY-FAILURE': {
