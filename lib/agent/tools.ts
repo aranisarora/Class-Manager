@@ -113,6 +113,15 @@ export type ToolCtx = {
   committed?: boolean
   /** The promise check fires once per turn, so a second attempt is never silenced. */
   promiseChecked?: boolean
+  /**
+   * The affordance guard's own budget, separate from `promiseChecked`.
+   *
+   * They shared one flag, and the two never fire on the same defect: a turn refused
+   * once for claiming an action had already spent the budget, so the FIRST time its
+   * next message pointed at a button that did not exist, that check was skipped
+   * entirely and the message went out. One round of grace each, not one between them.
+   */
+  affordanceChecked?: boolean
 }
 
 /* ------------------------------------------------------------------------- *
@@ -164,7 +173,7 @@ const CLAIMED_DONE = new RegExp(
  * word lower-case mid-paragraph is prose.
  */
 const CLAIMED_DONE_OPENER = new RegExp(
-  `(?:^|\\n)\\s*(?:${DONE_VERBS.split('|').map((v) => v[0].toUpperCase() + v.slice(1)).join('|')})` +
+  `^\\s*(?:${DONE_VERBS.split('|').map((v) => v[0].toUpperCase() + v.slice(1)).join('|')})` +
     `\\s+(?=[₹\\d"']|the\\b|a\\b|an\\b|your\\b|their\\b|his\\b|her\\b|[A-Z])`,
 )
 
@@ -1783,7 +1792,31 @@ export async function runTool(
            * is pending that read-back is computed from the diff, so it is strictly
            * better evidence than the prose it replaces — and the affordance is
            * untouched, so the person can still act.
+           *
+           * **Only to the person in the conversation.** The substituted sentence ends
+           * "tap to confirm and I'll do it", and the button that makes it true is minted
+           * for the tapping contact — so sent to a parent or a coach it is an
+           * instruction they cannot follow, attached to a plan diff written for an
+           * operator. The "silencing somebody is worse" argument does not carry here
+           * either: it is about the person waiting on an answer, not about a bystander
+           * who was never expecting this message and would only be told something false.
+           * So a third-party message with a false claim is refused outright, and the
+           * model is told why.
            */
+          if (to !== ctx.identity.contact.id) {
+            return {
+              result: {
+                error:
+                  'that message claims something happened, nothing was written this turn, and it is addressed to '
+                  + 'somebody else — so there is nothing they could tap to make it true',
+                hint:
+                  'Do the thing first, then tell them. A message to a third party has to be true when it is sent: '
+                  + 'they have no way to see this conversation and no button that fixes it.',
+                sent: false,
+              },
+            }
+          }
+
           const waiting = pendingConfirmation(ctx)
           body = waiting
             ? `${waiting.summary}\n\nNothing has run yet — tap to confirm and I'll do it.`
@@ -1834,9 +1867,26 @@ export async function runTool(
         wantsSetup && to === ctx.identity.contact.id && ctx.identity.roles.includes('admin')
           ? {
               flow: ONBOARDING_SETUP.id,
-              // Prefilled so the first field is already right rather than empty — the
-              // business has a name from the moment it was created.
-              data: { name: ctx.identity.academy.name, category: ctx.identity.academy.category ?? '' },
+              /**
+               * EVERY field the form writes, prefilled from what is on the row now.
+               *
+               * The form is a full overwrite of the business shape, and it prefilled two
+               * of its five fields — so an admin who opened it a second time to change
+               * one thing submitted blanks for the rest, and the UPI handle they had
+               * already given was silently nulled and the cancellation window reset. A
+               * form that overwrites what it does not show is a data-loss bug wearing a
+               * convenience feature's clothes.
+               *
+               * The venue is deliberately absent: it is the one field that adds a row
+               * rather than replacing one, so an empty box means "no new place", not
+               * "delete the places I have".
+               */
+              data: {
+                name: ctx.identity.academy.name,
+                category: ctx.identity.academy.category ?? '',
+                cancellation_window_hours: String(ctx.identity.academy.cancellation_window_hours ?? 24),
+                upi_handle: ctx.identity.academy.upi_handle ?? '',
+              },
             }
           : undefined
 
@@ -1875,15 +1925,16 @@ export async function runTool(
        * is what makes the difference between a message that is wrong and a message that
        * is wrong AND looks fine.
        *
-       * Fires at most once per turn, sharing `promiseChecked` with the action-claim
-       * guard for the same reason it exists: one round to make the sentence true, never
-       * an argument. A second attempt always goes out, because silencing somebody is
-       * worse than telling them something slightly wrong.
+       * Fires at most once per turn, on its OWN budget. It used to share
+       * `promiseChecked` with the action-claim guard, and the two never fire on the same
+       * defect — so a turn already refused once for claiming an action had spent the
+       * budget, and the first time its next message pointed at a button that did not
+       * exist the check was skipped and the message went out. One round of grace each.
        */
-      if (!ctx.promiseChecked) {
+      if (!ctx.affordanceChecked) {
         const hasAffordance = Boolean(link || setupFlow || buttons?.length || args?.list)
         if (pointsAtMissingAffordance(body, hasAffordance)) {
-          ctx.promiseChecked = true
+          ctx.affordanceChecked = true
           return {
             result: {
               error: 'that message points at a button, link or form, and the message carries none',

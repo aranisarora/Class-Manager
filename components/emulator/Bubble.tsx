@@ -21,6 +21,7 @@ import {
   msUntil,
   type EmuButton,
   type EmuEvent,
+  type EmuFlow,
   type EmuMessage,
   type MessageStatus,
 } from '@/lib/emulator/state'
@@ -223,6 +224,60 @@ function ActionButton({
   )
 }
 
+/**
+ * The Flow's one call to action, attached to the bubble.
+ *
+ * Attached, not floating below it: WhatsApp draws a reply button as its own card under the
+ * message and a Flow CTA as a divided strip inside it, and the difference is the whole point —
+ * a reply button sends a word back, this one opens a form. Drawing both the same way would
+ * make the emulator agree with itself and disagree with the handset.
+ *
+ * The disabled state is the load-bearing part. `flow_token` is a single-use `action` row, so a
+ * form that has been submitted once, or whose ttl has run out, is dead — and until this
+ * rendered it, a dead form and a live one were the same bubble.
+ */
+function FlowButton({
+  flow,
+  nowIso,
+  onOpen,
+  busy,
+}: {
+  flow: EmuFlow
+  nowIso: string
+  onOpen: () => void
+  busy: boolean
+}) {
+  const reason = buttonDisabled({ ...flow, actionId: flow.flowToken }, nowIso)
+  const left = reason ? null : msUntil(flow.expiresAt, nowIso)
+  return (
+    <button
+      type="button"
+      disabled={!!reason || busy}
+      onClick={onOpen}
+      title={reason ? `flow ${reason}` : `flow ${flow.flowId} · screen ${flow.screen}`}
+      className={cx(
+        'mt-1 -mr-2 -mb-1 -ml-2 flex items-center justify-center gap-1.5 border-t px-2 py-1.5 text-[12px] transition-colors',
+        'w-[calc(100%+1rem)]',
+        reason
+          ? 'cursor-not-allowed border-white/10 text-zinc-500 line-through decoration-zinc-600'
+          : 'border-violet-500/30 text-violet-300 hover:bg-violet-500/10',
+      )}
+    >
+      <span className="font-mono text-[10px]">▤</span>
+      <span className="truncate">{flow.cta || '(no cta)'}</span>
+      {reason ? <span className="font-mono text-[9px] tracking-wide no-underline">· {reason}</span> : null}
+      {left !== null ? (
+        <span
+          className={cx('font-mono text-[9px] tracking-wide', left < 10 * 60_000 ? 'text-amber-400' : 'text-zinc-500')}
+          title="how long this flow_token stays submittable"
+        >
+          · {fmtDuration(left)} left
+        </span>
+      ) : null}
+    </button>
+  )
+}
+
 /** §2.4's ladder, one rung at a time. `queued` is not on the wire, so it has nothing to give. */
 function nextRung(status: MessageStatus): 'delivered' | 'read' | null {
   if (status === 'sent') return 'delivered'
@@ -238,8 +293,10 @@ export function Bubble({
   senderFallback,
   onTap,
   onOpenList,
+  onOpenFlow,
   onAdvanceStatus,
   busyTap,
+  busyFlow,
 }: {
   m: EmuMessage
   tz: string
@@ -248,8 +305,10 @@ export function Bubble({
   senderFallback: string | null
   onTap: (actionId: string, label: string) => void
   onOpenList: (m: EmuMessage) => void
+  onOpenFlow: (m: EmuMessage) => void
   onAdvanceStatus: (messageId: string, status: 'delivered' | 'read') => void
   busyTap: (actionId: string) => boolean
+  busyFlow: (flowToken: string) => boolean
 }) {
   const [showRaw, setShowRaw] = useState(false)
   const [lightbox, setLightbox] = useState(false)
@@ -279,6 +338,7 @@ export function Bubble({
   const inWindow = m.inWindow ?? meta?.inWindow ?? (templateName ? false : null)
   const sender = m.senderPhone ?? meta?.senderPhone ?? senderFallback
   const rung = nextRung(m.status)
+  const flowState = m.flow ? buttonDisabled({ ...m.flow, actionId: m.flow.flowToken }, nowIso) : null
 
   return (
     /*
@@ -326,6 +386,26 @@ export function Bubble({
                 <Chip tone="catalog" title="The catalog moment code raised (§12) — the bot chose what to do with it">
                   {m.catalogId}
                 </Chip>
+              ) : null}
+              {/* A Flow's evidence, on the bubble: which published artifact, which screen it
+                  opens on, and whether the action row behind `flow_token` is still live. The
+                  last one is the fact worth being able to see — it is the difference between
+                  a form that can be filled in and one that would be refused on submit. */}
+              {m.flow ? (
+                <>
+                  <Chip tone="violet" title="a WhatsApp Flow — a form inside the chat, carried by this message's one action slot">
+                    FLOW · {m.flow.flowId}
+                  </Chip>
+                  <Chip tone="quiet" title="the screen flow_action: navigate opens on">
+                    {m.flow.screen || 'no screen'}
+                  </Chip>
+                  <Chip
+                    tone={flowState ? 'danger' : 'window'}
+                    title={`flow_token ${m.flow.flowToken || '(none)'} — an action row (§2.2): minted once, submittable once`}
+                  >
+                    token {flowState ?? 'live'}
+                  </Chip>
+                </>
               ) : null}
             </div>
           ) : null}
@@ -398,6 +478,15 @@ export function Bubble({
               </button>
             ) : null}
           </div>
+
+          {m.flow ? (
+            <FlowButton
+              flow={m.flow}
+              nowIso={nowIso}
+              onOpen={() => onOpenFlow(m)}
+              busy={busyFlow(m.flow.flowToken)}
+            />
+          ) : null}
         </div>
 
         {m.buttons.length ? (
@@ -471,6 +560,22 @@ export function Bubble({
                 action · {b.actionId || '(none)'} {b.consumedAt ? '· consumed' : ''} {b.expiresAt ? `· ttl ${fmtStamp(b.expiresAt, tz)}` : ''}
               </div>
             ))}
+            {m.flow ? (
+              <>
+                <div className="truncate">
+                  flow · {m.flow.flowId} · screen {m.flow.screen || '(none)'} · {m.flow.mode}
+                </div>
+                <div className="truncate">
+                  flow_token · {m.flow.flowToken || '(none)'} {m.flow.consumedAt ? `· consumed ${fmtStamp(m.flow.consumedAt, tz)}` : ''}{' '}
+                  {m.flow.expiresAt ? `· ttl ${fmtStamp(m.flow.expiresAt, tz)}` : ''}
+                </div>
+                {Object.keys(m.flow.data).length ? (
+                  <div className="truncate">
+                    flow data · {Object.entries(m.flow.data).map(([k, v]) => `${k}=${v}`).join(' ')}
+                  </div>
+                ) : null}
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>

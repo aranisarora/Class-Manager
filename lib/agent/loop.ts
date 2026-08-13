@@ -320,7 +320,7 @@ async function executeAction(
         category: v.category || null,
         cancellationWindowHours: v.cancellation_window_hours,
         upiHandle: v.upi_handle || null,
-        venues: [{ name: v.venue }],
+        venues: v.venue ? [{ name: v.venue }] : [],
       })
       const res = await executePlan(session, steps, 'Business set up from the onboarding form', audienceFor(identity))
       if (!res.ok) {
@@ -339,7 +339,7 @@ async function executeAction(
         name: v.name,
         cancellationWindowHours: v.cancellation_window_hours,
         upiHandle: v.upi_handle || null,
-        venues: [{ name: v.venue }],
+        venues: v.venue ? [{ name: v.venue }] : [],
       })
       outcomes.push(
         await composeAndSend(session, {

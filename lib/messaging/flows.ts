@@ -120,6 +120,8 @@ const ONBOARDING_SETUP_JSON: FlowJson = {
       data: {
         name: { type: 'string', __example__: 'Baseline Badminton' },
         category: { type: 'string', __example__: 'Badminton' },
+        cancellation_window_hours: { type: 'string', __example__: '24' },
+        upi_handle: { type: 'string', __example__: 'coach@okhdfc' },
       },
       layout: {
         type: 'SingleColumnLayout',
@@ -149,9 +151,13 @@ const ONBOARDING_SETUP_JSON: FlowJson = {
             type: 'TextInput',
             name: 'venue',
             label: 'Where you play',
-            'helper-text': 'The hall or court name',
+            // Not required, because this form is also how an established business edits
+            // its settings — and the venue is the one field that ADDS a row rather than
+            // replacing one. Demanding it on every edit would make somebody re-type a
+            // hall they already have, or invent a second one to get past the form.
+            'helper-text': 'Add a hall or court — leave blank to keep the ones you have',
             'input-type': 'text',
-            required: true,
+            required: false,
           },
           {
             type: 'Dropdown',
@@ -210,8 +216,17 @@ const ONBOARDING_SETUP_JSON: FlowJson = {
 const OnboardingSetupResponse = z.object({
   name: z.string().trim().min(1).max(120),
   category: z.string().trim().max(80).optional().default(''),
-  venue: z.string().trim().min(1).max(120),
-  cancellation_window_hours: z.coerce.number().int().min(0).max(168).default(24),
+  venue: z.string().trim().max(120).optional().default(''),
+  /**
+   * The empty string is turned into `undefined` BEFORE coercion so the default applies.
+   * `z.coerce.number()` reads '' as 0, so "they left it blank" would have been written as
+   * a zero-hour cancellation policy — a business that can never refuse a late
+   * cancellation — rather than falling back to the 24 this schema already declares.
+   */
+  cancellation_window_hours: z.preprocess(
+    (v) => (v === '' || v === null ? undefined : v),
+    z.coerce.number().int().min(0).max(168).default(24),
+  ),
   upi_handle: z.string().trim().max(120).optional().default(''),
 })
 
