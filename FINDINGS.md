@@ -15,9 +15,22 @@ back) or **read it** (confident from the code, did not run it).
 
 ## The method this pass, and the one number that says whether it worked
 
-Two full probe runs plus a hand-driven academy from empty. Run 1 scored **235/247**; after
-the fixes, run 2 scored **243/247**, and the eight repetition failures that made up most of
-run 1's deficit were gone.
+Three full probe runs plus a hand-driven academy from empty. Run 1 scored **235/247**;
+run 2, after the first batch of fixes, **243/247**, with the eight repetition failures that
+made up most of run 1's deficit gone; run 3, **244/247**.
+
+**All three of run 3's remaining failures are the known harness bug** — the
+`coach-marks-register` check that asserts "aarav is down as absent" *after* tapping
+`[Aarav told me]`, which converts him to `cancelled_timely`, which is §8.2 working. And its
+one flagged `UNBACKED CLAIM` is a false positive of the axis-1 heuristic: *"I've set a watch
+for next Friday morning"* was backed by job `d0ed1979`, `pending`, `run_at` Friday 21 Aug
+09:00 — read back from the row. Axis 1 looks for an `audit_entry`, and scheduling writes a
+`job`. **So the product passed everything the harness can correctly measure.**
+
+Cost fell across the three runs — ₹11.58 → ₹12.35 → **₹10.56** — and the most expensive
+turn in the product, a parent asking to end her child's enrolment, went from 8 rounds and
+₹2.36 to **4 rounds and ₹0.80** once `CHANGED_NOTHING` could say which kind of nothing it
+was.
 
 But the score is the least interesting thing here, and this is the point worth keeping:
 **of the nine defects fixed this pass, six sat inside cases whose checks all passed.** The
@@ -216,14 +229,18 @@ Said plainly so nobody promotes it by accident.
 - **The money tail beyond `record_payment` is still unrun.** The reconcile ladder to
   `[Confirm payment]`, dunning to escalation, `per_package` exhaustion, `per_term` and a
   disputed charge have not been driven. Item 3 below is **read it**, not driven.
-- **Money idempotency is keyed on human-facing prose, and two writers spell it
-  differently — read it.** The free-first-class credit is deduped on `reason = 'free trial'`
-  in `money.ts` and written as `'free first class'` in `operations.ts`, so **neither writer
-  can see the other's rows** and a trial player can be credited twice. The same shape holds
-  for `kind='package'`: `money.ts` composes `"<class> — pack of N classes"` and
-  `operations.ts` composes `"N-class package — <player>"`, so `packageState` counts zero
-  packs opened by the other path and bills another one. **Found by reading, verified against
-  source, not driven, not fixed.**
+- **The money rules whose two writers disagreed are now fixed, but the fix is the smaller
+  half.** The free-first-class credit was deduped on `reason = 'free trial'` in `money.ts`
+  and written as `'free first class'` in `operations.ts`, so neither writer could see the
+  other's rows and a trial player could be credited twice; `kind='package'` had two
+  different description sentences, so `packageState` counted zero packs opened by the other
+  path and billed another. Both now import `lib/billing-keys.ts`, and
+  `scripts/check-billing-keys.mts` fails if either literal is reintroduced. **Found by
+  reading, verified against source, still not DRIVEN** — `per_package` and a trial player
+  have never run. And the real answer is that idempotency should not key on a sentence a
+  human reads at all: a `dedupe_key` column on `tally_line` with a unique index would make
+  the rule enforceable rather than merely agreed. Renaming a class still defeats a
+  description-keyed guard.
 - **The coach roster timeout has no established root.** It returns in ~200ms in isolation.
   Candidates are pool contention (`max: 10` per process against a shared `pool_size: 15`)
   and concurrent edits during the run. Not diagnosed.

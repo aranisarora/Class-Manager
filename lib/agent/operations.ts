@@ -27,6 +27,11 @@
  */
 
 import { serviceFrom, withSession, type SessionCtx } from '@/lib/db'
+import {
+  FREE_FIRST_CLASS_REASON,
+  freeFirstClassDescription,
+  packageDescription,
+} from '@/lib/billing-keys'
 import { undo as inverseOf } from '@/lib/audit'
 import { dedupe, liveAgentTasks, sessionJobPrefixes, TIMING_KEYS } from '@/lib/jobs'
 import { now } from '@/lib/clock'
@@ -1562,13 +1567,17 @@ const markAttendance: OperationDef = {
           )
           if (num(prior?.n) === 0 || r.is_trial) {
             steps.push({
+              // The reason string is shared with `money.ts` (lib/billing-keys.ts).
+              // It used to be 'free first class' here and 'free trial' there, so
+              // neither guard could see the other's credit and a trial player who
+              // met both paths was credited twice.
               write: `insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount, reason)
                       select ${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)}, date ${lit(period)},
-                             'adjustment', ${lit(`First class free — ${r.player_name}`)}, ${moneyLit(-amount)},
-                             'free first class'
+                             'adjustment', ${lit(freeFirstClassDescription(r.player_name))}, ${moneyLit(-amount)},
+                             ${lit(FREE_FIRST_CLASS_REASON)}
                        where not exists (select 1 from tally_line t
                                           where t.player_id = ${uid(r.player_id)}
-                                            and t.reason = 'free first class')`,
+                                            and t.reason = ${lit(FREE_FIRST_CLASS_REASON)})`,
               service: true,
             })
           }
@@ -1598,7 +1607,7 @@ const markAttendance: OperationDef = {
           steps.push({
             write: `insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount)
                     values (${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)}, date ${lit(period)},
-                            'package', ${lit(`${size}-class package — ${r.player_name}`)}, ${moneyLit(amount)})`,
+                            'package', ${lit(packageDescription(s.class_name, size))}, ${moneyLit(amount)})`,
             service: true,
           })
         }

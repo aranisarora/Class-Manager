@@ -16,6 +16,11 @@
 import { DateTime } from 'luxon'
 import type { Job } from '@/lib/types'
 import type { Tx } from '@/lib/db'
+import {
+  FREE_FIRST_CLASS_REASON,
+  freeFirstClassDescription,
+  packageDescription,
+} from '@/lib/billing-keys'
 import { now } from '@/lib/clock'
 import { formatINR } from '@/lib/format'
 import { composeAndSend } from '@/lib/messaging/compose'
@@ -42,9 +47,8 @@ function termDescription(className: string, period: string, months: number, tz: 
   return `${className} — term, ${start.toFormat('LLLL')} to ${end.toFormat('LLLL yyyy')}`
 }
 
-function packageDescription(className: string, count: number): string {
-  return `${className} — pack of ${count} classes`
-}
+// packageDescription now lives in lib/billing-keys.ts — `operations.ts` opens packs
+// too and composed a different sentence, so `packageState` counted zero of them.
 
 type EnrollmentRow = {
   enrollment_id: string
@@ -191,10 +195,13 @@ async function writeLine(
    */
   if (!e.is_trial) return
 
+  // Both the guard and the write use the shared reason. They used 'free trial'
+  // here and `operations.ts` used 'free first class', so neither path could see
+  // the other's credit and a trial player who met both was credited twice.
   const [alreadyCredited] = await tx<{ id: string }[]>`
     select id from tally_line
      where academy_id = ${academyId} and player_id = ${e.player_id}
-       and kind = 'adjustment' and reason = 'free trial'
+       and kind = 'adjustment' and reason = ${FREE_FIRST_CLASS_REASON}
      limit 1
   `
   if (alreadyCredited) return
@@ -202,7 +209,7 @@ async function writeLine(
   await tx`
     insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount, reason)
     values (${academyId}, ${e.account_id}, ${e.player_id}, ${period}::date, 'adjustment',
-            ${`Free trial — ${e.player_name}`}, ${-amount}, 'free trial')
+            ${freeFirstClassDescription(e.player_name)}, ${-amount}, ${FREE_FIRST_CLASS_REASON})
   `
 }
 
