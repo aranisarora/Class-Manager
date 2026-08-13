@@ -33,6 +33,7 @@ import {
   runTool,
   toolDecls,
   unbackedClaim,
+  unsupportedClaims,
   withFollowUps,
   MENU_BUTTON_TITLE,
   type ToolCtx,
@@ -570,6 +571,31 @@ export type ToolTrace = {
 }
 
 /**
+ * The name every non-tool entry in the trace carries.
+ *
+ * The flight recorder held tool calls and nothing else, so the model's own
+ * output — the words it wrote on each round, what it spent, why it stopped —
+ * was reconstructable only for the one case that recorded it (a round that
+ * produced nothing at all). Everything else was summed into the turn row and
+ * the per-round detail was gone: a turn that cost 128k tokens over six rounds
+ * could not be asked WHICH round was expensive.
+ *
+ * Marker entries share the trace rather than getting a column of their own
+ * because they are the same evidence about the same turn, in order. The cost of
+ * that is every consumer counting `tool_calls` as "tools reached for" — so the
+ * prefix is a single constant, and `isToolCall` below is the one predicate that
+ * separates them.
+ */
+export const TRACE_MARKER = '(model)'
+
+/** A real tool call, as opposed to a per-round marker. Consumers that count
+ *  tools, or group by tool name, must filter with this or the model's own
+ *  rounds show up as a tool nobody declared. */
+export function isToolCall(t: { name?: unknown }): boolean {
+  return typeof t?.name === 'string' && !t.name.startsWith('(')
+}
+
+/**
  * The stable part of a failure: the message with every id, quoted literal and
  * number taken out, so "refused for table class_slot" matches itself across
  * three attempts that differed only in what they inserted.
@@ -737,25 +763,37 @@ async function modelTurn(
     cachedTokens += res.usage.cachedTokens
     text = res.text ?? ''
 
-    if (!res.functionCalls.length) {
-      // A round that produced neither a tool call nor a word is the shape of every
-      // turn that dies quietly, and it used to leave no trace at all. The reason the
-      // candidate stopped is the whole diagnosis, so it is recorded here rather than
-      // inferred later from a missing reply.
-      if (!text.trim()) {
-        trace.push({
-          round: round + 1,
-          name: '(model returned nothing)',
-          ms: res.ms,
-          // On MALFORMED_FUNCTION_CALL the parts sometimes carry the fragment the
-          // model was trying to emit, which is the only clue to WHICH tool it was
-          // reaching for — the call itself never arrives.
-          args: traceValue(res.modelParts, 2000),
-          error: `finishReason: ${res.finishReason ?? 'unknown'} · ${res.usage.outputTokens} output tokens`,
-        })
-      }
-      break
-    }
+    // Every round leaves a record, not just the ones that went wrong. What the
+    // model wrote, what it reached for, what it stopped for and what it spent —
+    // recorded in the same order as the tool calls it sits above, so reading a
+    // turn back reads as the turn happened rather than as a list of tool calls
+    // with the reasoning removed.
+    //
+    // `modelParts` is carried only when there is no text to carry, because that
+    // is the case it diagnoses: on MALFORMED_FUNCTION_CALL the parts sometimes
+    // hold the fragment the model was trying to emit, which is the only clue to
+    // WHICH tool it was reaching for — the call itself never arrives.
+    trace.push({
+      round: round + 1,
+      name: TRACE_MARKER,
+      ms: res.ms,
+      args: text.trim()
+        ? traceValue(text, 4000)
+        : { returnedNothing: true, parts: traceValue(res.modelParts, 2000) },
+      result: {
+        in: res.usage.promptTokens,
+        cached: res.usage.cachedTokens,
+        out: res.usage.outputTokens,
+        calls: res.functionCalls.map((f) => f.name),
+        finish: res.finishReason ?? 'unknown',
+      },
+      error:
+        !res.functionCalls.length && !text.trim()
+          ? `finishReason: ${res.finishReason ?? 'unknown'} · ${res.usage.outputTokens} output tokens`
+          : undefined,
+    })
+
+    if (!res.functionCalls.length) break
 
     // Echo the model's own parts back verbatim so Gemini 3 thought signatures
     // survive the round trip.
@@ -912,6 +950,23 @@ async function modelTurn(
       outputTokens += forced.usage.outputTokens
       cachedTokens += forced.usage.cachedTokens
       text = forced.text ?? ''
+      // The recovery call is a whole extra prefix and it was invisible in the
+      // trace, so a turn that spent one looked identical to a turn that did not
+      // and the tokens appeared in the total with nothing to attribute them to.
+      trace.push({
+        round: rounds + 1,
+        name: TRACE_MARKER,
+        ms: forced.ms,
+        args: text.trim() ? traceValue(text, 4000) : { returnedNothing: true, recovery: true },
+        result: {
+          in: forced.usage.promptTokens,
+          cached: forced.usage.cachedTokens,
+          out: forced.usage.outputTokens,
+          calls: [],
+          finish: forced.finishReason ?? 'unknown',
+          recovery: true,
+        },
+      })
       if (!text.trim()) {
         forcedError = `the recovery call returned an empty candidate (finish: ${forced.finishReason ?? 'unknown'})`
       }
@@ -1011,8 +1066,14 @@ async function modelTurn(
      * plan is the runtime's evidence that the sentence is about THIS turn.
      */
     const claim = unbackedClaim(text.trim())
-    const backed = claim === 'claimed' ? toolCtx.committed : toolCtx.worked
-    if (claim && !backed && pending) {
+    // The claim-scoped half, on this path too. A guarantee enforced where the
+    // model happens to call `reply` and not where the loop emits its own
+    // trailing prose is not a guarantee — which path a turn takes is the model's
+    // choice (R4), and this is the path that shipped "I've marked Aditya and
+    // Ananya as present" over zero attendance rows.
+    const unsupported = unsupportedClaims(text.trim(), toolCtx)
+    const backed = claim === 'claimed' ? toolCtx.committed && !unsupported.length : toolCtx.worked
+    if ((claim || unsupported.length) && !backed && pending) {
       text = `${pending.summary}\n\nNothing is done yet — tap to confirm and I'll run it.`
     }
 

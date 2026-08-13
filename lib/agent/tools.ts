@@ -8,7 +8,7 @@
  * model be free above it.
  */
 
-import { assertSingleReadStatement, modelQuery, withSession, type SessionCtx } from '@/lib/db'
+import { assertSingleReadStatement, modelQuery, serviceFrom, withSession, type SessionCtx } from '@/lib/db'
 import { now } from '@/lib/clock'
 import { newId } from '@/lib/ids'
 import { composeAndSend } from '@/lib/messaging/compose'
@@ -192,6 +192,94 @@ export function unbackedClaim(body: string): 'claimed' | 'promised' | null {
 }
 
 /* ------------------------------------------------------------------------- *
+ * Which write would make THIS sentence true.
+ *
+ * `ctx.committed` is a property of the TURN, so one true claim licenses any
+ * number of false ones beside it — and the false one is invisible precisely
+ * because the message is mostly right. Driven five times in a single 17-case
+ * run, every one inside a case whose checks all passed:
+ *
+ *   "I've also drafted an invite for Arjun"      — no draft; the turn ran
+ *                                                  create_class and remember
+ *   "and enrolled Aarav, Ananya, and Dev"        — no enrollment row, twice
+ *   "I've also drafted the invite for Arjun"     — plan still behind [Do it]
+ *   "I've also set you up on the system"         — plan still behind [Looks right]
+ *
+ * The fix is not general fact-grounding, which needs the world. It is asking
+ * whether a sentence naming a SPECIFIC action has a write of that shape behind
+ * it — and the turn already records every write it made, so the answer is a
+ * lookup rather than a judgement.
+ *
+ * **Deliberately partial.** Only verbs with an unambiguous footprint are listed.
+ * "added", "created", "set", "updated", "changed" name no particular table and
+ * are left to the turn-scoped flag exactly as before: a guard that guessed at
+ * those would refuse true sentences, and refusing a true sentence costs a round
+ * and can end in a substitution. Every verb below either has a table that must
+ * have been touched, or is not claimed at all.
+ * ------------------------------------------------------------------------- */
+
+/** Verb (as written in a claim) → the tables any of which makes it true. */
+const CLAIM_TABLES: Record<string, string[]> = {
+  drafted: ['message'],
+  invited: ['message'],
+  enrolled: ['enrollment'],
+  waived: ['tally_line'],
+  recorded: ['payment'],
+  requested: ['payment'],
+  marked: ['attendance', 'session', 'session_coach'],
+  cancelled: ['session', 'enrollment', 'job'],
+  canceled: ['session', 'enrollment', 'job'],
+  moved: ['session', 'class_slot'],
+  scheduled: ['job', 'session'],
+  booked: ['enrollment', 'session'],
+  assigned: ['class_coach', 'session_coach'],
+  removed: ['enrollment', 'session', 'class_coach', 'session_coach'],
+  deleted: ['enrollment', 'session', 'class_coach', 'session_coach'],
+}
+
+/** Record what a plan wrote, so a claim can be checked against it. */
+export function recordExecuted(
+  ctx: ToolCtx,
+  op: string,
+  diffs: { table: string; op: string; after?: any[] }[] | undefined,
+): void {
+  if (!ctx.executed || !diffs?.length) return
+  ctx.executed.push({
+    op,
+    args: {},
+    wrote: diffs.map((d) => ({ table: d.table, op: d.op, after: d.after ?? [] })),
+  })
+}
+
+/**
+ * The specific claims this body makes that the turn's writes do NOT support.
+ *
+ * Empty when the sentence names no specific action — the caller then falls back
+ * to the turn-scoped flag, which is the behaviour that shipped before.
+ */
+export function unsupportedClaims(body: string, ctx: ToolCtx): string[] {
+  const wrote = new Set<string>()
+  for (const e of ctx.executed ?? []) for (const w of e.wrote ?? []) wrote.add(w.table)
+  // A message that actually reached somebody is a write for the purposes of
+  // "sent"/"drafted"/"invited": staged plan messages land in `message` too, but
+  // an operation that emitted one outside a plan diff would otherwise look silent.
+  if (ctx.outcomes?.some((o) => o.status === 'sent' || o.status === 'queued')) wrote.add('message')
+
+  const missing: string[] = []
+  for (const [verb, tables] of Object.entries(CLAIM_TABLES)) {
+    // Same two shapes `unbackedClaim` matches: "I've <verb>" anywhere, or the
+    // bare past tense opening a line. Mid-sentence lower-case is ordinary English
+    // ("sessions cancelled in time are credited") and must not be read as a receipt.
+    const claimed =
+      new RegExp(`\\bi(?:'ve| have)\\s+(?:just\\s+|now\\s+|also\\s+)*${verb}\\b`, 'i').test(body) ||
+      new RegExp(`(?:^|[.\\n]\\s*)(?:and\\s+)?${verb[0].toUpperCase()}${verb.slice(1)}\\s`, '').test(body) ||
+      new RegExp(`\\band\\s+${verb}\\s+(?=[A-Z₹\\d])`, '').test(body)
+    if (claimed && !tables.some((t) => wrote.has(t))) missing.push(verb)
+  }
+  return missing
+}
+
+/* ------------------------------------------------------------------------- *
  * "Tap the button below" — and there is no button.
  *
  * The same failure as the one above, one layer out: the message does not claim an
@@ -277,23 +365,26 @@ const STEPS_PARAM = {
     '  [{"write":"insert into venue (academy_id, name) values (app.academy_id(), \'Green Park\')"},\n' +
     '   {"write":"insert into class (academy_id, name, venue_id, starts_on) values (app.academy_id(), \'Evening\', ' +
     '(select id from venue where name = \'Green Park\' and academy_id = app.academy_id()), date \'2026-08-20\')"}]\n' +
-    // The pattern below is safe for `venue`, which has a real unique key on
-    // (academy_id, name). It is NOT safe for `class`: 0014 deliberately left
-    // classes without one, because §6.3 keeps ended classes forever and last
-    // year's "Beginners" must not block this year's. So a class lookup can match
-    // several rows, and a subquery used as an expression that returns two rows
-    // aborts the whole transaction — measured: an admin's entire second
-    // onboarding turn died on `more than one row returned by a subquery used as
-    // an expression`, nothing was written, and the model reported it as a SQL
-    // syntax problem it could not solve.
+    // Both are safe now. `venue` has always had a unique key on (academy_id,
+    // name); `class` gained one in 0021, scoped to classes that are still OPEN
+    // (active and no `ends_on`), so §6.3's requirement still holds — an ended
+    // class keeps its name and next season may reuse it.
+    //
+    // Saying so here is the point. The old text told the model classes were NOT
+    // unique and to narrow every lookup with `order by starts_on desc limit 1`.
+    // That `limit 1` is exactly what made a duplicate invisible: two "Evening
+    // Fitness" rows existed, every lookup silently picked one, and the coach was
+    // prompted twice for a fortnight. The instruction was correct for the schema
+    // it was written against and became a way to not notice.
     'An id argument may also be ONE parenthesised SELECT, for a row an earlier step in this same ' +
     'plan created — so an operation is never the wrong tool just because you do not have the id. ' +
     'It MUST return exactly one row: a subquery that matches two aborts the whole plan. Venue names ' +
-    'are unique per business, so a venue lookup is safe as written. Classes are NOT — ended classes ' +
-    'are kept forever and a name may repeat across years — so always narrow a class lookup with ' +
-    '`and active` and end it with `order by starts_on desc limit 1`:\n' +
+    'are unique per business, and so are the names of classes that are still running, so both are ' +
+    'safe as written. Narrow a class lookup with `and active and ends_on is null`:\n' +
     "  (select id from class where name = 'Beginners' and academy_id = app.academy_id() and active " +
-    'order by starts_on desc limit 1)\n' +
+    'and ends_on is null)\n' +
+    'If that matches nothing, the class does not exist yet — create it rather than widening the ' +
+    'lookup until something comes back.\n' +
     'Better still, if the row already exists, `read` its id first and pass the id itself.\n' +
     '  {"operation":{"name":"create_class","args":{"venue_id":"(select id from venue where name = ' +
     "'Green Park' and academy_id = app.academy_id())\", …}}}\n" +
@@ -1219,7 +1310,7 @@ async function whereThatColumnLives(ctx: ToolCtx, error: string): Promise<Record
   const column = m?.[1]
   if (!column) return {}
   try {
-    const found = await withSession({ role: 'service', academyId: ctx.session.academyId }, async (tx) => {
+    const found = await withSession(serviceFrom(ctx.session), async (tx) => {
       return (await tx.unsafe(
         `select table_name from information_schema.columns
           where table_schema = 'public' and column_name = ${lit(column)}
@@ -1465,6 +1556,12 @@ export async function runTool(
         if (!res.ok) return { result: { ok: false, executed: false, error: res.error } }
         ctx.worked = true
         ctx.committed = true
+        // What a plan wrote is recorded the same way a named operation's writes
+        // are. It was not, and that asymmetry was invisible while the honesty
+        // guard only asked "did ANYTHING commit" — both paths set that flag. The
+        // moment the guard asks "did the thing you SAID happen", a plan's diffs
+        // are the evidence, and this is the commonest write path in the product.
+        recordExecuted(ctx, 'plan', res.diffs)
         return {
           result: {
             ok: true,
@@ -1547,6 +1644,7 @@ export async function runTool(
       if (!res.ok) return { result: { ok: false, error: res.error, sent: 0 } }
       ctx.worked = true
       ctx.committed = true
+      recordExecuted(ctx, 'plan', res.diffs)
       return {
         result: {
           ok: true,
@@ -1756,20 +1854,40 @@ export async function runTool(
         const claim = unbackedClaim(body)
         // Past tense needs something to be TRUE; a promise needs something to be in
         // motion. A previewed plan satisfies the second and not the first.
-        const backed = claim === 'claimed' ? ctx.committed : ctx.worked
-        if (claim && !backed) {
+        //
+        // `unsupportedClaims` is the claim-scoped half. `ctx.committed` asks only
+        // whether the TURN wrote anything, so a message that truthfully reports
+        // creating a class could carry "and enrolled Aarav, Ananya and Dev"
+        // beside it with no enrollment row anywhere, and did. A specific verb is
+        // now checked against the specific table that would make it true, and a
+        // sentence naming one that was never written is unbacked however much
+        // else the turn got right.
+        const unsupported = unsupportedClaims(body, ctx)
+        const backed = claim === 'claimed' ? ctx.committed && !unsupported.length : ctx.worked
+        if ((claim || unsupported.length) && !backed) {
           if (!ctx.promiseChecked) {
             ctx.promiseChecked = true
+            // Naming the verb is the difference between one round and three. A
+            // message that is mostly true and wrong in one clause reads as
+            // correct to the model too, so "nothing has been written this turn"
+            // sends it looking for a problem it cannot see — and the turn that
+            // produced this had committed a class quite correctly.
+            const error = unsupported.length
+              ? `that message says you ${unsupported.join(' and ')} something, and nothing was written this turn that ` +
+                `would make that true. The rest of the message may be right — this is about the "${unsupported[0]}" part ` +
+                `specifically.`
+              : claim === 'claimed'
+                ? 'that message says you did something, and nothing has been written this turn'
+                : 'that message says you are about to do something, and there is no "about to" — the turn ends when you reply'
             return {
               result: {
-                error:
-                  claim === 'claimed'
-                    ? 'that message says you did something, and nothing has been written this turn'
-                    : 'that message says you are about to do something, and there is no "about to" — the turn ends when you reply',
-                hint:
-                  'Do it now — `act` for a named operation, `plan` then a confirmation button for anything bigger — and ' +
-                  'then say what you did. Or say plainly that you have not done it yet and ask for the one thing you ' +
-                  'need. Nothing else you send will make it true.',
+                error,
+                hint: unsupported.length
+                  ? `Either do it now — ${unsupported.join(' / ')} — and then say so, or drop that clause and send the ` +
+                    `part that is true. Do not reword it: the sentence is not what is wrong.`
+                  : 'Do it now — `act` for a named operation, `plan` then a confirmation button for anything bigger — and ' +
+                    'then say what you did. Or say plainly that you have not done it yet and ask for the one thing you ' +
+                    'need. Nothing else you send will make it true.',
                 sent: false,
               },
             }
@@ -2245,7 +2363,7 @@ export async function runTool(
       const viewSpecId = newId()
       const expires = new Date((await now()).getTime() + ttl * 60_000)
       void linkUrl // the URL is minted at send time, by `linkFor`, and never returned here
-      await withSession({ role: 'service', academyId: ctx.session.academyId }, async (tx) => {
+      await withSession(serviceFrom(ctx.session), async (tx) => {
         await tx.unsafe(
           `insert into view_spec (id, academy_id, spec, for_person_id, expires_at)
            values (${uid(viewSpecId)}, ${uid(ctx.session.academyId)}, ${jsonLit(spec)}, ${uid(forPersonId)},
@@ -2304,7 +2422,7 @@ export async function runTool(
       const summary = String(args?.summary ?? '')
       const sent: string[] = []
       if (!isAdmin) {
-        const admins = await withSession({ role: 'service', academyId: ctx.session.academyId }, async (tx) => {
+        const admins = await withSession(serviceFrom(ctx.session), async (tx) => {
           const rows = (await tx.unsafe(
             `select c.id from academy_admin aa
                join contact c on c.person_id = aa.person_id and c.academy_id = aa.academy_id
@@ -2329,7 +2447,7 @@ export async function runTool(
           sent.push(o.status)
         }
       }
-      await withSession({ role: 'service', academyId: ctx.session.academyId }, async (tx) => {
+      await withSession(serviceFrom(ctx.session), async (tx) => {
         await tx.unsafe(
           `insert into memory_fact (academy_id, subject_kind, subject_id, fact, source)
            values (${uid(ctx.session.academyId)}, 'person', ${uid(ctx.identity.person.id)},

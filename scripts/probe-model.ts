@@ -1302,7 +1302,11 @@ async function runChild(model: string): Promise<void> {
         result: JSON.stringify(x?.result ?? null).slice(0, 900),
         ...(x?.error ? { error: String(x.error).slice(0, 300) } : {}),
       }))
-      const toolNames = tools.map((x) => x.name)
+      // The model's own per-round records ride in the same array as the tool
+      // calls, deliberately — the score file wants them, because "what it wrote
+      // on round 3 before calling nothing" is the evidence a wrong reply raises.
+      // The `tools` COLUMN is a different question and must not count them.
+      const toolNames = tools.filter((x) => !x.name.startsWith('(')).map((x) => x.name)
       const reply = readReply(msgs)
 
       // Everything the turn queued that is already due — `create_class` writes no

@@ -37,6 +37,26 @@ export type SessionCtx =
   | { role: 'user'; academyId: string; personId: string; contactId: string; turnId?: string }
   | { role: 'readonly'; academyId: string; personId: string; contactId: string; turnId?: string }
 
+/**
+ * The service session that does a piece of work on behalf of an existing one.
+ *
+ * Fourteen places wrote `{ role: 'service', academyId: ctx.academyId }` inline,
+ * and every one of them silently dropped `turnId` — so the GUC that 0015 chose
+ * *specifically so no caller has to remember* was unset for the whole of every
+ * escalated write. `message.turn_id` came back null on every row in the product
+ * because of exactly this, at one line, in `send`.
+ *
+ * The lesson is the one in DRIVING.md's second test: a guarantee applied per
+ * caller is not a guarantee. Escalating is the operation, so escalating is where
+ * the attribution is carried, and a new caller written tomorrow gets it free.
+ *
+ * `turnId` is spread conditionally rather than passed as `undefined` because
+ * `applySession` distinguishes an absent GUC from an empty one.
+ */
+export function serviceFrom(ctx: SessionCtx): SessionCtx {
+  return { role: 'service', academyId: ctx.academyId, ...(ctx.turnId ? { turnId: ctx.turnId } : {}) }
+}
+
 export type QueryResult = {
   rows: Record<string, unknown>[]
   rowCount: number

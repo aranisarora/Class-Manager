@@ -58,9 +58,40 @@ for (const body of MODEL_CLAIMS_MUST_WEAKEN) {
   }
 }
 
+/**
+ * The idiom pass rewrites times on purpose, so "leave it alone" cannot express what
+ * it must get right. These say what it must produce.
+ *
+ * The first two are the driven defect: the localiser ended `[Mm]\.?`, so the dot it
+ * absorbed after "PM" was the one ending the SENTENCE. A prospect's first message
+ * read "...from 6:30pm to 7:30pm It's ₹1,500 per month." A period is never the
+ * abbreviation's to take.
+ */
+const MUST_BECOME: [string, string][] = [
+  ["That batch runs from 6:30 PM to 7:30 PM. It's ₹1,500 per month.", "That batch runs from 6:30pm to 7:30pm. It's ₹1,500 per month."],
+  ['The first session is this evening at 6:30 PM. Who is coaching it?', 'The first session is this evening at 6:30pm. Who is coaching it?'],
+  ['Doors open at 8 AM, warm-up at 8:30 AM.', 'Doors open at 8am, warm-up at 8:30am.'],
+  ['Starts 6:00 PM sharp.', 'Starts 6pm sharp.'],
+  // Driven: an admin was shown this table, pipes and all. WhatsApp has no table.
+  [
+    '| Class | Coach | Roster |\n|:--- |:--- |:--- |\n| *Beginners* | Arjun Menon | Aarav, Ananya |\n| *Advanced* | (None) | Dev |',
+    '• *Beginners* — Coach: Arjun Menon · Roster: Aarav, Ananya\n• *Advanced* — Coach: (None) · Roster: Dev',
+  ],
+  // A sentence that merely contains a pipe is prose, and must survive intact.
+  ['Pay by UPI | NEFT | IMPS — whichever suits.', 'Pay by UPI | NEFT | IMPS — whichever suits.'],
+]
+for (const [body, want] of MUST_BECOME) {
+  const out = atSend(body)
+  if (out !== want) {
+    bad += 1
+    console.log(`WRONG\n  in:   ${body}\n  want: ${want}\n  got:  ${out}`)
+  }
+}
+
 console.log(
   bad === 0
-    ? `lint leaves all ${MUST_NOT_CHANGE.length} real bodies alone, and still weakens ${MODEL_CLAIMS_MUST_WEAKEN.length} model claims`
+    ? `lint leaves all ${MUST_NOT_CHANGE.length} real bodies alone, rewrites ${MUST_BECOME.length} times correctly, ` +
+        `and still weakens ${MODEL_CLAIMS_MUST_WEAKEN.length} model claims`
     : `\n${bad} problem(s)`,
 )
 process.exit(bad === 0 ? 0 : 1)

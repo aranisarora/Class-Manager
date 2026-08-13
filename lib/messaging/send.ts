@@ -21,7 +21,7 @@
  * against the drivable clock, or advancing it in the emulator would prove nothing (§17).
  */
 
-import { withSession } from '@/lib/db'
+import { serviceFrom, withSession } from '@/lib/db'
 import type { SessionCtx, Tx } from '@/lib/db'
 import { lint } from '@/lib/agent/lint'
 import { CATALOG, isCatalogId } from './catalog'
@@ -101,9 +101,17 @@ function rememberWaMessage(waMessageId: string, academyId: string, messageId: st
   waIndex.set(waMessageId, { academyId, messageId })
 }
 
-function serviceCtx(ctx: SessionCtx): SessionCtx {
-  return { role: 'service', academyId: ctx.academyId }
-}
+/**
+ * The service session this path does its work under.
+ *
+ * This was a local copy that rebuilt the context from the tenant alone, so it
+ * dropped `turnId` — and `app.turn_id` was therefore unset for every insert into
+ * `message`, leaving the column that records which turn put a sentence on
+ * somebody's screen null on every row the product has ever sent. Nothing failed;
+ * the attribution was simply absent, which is the whole shape of R6. It is
+ * `serviceFrom` now because thirteen other places had the identical copy.
+ */
+const serviceCtx = serviceFrom
 
 function capFrom(settings: Record<string, unknown> | null, key: string, fallback: number): number {
   const caps = (settings?.['send_caps'] ?? null) as Record<string, unknown> | null

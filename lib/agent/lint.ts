@@ -115,9 +115,80 @@ export function lint(
  * Runs first, so a heading rewritten to bold is still bold after the passes
  * below have taken their punctuation out.
  */
+/**
+ * A Markdown pipe table, turned into lines WhatsApp can actually draw.
+ *
+ * WhatsApp's markup is bold, italic, strikethrough, monospace, inline code,
+ * bulleted and numbered lists, and block quotes. There is no table. A model
+ * asked for a roster reaches for one anyway, and an admin was shown:
+ *
+ *   | Class | Coach | Roster |
+ *   |:--- |:--- |:--- |
+ *   | *Beginners* | Arjun Menon | Aarav, Ananya |
+ *
+ * — pipes and colons, verbatim, in the message summarising their whole business.
+ * It passed every check in the probe, including "no message carries raw
+ * structure", because that check was looking for JSON and ids.
+ *
+ * **Converted rather than refused.** The information is right and the person
+ * wants it; suppressing the message would leave them with nothing, and this file
+ * is a rewriting pass by design. Each data row becomes a bullet led by its first
+ * cell, with the remaining cells labelled from the header — which is what the
+ * table was for.
+ *
+ * Requires two or more consecutive pipe rows AND either a `|:---|` separator or a
+ * consistent column count, so a sentence that merely contains a pipe is left
+ * alone. A rewriting pass that fires on prose is worse than the table it fixes.
+ */
+function pipeTablesToLines(text: string): string {
+  const lines = text.split('\n')
+  const isRow = (l: string) => /\|/.test(l) && l.trim().length > 0
+  const cellsOf = (l: string) => {
+    const t = l.trim().replace(/^\|/, '').replace(/\|$/, '')
+    return t.split('|').map((c) => c.trim())
+  }
+  const isSeparator = (l: string) => cellsOf(l).every((c) => /^:?-{1,}:?$/.test(c) && c.length > 0)
+
+  const out: string[] = []
+  for (let i = 0; i < lines.length; i++) {
+    if (!isRow(lines[i])) {
+      out.push(lines[i])
+      continue
+    }
+    let j = i
+    while (j < lines.length && isRow(lines[j])) j++
+    const run = lines.slice(i, j)
+    const counts = run.map((l) => cellsOf(l).length)
+    const consistent = counts.every((n) => n === counts[0] && n >= 2)
+    if (run.length < 2 || !(run.some(isSeparator) || consistent)) {
+      out.push(...run)
+      i = j - 1
+      continue
+    }
+
+    const rows = run.filter((l) => !isSeparator(l)).map(cellsOf)
+    const header = run.some(isSeparator) && rows.length > 1 ? rows.shift()! : null
+    for (const cells of rows) {
+      const kept = cells.filter((c) => c.length > 0)
+      if (!kept.length) continue
+      // Already emphasised cells are left as they are — a second pair of asterisks
+      // round `*Beginners*` renders as a literal asterisk, which is the bug one
+      // layer down from the one being fixed.
+      const lead = /[*_~]/.test(kept[0]) ? kept[0] : `*${kept[0]}*`
+      const rest = kept.slice(1).map((c, k) => {
+        const label = header && header[k + 1] ? `${header[k + 1]}: ` : ''
+        return `${label}${c}`
+      })
+      out.push(rest.length ? `• ${lead} — ${rest.join(' · ')}` : `• ${lead}`)
+    }
+    i = j - 1
+  }
+  return out.join('\n')
+}
+
 function toWhatsAppMarkup(text: string): string {
   return (
-    text
+    pipeTablesToLines(text)
       // Fenced code and inline code survive as-is: WhatsApp has both.
       // `## Heading` → bold on its own line. Headings do not exist here.
       .replace(/^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*$/gm, (_m, body: string) => `*${String(body).trim()}*`)
@@ -319,10 +390,22 @@ function localiseEnglishDates(text: string): string {
   return (
     text
       // "6:00 PM" -> "6pm", "6:30 PM" -> "6:30pm". Also "6 PM".
-      .replace(/\b(\d{1,2}):(\d{2})\s*([APap])\.?[Mm]\.?/g, (_m, h, mm, ap) =>
+      //
+      // **No trailing `\.?`.** It used to end `[Mm]\.?`, to absorb the second dot of
+      // "P.M.". A regex cannot tell that dot from the one ending the sentence, and
+      // the sentence is the commoner case by far: the model writes "PM", so every
+      // "...from 6:30 PM to 7:30 PM. It's ₹1,500 per month." shipped to a person as
+      // "...to 7:30pm It's ₹1,500 per month." — two sentences run together, on the
+      // first message a prospect ever receives. Driven twice in one probe run, and
+      // invisible to every check because the body is otherwise perfect English.
+      //
+      // Dropping it costs a stray dot on the rare dotted form ("6:30 P.M. tomorrow"
+      // -> "6:30pm. tomorrow"). That is the right way round: a spare full stop reads
+      // as a typo, a missing one reads as a different sentence.
+      .replace(/\b(\d{1,2}):(\d{2})\s*([APap])\.?[Mm]/g, (_m, h, mm, ap) =>
         `${Number(h)}${mm === '00' ? '' : `:${mm}`}${ap.toLowerCase()}m`,
       )
-      .replace(/\b(\d{1,2})\s+([APap])\.?[Mm]\.?/g, (_m, h, ap) => `${Number(h)}${ap.toLowerCase()}m`)
+      .replace(/\b(\d{1,2})\s+([APap])\.?[Mm]/g, (_m, h, ap) => `${Number(h)}${ap.toLowerCase()}m`)
       // "August 17th" / "August 17, 2026" -> "17 Aug"
       //
       // `(?!\d)` after the day, because without it "August 2026" parsed as day 20 with

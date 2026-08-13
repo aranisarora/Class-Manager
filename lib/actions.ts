@@ -27,7 +27,7 @@
  * buttons are all `noop` — `[I'll be there]` beside `[Can't make it]` — retires nothing.
  */
 
-import { withSession } from '@/lib/db'
+import { serviceFrom, withSession } from '@/lib/db'
 import type { SessionCtx } from '@/lib/db'
 import { msgError } from '@/lib/messaging/types'
 import type { OperationName } from '@/lib/agent/operations'
@@ -105,7 +105,7 @@ export async function mintAction(
 
   const ttl = Number.isFinite(a.ttlMinutes) ? Number(a.ttlMinutes) : DEFAULT_ACTION_TTL_MINUTES
 
-  return withSession({ role: 'service', academyId: ctx.academyId }, async (tx) => {
+  return withSession(serviceFrom(ctx), async (tx) => {
     const rows = await tx<{ id: string }[]>`
       insert into action (academy_id, kind, payload, minted_at, minted_for_contact_id, expires_at)
       values (
@@ -151,7 +151,7 @@ export async function attachActionsToMessage(
   // it says so in the log rather than passing for success.
   let stamped = 0
   try {
-    stamped = await withSession({ role: 'service', academyId: ctx.academyId }, async (tx) => {
+    stamped = await withSession(serviceFrom(ctx), async (tx) => {
       const rows = await tx<{ id: string }[]>`
         update action
            set message_id = ${messageId}
@@ -207,8 +207,7 @@ export async function consumeAction(
   // The claim runs under the tapper's own session where there is one, so `action`'s RLS
   // policy — `minted_for_contact_id = app.contact_id()` — is the enforcer and the WHERE
   // clause below is the belt to it. Jobs and sims have no contact GUC and claim as service.
-  const claimCtx: SessionCtx =
-    ctx.role === 'user' ? ctx : { role: 'service', academyId: ctx.academyId }
+  const claimCtx: SessionCtx = ctx.role === 'user' ? ctx : serviceFrom(ctx)
 
   const claimed = await withSession(claimCtx, async (tx) => {
     const rows = await tx<{ payload: unknown }[]>`
@@ -296,7 +295,7 @@ export async function consumeAction(
 
   // Nothing was claimed. This read decides no outcome — it only says why, so the reply can
   // be "that one's already been used" rather than a shrug.
-  return withSession({ role: 'service', academyId: ctx.academyId }, async (tx): Promise<ConsumeResult> => {
+  return withSession(serviceFrom(ctx), async (tx): Promise<ConsumeResult> => {
     const rows = await tx<
       {
         minted_for_contact_id: string
@@ -349,7 +348,7 @@ export type PeekResult =
 export async function peekAction(ctx: SessionCtx, actionId: string): Promise<PeekResult> {
   if (!actionId || !UUID_RE.test(actionId)) return { ok: false }
 
-  return withSession({ role: 'service', academyId: ctx.academyId }, async (tx): Promise<PeekResult> => {
+  return withSession(serviceFrom(ctx), async (tx): Promise<PeekResult> => {
     const rows = await tx<
       {
         payload: unknown

@@ -26,7 +26,7 @@
  * model-facing step schema strips it (see plan.ts).
  */
 
-import { withSession, type SessionCtx } from '@/lib/db'
+import { serviceFrom, withSession, type SessionCtx } from '@/lib/db'
 import { undo as inverseOf } from '@/lib/audit'
 import { dedupe, liveAgentTasks, sessionJobPrefixes, TIMING_KEYS } from '@/lib/jobs'
 import { now } from '@/lib/clock'
@@ -102,9 +102,7 @@ export function jsonLit(v: unknown): string {
   return `${lit(JSON.stringify(v ?? null))}::jsonb`
 }
 
-function svc(ctx: SessionCtx): SessionCtx {
-  return { role: 'service', academyId: ctx.academyId }
-}
+const svc = serviceFrom
 
 async function q<T = Record<string, any>>(ctx: SessionCtx, sql: string): Promise<T[]> {
   return withSession(ctx, async (tx) => (await tx.unsafe(sql)) as unknown as T[])

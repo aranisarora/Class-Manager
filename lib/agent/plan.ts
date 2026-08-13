@@ -18,6 +18,7 @@
 
 import {
   assertSingleWriteStatement,
+  serviceFrom,
   withRollback,
   withSession,
   type SessionCtx,
@@ -810,8 +811,11 @@ function assertSomethingChanged(expanded: PlanStep[], diffs: TableDiff[]): void 
 /** BEGIN → run every step → capture the diff → ROLLBACK. Messages never leave the outbox. */
 export async function previewPlan(ctx: SessionCtx, steps: PlanStep[]): Promise<PlanResult> {
   const state = emptyState()
+  // Hoisted so the catch can tell a refusal from a missing row — that diagnosis
+  // needs the steps, and inside the try they are out of scope by the time it throws.
+  let expanded: PlanStep[] = []
   try {
-    const expanded = await expand(ctx, steps, 0)
+    expanded = await expand(ctx, steps, 0)
     const diffs = await withRollback(ctx, async (tx) => {
       const auditId = await beginAuditSafe(tx, ctx, 'preview', steps)
       await runSteps(tx, ctx, expanded, state)
@@ -828,8 +832,23 @@ export async function previewPlan(ctx: SessionCtx, steps: PlanStep[]): Promise<P
       summary: buildSummary(merged, state),
     }
   } catch (e) {
-    return failed(state, e, await repairHint(ctx, e))
+    return failed(state, e, await hintFor(ctx, e, expanded))
   }
+}
+
+/**
+ * The best sentence available about why this failed.
+ *
+ * `CHANGED_NOTHING` is the one failure whose cause the error itself cannot name,
+ * so it gets the extra round trip; everything else is diagnosable from the
+ * Postgres message alone.
+ */
+async function hintFor(ctx: SessionCtx, e: unknown, expanded: PlanStep[]): Promise<string | null> {
+  if (e instanceof PlanAbort && e.code === 'CHANGED_NOTHING') {
+    const refusal = await refusalHint(ctx, expanded)
+    if (refusal) return refusal
+  }
+  return repairHint(ctx, e)
 }
 
 /**
@@ -845,8 +864,11 @@ export async function executePlan(
 ): Promise<PlanResult & { auditId: string; outcomes: SendOutcome[] }> {
   const state = emptyState()
   let auditId = newId()
+  // Hoisted for the same reason as in `previewPlan`: the catch needs the steps
+  // to tell an RLS refusal from a WHERE that matched nothing.
+  let expanded: PlanStep[] = []
   try {
-    const expanded = await expand(ctx, steps, 0)
+    expanded = await expand(ctx, steps, 0)
     const diffs = await withSession(ctx, async (tx) => {
       auditId = await beginAuditSafe(tx, ctx, intent, steps, auditId)
       await runSteps(tx, ctx, expanded, state)
@@ -869,7 +891,7 @@ export async function executePlan(
       summary: receipt,
     }
   } catch (e) {
-    return { ...failed(state, e, await repairHint(ctx, e)), auditId, outcomes: [] }
+    return { ...failed(state, e, await hintFor(ctx, e, expanded)), auditId, outcomes: [] }
   }
 }
 
@@ -895,6 +917,18 @@ const NOT_NULL_RE = /null value in column "([^"]+)" of relation "([^"]+)"/i
 const ON_CONFLICT_RE = /no unique or exclusion constraint matching the ON CONFLICT/i
 const FK_RE = /violates foreign key constraint "[^"]*" on table "([^"]+)"/i
 const CHECK_RE = /violates check constraint "([^"]+)"/i
+/**
+ * 23505. Absent until 0021, because until then the only unique keys were ones a
+ * plan rarely collided with. `class_academy_name_open_key` changed that: "add a
+ * beginners batch" typed twice is now a refusal rather than a second class, and
+ * without a hint the model gets `duplicate key value violates unique constraint
+ * "class_academy_name_open_key"` — a sentence whose repair is not obvious and
+ * whose worst outcome is being read back to an admin verbatim.
+ */
+const UNIQUE_RE = /duplicate key value violates unique constraint "([^"]+)"/i
+/** Postgres appends `Key (a, b)=(x, y) already exists.` — the columns AND the
+ *  values that collided, which is the whole diagnosis. */
+const UNIQUE_DETAIL_RE = /Key \(([^)]+)\)=\(([^)]*)\) already exists/i
 
 /**
  * Postgres refuses precisely and explains nothing, and the model has no way to
@@ -910,6 +944,50 @@ const CHECK_RE = /violates check constraint "([^"]+)"/i
  * knowing anything about any particular table, which is the whole point: a
  * policy added tomorrow explains itself tomorrow, with no edit here.
  */
+/**
+ * Which kind of nothing happened.
+ *
+ * `assertSomethingChanged` can see that a plan of writes changed no rows. It
+ * cannot see WHY, so it says "either the WHERE matched nothing, or this person
+ * is not allowed to change those rows" — and leaves the model to guess. Driven:
+ * a parent asked to stop her child's enrolment, and the turn spent 8 rounds,
+ * 38.6s and ₹1.87 guessing. It tried the named operation, then raw SQL twice,
+ * got the same silent nothing each time, and gave up with a question. She can
+ * READ the row and not write it; the write is RLS-refused and refusals are
+ * silent by construction, which is R7's defining case.
+ *
+ * The runtime can tell the difference and simply was not asked. Re-run the same
+ * writes as the service role inside a transaction that always rolls back: if
+ * they match rows there, the rows exist and this person is not allowed to change
+ * them — a refusal, and something an admin can do. If they match nothing there
+ * either, the WHERE really is wrong.
+ *
+ * Only ever on the failure path, which already costs several rounds, so one
+ * extra round trip is the cheapest thing in the sequence. Rolled back, so the
+ * diagnosis cannot become the write.
+ */
+async function refusalHint(ctx: SessionCtx, expanded: PlanStep[]): Promise<string | null> {
+  if (ctx.role === 'service') return null
+  const writes = expanded.filter((s): s is PlanStep & { write: string } => 'write' in s)
+  if (!writes.length) return null
+  try {
+    const matched = await withRollback(serviceFrom(ctx), async (tx) => {
+      let n = 0
+      for (const w of writes) n += rowCount(await tx.unsafe(w.write))
+      return n
+    })
+    return matched > 0
+      ? `those rows DO exist — ${matched} of them — and this person is not allowed to change them. The database ` +
+          `refused silently rather than raising. This is not something to retry or reword: say plainly that it is ` +
+          `not something they can change themselves, and offer to pass it to whoever runs the business.`
+      : `the rows genuinely do not exist — the same writes match nothing even with no permissions in the way. ` +
+          `The WHERE is wrong, not the permission. Read the row back and check the id before writing again.`
+  } catch {
+    /* a hint is an improvement on the error, never a precondition for reporting it */
+    return null
+  }
+}
+
 async function repairHint(ctx: SessionCtx, e: unknown): Promise<string | null> {
   const message = e instanceof Error ? e.message : String(e)
   try {
@@ -948,6 +1026,18 @@ async function repairHint(ctx: SessionCtx, e: unknown): Promise<string | null> {
     if (chk) {
       return `the value is outside what "${chk[1]}" allows — the schema lists the permitted values for that column.`
     }
+
+    const uq = UNIQUE_RE.exec(message)
+    if (uq) {
+      const detail = UNIQUE_DETAIL_RE.exec(message)
+      const where = detail ? ` on (${detail[1]}) = (${detail[2]})` : ''
+      return (
+        `that row already exists${where} — "${uq[1]}" is a unique key, so this is a second copy of ` +
+        `something the business already has, not a new one. Read the existing row back and work with ` +
+        `it: say it is already there, or change the one that exists. Do not retry the insert with a ` +
+        `different spelling to get past the constraint — a near-duplicate is the thing it is there to stop.`
+      )
+    }
   } catch {
     /* a hint is an improvement on the error, never a precondition for reporting it */
   }
@@ -956,7 +1046,7 @@ async function repairHint(ctx: SessionCtx, e: unknown): Promise<string | null> {
 
 /** The WITH CHECK (or USING) expressions a write to this table has to satisfy. */
 async function policyExpressions(ctx: SessionCtx, table: string): Promise<string> {
-  const rows = await withSession({ role: 'service', academyId: ctx.academyId }, async (tx) => {
+  const rows = await withSession(serviceFrom(ctx), async (tx) => {
     return (await tx.unsafe(
       `select distinct coalesce(with_check, qual) as expr
          from pg_policies
@@ -970,7 +1060,7 @@ async function policyExpressions(ctx: SessionCtx, table: string): Promise<string
 
 /** The unique constraints that actually exist on a table. */
 async function uniqueKeys(ctx: SessionCtx, table: string): Promise<string> {
-  const rows = await withSession({ role: 'service', academyId: ctx.academyId }, async (tx) => {
+  const rows = await withSession(serviceFrom(ctx), async (tx) => {
     return (await tx.unsafe(
       `select pg_get_constraintdef(c.oid) as def
          from pg_constraint c join pg_class t on t.oid = c.conrelid
@@ -1047,7 +1137,7 @@ async function flushOutbox(
   staged: Staged[],
   auditId: string,
 ): Promise<SendOutcome[]> {
-  const svc: SessionCtx = { role: 'service', academyId: ctx.academyId }
+  const svc: SessionCtx = serviceFrom(ctx)
   const outcomes: SendOutcome[] = []
   for (let i = 0; i < staged.length; i++) {
     const m = staged[i]
@@ -1143,7 +1233,7 @@ async function recordAudit(
   }))
   const payload = { diffs, messages: told, scheduled: state.scheduled, summary: buildSummary(diffs, state) }
   try {
-    await withSession({ role: 'service', academyId: ctx.academyId }, async (tx) => {
+    await withSession(serviceFrom(ctx), async (tx) => {
       const res = (await tx.unsafe(
         `update audit_entry set intent = ${lit(intent)}, plan = ${jsonLit(steps)},
                 diff = ${jsonLit(payload)}

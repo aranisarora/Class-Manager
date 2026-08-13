@@ -45,6 +45,8 @@
  * a wrong answer is diagnosable in one command.
  */
 import { c, loadEnvFiles } from './_env'
+import { isToolCall } from '@/lib/agent/loop'
+import { costInr } from '@/lib/pricing'
 import type { OperationName } from '@/lib/agent/operations'
 import type { PlanStep } from '@/lib/agent/plan'
 import type { LinkPurpose } from '@/lib/web/jwt'
@@ -655,10 +657,12 @@ async function showTurn(
 
   for (const t of turns) {
     const cacheRatio = t.prompt_tokens ? Math.round((100 * (t.cached_tokens ?? 0)) / t.prompt_tokens) : 0
+    const inr = costInr(String(t.model ?? ''), t.prompt_tokens ?? 0, t.cached_tokens ?? 0, t.output_tokens ?? 0)
     console.log(
       c.dim(
         `     · ${t.role_acted} · ${t.rounds ?? '?'} round(s) · ${((t.latency_ms ?? 0) / 1000).toFixed(1)}s · ` +
-          `${t.prompt_tokens ?? 0} in (${cacheRatio}% cached) / ${t.output_tokens ?? 0} out`,
+          `${t.prompt_tokens ?? 0} in (${cacheRatio}% cached) / ${t.output_tokens ?? 0} out` +
+          (inr === null ? '' : ` · ₹${inr.toFixed(2)}`),
       ),
     )
     if (t.error) console.log(`     ${c.red(`· error: ${clip(t.error, 300)}`)}`)
@@ -680,6 +684,38 @@ async function showTurn(
           })()
         : []
     for (const call of trace) {
+      // A per-round record of the model itself, not a tool. It leads its round —
+      // what the model wrote, what it then reached for, and what that round cost —
+      // so the calls printed under it read as consequences rather than as a list.
+      if (!isToolCall(call)) {
+        const u = (call.result ?? {}) as any
+        const rInr = costInr(String(t.model ?? ''), Number(u.in ?? 0), Number(u.cached ?? 0), Number(u.out ?? 0))
+        const spend =
+          `${Number(u.in ?? 0)} in` +
+          (u.cached ? ` (${Math.round((100 * Number(u.cached)) / Math.max(1, Number(u.in ?? 0)))}% cached)` : '') +
+          ` / ${Number(u.out ?? 0)} out` +
+          (rInr === null ? '' : ` · ₹${rInr.toFixed(2)}`)
+        console.log(
+          c.dim(
+            `     ── round ${call.round} · ${(call.ms / 1000).toFixed(1)}s · ${spend}` +
+              (u.finish && u.finish !== 'STOP' ? ` · ${c.yellow(String(u.finish))}` : '') +
+              (u.recovery ? ' · recovery' : ''),
+          ),
+        )
+        const said =
+          typeof call.args === 'string' ? call.args : (call.args as any)?.returnedNothing ? '' : JSON.stringify(call.args)
+        if (said) {
+          // Indented under the round and marked, because these are the model's own
+          // words BEFORE the send path touched them — what the person actually read
+          // is the `message` row above, and confusing the two is how a round gets
+          // written up as a defect the customer never saw.
+          for (const line of clip(said, o.full ? 4000 : 400).split('\n')) console.log(c.dim(`        ┊ ${line}`))
+        } else if (!Array.isArray(u.calls) || !u.calls.length) {
+          console.log(`        ${c.red('┊ (model returned nothing)')}`)
+        }
+        if (call.error) console.log(`        ${c.red(`! ${clip(call.error, 300)}`)}`)
+        continue
+      }
       const detail =
         call.name === 'read'
           ? clip(call.args?.query, o.full ? 4000 : 200)
@@ -828,6 +864,7 @@ const HELP: [string, string][] = [
   ['deliver [--read] [--limit N]', 'sent → delivered → read, one rung a call'],
   ['fault [<kind> on|off] [--rate 0.5]', 'inject a failure (§17), or list them'],
   ['thread <contactId> [--others] [--full]', 'the conversation + flight recorder'],
+  ['turn [contactId] [--n 3] [--academy X]', 'inside the last N turns: every round, what it wrote, what it cost'],
   ['cost [contactId] [--academy X]', 'tokens, cache ratio, latency per turn'],
   ['score [contactId] [--academy X]', 'the seven axes, as numbers'],
   ['money [contactId] [--academy X] [--period 2026-07|all]', 'billed vs confirmed vs awaiting vs failed'],
@@ -2452,6 +2489,128 @@ async function main(): Promise<void> {
       break
     }
 
+    /**
+     * **The inside of a turn, round by round.**
+     *
+     * `thread` answers "what did this conversation look like"; this answers "what
+     * did the machine do, and what did each round of it cost". They are different
+     * questions and conflating them is how a turn that burned six rounds and a
+     * recovery call gets read as a turn that answered.
+     *
+     * Everything printed here was already recorded — `turn.tool_calls` carries the
+     * model's own per-round record beside the tool calls — but until this command
+     * existed the only way to see it was to read the jsonb by hand, and the only
+     * per-round number anybody quoted was the one the probe printed.
+     */
+    case 'turn': {
+      const contactId = positional[0]
+      const n = Number(flag('n') ?? '3')
+      const scope = await academiesInScope(contactId)
+      const rows: any[] = []
+      for (const a of scope) {
+        for (const r of await q<any>(
+          // `created_at` comes back as a Date, and `String(aDate)` is
+          // "Fri Aug 14 2026 …" — which sorts lexicographically by weekday and
+          // slices to nonsense. Both the clock shown and the key sorted on are
+          // rendered in SQL so neither depends on how the driver stringifies.
+          `select t.id, to_char(t.created_at, 'YYYY-MM-DD HH24:MI:SS') as at,
+                  to_char(t.created_at, 'YYYYMMDDHH24MISSUS') as seq,
+                  t.role_acted, t.model, t.rounds, t.latency_ms,
+                  t.prompt_tokens, t.cached_tokens, t.output_tokens, t.error, t.tool_calls,
+                  t.input, p.full_name as who
+             from turn t
+             join contact ct on ct.id = t.contact_id
+             join person p on p.id = ct.person_id
+            ${contactId ? `where t.contact_id = '${contactId}'::uuid` : ''}
+            order by t.created_at desc limit ${Math.max(1, Math.min(50, n))}`,
+          a.id,
+        )) {
+          rows.push({ ...r, academy: a.name })
+        }
+      }
+      if (!rows.length) {
+        console.log(c.yellow('no turns recorded yet.'))
+        break
+      }
+      rows.sort((x, y) => String(y.seq).localeCompare(String(x.seq)))
+      rows.length = Math.min(rows.length, Math.max(1, Math.min(50, n)))
+
+      for (const t of rows.reverse()) {
+        const inr = costInr(String(t.model ?? ''), t.prompt_tokens ?? 0, t.cached_tokens ?? 0, t.output_tokens ?? 0)
+        const cacheRatio = t.prompt_tokens ? Math.round((100 * (t.cached_tokens ?? 0)) / t.prompt_tokens) : 0
+        const src = t.input?.source ?? '?'
+        console.log(
+          `\n${c.bold(`── ${t.who} (${t.role_acted})`)} ${c.dim(`· ${t.academy} · ${t.at} · via ${src}`)}`,
+        )
+        const asked = t.input?.text ?? t.input?.task ?? (t.input?.actionId ? `[tap ${t.input.actionId}]` : null)
+        if (asked) console.log(c.dim(`   in: ${clip(String(asked), 400)}`))
+        console.log(
+          c.dim(
+            `   ${t.rounds ?? '?'} round(s) · ${((t.latency_ms ?? 0) / 1000).toFixed(1)}s · ` +
+              `${t.prompt_tokens ?? 0} in (${cacheRatio}% cached) / ${t.output_tokens ?? 0} out` +
+              (inr === null ? ` · unpriced (${t.model ?? 'no model'})` : ` · ₹${inr.toFixed(2)}`),
+          ),
+        )
+        if (t.error) console.log(c.red(`   error: ${clip(String(t.error), 500)}`))
+
+        const trace: Trace[] = Array.isArray(t.tool_calls)
+          ? t.tool_calls
+          : typeof t.tool_calls === 'string'
+            ? (() => {
+                try {
+                  const p = JSON.parse(t.tool_calls)
+                  return Array.isArray(p) ? p : []
+                } catch {
+                  return []
+                }
+              })()
+            : []
+        for (const call of trace) {
+          if (!isToolCall(call)) {
+            const u = (call.result ?? {}) as any
+            const rInr = costInr(String(t.model ?? ''), Number(u.in ?? 0), Number(u.cached ?? 0), Number(u.out ?? 0))
+            const pct = u.in ? `${Math.round((100 * Number(u.cached ?? 0)) / Number(u.in))}% cached` : ''
+            console.log(
+              c.yellow(
+                `\n   round ${call.round}` +
+                  c.dim(
+                    ` · ${(call.ms / 1000).toFixed(1)}s · ${Number(u.in ?? 0)} in${pct ? ` (${pct})` : ''} / ` +
+                      `${Number(u.out ?? 0)} out${rInr === null ? '' : ` · ₹${rInr.toFixed(2)}`}` +
+                      (u.finish && u.finish !== 'STOP' ? ` · finish=${u.finish}` : '') +
+                      (u.recovery ? ' · RECOVERY CALL' : '') +
+                      (Array.isArray(u.calls) && u.calls.length ? ` · → ${u.calls.join(', ')}` : ' · → no tools'),
+                  ),
+              ),
+            )
+            const said =
+              typeof call.args === 'string' ? call.args : (call.args as any)?.returnedNothing ? '' : String(call.args ?? '')
+            if (said) for (const line of clip(said, 4000).split('\n')) console.log(c.dim(`     ┊ ${line}`))
+            else if (!Array.isArray(u.calls) || !u.calls.length) console.log(c.red('     ┊ (model returned nothing)'))
+            if (call.error) console.log(c.red(`     ! ${clip(String(call.error), 400)}`))
+            continue
+          }
+          const detail =
+            call.name === 'read'
+              ? clip(call.args?.query, 2000)
+              : clip(typeof call.args === 'string' ? call.args : JSON.stringify(call.args), 2000)
+          console.log(`     ${c.blue(call.name.padEnd(10))} ${c.dim(`${call.ms}ms`)}  ${detail}`)
+          if (call.result !== undefined) {
+            console.log(
+              c.dim(
+                `                → ${clip(
+                  typeof call.result === 'string' ? call.result : JSON.stringify(call.result),
+                  1500,
+                )}`,
+              ),
+            )
+          }
+          if (call.error) console.log(c.red(`                ! ${clip(String(call.error), 400)}`))
+        }
+      }
+      console.log()
+      break
+    }
+
     case 'thread': {
       const contactId = positional[0]
       if (!contactId) die(c.red('drive thread <contactId> [--turns] [--full] [--others]'))
@@ -2475,8 +2634,9 @@ async function main(): Promise<void> {
       for (const a of scope) {
         for (const r of await q<any>(
           `select to_char(created_at, 'HH24:MI:SS') as t, created_at, role_acted, rounds, latency_ms,
-                  prompt_tokens, cached_tokens, output_tokens,
-                  jsonb_array_length(coalesce(tool_calls,'[]'::jsonb)) as calls,
+                  prompt_tokens, cached_tokens, output_tokens, model,
+                  (select count(*) from jsonb_array_elements(coalesce(tool_calls,'[]'::jsonb)) call
+                    where call->>'name' not like '(%') as calls,
                   (error is not null) as failed
              from turn ${where} order by created_at desc limit 40`,
           a.id,
@@ -2641,9 +2801,13 @@ async function main(): Promise<void> {
 
       // --- 5 · Capability --------------------------------------------------------
       const tools = await q<any>(
+        // `not like '(%'` drops the per-round model records that share this array.
+        // Without it the most-reached-for "tool" in the product is `(model)`, which
+        // is not a tool and would have made axis 5 unreadable.
         `select call->>'name' as tool, count(*) as n
            from turn t, jsonb_array_elements(coalesce(t.tool_calls,'[]'::jsonb)) call
           where t.created_at > app.now() - interval '30 days' ${forContact}
+            and call->>'name' not like '(%'
           group by 1 order by 2 desc`,
         academyId,
       )
