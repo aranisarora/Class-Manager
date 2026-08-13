@@ -148,8 +148,29 @@ export async function monthlyLines(job: Job): Promise<void> {
       const size = Math.max(1, e.rate_count ?? 1)
       const description = packageDescription(e.class_name, size)
       const { opened, consumed } = await packageState(tx, academyId, e, description)
-      if (consumed < opened * size) {
-        skip(`pack still has ${opened * size - consumed} of ${size} left`)
+      /**
+       * **A pack opens on the next session, not on the last one.**
+       *
+       * This was `consumed < opened * size`, so at `consumed === opened * size`
+       * — the moment the pack is exactly used up — the skip did not fire and a
+       * new pack was billed. §6.4 puts the moment one class later: "when
+       * `rate_count` sessions are consumed **the next session opens a new
+       * package** and writes the next line." `mark_attendance` implements that
+       * correctly (`consumed = used + 1; if (consumed > size)`), so the two
+       * writers rolled over one class apart, and this one was the wrong one.
+       *
+       * What that cost: a family finishes exactly their ten classes on 28 August
+       * and stops coming. On 1 September this billed them for pack #2 — with no
+       * session attended in it and none booked — and then carried it as
+       * outstanding, which is the dunning ladder's trigger. A charge for a pack
+       * that was never started, to a family who has just left, is the worst
+       * moment in the product to be wrong about money and the one most likely to
+       * be read as the academy squeezing a leaver. Nothing in the runtime could
+       * see it: the line is honestly written and "0 of 10 classes left" is
+       * arithmetically true of a pack nobody used.
+       */
+      if (consumed <= opened * size) {
+        skip(`pack has ${opened * size - consumed} of ${size} left — the next class opens the next pack`)
       }
       // The pack being opened is the (opened + 1)th, and that ordinal is its
       // identity: a period cannot name a pack, because a busy month can exhaust
@@ -224,6 +245,36 @@ async function writeLine(
    */
   if (!e.is_trial) return
 
+  /**
+   * **One free CLASS, not one free billing period.**
+   *
+   * §6.4 sizes this precisely: "a negative line equal to the first `session`
+   * line." The three units handled here have no session line, and this credited
+   * `-amount` — the whole recurring charge. So a trial booked into a `per_month`
+   * class got a free month; into `per_term` at ₹15,000, a free term; into a
+   * ten-class `per_package`, the entire pack. On the §10.1 prospect funnel,
+   * which is auto-confirmed with no admin gate, that is the DEFAULT for every
+   * customer who arrives cold — not an edge case.
+   *
+   * Nobody would have found out. The credit line is honestly written, it reads
+   * plausibly on the tally ("First class free — Aarav"), and it makes the total
+   * SMALLER, so no parent ever complains. No screen anywhere shows an admin what
+   * their free-trial policy costs. That is R6's own "where else to look": a
+   * commercial default the product applies without ever asking.
+   *
+   * The honest price of one class is the period's charge divided by the classes
+   * the period actually contains, counted from the `session` rows rather than
+   * assumed — a pack of ten is a tenth, a month with eight sessions is an
+   * eighth. If the period contains no sessions there is no such thing as "one
+   * class" to give away, and the credit is skipped rather than guessed at: an
+   * invented number here is exactly the failure this is fixing.
+   */
+  const perClass = await oneClassOf(tx, academyId, e, period, amount)
+  if (perClass === null) {
+    note(`${e.player_name} is a trial but ${e.class_name} has no sessions this period — no credit sized`)
+    return
+  }
+
   // Both writers spell the reason the same way (lib/billing-keys.ts): it was
   // 'free trial' here and 'free first class' in `operations.ts`, so neither path
   // could see the other's credit and a trial player who met both was credited
@@ -233,11 +284,66 @@ async function writeLine(
     insert into tally_line (academy_id, account_id, player_id, class_id, period,
                             kind, description, amount, reason, dedupe_key)
     values (${academyId}, ${e.account_id}, ${e.player_id}, ${e.class_id}, ${period}::date, 'adjustment',
-            ${freeFirstClassDescription(e.player_name)}, ${-amount}, ${FREE_FIRST_CLASS_REASON},
+            ${freeFirstClassDescription(e.player_name)}, ${-perClass}, ${FREE_FIRST_CLASS_REASON},
             ${billingKey.freeFirstClass(e.player_id)})
     on conflict (academy_id, dedupe_key) where dedupe_key is not null
     do nothing
   `
+
+  /**
+   * **The trial is over — say so in the row.**
+   *
+   * `is_trial` had exactly one writer (`book_trial`, hardcoded true) and no
+   * transition out of it. Every `update enrollment` in the repo sets `ended_on`
+   * and nothing else. So a player who joined on a trial two years ago is still
+   * flagged as a trial to `enrolledPlayers`, to `rosterOf`, to
+   * `app.session_roster`, and to the model itself — `schema-doc.ts` hands it the
+   * column — and asked "is Aarav still on a trial?" the honest answer from the
+   * row is yes, for ever.
+   *
+   * Their first recurring line has now been billed and their free class has been
+   * credited. That IS the conversion, and it is the only moment in the product
+   * that unambiguously is one.
+   */
+  await tx`
+    update enrollment set is_trial = false
+     where id = ${e.enrollment_id} and academy_id = ${academyId} and is_trial
+  `
+}
+
+/**
+ * What one class is worth, out of a period's charge.
+ *
+ * Counts the sessions the class actually holds in the period rather than
+ * assuming a number, because "how many classes are in a month" is a property of
+ * the timetable and differs per class and per month. Cancelled sessions do not
+ * count — a family cannot attend one.
+ *
+ * Returns null when the period holds no sessions at all, which is the honest
+ * answer to "what is one class worth" when there are none.
+ */
+async function oneClassOf(
+  tx: Tx, academyId: string, e: EnrollmentRow, period: string, amount: number,
+): Promise<number | null> {
+  // A pack's size is its own definition of how many classes the charge buys, and
+  // it does not depend on which month they fall in.
+  if (e.rate_unit === 'per_package') {
+    const size = Math.max(1, e.rate_count ?? 1)
+    return Math.round((amount / size) * 100) / 100
+  }
+
+  const months = e.rate_unit === 'per_term' ? Math.max(1, e.rate_count ?? 1) : 1
+  const [row] = await tx<{ n: number }[]>`
+    select count(*)::int as n
+      from session s
+     where s.academy_id = ${academyId} and s.class_id = ${e.class_id}
+       and s.status <> 'cancelled'
+       and s.starts_at >= ${period}::date
+       and s.starts_at < (${period}::date + make_interval(months => ${months}::int))
+  `
+  const n = Number(row?.n ?? 0)
+  if (n <= 0) return null
+  return Math.round((amount / n) * 100) / 100
 }
 
 /**

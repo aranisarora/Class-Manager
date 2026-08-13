@@ -2772,6 +2772,16 @@ const addFamily: OperationDef = {
           class_id: uuid.nullish(),
           rate_amount: z.number().nullish(),
           rate_unit: z.enum(['per_session', 'per_month', 'per_term', 'per_package']).nullish(),
+          /**
+           * Months in the term, or sessions in the pack. Required by 0025 for
+           * those two units, and this operation could not express it at all —
+           * it wrote `rate_unit` and omitted the count, so "Neha bought a
+           * ten-class pack" produced an enrolment the billing job had to guess
+           * at, and its three readers guessed 1, 1 and 10. `add_family` is the
+           * acquisition path — it is how a photographed register is loaded — so
+           * being structurally unable to state the count was not an edge case.
+           */
+          rate_count: z.number().int().positive().nullish(),
           started_on: z.string().nullish(),
         }),
       )
@@ -2853,10 +2863,11 @@ const addFamily: OperationDef = {
       })
       if (p.class_id) {
         steps.push({
-          write: `insert into enrollment (academy_id, class_id, player_id, rate_amount, rate_unit, started_on)
+          write: `insert into enrollment (academy_id, class_id, player_id, rate_amount, rate_unit, rate_count, started_on)
                   values (${uid(ctx.academyId)}, ${uid(p.class_id)}, ${uid(playerId)},
                           ${p.rate_amount === null || p.rate_amount === undefined ? 'null' : moneyLit(p.rate_amount)},
                           ${lit(p.rate_unit ?? null)},
+                          ${lit(p.rate_count ?? null)},
                           date ${lit(p.started_on ? isoDate(p.started_on, a.timezone) : today)})`,
         })
       }
