@@ -20,6 +20,16 @@ const CASES: { why: string; body: string; buttons: number; mustNotContain: strin
     mustNotContain: ['[', 'action:', 'Next step:'],
   },
   {
+    why: 'the FULL wire shape typed after the label — four consecutive messages of a clean drive',
+    body:
+      "We're still missing your *UPI handle*.\n\n*Next step:*\n\n"
+      + "[Set UPI Handle] (kind: 'operation', op: 'view', args: { screen: setup })\n"
+      + "[Go Live] (kind: 'operation', op: 'set onboarding state', args: { state: live })\n"
+      + "[Draft Arjun's Invite] (kind: 'operation', op: 'send invite draft', args: {: '' })",
+    buttons: 3,
+    mustNotContain: ['[', 'kind:', 'op:', 'args:', 'Next step:'],
+  },
+  {
     why: 'bare labels on their own line, the shape that already worked',
     body: 'Does that look right?\n\n[Looks right]\n[Something’s wrong]',
     buttons: 2,

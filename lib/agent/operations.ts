@@ -3029,52 +3029,12 @@ const undo: OperationDef = {
  * Onboarding state, memory, watches
  * =========================================================================== */
 
-/**
- * What has to exist before going live means anything.
- *
- * `onboarding_state = 'live'` is the single most consequential value in the
- * product: every job handler gates on it (`if (academy.onboarding_state !== 'live')
- * skip('not live yet')`) and `send` suppresses every unsolicited non-admin message
- * as `pre_launch` until it flips. So it is both the switch that starts the whole
- * business and — until now — an unconditional one-line UPDATE with no read behind
- * it, reachable only if the model happened to choose it.
- *
- * Going live with no classes is not a business that has launched; it is a business
- * that has turned on a set of jobs with nothing to say. `onboarding.md` gives the
- * order — shape, timetable, coaches, families, money, live — and nothing enforced
- * any of it.
- *
- * Only the timetable is a hard block. The rest are named in the preview instead of
- * refused, because they are all legitimately absent for a real business: a solo
- * academy has no coaches (§18 — the owner IS the coach), a business joining
- * mid-cycle may add families over the following week, and a cash-only business may
- * never want a UPI handle. Refusing those would be inventing policy nobody chose.
- */
-async function goLiveReadiness(
-  ctx: SessionCtx,
-): Promise<{ classes: number; coaches: number; families: number; upi: boolean }> {
-  const [row] = await q<{ classes: number; coaches: number; families: number; upi: boolean }>(
-    ctx,
-    `select
-       (select count(*)::int from class where academy_id = ${uid(ctx.academyId)} and active) as classes,
-       (select count(*)::int from coach where academy_id = ${uid(ctx.academyId)} and ended_on is null) as coaches,
-       (select count(*)::int from account where academy_id = ${uid(ctx.academyId)}) as families,
-       (select coalesce(nullif(trim(coalesce(upi_handle, '')), ''), '') <> ''
-          from academy where id = ${uid(ctx.academyId)}) as upi`,
-  )
-  return {
-    classes: Number(row?.classes ?? 0),
-    coaches: Number(row?.coaches ?? 0),
-    families: Number(row?.families ?? 0),
-    upi: Boolean(row?.upi),
-  }
-}
 
 const setOnboardingState: OperationDef = {
   name: 'set_onboarding_state',
   description:
     "Move the academy through setup → roster → ready → live. Nothing is sent to anyone until it is 'live' (§2.6). "
-    + 'Going live needs at least one active class, and reads back what is still missing before it runs.',
+    + 'Going live needs at least one active class — a class created earlier in the same plan counts.',
   params: z.object({ state: z.enum(['setup', 'roster', 'ready', 'live']) }),
   async build(ctx, args) {
     if (args.state !== 'live') {
@@ -3087,30 +3047,35 @@ const setOnboardingState: OperationDef = {
       ]
     }
 
-    const ready = await goLiveReadiness(ctx)
-    if (ready.classes === 0) {
-      // Thrown rather than returned as a step, so the plan never previews: there is
-      // nothing to read back and nothing to confirm. The sentence is what the admin
-      // reads, so it says the missing thing rather than the state machine.
-      throw new Error(
-        'there are no classes yet, so going live would start reminders about nothing — add the timetable first',
-      )
-    }
-
-    const missing = [
-      ready.coaches === 0 ? 'no coaches' : null,
-      ready.families === 0 ? 'no families' : null,
-      !ready.upi ? 'no UPI handle, so nobody can pay' : null,
-    ].filter(Boolean) as string[]
-
+    /**
+     * The precondition rides IN the statement, not in a read taken before the plan.
+     *
+     * It was a build-time query, and `build()` runs before any of the plan's steps do —
+     * so it saw the world as it was, not as the plan was about to leave it. Driven:
+     * asked to "set the UPI to probe@upi and switch it on", the model composed one plan
+     * whose first step set the handle and whose second went live, and the receipt read
+     * *"messages start flowing — note there is still no UPI handle, so nobody can pay"*
+     * about a plan that had just set one. The same staleness made the hard block worse
+     * than wrong: "add a class and go live" in a single plan would have been REFUSED for
+     * having no classes, moments before creating one.
+     *
+     * As an `exists` inside the UPDATE it is evaluated where the plan already is —
+     * inside the transaction, after the earlier steps — so a class created a step ago
+     * counts. `requireRows: 1` turns "no class" into a precondition failure that aborts
+     * the whole plan rather than a silent no-op, which is what `requireRows` is for.
+     *
+     * The "what is still missing" list is gone with the read that produced it. It was
+     * never a check — the admin census carries the same facts every turn, computed fresh
+     * — and the one thing it added over the census was the chance to be out of date at
+     * the exact moment somebody was fixing it.
+     */
     return [
+      { note: 'messages start flowing from now on' },
       {
-        note: missing.length
-          ? `messages start flowing from now on — note there is still ${missing.join(', ')}`
-          : 'messages start flowing from now on',
-      },
-      {
-        write: `update academy set onboarding_state = 'live' where id = ${uid(ctx.academyId)}`,
+        write: `update academy set onboarding_state = 'live'
+                 where id = ${uid(ctx.academyId)}
+                   and exists (select 1 from class
+                                where academy_id = ${uid(ctx.academyId)} and active)`,
         requireRows: 1,
       },
     ]

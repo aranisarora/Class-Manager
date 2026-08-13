@@ -306,6 +306,53 @@ Said plainly so nobody promotes it by accident.
   turn to turn; the structural guarantees hold every time, which tool the model reaches for
   first does not.
 
+## 9 · What reading every turn found that 247 checks did not — **drove it**
+
+Three clean lifecycle runs were scored, and for the first two only the summary table
+and the failed-check tally were read. That was not enough, and the gap is the point:
+**every defect below sat inside a case whose checks all passed.** A check only asserts
+what somebody thought to assert.
+
+`.probe/score.md` is ~1,150 lines for 17 cases. Reading it takes twenty minutes and
+found more than the counters did.
+
+- **A claim of the wrong action passes the honesty guard.** `hire-coach` told the admin
+  *"He hasn't been messaged yet — I've just drafted the invite for you to forward"*. The
+  turn's only tools were `add_coach` and `reflect:remember`; **no draft exists**. The
+  guard is turn-scoped: any write anywhere in the turn satisfies any past-tense sentence
+  about anything, so a true claim about A licenses a false claim about B. This is live
+  and is item 2 in `NEXT.md`.
+- **The model writes the whole wire shape into the message text**, and it shipped in four
+  consecutive messages: `[Set UPI Handle] (kind: 'operation', op: 'view', args: { screen:
+  setup })`. `BRACKET_LINE` matched a line of brackets ALONE, so any parenthetical after
+  the label made the line "prose". Fixed, with the real strings in
+  `scripts/check-repair.mts`.
+- **A parent cannot end her own child's enrolment, and nothing says so.** She asked; the
+  model tried `end_enrollment` (`PRECONDITION_FAILED`), then raw SQL twice
+  (`CHANGED_NOTHING` both times), then gave up and asked a question — 8 rounds, 38.6s,
+  ₹1.87, the most expensive turn in the run. She can READ the row and not write it, and
+  the silent no-op is R7 exactly. Worse, the two buttons she needed to answer with
+  carried `params:` where the schema wants `args:`, so both were rejected at mint and she
+  got `[What can you do?]`.
+- **The go-live receipt contradicted its own plan** — *"note there is still no UPI handle,
+  so nobody can pay"* on a plan whose first step set one. `goLiveReadiness` read committed
+  state at build time, before any step ran. The same staleness would have made the hard
+  block FALSELY REFUSE "add a class and go live" in one plan. The precondition now rides
+  inside the UPDATE as an `exists`, evaluated in the transaction where a class created a
+  step earlier counts.
+- **Four of six reads in one turn failed on guessed schema** (`e.active`, `class_at`, a
+  mangled uuid) — 7 rounds and 23.5s for a stranger's first question. The runtime's
+  `column_lives_on` hint fired once and helped; the rest were unguided.
+- **The probe contains a check that contradicts its own tap.** `coach-marks-register`
+  asserts "aarav is down as absent" AFTER tapping `[Aarav told me]`, which converts him to
+  `cancelled_timely` — §8.2's catch-point working correctly. All three of run 2's
+  remaining failures are this one harness bug, so the product passed everything that run
+  could actually measure.
+
+**And one fix promoted from inferred to verified by reading rows:** Meera's August bill is
+₹3,500 — `Beginners ₹1,500` AND `Evening Fitness ₹2,000`, one player in two recurring
+classes. Under the old month-boundary filter the second line would never have existed.
+
 ## Reported, not fixed
 
 Found by the harness agent while driving its own academy, and left alone deliberately —

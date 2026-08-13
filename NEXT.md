@@ -101,7 +101,45 @@ to synthesis as if it were copy, because it is.**
 
 ## The work, ranked
 
-### 1. Drive the money half to the end — it is now reachable and mostly unrun
+### 1. Make the honesty guard claim-scoped, not turn-scoped
+
+**Why.** **Verified** by reading a clean run turn by turn. Asked to hire a coach, the model
+told the admin *"He hasn't been messaged yet — I've just drafted the invite for you to
+forward."* The turn ran `add_coach` and `reflect:remember` and nothing else; **no draft
+exists**, so the coach is never invited and the admin believes otherwise.
+
+The guard passed it because `add_coach` committed. `ctx.committed` is a property of the
+TURN, so one true claim licenses any number of false ones beside it — and the false one is
+invisible precisely because the message is mostly right.
+
+**How.** `ctx.executed[]` already records every operation that ran this turn with the rows
+it wrote. The tractable version is not general fact-grounding: it is asking whether a
+sentence naming a *specific* action (drafted, invited, cancelled, waived, moved) has an
+executed operation of that shape behind it. Start by listing which verbs map to which
+operations — that mapping is small, closed, and already implicit in the registry.
+
+**How you will know.** Ask for a coach and an invite in one sentence and confirm the reply
+cannot claim a draft that `send_invite_draft` did not produce.
+
+### 2. A parent cannot end her own child's enrolment, and nothing says so
+
+**Why.** **Verified**, and it was the most expensive turn of the run: 8 rounds, 38.6s,
+₹1.87. She asked to stop; the model tried the operation (`PRECONDITION_FAILED`), then raw
+SQL twice (`CHANGED_NOTHING` both times), then gave up and asked a question. She can READ
+the row and not write it — the write is RLS-refused and silent, which is R7's defining case.
+
+Whether a parent *should* be able to is a policy question worth answering explicitly. What
+is not in question is that four silent no-ops and a shrug is the wrong answer to either
+policy. The runtime can tell the difference: re-read the row as the service role, and if it
+exists but the write matched nothing, that is a refusal, not a missing row — say so, and
+route it to the admin.
+
+**Also there:** the two buttons she needed to answer with carried `params:` where the schema
+wants `args:`, so both were rejected at mint and she got `[What can you do?]`. The mint-time
+rejection is correct; the model never being told is not — `dropped_buttons` exists for this
+and did not reach it.
+
+### 3. Drive the money half to the end — it is now reachable and mostly unrun
 
 **Why.** Every money path is reachable and the front half has now executed once:
 `monthly_lines` billed, `request_payment` wrote a `requested` row, `reconcile` was scheduled
