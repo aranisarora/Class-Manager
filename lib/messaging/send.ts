@@ -170,6 +170,47 @@ async function subjectName(tx: Tx, msg: OutboundMessage, row: Row): Promise<stri
     : `${names[0].full_name} and ${names.length - 1} others`
 }
 
+/**
+ * The template frame already says the academy's name; the detail must not say it again.
+ *
+ * Every one of the eight templates opens with `{academy}:`, and `{detail}` is filled
+ * with the body composed for the IN-window send — which several writers quite
+ * correctly prefix with the academy name, because in window there is no frame in
+ * front of it. Out of window the two are concatenated, so the one line a parent
+ * skims names the business twice and reads as two messages glued together:
+ *
+ *     Baseline Badminton: a payment receipt for Meena Krishnan.
+ *     Baseline Badminton: received ₹1,200. Thank you.
+ *
+ * That was the real `message` row for the first payment receipt this product ever
+ * sent. Five more like it are in the shared world, across CL-RECEIPT, CL-TALLY,
+ * CO-FINAL-STATEMENT and CL-FIRST-CONTACT — and out of window is the NORMAL case
+ * for exactly those: a receipt, a tally and a reconcile all fire long after the
+ * 24h window has shut. R1 — composed at one layer, rendered at another, and there
+ * is no model in the loop at send time to notice.
+ *
+ * **Only the OPENING restatement is removed, and only the academy's own name.**
+ * A mention later in the body is prose and may be load-bearing. And the event
+ * being repeated in different words — "your final statement" then "final statement
+ * to 20 Aug" — is left alone deliberately: DRIVING's split puts byte-identical
+ * repetition at the send gate and *semantic* repetition at the generator, because
+ * only the first is a thing the runtime can check against its own record. The
+ * academy name IS the runtime's own record, which is what makes this half a
+ * structural check rather than a guess.
+ */
+function withoutRestatedFrame(detail: string, academyName: string): string {
+  const name = academyName.trim()
+  if (!name) return detail
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // The separator is optional because a composer may write "Ace: x", "Ace — x" or
+  // just "Ace x". Anchored at the start, so this can only ever remove a prefix.
+  const stripped = detail.replace(new RegExp(`^\\s*${escaped}\\s*(?:[:\\u2013\\u2014-]\\s*)?`, 'i'), '')
+  // A body that is *only* the academy's name has nothing left to say; keep it
+  // rather than handing `renderTemplate` an empty parameter, which it throws on.
+  if (!stripped.trim()) return detail
+  return stripped.charAt(0).toUpperCase() + stripped.slice(1)
+}
+
 function buildTemplateParams(
   template: TemplateName,
   msg: OutboundMessage,
@@ -177,7 +218,7 @@ function buildTemplateParams(
   who: string,
 ): Record<string, string> {
   const entry = msg.catalogId && isCatalogId(msg.catalogId) ? CATALOG[msg.catalogId] : null
-  const detail = (msg.body ?? '').trim()
+  const detail = withoutRestatedFrame((msg.body ?? '').trim(), row.academy_name)
   const defaults: Record<string, string> = {
     academy: row.academy_name,
     who,
