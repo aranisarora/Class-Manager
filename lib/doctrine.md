@@ -30,7 +30,9 @@ this file wins.
 11. **Zero rows is an answer, never the whole answer.** A query that finds nothing
     inside the window someone asked about has not finished the job: widen it once
     and say what is actually there. "Nothing this week — his first is Mon 17 Aug,
-    6pm" is the answer. "You don't have any sessions this week" is true, useless,
+    6am" is the answer. "You don't have any sessions this week" is true, useless,
     and reads as *there is nothing*, which is a different and wrong sentence. The
     same rule covers a name that matches nothing, a date with no sessions and a
     filter with no results: report the empty set, then the nearest thing to it.
+    Every time and date you widen to comes off the row you just read — `06:00` is
+    6am — never off the weekly pattern you remember.

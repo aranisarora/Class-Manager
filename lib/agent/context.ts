@@ -284,6 +284,31 @@ async function census(id: Identity): Promise<string | null> {
   }
   const n = (row: Record<string, unknown> | null, key: string): number => Number(row?.[key] ?? 0)
 
+  const many = async (sql: string): Promise<Record<string, unknown>[]> => {
+    const res = await modelQuery(ctx, sql)
+    return res.error ? [] : (res.rows as Record<string, unknown>[])
+  }
+
+  /**
+   * A session as a person says it, not as the row stores it.
+   *
+   * Rendered here rather than handed over raw, because a raw `starts_at` is the
+   * shape the most expensive error in the product comes out of: given `06:00:00`
+   * and no rendering, replies came back saying "6pm", defended it when pushed,
+   * and sent a parent to a locked hall. `inZone().label` is the same formatter the
+   * rest of the product writes times with, so the tail already contains the exact
+   * sentence the reply should use.
+   */
+  const tz = id.academy.timezone || 'Asia/Kolkata'
+  const sessionLine = (r: Record<string, unknown>): string => {
+    const raw = r.starts_at
+    const at = raw instanceof Date ? raw : new Date(String(raw))
+    if (Number.isNaN(at.getTime())) return String(r.class_name ?? 'a class')
+    const who = r.who ? `${String(r.who)} — ` : ''
+    const venue = r.venue ? ` at ${String(r.venue)}` : ''
+    return `${who}${String(r.class_name ?? 'a class')}, ${inZone(at, tz).label}${venue}`
+  }
+
   try {
     if (id.roles.includes('admin')) {
       const row = await q(`select
@@ -326,32 +351,80 @@ async function census(id: Identity): Promise<string | null> {
     }
 
     if (id.coachId) {
-      const row = await q(`select
+      const [row, next, unmarked] = await Promise.all([
+        q(`select
           (select status from coach where id = '${id.coachId}'::uuid) as status,
           (select count(*) from class_coach where coach_id = '${id.coachId}'::uuid) as classes,
           (select count(*) from session_coach sc join session s on s.id = sc.session_id
-            where sc.coach_id = '${id.coachId}'::uuid and s.status = 'scheduled' and s.starts_at > app.now()) as upcoming,
-          (select min(s.starts_at) from session_coach sc join session s on s.id = sc.session_id
-            where sc.coach_id = '${id.coachId}'::uuid and s.status = 'scheduled' and s.starts_at > app.now()) as next_at`)
-      if (!row) return null
-      return [
-        `- their coach record is "${String(row.status ?? 'unknown')}"`,
-        `- assigned to ${n(row, 'classes')} class(es)`,
-        `- ${n(row, 'upcoming')} session(s) ahead of them${row.next_at ? `, the first at ${String(row.next_at)}` : ''}`,
-      ].join('\n')
+            where sc.coach_id = '${id.coachId}'::uuid and s.status = 'scheduled' and s.starts_at > app.now()) as upcoming`),
+        many(`select c.name as class_name, s.starts_at, v.name as venue
+                from session_coach sc
+                join session s on s.id = sc.session_id
+                join class c on c.id = s.class_id
+                left join venue v on v.id = coalesce(s.venue_id, c.venue_id)
+               where sc.coach_id = '${id.coachId}'::uuid
+                 and sc.declined_at is null
+                 and s.status = 'scheduled' and s.starts_at > app.now()
+               order by s.starts_at limit 4`),
+        // The one thing a coach is chased about, prefetched with the id needed to
+        // act on it — so "did I mark Tuesday?" is answered, and marking it is one
+        // round rather than three.
+        many(`select c.name as class_name, s.starts_at, s.id as session_id
+                from session_coach sc
+                join session s on s.id = sc.session_id
+                join class c on c.id = s.class_id
+               where sc.coach_id = '${id.coachId}'::uuid
+                 and s.status = 'scheduled' and s.ends_at < app.now()
+                 and not exists (select 1 from attendance a where a.session_id = s.id)
+               order by s.starts_at desc limit 3`),
+      ])
+      const bits = [
+        `- their coach record is "${String(row?.status ?? 'unknown')}"`,
+        `- assigned to ${n(row, 'classes')} class(es), ${n(row, 'upcoming')} session(s) ahead of them`,
+      ]
+      if (next.length) {
+        bits.push(`- their next sessions, already looked up — use these times verbatim:`)
+        for (const r of next) bits.push(`    · ${sessionLine(r)}`)
+      }
+      if (unmarked.length) {
+        bits.push(`- register(s) still unmarked, with the id to mark them:`)
+        for (const r of unmarked) {
+          bits.push(`    · ${sessionLine(r)} — session_id = ${String(r.session_id)}`)
+        }
+      }
+      return bits.join('\n')
     }
 
     if (id.accountIds.length || id.playerIds.length) {
-      const row = await q(`select
+      const [row, next] = await Promise.all([
+        q(`select
           (select count(*) from player where active) as players,
-          (select count(*) from enrollment where ended_on is null) as enrolled,
-          (select min(s.starts_at) from session s join enrollment e on e.class_id = s.class_id
-            where s.status = 'scheduled' and s.starts_at > app.now() and e.ended_on is null) as next_at`)
-      if (!row) return null
+          (select count(*) from enrollment where ended_on is null) as enrolled`),
+        // §9's most-asked question is "what time is his class", and it cost a round
+        // every time because the tail carried a count and a bare timestamp. These are
+        // the actual rows, already in their words.
+        many(`select pe.full_name as who, c.name as class_name, s.starts_at, v.name as venue
+                from session s
+                join class c on c.id = s.class_id
+                join enrollment e on e.class_id = s.class_id and e.ended_on is null
+                join player pl on pl.id = e.player_id and pl.active
+                join person pe on pe.id = pl.person_id
+                left join venue v on v.id = coalesce(s.venue_id, c.venue_id)
+               where s.status = 'scheduled' and s.starts_at > app.now()
+               order by s.starts_at limit 4`),
+      ])
       const bits = [
         `- ${n(row, 'players')} of their children/players on the roster, ${n(row, 'enrolled')} live enrolment(s)`,
-        row.next_at ? `- their next session is at ${String(row.next_at)}` : `- nothing scheduled ahead for them`,
       ]
+      if (next.length) {
+        bits.push(`- their next sessions, already looked up — use these times verbatim:`)
+        for (const r of next) bits.push(`    · ${sessionLine(r)}`)
+      } else {
+        bits.push(
+          `- **nothing is scheduled ahead for them at all.** Not "nothing this week" — nothing. ` +
+            `Say so plainly and say what the class normally is; do not infer a next date from the weekly pattern.`,
+        )
+      }
       return bits.join('\n')
     }
 

@@ -95,6 +95,104 @@ export function extractBracketButtons(text: string): {
   }
 }
 
+/**
+ * The span of the JSON object containing `needle`, brace-balanced.
+ *
+ * A regex cannot do this: `{"buttons":[{"title":"x"}]}` has nested braces, and every
+ * non-greedy pattern that terminates on the first `}` leaves `]}` behind in the message
+ * — which is worse than not repairing it, because the residue looks like a typo rather
+ * than like machinery. String-aware, so a `}` inside a label does not end the scan.
+ */
+function jsonObjectSpan(text: string, needle: string): { start: number; end: number } | null {
+  const at = text.indexOf(needle)
+  if (at === -1) return null
+  const start = text.lastIndexOf('{', at)
+  if (start === -1) return null
+
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (ch === '\\') {
+      escaped = true
+      continue
+    }
+    if (ch === '"') {
+      inString = !inString
+      continue
+    }
+    if (inString) continue
+    if (ch === '{') depth += 1
+    else if (ch === '}') {
+      depth -= 1
+      if (depth === 0) return { start, end: i + 1 }
+    }
+  }
+  return null
+}
+
+/**
+ * A `{"buttons": […]}` blob, typed into the message body.
+ *
+ * The same instinct as a bracket label, one level more literal: the model knows what it
+ * wants to offer and writes the **wire shape** instead of calling the tool with it.
+ * Counted in `message.body` — three consecutive messages to one parent ended in a raw
+ * JSON object. And because the runtime then saw a message carrying no buttons, it bolted
+ * its generic `[What can you do?]` fallback on, so the customer received JSON *and* a
+ * button that answered none of it.
+ *
+ * Handled separately from brackets because the repair differs. A bracket label is prose
+ * that very nearly reads as an offer; a JSON object is something no person may see under
+ * any circumstances. So this **strips whether or not it parses**, and promotes the titles
+ * to real `reply` buttons only when it does.
+ */
+export function extractJsonButtons(text: string): {
+  text: string
+  buttons: { title: string; action: { kind: 'reply'; text: string } }[]
+} {
+  if (!text.includes('"buttons"')) return { text, buttons: [] }
+  const span = jsonObjectSpan(text, '"buttons"')
+  if (!span) return { text, buttons: [] }
+
+  let titles: string[] = []
+  try {
+    const parsed = JSON.parse(text.slice(span.start, span.end)) as { buttons?: unknown }
+    if (Array.isArray(parsed?.buttons)) {
+      titles = parsed.buttons
+        .map((b) => String((b as { title?: unknown } | null)?.title ?? '').trim())
+        .filter((t) => t.length > 0)
+    }
+  } catch {
+    // Unparseable is still not something a person may see. Strip it anyway.
+  }
+
+  // Take the code fence with it when the model wrapped one round the blob, or the
+  // message keeps a pair of empty ``` markers where the JSON used to be.
+  let { start, end } = span
+  const fenceBefore = /```(?:json)?[ \t]*\r?\n?[ \t]*$/.exec(text.slice(0, start))
+  if (fenceBefore) start -= fenceBefore[0].length
+  const fenceAfter = /^[ \t]*\r?\n?[ \t]*```/.exec(text.slice(end))
+  if (fenceAfter) end += fenceAfter[0].length
+
+  const cleaned = `${text.slice(0, start)}${text.slice(end)}`
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
+  return {
+    text: cleaned,
+    buttons: titles.slice(0, LIMITS.buttons).map((title) => ({
+      title: fitTitle(title),
+      action: { kind: 'reply' as const, text: title },
+    })),
+  }
+}
+
 /* ------------------------------------------------------------------------- *
  * Links
  * ------------------------------------------------------------------------- */
@@ -138,20 +236,37 @@ export type RepairResult<T extends RepairableMessage> = {
 /**
  * Everything a message can be wrong about that a string operation can put right.
  *
- * Order matters: brackets come out of the body first, and the URL pass runs after, so a
- * link that was sitting next to a bracket line is not lost with it.
+ * Order matters: the JSON blob comes out first (it can contain square brackets, so a
+ * bracket pass run before it would shred the labels inside it), then brackets, then the
+ * URL pass, so a link sitting next to a bracket line is not lost with it.
  */
 export function repairOutbound<T extends RepairableMessage>(msg: T): RepairResult<T> {
   const repairs: string[] = []
   const out = { ...msg }
   let bracketButtons: RepairResult<T>['bracketButtons'] = []
 
+  // --- the wire shape, typed into the prose ----------------------------------
+  if (typeof out.body === 'string' && out.body.includes('"buttons"')) {
+    const pulled = extractJsonButtons(out.body)
+    if (pulled.text !== out.body) {
+      out.body = pulled.text
+      bracketButtons = pulled.buttons
+      repairs.push(
+        pulled.buttons.length
+          ? `took a {"buttons"} JSON block out of the body, recovering ${pulled.buttons.length} label(s)`
+          : 'took an unparseable {"buttons"} JSON block out of the body',
+      )
+    }
+  }
+
   // --- buttons typed into the prose ------------------------------------------
   if (typeof out.body === 'string' && out.body.includes('[')) {
     const pulled = extractBracketButtons(out.body)
     if (pulled.buttons.length) {
       out.body = pulled.text
-      bracketButtons = pulled.buttons
+      // Both passes are the same instinct in two notations, so they add up rather
+      // than overwrite — and the cap is the wire's, not each pass's.
+      bracketButtons = [...bracketButtons, ...pulled.buttons].slice(0, LIMITS.buttons)
       repairs.push(`took ${pulled.buttons.length} bracketed label(s) out of the body`)
     }
   }

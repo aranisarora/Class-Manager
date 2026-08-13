@@ -174,16 +174,34 @@ function rowCount(res: unknown): number {
  * Identity for a session. Operations build against a person, not a role name.
  * ------------------------------------------------------------------------- */
 
-const identityCache = new Map<string, Identity>()
-
+/**
+ * **Not cached, and the cache is what was wrong with it.**
+ *
+ * This memoised the whole `Identity` per academy in a module-level Map with no
+ * invalidation, in a process that outlives any number of writes. Two of the
+ * fields it froze are the two that move:
+ *
+ *   `isSolo`  — `lib/jobs/util.ts` computes the same value and says of it, in as
+ *               many words, *"Never cached."* Adding the second coach to a solo
+ *               academy is the single most consequential shape change in §18, and
+ *               a long-lived worker went on believing there was nobody to escalate
+ *               to. Two modules disagreeing about one derived value is the exact
+ *               "two rules about one thing" failure this codebase is built to
+ *               avoid — and here it was inside the codebase.
+ *   `person` / `contact` — the admin borrowed for attribution. Change who the
+ *               first admin is and every subsequent job attributes to the old one.
+ *
+ * What the removal costs: one session and four statements per service-role plan
+ * that contains an `operation` step. That is jobs, which run sequentially and
+ * already open a session per handler, so it is a round trip nobody is waiting on.
+ * A correct answer that costs a query beats a stale one that is free.
+ */
 export async function identityFor(ctx: SessionCtx): Promise<Identity> {
   if (ctx.role !== 'service') {
     const id = await resolveIdentity(ctx.contactId)
     if (!id) throw new Error('plan: could not resolve the identity for this session')
     return id
   }
-  const cached = identityCache.get(ctx.academyId)
-  if (cached) return cached
   // A service session acts for the academy itself. Borrow the admin's shape so
   // operations have a person to attribute to; roles are ['admin'] because
   // cm_service is academy-wide by policy.
@@ -223,7 +241,6 @@ export async function identityFor(ctx: SessionCtx): Promise<Identity> {
     }
     return identity
   })
-  identityCache.set(ctx.academyId, built)
   return built
 }
 

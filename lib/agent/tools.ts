@@ -877,7 +877,12 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
   {
     name: 'read',
     description:
-      'Run one SELECT over the schema. RLS scopes it to what this person may see; 5s and 10k rows. Aggregates, window functions and date maths are all allowed. Always returns a scope line so an obviously wrong denominator is visible.',
+      'Run one SELECT over the schema. RLS scopes it to what this person may see; 5s and 10k rows. Aggregates, window functions and date maths are all allowed. Always returns a scope line so an obviously wrong denominator is visible. ' +
+      // The loop has always executed every function call in a round concurrently
+      // (`for (const call of res.functionCalls)`), and nothing anywhere said so — so
+      // the model asked one question per round and paid a whole prefix for each. A
+      // four-step discovery chain is two rounds instead of four for one sentence here.
+      'If you need several unrelated things, ask for them ALL IN THE SAME ROUND — several read calls in one round cost one round between them, while asking one at a time costs a round each.',
     parametersJsonSchema: {
       type: 'object',
       properties: {
