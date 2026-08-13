@@ -102,12 +102,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         outcomes.push(
           await composeAndSend(session, {
             toContactId: identity.contact.id,
-            body:
-              consumed.reason === 'expired'
-                ? "That button has expired — tell me what you'd like and I'll sort it out."
-                : consumed.reason === 'already_used'
-                  ? "That one's already done. Anything else?"
-                  : "That button isn't yours to tap. Tell me what you need instead.",
+            body: TAP_REFUSAL[consumed.reason],
           }),
         )
       } else if (consumed.payload.kind === 'reply') {
@@ -207,6 +202,25 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
   }
 
   return { turnId, sent: outcomes, toolCalls, error }
+}
+
+/**
+ * Why a tap did not go through, in the recipient's words. Four reasons, four
+ * sentences.
+ *
+ * `missing` and `wrong_contact` shared one line for most of this product's life —
+ * *"That button isn't yours to tap"* — so the two cases that are nobody's fault
+ * were reported as the one that is. A person whose action row was never written,
+ * or whose stored payload no longer parses, was told they had tapped someone
+ * else's button: accusatory, wrong, and the most alarming of the four things it
+ * could have meant. `wrong_contact` is the only one of the four that is about
+ * *them*, and it is the rarest.
+ */
+const TAP_REFUSAL: Record<'expired' | 'already_used' | 'wrong_contact' | 'missing', string> = {
+  expired: "That button has expired — tell me what you'd like and I'll sort it out.",
+  already_used: "That one's already done. Anything else?",
+  wrong_contact: "That button isn't yours to tap. Tell me what you need instead.",
+  missing: "I can't find that button any more — tell me what you need and I'll sort it out.",
 }
 
 /**
@@ -1491,7 +1505,19 @@ async function synthesisPayload(svc: SessionCtx, academyId: string): Promise<Rec
                  and (s.starts_at at time zone (select timezone from academy where id = ${A}))::date
                      = (app.now() at time zone (select timezone from academy where id = ${A}))::date
                order by s.starts_at`)
-    const needs_you_uncovered = await many(`select c.name as class_name, s.starts_at
+    // The predicate is §6.3's definition of coverage and is correct. What was
+    // wrong was that it travelled alone: a bare list of "uncovered" sessions
+    // cannot distinguish *nobody is on this* from *somebody is on this and has
+    // not tapped yet*, and the digest read it out as the first when it was the
+    // second — four times, to an owner whose only coach was assigned to all
+    // three classes. So the assignment travels with it.
+    const needs_you_uncovered = await many(`select c.name as class_name, s.starts_at,
+                     coalesce((select string_agg(p.full_name, ', ' order by p.full_name)
+                                 from session_coach sc
+                                 join coach co on co.id = sc.coach_id
+                                 join person p on p.id = co.person_id
+                                where sc.session_id = s.id and sc.declined_at is null), '')
+                       as assigned_coaches
                 from session s join class c on c.id = s.class_id
                where s.academy_id = ${A} and s.status = 'scheduled'
                  and s.starts_at between app.now() and app.now() + interval '36 hours'
@@ -1582,7 +1608,19 @@ async function synthesisPayload(svc: SessionCtx, academyId: string): Promise<Rec
       note: 'Every list here is the complete result of its query, not a sample.',
       today_sessions,
       needs_you: {
-        uncovered_sessions_next_36h: needs_you_uncovered,
+        // **The key name is prompt, and it is the part nobody reviews.** This was
+        // `uncovered_sessions_next_36h`, and "uncovered" became "still need a coach
+        // assigned" in the admin's digest — a false sentence, sent four times, about
+        // the only coach he had, on the eve of his first class. The predicate never
+        // changed; the name did the damage. Named for what it measures now, with the
+        // assignment alongside it so the true sentence is the available one.
+        sessions_without_a_confirmed_coach_next_36h: needs_you_uncovered,
+        sessions_note:
+          'A row here means nobody has CONFIRMED — not that nobody is assigned. Read ' +
+          '`assigned_coaches` on the row: non-empty means they have a coach who simply ' +
+          'has not tapped yet, and the true sentence names that person. Only an empty ' +
+          '`assigned_coaches` means nobody is on it at all. Never tell an admin a session ' +
+          'needs a coach assigned when one is.',
         registers_unmarked: registers_unmarked,
         coaches_invited_but_not_onboarded: coaches_not_onboarded,
       },

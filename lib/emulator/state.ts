@@ -22,7 +22,7 @@ import {
   useRef,
   type ReactNode,
 } from 'react'
-import { LIMITS } from '@/lib/messaging/types'
+import { EXTRA_LIMITS, LIMITS } from '@/lib/messaging/types'
 import type { ContactState, OnboardingState, Role } from '@/lib/types'
 
 /* ------------------------------------------------------------------ *
@@ -130,8 +130,17 @@ export type EmuAcademy = {
   timezone: string
   onboardingState: OnboardingState | string
   senderPhone: string | null
+  /**
+   * §16.3's accepted trade-off, made visible: the display name on the shared number is what
+   * every parent sees at the top of their chat — "Class Manager", never the academy's name.
+   * `worldState` has always served it and the client dropped it, so the one screen where the
+   * trade-off would be obvious showed the academy's name instead and hid it completely.
+   */
+  senderLabel: string | null
   category: string | null
   rail: string | null
+  /** §6.4 — where a Rail 1 parent is told to pay. Empty is a real state, and worth seeing. */
+  upiHandle: string | null
 }
 
 export type EmuContact = {
@@ -158,6 +167,16 @@ export type EmuClock = {
   nowIso: string
   offsetMs: number
   nextEventAtIso: string | null
+  /**
+   * `Date.now()` when `nowIso` arrived from the server. The simulated clock is real time plus
+   * an offset, so it keeps running between clock actions — but `nowIso` only changes when a
+   * route answers, and everything derived from it froze in between. A window with four minutes
+   * left read "window 4m" an hour later, and an expired action button stayed tappable-looking
+   * until something else happened. Measuring elapsed wall time from this anchor (rather than
+   * trusting the browser's own clock, which is not the server's) makes the countdowns move
+   * without ever drifting from the server's answer.
+   */
+  syncedAtMs: number
 }
 
 export type ScenarioMeta = { id: string; name: string; description: string | null }
@@ -245,6 +264,24 @@ export type EventFilters = {
   q: string
 }
 
+/**
+ * §2.4's ladder, driven for you.
+ *
+ * Nothing in this build ever advanced a delivery on its own: the emulator transport hands back
+ * a wire id and stops, so a full run of jobs left every message sitting at `sent` forever, and
+ * every per-tenant quality proxy §16.3 asks for — delivery failures, read rate — had no input
+ * that was not typed by hand. `delivered` is the honest default because delivery is the
+ * network's act; `read` additionally simulates the recipient opening the chat, which is a
+ * person's act and therefore an explicit choice rather than something that just happens.
+ */
+export type AutoDelivery = 'off' | 'delivered' | 'read'
+
+export const AUTO_DELIVERY_LABELS: Record<AutoDelivery, string> = {
+  off: 'manual',
+  delivered: 'auto ✓✓',
+  read: 'auto read',
+}
+
 export type EmulatorState = {
   booted: boolean
   loading: boolean
@@ -267,6 +304,7 @@ export type EmulatorState = {
   toasts: Toast[]
   showTray: boolean
   showLog: boolean
+  autoDelivery: AutoDelivery
 }
 
 /* ------------------------------------------------------------------ *
@@ -453,10 +491,18 @@ export function normalizeMessage(raw: Raw, index: ActionIndex, fallbackContactId
   const mediaUrl = str(pick(raw, 'media_url', 'mediaUrl')) ?? str(pick(payload, 'url'))
   const mediaRaw = (pick(raw, 'media') as Raw) ?? (pick(payload, 'media') as Raw) ?? null
   const resolvedMediaUrl = str(pick(mediaRaw, 'url')) ?? mediaUrl
+  // An inbound row keeps the declared mime type on the payload and the bytes in `media_url`.
+  // Its top-level type is the better answer than sniffing an extension, because §14.5 turns
+  // on the kind being right — audio has to arrive as audio, and a URL with no extension is
+  // otherwise indistinguishable from a document.
+  const mediaMime = str(pick(payload, 'mediaMimeType', 'media_mime_type', 'mimeType'))
   const media: EmuMedia | null = resolvedMediaUrl
     ? {
         url: resolvedMediaUrl,
-        kind: mediaKind(resolvedMediaUrl, pick(mediaRaw, 'kind', 'type') ?? pick(raw, 'media_kind', 'mediaKind')),
+        kind: mediaKind(
+          resolvedMediaUrl,
+          pick(mediaRaw, 'kind', 'type') ?? pick(raw, 'media_kind', 'mediaKind') ?? mediaMime?.split('/')[0],
+        ),
         filename: str(pick(mediaRaw, 'filename', 'name')),
       }
     : null
@@ -507,8 +553,10 @@ export function normalizeAcademy(raw: Raw): EmuAcademy | null {
     timezone: str(pick(raw, 'timezone', 'tz')) ?? 'Asia/Kolkata',
     onboardingState: (str(pick(raw, 'onboarding_state', 'onboardingState')) ?? 'live') as OnboardingState,
     senderPhone: str(pick(raw, 'sender_phone_e164', 'senderPhone', 'sender_phone')),
+    senderLabel: str(pick(raw, 'sender_label', 'senderLabel')),
     category: str(pick(raw, 'category')),
     rail: str(pick(raw, 'rail')),
+    upiHandle: str(pick(raw, 'upi_handle', 'upiHandle')),
   }
 }
 
@@ -629,6 +677,7 @@ function normalizeClock(raw: Raw | null | undefined, prev: EmuClock): EmuClock {
     nowIso,
     offsetMs: num(pick(raw, 'offset_ms', 'offsetMs')) ?? prev.offsetMs,
     nextEventAtIso: iso(pick(raw, 'next_event_at', 'nextEventAt', 'nextEvent')) ?? null,
+    syncedAtMs: Date.now(),
   }
 }
 
@@ -821,12 +870,24 @@ export function limitViolations(m: EmuMessage): string[] {
   if (m.list) {
     const rows = m.list.sections.reduce((n, s) => n + s.rows.length, 0)
     if (rows > LIMITS.listRows) out.push(`${rows} list rows / max ${LIMITS.listRows}`)
+    // The three limits below are as real as the row count — `validateOutbound` rejects a send
+    // that breaks any of them — and the emulator enforced none of them, so a list Meta would
+    // refuse rendered here as if it were fine. That is the exact inversion of §17's promise
+    // that "something that works here works there".
+    if (m.list.buttonText.length > EXTRA_LIMITS.listButtonTextChars)
+      out.push(`list button "${m.list.buttonText.slice(0, 12)}…" ${m.list.buttonText.length}/${EXTRA_LIMITS.listButtonTextChars}`)
+    if (m.list.sections.length > EXTRA_LIMITS.listSections)
+      out.push(`${m.list.sections.length} list sections / max ${EXTRA_LIMITS.listSections}`)
     for (const s of m.list.sections) {
       if (s.title.length > LIMITS.listSectionTitleChars)
         out.push(`section "${s.title.slice(0, 12)}…" ${s.title.length}/${LIMITS.listSectionTitleChars}`)
       for (const r of s.rows) {
         if (r.title.length > LIMITS.listRowTitleChars)
           out.push(`row "${r.title.slice(0, 12)}…" ${r.title.length}/${LIMITS.listRowTitleChars}`)
+        if (r.description && r.description.length > EXTRA_LIMITS.listRowDescriptionChars)
+          out.push(
+            `row "${r.title.slice(0, 12)}…" description ${r.description.length}/${EXTRA_LIMITS.listRowDescriptionChars}`,
+          )
       }
     }
   }
@@ -842,6 +903,46 @@ export function buttonDisabled(
   if (!b.actionId) return 'no action minted'
   if (b.consumedAt) return 'already used'
   if (b.expiresAt && new Date(b.expiresAt).getTime() <= new Date(nowIso).getTime()) return 'expired'
+  return null
+}
+
+/** Milliseconds from the simulated now until `when`. Negative once it is past. */
+export function msUntil(when: string | null, nowIso: string): number | null {
+  if (!when) return null
+  const t = new Date(when).getTime()
+  if (Number.isNaN(t)) return null
+  return t - new Date(nowIso).getTime()
+}
+
+/**
+ * What this row carries that the **wire would not deliver**, as a sentence.
+ *
+ * §17's contract runs in one direction only: the emulator may show less than production
+ * sends, never more. Media broke it. `asTemplateMessage` strips the header, the footer, the
+ * list and the link when a message goes out of window, and it keeps `media` — but a template
+ * send is `type: 'template'` with body parameters and one quick-reply payload, and there is
+ * nowhere in that shape for an image. So the bytes are stored on the row, the emulator drew
+ * them, and the parent's handset would have received a line of text with no photo. The one
+ * case §7.1 calls the biggest friction reducer in the product is exactly the case where this
+ * lies loudest, so the emulator says what actually lands instead of drawing what did not.
+ *
+ * The list and link cases are the same failure through a different door: `buildPayload` rides
+ * media as an image *header*, and it only attaches a header to a list or a `cta_url` when
+ * that header is text. This asks what **this codebase sends**, not what Meta would accept —
+ * the emulator's job is to be the other implementation of one transport, so the line it draws
+ * has to be `transport-cloud.ts`'s line.
+ */
+export function droppedOnTheWire(m: EmuMessage): string | null {
+  if (m.direction !== 'outbound' || !m.media) return null
+  if (m.templateName) {
+    return `a ${m.media.kind} is on this row, and an approved template carries body parameters and one quick-reply payload — nothing else. This never reaches the handset.`
+  }
+  if (m.list) {
+    return `a ${m.media.kind} is on this row, and a list's header is text only — the send path drops it. This never reaches the handset.`
+  }
+  if (m.link) {
+    return `a ${m.media.kind} is on this row, and a cta_url goes out with a text header only — the send path drops it. This never reaches the handset.`
+  }
   return null
 }
 
@@ -863,7 +964,7 @@ const initialState: EmulatorState = {
   scenarios: [],
   academies: [],
   contacts: [],
-  clock: { nowIso: new Date().toISOString(), offsetMs: 0, nextEventAtIso: null },
+  clock: { nowIso: new Date().toISOString(), offsetMs: 0, nextEventAtIso: null, syncedAtMs: Date.now() },
   faults: FAULT_KINDS.reduce(
     (acc, k) => ({ ...acc, [k]: { active: false, rate: 1 } }),
     {} as EmulatorState['faults'],
@@ -879,6 +980,7 @@ const initialState: EmulatorState = {
   toasts: [],
   showTray: true,
   showLog: true,
+  autoDelivery: 'off',
 }
 
 type Action =
@@ -905,6 +1007,7 @@ type Action =
   | { type: 'toast/dismiss'; id: string }
   | { type: 'ui/toggle'; key: 'showTray' | 'showLog' }
   | { type: 'scenario/set'; scenario: string }
+  | { type: 'delivery/mode'; mode: AutoDelivery }
 
 function mergeMessages(prev: EmuMessage[], incoming: EmuMessage[]): EmuMessage[] {
   // A refetch is authoritative. Optimistic echoes survive only briefly, so a slow round trip
@@ -1127,6 +1230,8 @@ function reducer(state: EmulatorState, action: Action): EmulatorState {
       return action.key === 'showTray'
         ? { ...state, showTray: !state.showTray }
         : { ...state, showLog: !state.showLog }
+    case 'delivery/mode':
+      return { ...state, autoDelivery: action.mode }
     default:
       return state
   }
@@ -1185,7 +1290,16 @@ export type EmulatorActions = {
     caption?: string,
   ) => Promise<void>
   tapAction: (contactId: string, actionId: string, label?: string) => Promise<void>
-  markRead: (contactId: string, messageId: string) => Promise<void>
+  /**
+   * §2.4 has four rungs and the UI had one control, wired to the top of the ladder: every
+   * hand-driven message jumped `sent → read` and `delivered` was unreachable, so the one
+   * state where a message is on the handset and unread — the state most delivery questions
+   * are actually about — could not be produced at all.
+   */
+  advanceStatus: (contactId: string, messageId: string, status: 'delivered' | 'read') => Promise<void>
+  /** Advance every outbound message the transport has accepted, world-wide. */
+  runDelivery: (mode: 'delivered' | 'read') => Promise<{ advanced: number }>
+  setAutoDelivery: (mode: AutoDelivery) => void
   /** Adds a throwaway person to the live world and opens them as a pane. */
   createTestContact: (input: {
     academyId: string
@@ -1563,11 +1677,20 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
           await afterMutation(contactId)
         }),
 
-      markRead: (contactId, messageId) =>
+      advanceStatus: (contactId, messageId, status) =>
         withBusy(`read:${messageId}`, async () => {
-          await post('/api/emulator/read', { messageId })
+          await post('/api/emulator/read', { messageId, status })
           await Promise.all([refreshThread(contactId), refreshEvents()])
         }),
+
+      runDelivery: async (mode) => {
+        const res = (await post('/api/emulator/delivery', { mode })) as Raw
+        const advanced = num(pick(res, 'advanced')) ?? 0
+        if (advanced > 0) await Promise.all([refreshOpenThreads(), refreshEvents(), refreshState()])
+        return { advanced }
+      },
+
+      setAutoDelivery: (mode) => dispatch({ type: 'delivery/mode', mode }),
 
       createTestContact: (input) =>
         withBusy('contact/new', async () => {
@@ -1635,6 +1758,38 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
     }
   }, [notify, refreshEvents, refreshOpenThreads, refreshState, refreshThread, withBusy])
 
+  /*
+   * Auto-delivery. It runs on wall-clock rather than on the sim clock deliberately: the
+   * point is that a message spends a moment at `sent` and then moves, the way a real one
+   * does, and a driver watching a pane needs to see that happen without touching anything.
+   * Overlapping runs are prevented by a flag rather than by clearing the interval, because
+   * a slow round trip must not be able to stack requests against the same rows.
+   */
+  const { autoDelivery } = state
+  const runDelivery = actions.runDelivery
+  useEffect(() => {
+    if (autoDelivery === 'off') return
+    let stopped = false
+    let inFlight = false
+    const beat = async () => {
+      if (inFlight || stopped) return
+      inFlight = true
+      try {
+        await runDelivery(autoDelivery)
+      } catch {
+        /* the ladder is an instrument, not the product — a failed poll must not toast */
+      } finally {
+        inFlight = false
+      }
+    }
+    void beat()
+    const t = setInterval(() => void beat(), 3000)
+    return () => {
+      stopped = true
+      clearInterval(t)
+    }
+  }, [autoDelivery, runDelivery])
+
   const value = useMemo<Ctx>(() => ({ state, actions }), [state, actions])
   return createElement(EmulatorContext.Provider, { value }, props.children)
 }
@@ -1672,6 +1827,33 @@ export function useThread(contactId: string): ThreadState {
   return state.threads[contactId] ?? { messages: [], loading: true, error: null, loadedAt: 0 }
 }
 
+/**
+ * The simulated now, ticking.
+ *
+ * `state.clock.nowIso` is the server's last answer and does not move between calls, which is
+ * why a 24h window could sit on screen reading "window 3m" long after it had closed and a
+ * time-limited button could never be watched expiring. This adds the wall time elapsed since
+ * that answer arrived — the same thing `app.now()` does server-side, since the sim clock is
+ * real time plus a stored offset — so a pane counts down truthfully with no extra round trips.
+ *
+ * It re-renders its caller once a second, so it belongs on the small surfaces that show a
+ * countdown, not at the root of the tree.
+ */
+export function useLiveNowIso(): string {
+  const { state } = useEmulator()
+  const { nowIso, syncedAtMs } = state.clock
+  const [, bump] = useReducer((n: number) => n + 1, 0)
+  useEffect(() => {
+    const t = setInterval(bump, 1000)
+    return () => clearInterval(t)
+  }, [])
+  const elapsed = Math.max(0, Date.now() - syncedAtMs)
+  // Under a second of drift is not worth a new string: keeping the server's own value means
+  // a pane that is not counting anything down renders byte-identically to what it was told.
+  if (elapsed < 1000) return nowIso
+  return new Date(new Date(nowIso).getTime() + elapsed).toISOString()
+}
+
 /** The clock is one shared thing; panes render it in their own academy's tz. */
 export function usePrimaryTimezone(): string {
   const { state } = useEmulator()
@@ -1686,6 +1868,39 @@ export function useSendMeta(messageId: string): EmuEvent | null {
     () => state.events.find((e) => e.messageId === messageId && (e.kind === 'send' || e.kind === 'suppress')) ?? null,
     [state.events, messageId],
   )
+}
+
+/**
+ * §16.1's tier accounting, derived from the log itself.
+ *
+ * The event log has rendered `tier n/limit` since it was written, and nothing in this build
+ * has ever emitted either number: `contact.tier_state` is in the schema and no code reads or
+ * writes it, so the chip was dead UI on every send. What a tier limit counts is
+ * **business-initiated conversations on one number in a rolling 24 hours**, and that is
+ * derivable here without inventing anything — a send that opened a paid conversation is
+ * exactly the send that consumed one, and both facts are already on the row.
+ *
+ * The denominator is deliberately not derived. Which tier a number sits in is Meta's fact
+ * about the number, not ours, so it stays absent unless a server emits it (§2.4).
+ */
+export function tierOrdinals(events: EmuEvent[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  const perSender = new Map<string, number[]>()
+  // Oldest first: an ordinal is "how many came before this one", so order is the whole point.
+  const ordered = [...events].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+  for (const e of ordered) {
+    if (e.kind !== 'send') continue
+    const opened = Boolean(e.templateName) || (e.costPaise ?? 0) > 0
+    if (!opened) continue
+    const key = e.senderPhone ?? 'unknown sender'
+    const at = new Date(e.at).getTime()
+    const seen = perSender.get(key) ?? []
+    const window = seen.filter((t) => at - t < 24 * 3600 * 1000)
+    window.push(at)
+    perSender.set(key, window)
+    out[e.id] = window.length
+  }
+  return out
 }
 
 export function filterEvents(state: EmulatorState): EmuEvent[] {

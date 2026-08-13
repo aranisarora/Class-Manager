@@ -44,15 +44,18 @@ export function Composer({
   optedOut,
   onSendText,
   onSendMedia,
-  onMarkRead,
-  markReadDisabled,
+  nextRung,
+  onAdvanceStatus,
+  advanceDisabled,
 }: {
   busy: boolean
   optedOut: boolean
   onSendText: (text: string) => void
   onSendMedia: (media: { url: string; mimeType: string; filename: string }, caption?: string) => void
-  onMarkRead: () => void
-  markReadDisabled: boolean
+  /** The rung the newest outbound message can reach next, or null when it is at the top. */
+  nextRung: 'delivered' | 'read' | null
+  onAdvanceStatus: () => void
+  advanceDisabled: boolean
 }) {
   const [text, setText] = useState('')
   const [attachError, setAttachError] = useState<string | null>(null)
@@ -173,14 +176,23 @@ export function Composer({
           {reading ? <Spinner /> : '📎 attach'}
         </Btn>
         <span className="font-mono text-[9px] text-zinc-600">or drop / paste a file</span>
+        {/* One rung, never the whole ladder. This control used to jump straight to `read`,
+            which meant `delivered` — the state a message is in on the handset of someone who
+            has not looked yet — could not be produced from the UI at all (§2.4). */}
         <Btn
           size="xs"
-          disabled={markReadDisabled}
-          onClick={onMarkRead}
-          title="advance the newest outbound message's delivery status by hand"
+          disabled={advanceDisabled}
+          onClick={onAdvanceStatus}
+          title={
+            nextRung === 'delivered'
+              ? 'the newest outbound message reached the transport — mark it delivered to the handset'
+              : nextRung === 'read'
+                ? 'it is on the handset — mark it read, as if they opened the chat'
+                : 'nothing to advance: the newest outbound message is queued, read, or there is none'
+          }
           className="ml-auto"
         >
-          ✓✓ mark read
+          {nextRung === 'read' ? '✓✓ mark read' : '✓ mark delivered'}
         </Btn>
         {over ? (
           <span className="font-mono text-[9px] text-rose-400">

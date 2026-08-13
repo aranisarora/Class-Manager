@@ -56,6 +56,7 @@ type EnrollmentRow = {
   holder_person_id: string
   started_on: string
   ended_on: string | null
+  is_trial: boolean
   rate_amount: string | number | null
   rate_unit: string | null
   rate_count: number | null
@@ -83,7 +84,7 @@ export async function monthlyLines(job: Job): Promise<void> {
       select e.id as enrollment_id, e.class_id, cl.name as class_name,
              e.player_id, pp.full_name as player_name,
              pl.account_id, a.holder_person_id,
-             e.started_on::text as started_on, e.ended_on::text as ended_on,
+             e.started_on::text as started_on, e.ended_on::text as ended_on, e.is_trial,
              coalesce(e.rate_amount, cl.rate_amount) as rate_amount,
              coalesce(e.rate_unit, cl.rate_unit) as rate_unit,
              coalesce(e.rate_count, cl.rate_count) as rate_count,
@@ -166,6 +167,42 @@ async function writeLine(
     insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount)
     values (${academyId}, ${e.account_id}, ${e.player_id}, ${period}::date,
             ${kind}, ${description}, ${amount})
+  `
+
+  /**
+   * §6.4's free first class, for the three units that do not bill on attendance.
+   *
+   * The free-trial rule lived entirely inside `mark_attendance`'s `per_session`
+   * branch, because it is written there as "a negative line equal to the first
+   * *session* line". The other three units have no session line — so a player
+   * booked in as a trial into a `per_month` class was **billed a full month for
+   * their free trial**, on the 1st, with nothing anywhere marking it as wrong.
+   * `is_trial` was carried on the enrollment, selected by nobody, and read by
+   * nothing in this file.
+   *
+   * Minted here rather than in the three branches for the reason the rest of this
+   * codebase gives: `writeLine` is the one place a recurring line is written, and
+   * a rule that has to be repeated three times is a rule that will be right twice.
+   *
+   * Self-limiting by construction — it offsets the FIRST recurring line only, so a
+   * trial who stays is billed normally from their second period. That matters
+   * because nothing in the product ever clears `is_trial`, so an exemption keyed
+   * on the flag alone would be permanent and silent.
+   */
+  if (!e.is_trial) return
+
+  const [alreadyCredited] = await tx<{ id: string }[]>`
+    select id from tally_line
+     where academy_id = ${academyId} and player_id = ${e.player_id}
+       and kind = 'adjustment' and reason = 'free trial'
+     limit 1
+  `
+  if (alreadyCredited) return
+
+  await tx`
+    insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount, reason)
+    values (${academyId}, ${e.account_id}, ${e.player_id}, ${period}::date, 'adjustment',
+            ${`Free trial — ${e.player_name}`}, ${-amount}, 'free trial')
   `
 }
 
@@ -466,10 +503,17 @@ export async function reconcile(job: Job): Promise<void> {
       ),
       buttons: [
         {
+          // §2.2 — minted resolved, replayed verbatim. This was
+          // `{kind:'reply', text:"Yes — …'s ₹X came in, confirm it"}`: a sentence
+          // handed back to the model to re-interpret, which made **a money state
+          // transition a tap-time inference** on the one table where being wrong
+          // costs the business real money. The payment id is right here; the
+          // button carries the row.
           title: buttonTitle('Yes, received'),
           action: {
-            kind: 'reply',
-            text: `Yes — ${pay.holder_name}'s ${formatINR(num(pay.amount))} came in, confirm it`,
+            kind: 'operation',
+            op: 'confirm_payment',
+            args: { payment_id: paymentId },
           },
         },
         { title: buttonTitle('Not yet'), action: { kind: 'noop', ack: "Left as requested — I'll ask again." } },

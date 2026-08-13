@@ -330,49 +330,97 @@ type Push = (
   payload: Record<string, unknown>, allowPast?: boolean,
 ) => void
 
+/** How far back the month-boundary catch-up looks. */
+const BILLING_CATCHUP_MONTHS = 3
+
 /**
- * The 1st writes the month's lines; the same morning reads the month just gone
- * back to every family that owes for it (§6.4, §12.1).
+ * The 1st writes the month's lines; the 1st of the following month reads the
+ * month just gone back to every family that owes for it (§6.4, §12.1).
+ *
+ * **This used to be a forward look and nothing else, so a month could be lost
+ * permanently.** It scanned the next 48 hours for a day whose `day === 1`, which
+ * means the entire boundary depended on the planner running during those two
+ * days. It does not, reliably: the clock is drivable and `drive clock --set`
+ * across the 1st skips it in one hop, a worker that is down over a month end
+ * skips it, and `month_end_tally` was additionally pushed WITHOUT `allowPast`, so
+ * even a planner that ran on the correct day dropped the tally if it ran after
+ * 09:00. Nothing back-filled any of it. That is why every driven world reached
+ * its second month with no lines and no tally, and it is the other half of why
+ * the money side has never run.
+ *
+ * So it is a **catch-up, not a schedule**. Both queries ask what is missing
+ * rather than what day it is, bounded to the last few months so the scan stays
+ * two queries per academy per tick — the same cost as the version that lost
+ * months. `on conflict (dedupe_key) do nothing` makes re-planning free, and every
+ * handler re-checks its own precondition (§13 rule 2), so enqueueing a period
+ * that turns out not to need billing costs one skipped job and nothing else.
  */
 async function planMonthBoundary(
   tx: Tx, academy: AcademyRow, nowAt: Date, push: Push,
 ): Promise<void> {
   const tz = academy.timezone
-  const start = zoned(nowAt, tz).startOf('day')
-  const days = Math.ceil(PLAN_HORIZON_HOURS / 24)
 
-  for (let d = 0; d <= days; d++) {
-    const day = start.plus({ days: d })
-    if (day.day !== 1) continue
+  // Every (enrollment, period) that should carry a recurring line and does not —
+  // from the enrollment's own first month, never earlier, so joining mid-year
+  // does not invent a back-catalogue. Runs to the NEXT month so an upcoming 1st
+  // is still scheduled at its proper future time rather than only caught later.
+  const due = await tx<{ id: string; period: string }[]>`
+    select e.id, gs.period::date::text as period
+      from enrollment e
+      join class cl on cl.id = e.class_id
+      join player pl on pl.id = e.player_id and pl.active
+      cross join lateral generate_series(
+        greatest(
+          date_trunc('month', e.started_on::timestamp),
+          date_trunc('month', (app.now() at time zone ${tz}))
+            - make_interval(months => ${BILLING_CATCHUP_MONTHS}::int)
+        ),
+        date_trunc('month', (app.now() at time zone ${tz})) + interval '1 month',
+        interval '1 month'
+      ) as gs(period)
+     where e.academy_id = ${academy.id}
+       and cl.active
+       and coalesce(e.rate_unit, cl.rate_unit) in ('per_month', 'per_term', 'per_package')
+       and e.started_on <= (gs.period + interval '1 month' - interval '1 day')::date
+       and (e.ended_on is null or e.ended_on >= gs.period::date)
+       and not exists (
+         select 1 from tally_line tl
+          where tl.academy_id = e.academy_id
+            and tl.player_id = e.player_id
+            and tl.period = gs.period::date
+            and tl.kind in ('monthly', 'term', 'package')
+       )
+  `
+  for (const e of due) {
+    push(
+      'monthly_lines',
+      atTimeOn(e.period, '00:05:00', tz),
+      dedupe.monthlyLines(e.id, e.period),
+      { enrollment_id: e.id, period: e.period },
+      true,
+    )
+  }
 
-    const period = day.toFormat('yyyy-MM-dd')
-    const periodEnd = day.endOf('month').toFormat('yyyy-MM-dd')
-    const previous = day.minus({ months: 1 }).toFormat('yyyy-MM-dd')
-
-    const enrollments = await tx<{ id: string }[]>`
-      select e.id
-        from enrollment e
-        join class cl on cl.id = e.class_id
-        join player pl on pl.id = e.player_id and pl.active
-       where e.academy_id = ${academy.id}
-         and cl.active
-         and e.started_on <= ${periodEnd}::date
-         and (e.ended_on is null or e.ended_on >= ${period}::date)
-         and coalesce(e.rate_unit, cl.rate_unit) in ('per_month', 'per_term', 'per_package')
-    `
-    const linesAt = atTimeOn(period, '00:05:00', tz)
-    for (const e of enrollments) {
-      push('monthly_lines', linesAt, dedupe.monthlyLines(e.id, period), { enrollment_id: e.id, period }, true)
-    }
-
-    const accounts = await tx<{ account_id: string }[]>`
-      select distinct account_id from tally_line
-       where academy_id = ${academy.id} and period = ${previous}::date
-    `
-    const tallyAt = atTimeOn(period, '09:00:00', tz)
-    for (const a of accounts) {
-      push('month_end_tally', tallyAt, dedupe.monthEndTally(a.account_id, previous),
-        { account_id: a.account_id, period: previous })
-    }
+  // Every closed period that has lines. The tally for a period is read back on
+  // the 1st of the month AFTER it, which is what "the month just gone" means.
+  const periods = await tx<{ account_id: string; period: string }[]>`
+    select distinct tl.account_id, tl.period::text as period
+      from tally_line tl
+     where tl.academy_id = ${academy.id}
+       and tl.period >= (date_trunc('month', (app.now() at time zone ${tz}))
+                         - make_interval(months => ${BILLING_CATCHUP_MONTHS}::int))::date
+       and tl.period <= date_trunc('month', (app.now() at time zone ${tz}))::date
+  `
+  for (const p of periods) {
+    const readBackOn = DateTime.fromISO(p.period, { zone: tz }).plus({ months: 1 }).toFormat('yyyy-MM-dd')
+    push(
+      'month_end_tally',
+      atTimeOn(readBackOn, '09:00:00', tz),
+      dedupe.monthEndTally(p.account_id, p.period),
+      { account_id: p.account_id, period: p.period },
+      // Without this the tally was dropped whenever planning happened after 09:00
+      // on the 1st — a planner running at 09:01 lost the month it was there to bill.
+      true,
+    )
   }
 }

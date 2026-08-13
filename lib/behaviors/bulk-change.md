@@ -32,17 +32,15 @@ offered, because the value of the preview is that a wrong denominator is visible
 implies, the messages to each affected person, and any follow-up you want to
 schedule are steps of one transaction. Messages inside a plan are staged until
 commit, so a rolled-back plan has messaged nobody — that guarantee only holds if
-the messages are actually in the plan rather than sent afterwards.
+the messages are actually in the plan rather than sent afterwards. Moving or
+cancelling sessions rewires their pending reminders and coach prompts too
+(`schedule-change` has the mechanics), and that belongs in the preview: it is part
+of what they are agreeing to.
 
 **Compose the messages people receive individually.** One recipient who is
 affected three ways gets one merged message, not three. Each one still has to
 pass the test: would this person have asked for this? A parent whose child's
 class did not move does not hear about the class that did.
-
-**Say what will happen to the schedule.** Moving or cancelling sessions cancels
-the pending reminders and coach prompts for them and re-enqueues new ones. If a
-reminder for the old time already went out, say so and correct it — that is
-exactly the case where a second message is welcome.
 
 **Undo reverses database writes only.** A sent message cannot be unsent. If an
 operation messaged people, undoing it sends a correction to exactly those people,

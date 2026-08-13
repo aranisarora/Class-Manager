@@ -268,9 +268,41 @@ type RosterRow = {
   rate_count: number | null
 }
 
+/**
+ * The roster for a class, **read as the runtime rather than as the caller** — and
+ * that one word is why this product has never written a single tally line.
+ *
+ * This ran under the caller's own session. It inner-joins `account`, and
+ * `account_cm_user_select` (0003_rls.sql:396) has clauses for admins, account
+ * holders and players — **and none for coaches**. So for the one person the
+ * register exists for, every row disappeared:
+ *
+ *   `[All present]`  → `roster` empty → `entries` empty → *"there is nobody to
+ *                      mark on that register"*, on a coach standing on a court.
+ *   named players    → attendance written, `byPlayer.get()` undefined, `if (!r)
+ *                      continue` fires, and the §6.4 session line, the free-first-
+ *                      class credit, the package consumption and the timely-cancel
+ *                      refund are all skipped **silently**. R7 exactly: doing
+ *                      nothing succeeded, and the coach was told it went fine.
+ *
+ * Zero attendance rows and zero tally lines have existed in any world this product
+ * has ever run, and this is the reason for both.
+ *
+ * Reading it as the service role widens nothing, because **reachability is already
+ * established upstream of every caller**: `mark_attendance`, `cancel_session`,
+ * `reschedule_session` and `client_cancel` all call `sessionOf(ctx)` first, which
+ * is RLS-checked and throws *"that session is not one I can see"*; `move_class` and
+ * `end_coach` arrive through `assertIdsExist`, which checks `class_id` under the
+ * caller's own session (plan.ts). Nobody reaches this function for a class they
+ * could not already open, and the product shows a coach this exact roster on
+ * `CO-REGISTER` anyway.
+ *
+ * Fixed here rather than in `mark_attendance` because it is a chokepoint and that
+ * is a call site: six callers had the bug, a seventh would have inherited it.
+ */
 async function rosterOf(ctx: SessionCtx, classId: string, onDate: string): Promise<RosterRow[]> {
   return q<RosterRow>(
-    ctx,
+    svc(ctx),
     `select p.id as player_id, p.account_id, pe.full_name as player_name,
             ac.holder_person_id, e.id as enrollment_id, e.is_trial,
             coalesce(e.rate_amount, c.rate_amount) as rate_amount,
@@ -359,6 +391,7 @@ export type OperationName =
   | 'client_cancel'
   | 'record_payment'
   | 'request_payment'
+  | 'confirm_payment'
   | 'opt_out'
   | 'set_timing'
   | 'create_class'
@@ -520,6 +553,22 @@ const endCoach: OperationDef = {
     }
 
     // 5. Final payables statement, then no more session messages.
+    //
+    // **This counted sessions that were `completed` AND carried an explicit
+    // confirmation, and that conjunction made the statement structurally
+    // guaranteed to read zero.** A session only reaches `completed` when a
+    // register is marked, and until the roster fix a coach could not mark one at
+    // all; `confirmed_at`/`arrived_at` has been null on every session_coach row
+    // that has ever existed. So the final word this product says to a departing
+    // coach — the one message where being wrong is unrecoverable, about their own
+    // money — was ₹0 by construction.
+    //
+    // Confirming is a courtesy the product asks for, not the record of who worked.
+    // A coach who simply turned up every week and never tapped anything has still
+    // taken the session, and the honest evidence is that the session RAN and they
+    // were on it and did not decline. `arrived_at` remains the stronger claim
+    // (§11.1) and is still what coverage is derived from; it is just not what
+    // being owed money depends on.
     const [taken] = await q<{ sessions: string; hours: string }>(
       ctx,
       `select count(*) as sessions,
@@ -527,7 +576,7 @@ const endCoach: OperationDef = {
          from session_coach sc join session s on s.id = sc.session_id
         where sc.coach_id = ${uid(args.coach_id)}
           and s.status = 'completed'
-          and (sc.confirmed_at is not null or sc.arrived_at is not null)`,
+          and sc.declined_at is null`,
     )
     const sessions = num(taken?.sessions)
     const hours = num(taken?.hours)
@@ -1298,9 +1347,24 @@ const markAttendance: OperationDef = {
     }
 
     // §11.1 — the register is what completes a session.
+    //
+    // `service: true` for the same reason the billing lines above carry it, and it
+    // was missing for the same reason it was easy to miss: `session_cm_user_update`
+    // requires `app.is_admin()` (0003_rls.sql:608), and the person who marks a
+    // register is a coach. So this matched zero rows, changed nothing, raised
+    // nothing — R7 again — and the session stayed `scheduled` forever after being
+    // taken. Everything keyed on `completed` inherited that: `end_coach`'s payables
+    // counted nothing, `register pending` (§11.1) stayed true for a session that had
+    // been marked, and the register-expiry escalation kept telling the admin a
+    // marked register was missing.
+    //
+    // Completing a session is the runtime's consequence of the register being
+    // marked, not the coach's own write — which is exactly the distinction §6.7
+    // draws and this file's header already states for the money tables.
     steps.push({
       write: `update session set status = 'completed'
                where id = ${uid(s.id)} and academy_id = ${uid(ctx.academyId)} and status = 'scheduled'`,
+      service: true,
     })
     steps.push(...cancelJobsForSession(s.id))
 
@@ -1740,19 +1804,56 @@ const recordPayment: OperationDef = {
       ctx,
       `select holder_person_id from account where id = ${uid(args.account_id)}`,
     )
+    /**
+     * **Settle the outstanding request, or insert a new payment. Never both.**
+     *
+     * This did both, unconditionally: it inserted a fresh `confirmed` row and then
+     * flipped every matching `requested` row to `confirmed`. So attesting a ₹2,400
+     * request booked ₹4,800 and read the family ₹2,400 in credit — and the state it
+     * misfires on is exactly the one the product manufactures, because
+     * `request_payment` writes the `requested` row and `AD-RECONCILE` exists to ask
+     * the admin to attest it. The first Rail 1 attestation this product ever
+     * performed would have been wrong, in the direction nobody checks: money the
+     * business is owed, silently written off.
+     *
+     * The old UPDATE also matched *every* requested row of that amount and carried
+     * no reference, no attester and no evidence, so the audit trail for a settled
+     * request was empty.
+     */
+    const [outstanding] = await q<{ id: string }>(
+      svc(ctx),
+      `select id from payment
+        where academy_id = ${uid(ctx.academyId)} and account_id = ${uid(args.account_id)}
+          and status = 'requested' and amount = ${moneyLit(args.amount)}
+        order by requested_at nulls last, created_at
+        limit 1`,
+    )
+    const attester = ctx.role === 'user' ? uid(ctx.personId) : 'null'
+
     const steps: PlanStep[] = [
       { note: `${formatINR(args.amount)} recorded` },
-      {
-        write: `insert into payment (academy_id, account_id, amount, rail, method, reference, status, confirmed_at, confirmed_by, evidence_url)
-                values (${uid(ctx.academyId)}, ${uid(args.account_id)}, ${moneyLit(args.amount)}, ${lit(a.rail)},
-                        ${lit(args.method ?? 'upi')}, ${lit(args.reference ?? null)}, 'confirmed', app.now(),
-                        ${ctx.role === 'user' ? uid(ctx.personId) : 'null'}, ${lit(args.evidence_url ?? null)})`,
-      },
-      {
-        write: `update payment set status = 'confirmed', confirmed_at = app.now()
-                 where account_id = ${uid(args.account_id)} and status = 'requested'
-                   and amount = ${moneyLit(args.amount)}`,
-      },
+      outstanding
+        ? {
+            // `requireRows` makes two admins attesting the same request in the same
+            // second abort the second plan rather than double-credit it — which is
+            // the same conditional-UPDATE trick that makes the cover race correct.
+            write: `update payment
+                       set status = 'confirmed',
+                           confirmed_at = app.now(),
+                           confirmed_by = ${attester},
+                           method = coalesce(${lit(args.method ?? null)}, method),
+                           reference = coalesce(${lit(args.reference ?? null)}, reference),
+                           evidence_url = coalesce(${lit(args.evidence_url ?? null)}, evidence_url)
+                     where id = ${uid(outstanding.id)}
+                       and status = 'requested'`,
+            requireRows: 1,
+          }
+        : {
+            write: `insert into payment (academy_id, account_id, amount, rail, method, reference, status, confirmed_at, confirmed_by, evidence_url)
+                    values (${uid(ctx.academyId)}, ${uid(args.account_id)}, ${moneyLit(args.amount)}, ${lit(a.rail)},
+                            ${lit(args.method ?? 'upi')}, ${lit(args.reference ?? null)}, 'confirmed', app.now(),
+                            ${attester}, ${lit(args.evidence_url ?? null)})`,
+          },
     ]
     if (args.notify && acct) {
       steps.push({
@@ -1839,6 +1940,77 @@ const requestPayment: OperationDef = {
         payload: { payment_id: paymentId, account_id: args.account_id, period },
       },
     })
+    return steps
+  },
+}
+
+/**
+ * `confirm_payment` — the Rail 1 attestation, addressed to one row.
+ *
+ * §11.5 is two arrows: `requested ──[Yes]──> confirmed`. Nothing in the product
+ * could draw the first one. `AD-RECONCILE` minted its `[Yes]` as
+ * `{kind:'reply', text:"Yes — Meera's ₹2,400 came in, confirm it"}` — a sentence
+ * handed back to the model to re-interpret — so **a money state transition was
+ * decided at tap time by inference**, which is the one thing §2.2 exists to
+ * prevent, on the one table where being wrong costs the business money. The only
+ * operation the model could then reach for was `record_payment(account_id,
+ * amount)`, which is amount-matched and was double-crediting.
+ *
+ * The payment id is known at mint time — `request_payment` generates it and the
+ * reconcile job carries it in its payload — so the button can carry the row. No
+ * inference, no amount matching, no second confirmed row.
+ */
+const confirmPayment: OperationDef = {
+  name: 'confirm_payment',
+  description:
+    'Confirm one specific payment the business asked for — the Rail 1 attestation. Takes the payment id from the reconcile prompt, never an amount.',
+  params: z.object({
+    payment_id: uuid,
+    reference: z.string().nullish(),
+    evidence_url: z.string().nullish(),
+    notify: z.boolean().optional().default(true),
+  }),
+  async build(ctx, args, _id) {
+    const a = await academyOf(ctx)
+    const [p] = await q<{ account_id: string; amount: string; status: string; holder_person_id: string }>(
+      svc(ctx),
+      `select p.account_id, p.amount, p.status, ac.holder_person_id
+         from payment p join account ac on ac.id = p.account_id
+        where p.id = ${uid(args.payment_id)} and p.academy_id = ${uid(ctx.academyId)}`,
+    )
+    if (!p) throw new Error('that payment is not one I can see')
+    if (p.status === 'confirmed') {
+      // Said plainly rather than written twice. A second attestation is not a
+      // no-op on a money table, it is a second credit.
+      throw new Error('that payment is already confirmed — nothing to do')
+    }
+
+    const amount = num(p.amount)
+    const steps: PlanStep[] = [
+      { note: `${formatINR(amount)} confirmed` },
+      {
+        write: `update payment
+                   set status = 'confirmed',
+                       confirmed_at = app.now(),
+                       confirmed_by = ${ctx.role === 'user' ? uid(ctx.personId) : 'null'},
+                       reference = coalesce(${lit(args.reference ?? null)}, reference),
+                       evidence_url = coalesce(${lit(args.evidence_url ?? null)}, evidence_url)
+                 where id = ${uid(args.payment_id)}
+                   and status <> 'confirmed'`,
+        requireRows: 1,
+      },
+    ]
+    if (args.notify) {
+      steps.push({
+        message: {
+          to_person_id: p.holder_person_id,
+          catalog_id: 'CL-RECEIPT',
+          fixed: true,
+          body: `${a.name}: received ${formatINR(amount)}${args.reference ? `, ref ${args.reference}` : ''}. Thank you.`,
+          buttons: [{ title: 'See the lines', action: { kind: 'reply', text: 'Show me my tally' } }],
+        },
+      })
+    }
     return steps
   },
 }
@@ -2582,6 +2754,7 @@ export const OPERATIONS: Record<OperationName, OperationDef> = {
   client_cancel: clientCancel,
   record_payment: recordPayment,
   request_payment: requestPayment,
+  confirm_payment: confirmPayment,
   opt_out: optOut,
   set_timing: setTiming,
   create_class: createClass,

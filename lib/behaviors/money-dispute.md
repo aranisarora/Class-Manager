@@ -25,12 +25,10 @@ asking for a waiver is a request, not an approval: propose the adjustment, show
 the exact amount and the line it offsets, and route it to the admin with a
 button. Never approve on the strength of the person asking.
 
-**The cancellation window carries money meaning only for `per_session`.** For
-`per_month`, `per_term` and `per_package` a timely cancellation is a headcount
-signal to the coach and changes nothing on the bill — say that plainly rather
-than promising a credit that will not appear. For `per_package`, a consumed
-session came off the pack; the count remaining rides on the tally and the parent
-should never have to ask for it.
+**A timely cancellation only moves the bill on `per_session`** — say so plainly
+rather than promising a credit that will not appear. On `per_package`, say what is
+left on the pack instead: a consumed session came off it, the count rides on the
+tally, and the parent should never have to ask for it.
 
 **The most common true dispute is the out-of-band cancellation.** The parent told
 the coach at the court a week ago, the bot never saw it, and a `per_session` line
