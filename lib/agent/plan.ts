@@ -77,6 +77,13 @@ export type MessageStep = {
    * `opt_out` can set it.
    */
   opt_out_ack?: boolean
+  /**
+   * RUNTIME-INTERNAL, set by `expand` on steps an operation produced. It is what
+   * lets `resolveContact` address the owner from a parent's turn — see the long
+   * note there. `PlanStepSchema` strips unknown keys, so a model-authored plan
+   * cannot set it and cannot borrow the reach.
+   */
+  fromOperation?: boolean
 }
 
 /**
@@ -388,7 +395,20 @@ async function expand(
       const args = def.params.parse(step.operation.args ?? {})
       await assertIdsExist(ctx, step.operation.name, args)
       const built = await def.build(ctx, args, id)
-      out.push(...(await expand(ctx, built, depth + 1, id)))
+      /**
+       * Steps an OPERATION produced are the runtime's own intent, and are marked
+       * so `resolveContact` may address them to somebody the caller cannot see.
+       * See the comment there — "the admin is told" is a decision the product
+       * made, not a row the parent is allowed to read.
+       *
+       * Marked here rather than trusted by shape, because after expansion an
+       * operation's message step and a model-authored one are the same object.
+       * `PlanStepSchema` strips unknown keys from anything the model writes, so
+       * this flag cannot be smuggled in from a plan.
+       */
+      out.push(...(await expand(ctx, built, depth + 1, id)).map(
+        (s) => ('message' in s ? { ...s, message: { ...s.message, fromOperation: true } } : s),
+      ))
     } else {
       out.push(step)
     }
@@ -416,6 +436,8 @@ type RunState = {
    * nothing became indistinguishable from one that was never written.
    */
   emptyWrites: number
+  /** Message steps whose recipient resolved to nobody — see `resolveContact`. */
+  unaddressed: number
 }
 
 function tableOf(sql: string): { table: string; op: 'insert' | 'update' | 'delete' } | null {
@@ -429,16 +451,59 @@ function tableOf(sql: string): { table: string; op: 'insert' | 'update' | 'delet
   return null
 }
 
+/**
+ * Which contact a message step is addressed to.
+ *
+ * **Addressing an outbound is not the same question as reading a contact, and
+ * conflating them silently un-sent every admin notification the product raises
+ * from a client's turn.**
+ *
+ * `contact_cm_user_select` is `is_admin() OR id = app.contact_id() OR person_id
+ * = app.person_id()`, so a parent, a coach or a prospect can see exactly their
+ * own row. This lookup ran on the caller's transaction, so `to_person_id` for
+ * the owner resolved to NULL, and the step below hit `if (!to) continue`. No
+ * message row, no `suppressed_reason`, no error — R7's defining case, on the
+ * path that exists to tell somebody something happened.
+ *
+ * Three agents driving three different personas in three different academies
+ * found this independently in one pass:
+ *   - a coach declined two Saturday sessions, was told "I'll find cover" twice,
+ *     and neither the admin nor the other assigned coach was ever told
+ *   - a parent's cancellation never reached the only coach in the academy
+ *   - a cold prospect created a person, an account, a player and an enrolment in
+ *     a business whose owner heard nothing
+ * `AD-NEW-TRIAL` — the catalog row whose entire job is telling an owner a
+ * stranger booked a trial — has been written **0 times across all seven
+ * academies**. The jobs path works because it runs as the service role; the
+ * operation path never could. R4: one guarantee, enforced on one of two paths.
+ *
+ * **But the caller's scope is not merely removed, because it was doing real
+ * work by accident.** Resolve everything as service and a model-authored plan in
+ * a parent's turn could address any person in the academy — the send gate's §18
+ * rules are about who a message is ABOUT, not who raised it, so nothing
+ * downstream would stop a fan-out. That containment was unintentional and it is
+ * load-bearing.
+ *
+ * So the question is who authored the step. An operation's message steps are the
+ * runtime's own intent — `book_trial` telling the admin is a decision the
+ * product made — and those resolve as service. A message step the MODEL wrote
+ * into a plan stays inside what the caller can see, which is exactly the reach
+ * it has always had.
+ */
 async function resolveContact(tx: Tx, ctx: SessionCtx, m: MessageStep): Promise<string | null> {
   if (m.to_contact_id) return m.to_contact_id
-  if (!m.to_person_id) return null
-  const rows = (await tx.unsafe(
-    `select id from contact
-      where academy_id = ${uid(ctx.academyId)} and person_id = ${uid(m.to_person_id)}
-        and opted_out_at is null
-      order by is_primary desc, created_at limit 1`,
-  )) as unknown as { id: string }[]
-  return rows[0]?.id ?? null
+  const personId = m.to_person_id
+  if (!personId) return null
+  const find = async (): Promise<string | null> => {
+    const rows = (await tx.unsafe(
+      `select id from contact
+        where academy_id = ${uid(ctx.academyId)} and person_id = ${uid(personId)}
+          and opted_out_at is null
+        order by is_primary desc, created_at limit 1`,
+    )) as unknown as { id: string }[]
+    return rows[0]?.id ?? null
+  }
+  return m.fromOperation ? asService(tx, ctx, find) : find()
 }
 
 async function runSteps(
@@ -508,10 +573,22 @@ async function runSteps(
 
     if ('message' in step) {
       const to = await resolveContact(tx, ctx, step.message)
-      // No contact, nothing to stage. `send` records a `no_contact` suppression
-      // for messages that do reach it; a message with no addressable recipient
-      // never becomes one.
-      if (!to) continue
+      /**
+       * No contact, nothing to stage. `send` records a `no_contact` suppression
+       * for messages that do reach it; a message with no addressable recipient
+       * never becomes one.
+       *
+       * **It is counted now, because it used to vanish.** This `continue` was the
+       * last step of the path that silently un-sent every admin notification
+       * raised from a client's turn — see `resolveContact`. That cause is fixed,
+       * but "the message went nowhere and nothing anywhere says so" is the shape
+       * of the defect rather than the cause, and the next thing to resolve to
+       * nobody should not be free either. The receipt says how many.
+       */
+      if (!to) {
+        state.unaddressed++
+        continue
+      }
       state.staged.push({ ...step.message, toContactId: to })
       continue
     }
@@ -760,6 +837,9 @@ function buildSummary(
       state.emptyWrites === 1 ? 'changed' : 'change'
     } nothing — check that part landed.`
   }
+  if (state.unaddressed > 0) {
+    s += ` ${state.unaddressed} message${state.unaddressed === 1 ? '' : 's'} had nobody to go to.`
+  }
 
   /**
    * Told, or merely addressed.
@@ -814,7 +894,7 @@ function previewOf(m: MessageStep): string {
  * ------------------------------------------------------------------------- */
 
 function emptyState(): RunState {
-  return { staged: [], scheduled: [], notes: [], personalNotes: [], exec: [], emptyWrites: 0 }
+  return { staged: [], scheduled: [], notes: [], personalNotes: [], exec: [], emptyWrites: 0, unaddressed: 0 }
 }
 
 /**
@@ -1010,7 +1090,7 @@ async function escalateRefusal(
         `select 1 from message
           where academy_id = ${uid(ctx.academyId)} and catalog_id = 'AD-NEEDS-YOU'
             and payload->'subject_person_ids' ? ${lit(ctx.personId as string)}
-            and created_at > now() - interval '10 minutes'
+            and created_at > app.now() - interval '10 minutes'
           limit 1`,
       )) as unknown as unknown[]).length > 0
     })
