@@ -129,16 +129,49 @@ const GENERIC_EVENT: Record<TemplateName, string> = {
  * that happened (the catalog row's own phrase), and the message the bot actually composed —
  * never "you have an update".
  */
+/**
+ * Who the message is ABOUT, when that is somebody other than who is reading it.
+ *
+ * `{who}` is filled from the recipient, and every template's own approved example
+ * shows a subject instead — *"Sharwin Academy: **Aarav** — missed Beginners Batch
+ * today."* Driven, on the first message two real parents ever received: the render
+ * came out as *"Baseline Badminton Academy: Sabu Babu — how the session went. Ananya
+ * was at Beginners today."* It names the parent where the child belongs and then
+ * names the child again in the detail, so the one line a parent skims is about the
+ * wrong person.
+ *
+ * `subjectPersonIds` already carries this — it is what the two §18 suppression rules
+ * read — so nothing new has to be recorded, only used. Falls back to the recipient,
+ * which is right for a message genuinely about them (a coach's own schedule), and is
+ * skipped when the subject IS the recipient so nobody is told about themselves in
+ * the third person.
+ */
+async function subjectName(tx: Tx, msg: OutboundMessage, row: Row): Promise<string> {
+  const ids = (msg.subjectPersonIds ?? []).filter((id) => id && id !== row.person_id)
+  if (ids.length === 0) return row.person_name
+  const names = await tx<{ full_name: string }[]>`
+    select full_name from person
+     where id = any(${ids}::uuid[]) and academy_id = ${row.academy_id}
+     order by full_name`
+  if (names.length === 0) return row.person_name
+  // Two children in one message is normal for a family; more than two and the names
+  // stop being the useful part of a one-line template.
+  return names.length <= 2
+    ? names.map((n) => n.full_name).join(' and ')
+    : `${names[0].full_name} and ${names.length - 1} others`
+}
+
 function buildTemplateParams(
   template: TemplateName,
   msg: OutboundMessage,
   row: Row,
+  who: string,
 ): Record<string, string> {
   const entry = msg.catalogId && isCatalogId(msg.catalogId) ? CATALOG[msg.catalogId] : null
   const detail = (msg.body ?? '').trim()
   const defaults: Record<string, string> = {
     academy: row.academy_name,
-    who: row.person_name,
+    who,
     event: entry?.templateEvent ?? GENERIC_EVENT[template],
     detail: detail ? sanitizeParam(detail) : 'Open this chat for the details.',
   }
@@ -151,8 +184,13 @@ function buildTemplateParams(
  * approval time, so the title is replaced while the **minted action id** is kept, which is
  * what keeps §2.2 intact across the window boundary.
  */
-function asTemplateMessage(msg: OutboundMessage, template: TemplateName, row: Row): OutboundMessage {
-  const params = buildTemplateParams(template, msg, row)
+function asTemplateMessage(
+  msg: OutboundMessage,
+  template: TemplateName,
+  row: Row,
+  who: string,
+): OutboundMessage {
+  const params = buildTemplateParams(template, msg, row, who)
   const def = TEMPLATES[template]
   const first = msg.buttons?.[0]
   return {
@@ -551,7 +589,7 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
         return suppress(tx, row, msg, 'out_of_window_no_template', inWindow)
       }
       try {
-        wire = asTemplateMessage(msg, wanted, row)
+        wire = asTemplateMessage(msg, wanted, row, await subjectName(tx, msg, row))
       } catch (e) {
         console.error(`[send] template ${wanted} could not render: ${(e as Error).message}`)
         return suppress(tx, row, msg, 'out_of_window_no_template', inWindow)

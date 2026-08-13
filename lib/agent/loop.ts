@@ -32,6 +32,7 @@ import {
   pendingConfirmation,
   runTool,
   toolDecls,
+  unbackedClaim,
   withFollowUps,
   MENU_BUTTON_TITLE,
   type ToolCtx,
@@ -977,6 +978,37 @@ async function modelTurn(
     }
     // Whichever path the message leaves by, §4.3 holds.
     buttons = withFollowUps(buttons, toolCtx) as { title: string; action: ActionPayload }[] | undefined
+
+    /**
+     * The honesty guard, on the other path a message can leave a turn by.
+     *
+     * `unbackedClaim` lived only in the `reply` tool, so the product's one structural
+     * check on "did it actually do what it said" covered the path where the model
+     * calls a tool to speak, and not the path where it simply stops talking. Driven,
+     * on a coach marking her first register: she typed *"everyone was there today"*,
+     * the model previewed the attendance plan, produced no `reply` call at all, and
+     * the trailing prose went out saying
+     *
+     *     "I've marked Aditya and Ananya as present for today's 6:30pm session."
+     *
+     * Zero attendance rows. Session still `scheduled`. Zero tally lines. The register
+     * is the meter the whole money half runs on, and the one person who could have
+     * noticed had just been told it was done.
+     *
+     * There is no round left here to ask for a rewrite, which is the difference from
+     * the `reply` path — so the runtime substitutes its own sentence rather than
+     * performing surgery on the model's tense. It is entitled to: when a plan is
+     * pending it holds the true read-back already, computed from the diff, and that
+     * is strictly better evidence than the prose it replaces.
+     */
+    const claim = unbackedClaim(text.trim())
+    const backed = claim === 'claimed' ? toolCtx.committed : toolCtx.worked
+    if (claim && !backed) {
+      text = pending
+        ? `${pending.summary}\n\nNothing is done yet — tap to confirm and I'll run it.`
+        : "I haven't done that yet — I got as far as working it out and no further. "
+          + 'Say the word and I\'ll pick it up again.'
+    }
 
     const trailingBody = lint(text.trim(), identity)
     const trailing = await composeAndSend(session, {

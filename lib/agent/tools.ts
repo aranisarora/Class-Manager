@@ -135,8 +135,38 @@ export type ToolCtx = {
  * guard exists to buy the model one round to make the sentence true — not to argue.
  * ------------------------------------------------------------------------- */
 
-const CLAIMED_DONE =
-  /\b(?:i(?:'ve| have)\s+(?:just\s+|now\s+)?(?:added|created|set|made|booked|cancelled|canceled|moved|sent|recorded|updated|removed|deleted|changed|waived|scheduled|assigned|enrolled|enrolled|marked|drafted)|that'?s (?:done|set up|sorted|added|created)|all (?:done|set up|sorted))\b/i
+/** The verbs that mean a write happened. Shared by both shapes below. */
+const DONE_VERBS =
+  'added|created|set|made|booked|cancelled|canceled|moved|sent|recorded|requested|updated|removed|deleted|changed|waived|scheduled|assigned|enrolled|marked|drafted'
+
+const CLAIMED_DONE = new RegExp(
+  [
+    `\\b(?:i(?:'ve| have)\\s+(?:just\\s+|now\\s+)?(?:${DONE_VERBS}))\\b`,
+    `\\b(?:that'?s (?:done|set up|sorted|added|created)|all (?:done|set up|sorted))\\b`,
+  ].join('|'),
+  'i',
+)
+
+/**
+ * The bare past tense, opening a line.
+ *
+ * "I've marked" was caught and *"Requested ₹1,200 from Meena Krishnan"* was not, and
+ * the second is how this model actually writes a receipt. Driven twice in one session:
+ * *"Sent the request to Meena Krishnan for ₹1,200.00"* and *"Requested ₹1,200 from
+ * Meena Krishnan for Aditya's August fees"* — both about money, both with the plan
+ * still sitting unconfirmed behind a `[Do it]` button, and neither matched.
+ *
+ * CASE-SENSITIVE, and anchored to the start of a line. Mid-sentence these words are
+ * ordinary English — "the class you added", "sessions cancelled in time are credited"
+ * — and this predicate can now substitute a message rather than merely ask for a
+ * rewrite, so a false positive costs somebody a real sentence. A capitalised verb
+ * opening a line, followed by a determiner, a figure or a name, is a receipt; the same
+ * word lower-case mid-paragraph is prose.
+ */
+const CLAIMED_DONE_OPENER = new RegExp(
+  `(?:^|\\n)\\s*(?:${DONE_VERBS.split('|').map((v) => v[0].toUpperCase() + v.slice(1)).join('|')})` +
+    `\\s+(?=[₹\\d"']|the\\b|a\\b|an\\b|your\\b|their\\b|his\\b|her\\b|[A-Z])`,
+)
 
 const PROMISED_IMMINENT =
   // "I will try to create the venue first, then the class" — said to an admin, with
@@ -146,8 +176,8 @@ const PROMISED_IMMINENT =
   /\b(?:i'?ll|i will|let me|i'?m going to|i am going to)\s+(?:now\s+|just\s+)?(?:try(?:ing)?\s+(?:to|and|again)\s*)?(?:add|create|set|make|book|cancel|move|send|remind|invite|record|update|remove|delete|change|waive|schedule|assign|enrol|enroll|mark|draft|again)\b/i
 
 /** The sentence this message is making, and whether the turn has anything to back it. */
-function unbackedClaim(body: string): 'claimed' | 'promised' | null {
-  if (CLAIMED_DONE.test(body)) return 'claimed'
+export function unbackedClaim(body: string): 'claimed' | 'promised' | null {
+  if (CLAIMED_DONE.test(body) || CLAIMED_DONE_OPENER.test(body)) return 'claimed'
   if (PROMISED_IMMINENT.test(body)) return 'promised'
   return null
 }
@@ -780,10 +810,19 @@ export function pendingConfirmation(ctx: ToolCtx): { steps: PlanStep[]; summary:
     const plan = ctx.pendingPlans.get(handle)
     if (!plan) continue
     steps.push(...plan)
-    if (meta.summary) summaries.push(meta.summary.replace(/\.$/, ''))
+    if (meta.summary) summaries.push(meta.summary.trim())
   }
   if (!steps.length) return null
-  return { steps, summary: summaries.join('; ') || 'the change we just went through' }
+  // The trailing period used to be stripped from every summary so they could be
+  // joined with "; ". A plan summary is not a fragment though — it is one to three
+  // whole sentences, and `plan.ts` appends "I'll check back once." when the plan
+  // schedules a watch. Stripping the stop turned that into "…I'll check back once",
+  // which reached an admin mid-word. Only the join needs it, and only between items.
+  const summary =
+    summaries.length <= 1
+      ? (summaries[0] ?? '')
+      : summaries.map((s) => s.replace(/\.$/, '')).join('; ') + '.'
+  return { steps, summary: summary || 'the change we just went through' }
 }
 
 /**
@@ -1704,26 +1743,51 @@ export async function runTool(
        * it buys the model one round to make the sentence true, not an argument.
        * Silencing somebody is worse than telling them something slightly wrong.
        */
-      if (!ctx.promiseChecked) {
-        const claim = unbackedClaim(String(args?.body ?? ''))
+      {
+        const claim = unbackedClaim(body)
         // Past tense needs something to be TRUE; a promise needs something to be in
         // motion. A previewed plan satisfies the second and not the first.
         const backed = claim === 'claimed' ? ctx.committed : ctx.worked
         if (claim && !backed) {
-          ctx.promiseChecked = true
-          return {
-            result: {
-              error:
-                claim === 'claimed'
-                  ? 'that message says you did something, and nothing has been written this turn'
-                  : 'that message says you are about to do something, and there is no "about to" — the turn ends when you reply',
-              hint:
-                'Do it now — `act` for a named operation, `plan` then a confirmation button for anything bigger — and ' +
-                'then say what you did. Or say plainly that you have not done it yet and ask for the one thing you ' +
-                'need. Nothing else you send will make it true.',
-              sent: false,
-            },
+          if (!ctx.promiseChecked) {
+            ctx.promiseChecked = true
+            return {
+              result: {
+                error:
+                  claim === 'claimed'
+                    ? 'that message says you did something, and nothing has been written this turn'
+                    : 'that message says you are about to do something, and there is no "about to" — the turn ends when you reply',
+                hint:
+                  'Do it now — `act` for a named operation, `plan` then a confirmation button for anything bigger — and ' +
+                  'then say what you did. Or say plainly that you have not done it yet and ask for the one thing you ' +
+                  'need. Nothing else you send will make it true.',
+                sent: false,
+              },
+            }
           }
+
+          /**
+           * The model has already had its one round and the sentence is still false.
+           *
+           * The old rule was "fires at most once; a second attempt always goes out",
+           * on the reasoning that silencing somebody is worse than telling them
+           * something slightly wrong. The first half of that is right. The second
+           * assumed the retry would be closer to true, and driven on a real payment
+           * request it was further: refused for *"I'll send her a payment request
+           * now"*, the model came back with *"Sent the request to Meena Krishnan for
+           * ₹1,200.00. I'll let you know once she's paid."* — past tense, about money,
+           * with the plan still sitting unconfirmed behind a `[Do it]` button.
+           *
+           * There is a third option between silence and a lie, and the runtime is the
+           * one thing entitled to take it: substitute its own read-back. When a plan
+           * is pending that read-back is computed from the diff, so it is strictly
+           * better evidence than the prose it replaces — and the affordance is
+           * untouched, so the person can still act.
+           */
+          const waiting = pendingConfirmation(ctx)
+          body = waiting
+            ? `${waiting.summary}\n\nNothing has run yet — tap to confirm and I'll do it.`
+            : "I haven't done that yet. Tell me to go ahead and I will."
         }
       }
 
