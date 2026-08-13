@@ -553,6 +553,22 @@ const endCoach: OperationDef = {
     }
 
     // 5. Final payables statement, then no more session messages.
+    //
+    // **This counted sessions that were `completed` AND carried an explicit
+    // confirmation, and that conjunction made the statement structurally
+    // guaranteed to read zero.** A session only reaches `completed` when a
+    // register is marked, and until the roster fix a coach could not mark one at
+    // all; `confirmed_at`/`arrived_at` has been null on every session_coach row
+    // that has ever existed. So the final word this product says to a departing
+    // coach — the one message where being wrong is unrecoverable, about their own
+    // money — was ₹0 by construction.
+    //
+    // Confirming is a courtesy the product asks for, not the record of who worked.
+    // A coach who simply turned up every week and never tapped anything has still
+    // taken the session, and the honest evidence is that the session RAN and they
+    // were on it and did not decline. `arrived_at` remains the stronger claim
+    // (§11.1) and is still what coverage is derived from; it is just not what
+    // being owed money depends on.
     const [taken] = await q<{ sessions: string; hours: string }>(
       ctx,
       `select count(*) as sessions,
@@ -560,7 +576,7 @@ const endCoach: OperationDef = {
          from session_coach sc join session s on s.id = sc.session_id
         where sc.coach_id = ${uid(args.coach_id)}
           and s.status = 'completed'
-          and (sc.confirmed_at is not null or sc.arrived_at is not null)`,
+          and sc.declined_at is null`,
     )
     const sessions = num(taken?.sessions)
     const hours = num(taken?.hours)
