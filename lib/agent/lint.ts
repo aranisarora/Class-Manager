@@ -356,9 +356,25 @@ function downgradeClaims(text: string, evidence?: DeliveryEvidence): string {
   let out = text
 
   if (!evidence?.read) {
-    // "she has read it", "it was seen", "they've opened it"
+    /**
+     * "she has read it", "it was seen", "they've opened it" — downgraded to the
+     * strongest claim the row supports.
+     *
+     * **Bounded to a message-shaped object, because unbounded it inverts English.**
+     * This matched any auxiliary followed by read/seen/opened, so *"she has read
+     * the notice"* became *"she has sent the notice"* — the opposite of what was
+     * said, produced by the pass whose entire job is not saying things that are not
+     * true. "Read" is one of the commonest irregular verbs in the language and only
+     * a fraction of its uses are a delivery claim.
+     *
+     * The lookahead is the discriminator: a delivery claim is about *the message*,
+     * so it lands on "it", "that", "your message" or the end of the clause. Anything
+     * with a real object — a notice, a form, a book — is ordinary English and is
+     * left alone. This is the same line lint.ts draws for number-grounding: a string
+     * operation may only act where the string itself is decisive.
+     */
     out = out.replace(
-      /\b(has|have|had|was|were|been|is|are|'ve|'s)\s+(read|seen|opened)\b/gi,
+      /\b(has|have|had|was|were|been|is|are|'ve|'s)\s+(?:already\s+)?(?:read|seen|opened)\b(?=\s*(?:it|this|that|them|the message|your message|my message|the reminder|the update)\b|\s*[.,;!?]|\s*$)/gi,
       (_m, aux: string) => `${aux} sent`,
     )
     out = out.replace(/\bread receipts?\b/gi, 'delivery status')
