@@ -74,16 +74,6 @@ export type ToolCtx = {
    */
   saidToUser?: string[]
   /**
-   * Plans that actually committed this turn, with the audit row each produced.
-   *
-   * §14.3's recipes are "captured model output, never hand-written code", and the
-   * capture half had no call site anywhere in the codebase — so `recipe` was a table
-   * nothing could write to and `matchRecipe` was a guaranteed-null query on every
-   * text turn. A committed plan's audit entry is exactly the artifact §14.3 wants
-   * frozen: already validated, already diff-computed, already known-good.
-   */
-  committedPlans?: { auditId: string; intent: string }[]
-  /**
    * Whether this turn has done anything at all beyond reading: an operation that ran,
    * a plan committed, a plan previewed and waiting on a tap, a watch scheduled.
    *
@@ -1415,10 +1405,6 @@ export async function runTool(
       if (!res.ok) return { result: { ok: false, error: res.error, sent: 0 } }
       ctx.worked = true
       ctx.committed = true
-      ctx.committedPlans?.push({
-        auditId: res.auditId,
-        intent: meta?.intent || String(args?.intent ?? 'committed a previewed plan'),
-      })
       return {
         result: {
           ok: true,
@@ -1470,7 +1456,6 @@ export async function runTool(
       })
       ctx.worked = true
       ctx.committed = true
-      ctx.committedPlans?.push({ auditId: res.auditId, intent: String(args?.intent ?? opName) })
       return {
         result: {
           ok: true,

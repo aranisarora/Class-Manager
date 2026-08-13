@@ -19,7 +19,11 @@
  * wrote `attendance` with its own SQL, which meant the register screen marked
  * attendance and produced none of §6.4's money and never completed the session.
  * A screen is a different way to reach an operation, never a second implementation
- * of one. `setup` still writes its own rows, under the same RLS.
+ * of one. `setup` was the last holdout — it wrote its own `academy` and `venue` SQL,
+ * so a setup submission had no audit entry, no before-images for `undo`, no
+ * atomicity between the settings and the venues, and no way to tell an RLS refusal
+ * from a save. It now builds steps and runs them through `executePlan` like the
+ * other two.
  */
 
 import { z } from 'zod'
@@ -33,9 +37,9 @@ import { loadViewSpec } from '@/lib/web/views'
 import type { ComponentSpec, FormField } from '@/lib/web/registry'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { resolveIdentity } from '@/lib/identity'
-import { OPERATIONS } from '@/lib/agent/operations'
+import { OPERATIONS, jsonLit, lit, uid } from '@/lib/agent/operations'
 import type { OperationName } from '@/lib/agent/operations'
-import { audienceFor, executePlan } from '@/lib/agent/plan'
+import { audienceFor, executePlan, type PlanStep } from '@/lib/agent/plan'
 
 export const dynamic = 'force-dynamic'
 
@@ -165,50 +169,85 @@ async function handleSetup(ctx: UserCtx, body: unknown): Promise<Response> {
     closes_at: v.closesAt,
   }
 
-  const result = await withSession(ctx, async (tx) => {
-    const updated = await tx<{ id: string; onboarding_state: string }[]>`
-      update academy
-         set name                      = ${v.name},
-             category                  = ${v.category?.trim() ? v.category.trim() : null},
-             timezone                  = ${v.timezone},
-             cancellation_window_hours = ${v.cancellationWindowHours},
-             morning_brief_at          = ${v.morningBriefAt}::time,
-             evening_digest_at         = ${v.eveningDigestAt}::time,
-             upi_handle                = ${v.upiHandle?.trim() ? v.upiHandle.trim() : null},
-             settings                  = coalesce(settings, '{}'::jsonb)
-                                         || jsonb_build_object('operating_pattern', ${JSON.stringify(pattern)}::text::jsonb),
-             onboarding_state          = case when onboarding_state = 'setup' then 'roster' else onboarding_state end
-       where id = ${ctx.academyId}
-       returning id, onboarding_state`
-    if (!updated[0]) return null
-
-    const keptIds: string[] = []
-    for (const venue of v.venues) {
-      if (venue.id) {
-        const rows = await tx<{ id: string }[]>`
-          update venue
-             set name = ${venue.name}, address = ${venue.address || null}
-           where id = ${venue.id} and academy_id = ${ctx.academyId}
-           returning id`
-        if (rows[0]) keptIds.push(rows[0].id)
-      } else {
-        const rows = await tx<{ id: string }[]>`
-          insert into venue (academy_id, name, address)
-          values (${ctx.academyId}, ${venue.name}, ${venue.address || null})
-          returning id`
-        if (rows[0]) keptIds.push(rows[0].id)
-      }
-    }
-
-    const existing = await tx<{ id: string; name: string }[]>`
-      select id, name from venue where academy_id = ${ctx.academyId}`
-    const removed = existing.filter((e) => !keptIds.includes(e.id))
-    return { onboardingState: updated[0].onboarding_state, kept: keptIds.length, removed }
+  // What this screen is about to replace, read before anything is written, so the
+  // set of venues to remove does not depend on ids the writes hand back.
+  const existing = await withSession(ctx, async (tx) => {
+    return (await tx`select id, name from venue where academy_id = ${ctx.academyId}`) as unknown as {
+      id: string
+      name: string
+    }[]
   })
+  const submittedIds = new Set(v.venues.map((x) => x.id).filter(Boolean) as string[])
+  const removed = existing.filter((e) => !submittedIds.has(e.id))
 
-  if (!result) {
-    return json({ ok: false, message: 'Only the admin can change these settings.' }, 403)
+  /**
+   * The last screen that wrote its own rows, and the reason it no longer does.
+   *
+   * `register` did exactly this for most of the product's life — its own SQL,
+   * twenty lines above a `handleForm` that ran its named operation properly — and
+   * the consequence was that marking a register produced no money, no free-first-
+   * class credit, no package consumption, and never completed the session. The bug
+   * was invisible because the screen said "Saved" either way.
+   *
+   * Setup was the remaining instance. Running it through `executePlan` is not
+   * tidiness: it is one audit entry with before-images (so `undo` can reverse a
+   * setup), one diff, atomicity across the academy row and every venue, and
+   * `requireRows` turning an RLS refusal into a refusal the admin is told about
+   * rather than a silent no-op reported as "Saved".
+   */
+  const steps: PlanStep[] = [
+    {
+      // requireRows replaces the old `if (!updated[0])` check: a non-admin's UPDATE
+      // matches zero rows silently, and the screen used to have to notice that by
+      // hand. Now the plan aborts, nothing else in it commits, and nobody is messaged.
+      write: `update academy
+                 set name                      = ${lit(v.name)},
+                     category                  = ${lit(v.category?.trim() ? v.category.trim() : null)},
+                     timezone                  = ${lit(v.timezone)},
+                     cancellation_window_hours = ${lit(v.cancellationWindowHours)},
+                     morning_brief_at          = time ${lit(v.morningBriefAt)},
+                     evening_digest_at         = time ${lit(v.eveningDigestAt)},
+                     upi_handle                = ${lit(v.upiHandle?.trim() ? v.upiHandle.trim() : null)},
+                     settings                  = coalesce(settings, '{}'::jsonb)
+                                                 || jsonb_build_object('operating_pattern', ${jsonLit(pattern)})
+                   , onboarding_state          = case when onboarding_state = 'setup' then 'roster' else onboarding_state end
+               where id = ${uid(ctx.academyId)}`,
+      requireRows: 1,
+    },
+  ]
+  for (const venue of v.venues) {
+    steps.push(
+      venue.id
+        ? {
+            // A venue id that is not this academy's used to be skipped in silence —
+            // the row was simply left out of `keptIds` and then deleted as "removed".
+            write: `update venue set name = ${lit(venue.name)}, address = ${lit(venue.address || null)}
+                     where id = ${uid(venue.id)} and academy_id = ${uid(ctx.academyId)}`,
+            requireRows: 1,
+          }
+        : {
+            write: `insert into venue (academy_id, name, address)
+                    values (${uid(ctx.academyId)}, ${lit(venue.name)}, ${lit(venue.address || null)})`,
+            requireRows: 1,
+          },
+    )
   }
+
+  const identity = await resolveIdentity(ctx.contactId)
+  if (!identity) {
+    return json({ ok: false, message: "I couldn't work out who you are from that link." }, 403)
+  }
+
+  const saved = await executePlan(ctx, steps, 'Business settings saved from the setup screen', audienceFor(identity))
+  if (!saved.ok) {
+    // An RLS refusal reaches here as a precondition failure rather than as an
+    // exception, because Postgres does not raise on an UPDATE that matches nothing.
+    if (/PRECONDITION_FAILED|CHANGED_NOTHING/.test(saved.error ?? '')) {
+      return json({ ok: false, message: 'Only the admin can change these settings.' }, 403)
+    }
+    return json({ ok: false, message: `That didn't save: ${saved.error ?? 'something went wrong'}` }, 500)
+  }
+  const result = { kept: v.venues.length, removed }
 
   // Removals go one at a time and outside the main transaction: a venue a class
   // still points at cannot be deleted, and that must not roll back the settings

@@ -1,22 +1,32 @@
 /**
- * probe-ceiling — is the 10-declaration ceiling real, and is it real on Gemini 3?
+ * probe-ceiling — how many tool declarations a model actually takes.
  *
  *   npx tsx scripts/probe-ceiling.ts [--models a,b] [--runs 2]
  *
- * `lib/agent/tools.ts` enforces `MAX_TOOL_DECLS = 10` as a hard boot-time throw,
- * on a measurement that says an eleventh declaration — "any eleventh with
- * parameters of its own, including one whose whole schema is a single optional
- * string" — makes EVERY turn return MALFORMED_FUNCTION_CALL.
+ * **The ten-tool ceiling this script was written to test does not exist.** It was
+ * a real observation and a wrong diagnosis: on `gemini-2.5-flash`, adding an
+ * eleventh declaration — any eleventh, including one whose whole schema is a
+ * single optional string — made EVERY turn come back MALFORMED_FUNCTION_CALL, and
+ * the count was blamed. The cause was an empty enum. `act`'s schema was
+ * `enum: Object.keys(OPERATIONS)`, those declarations were built at module load,
+ * and one extra import edge made that list empty; an empty enum is a declaration
+ * Vertex rejects, and its symptom is precisely "every turn returns
+ * MALFORMED_FUNCTION_CALL with zero output tokens". An eleventh tool perturbed the
+ * import graph, so the ceiling looked real every time it was tested. The lazy
+ * build in `lib/agent/tools.ts` fixed the cause.
  *
- * That constraint is load-bearing for the whole architecture: 25 operations hide
- * behind one `act` with `args: {type:'object'}` and no properties, their
- * signatures are carried as ~7k characters of prose in the stable prefix, and
- * `view` swallowed two unrelated screens to avoid becoming an eleventh tool.
+ * This script is what settled it — the real declarations plus K trivial ones,
+ * against the real prefix: 10 / 11 / 15 / 30 / 60 all clean, 2/2, on
+ * `gemini-2.5-flash` and `gemini-3-flash-preview` alike. `MAX_TOOL_DECLS` now sits
+ * at Google's documented limit of 128 per request, and the operations are declared
+ * as real functions instead of hiding behind one untyped `act`.
  *
- * Google documents the limit as **128** declarations per request, and the error
- * users actually hit at scale is a *nesting depth* one, not a count one. Both
- * cannot be right, so this measures it: the real ten declarations plus K trivial
- * ones, against the real prefix, on each model.
+ * Keep it because the belief was expensive while it stood: 20-odd operations
+ * behind one `act` with `args: {type:'object'}` and no properties, their signatures
+ * carried as ~7k characters of prose in the stable prefix where the decoder cannot
+ * use them, and `view` swallowing two unrelated screens to avoid becoming an
+ * eleventh tool. Re-run it before believing any new declaration-count folklore, on
+ * any new model.
  *
  * A run is BROKEN if the model returns no candidate and no text — the signature
  * of MALFORMED_FUNCTION_CALL — or if the request is rejected outright.

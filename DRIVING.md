@@ -151,7 +151,7 @@ new one, check these first.**
 
 | Root | Instances | Where else to look |
 |---|---|---|
-| **R1 · Validation happens after the last moment it could be repaired.** Something invalid is accepted at compose time and dies at the tap, in a job, or on a person's screen — where there is no model in the loop and nobody to recover. | C12, C16, C24, C13, F2 (message structure composed into the body), F6 (a Saturday class started on a Sunday), F8 (operator-shaped commit summaries shipped to parents) | Anything minted, staged or scheduled now and executed later: `schedule`'s payloads, catalog moments, staged plan messages, recipes. |
+| **R1 · Validation happens after the last moment it could be repaired.** Something invalid is accepted at compose time and dies at the tap, in a job, or on a person's screen — where there is no model in the loop and nobody to recover. | C12, C16, C24, C13, F2 (message structure composed into the body), F6 (a Saturday class started on a Sunday), F8 (operator-shaped commit summaries shipped to parents) | Anything minted, staged or scheduled now and executed later: `schedule`'s payloads, catalog moments, staged plan messages. |
 | **R2 · A capability exists with no way to reach it.** From outside, indistinguishable from a model that never wants it. | C14, C13, C4, C45, C46 | `form` and the rest of the component registry. Anything whose only caller is the model. |
 | **R3 · The runtime knows something and does not tell the model.** It then guesses, and the guess is confident. | C15, C16, C20, C41, F3 (a variable called `uncovered_sessions_next_36h` whose predicate meant *unconfirmed*), F4 (reflection told a turn had not replied when it had) | Anywhere the model asks a question the runtime could have answered: coverage, balances, what a gate would do before it tries. **And anywhere the runtime hands the model a named variable — the name is prompt, and it is the part nobody reviews.** |
 | **R4 · A guarantee is enforced on one path when several exist.** Which path a turn takes is the model's choice, so a guarantee that depends on it is not a guarantee. | C21, C22, C12, C9, C26, C49's own first run, F5 (three generators, one fact, no shared dedupe), F7 (`add_family` and `book_trial` disagree about what a person is) | Every place with both a "model does it" and a "runtime does it" branch: preview→commit, menus, escalation, digests, reflection. **Repetition is already split**: byte-identical bodies are caught at the send gate, and *semantic* repetition — the same fact in different words across days — is deliberately not, because that belongs at the generator. |
@@ -263,14 +263,15 @@ The narrow case where a session object *would* help is a within-turn scratchpad,
 recent lookups mostly cover it.
 
 **Statelessness does have one real cost**: anything earned in turn 1 and spent in turn 2
-has nothing to travel in. The recipe capture gate is the standing example — the rounds
-are spent in the turn that plans, the commit happens in the turn that taps, and the check
-only ever sees the second. The fix for that shape is never a session object; it is
-putting the number in the action payload, where the rest of the state already travels.
+has nothing to travel in. The recipe capture gate was the standing example — the rounds
+were spent in the turn that plans, the commit happened in the turn that taps, and the
+check only ever saw the second — and it went with the feature (`0017_drop_recipe.sql`).
+The shape will recur, and the fix for it is never a session object; it is putting the
+number in the action payload, where the rest of the state already travels.
 
 ### Optimisation, ranked by leverage
 
-In this order. The first two have landed; the rest have not.
+In this order. The first two have landed; the third has not.
 
 1. **Widen the census** — *done*. The tail now carries the next few sessions with class
    name and a rendered time, and a coach's unmarked registers with the id to mark them.
@@ -280,15 +281,7 @@ In this order. The first two have landed; the rest have not.
    `read` calls per round concurrently and nothing in the prompt said so, so the model
    asked one question per round and paid a whole prefix for each. One sentence in the
    `read` declaration collapses a four-step discovery chain into two rounds.
-3. **Wire the recipe loop end to end.** Capture, generalise and apply are all written,
-   all correct, and not connected to each other — `applyRecipe` still has no callers, and
-   what fires today pastes a matched plan into the tail as prose for the model to
-   re-compose. Once wired, a matched recipe is **1 round** (the runtime binds, previews,
-   executes, and the captured `message` steps carry the copy, so the model does not write
-   the reply either), or **0 rounds** behind a button.
-4. **Upgrade recipe matching from token overlap to embeddings.** This is the difference
-   between recipes firing sometimes and firing reliably.
-5. **Typing indicators.** WhatsApp cannot stream, so unlike a chat UI the latency is
+3. **Typing indicators.** WhatsApp cannot stream, so unlike a chat UI the latency is
    fully exposed — every optimisation others get from perception this product must get
    from real speed. A typing indicator is the one perceptual lever the surface offers.
 

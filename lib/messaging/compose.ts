@@ -14,7 +14,7 @@
  * does not ship."
  */
 
-import { mintAction } from '@/lib/actions'
+import { attachActionsToMessage, mintAction } from '@/lib/actions'
 import type { ActionPayload } from '@/lib/actions'
 import type { SessionCtx } from '@/lib/db'
 import { idem, newId } from '@/lib/ids'
@@ -149,6 +149,11 @@ export async function composeAndSend(ctx: SessionCtx, rawSpec: ComposeSpec): Pro
 
   const ttlMinutes = spec.ttlMinutes ?? entry?.actionTtlMinutes
 
+  // Every action this message prints, kept so the message can be stamped onto them once it
+  // has an id (0016). The order is forced: a button carries an action id, so the ids must
+  // exist before the message does.
+  const minted: string[] = []
+
   let buttons: Button[] | undefined
   if (spec.buttons?.length) {
     buttons = []
@@ -158,6 +163,7 @@ export async function composeAndSend(ctx: SessionCtx, rawSpec: ComposeSpec): Pro
         forContactId: spec.toContactId,
         ttlMinutes,
       })
+      minted.push(actionId)
       buttons.push({ actionId, title: b.title })
     }
   }
@@ -173,6 +179,7 @@ export async function composeAndSend(ctx: SessionCtx, rawSpec: ComposeSpec): Pro
           forContactId: spec.toContactId,
           ttlMinutes,
         })
+        minted.push(actionId)
         rows.push({ actionId, title: r.title, description: r.description })
       }
       sections.push({ title: s.title, rows })
@@ -180,7 +187,14 @@ export async function composeAndSend(ctx: SessionCtx, rawSpec: ComposeSpec): Pro
     list = { buttonText: spec.list.buttonText, sections }
   }
 
-  return send(ctx, { ...base, buttons, list })
+  const outcome = await send(ctx, { ...base, buttons, list })
+  // Close the family before returning. Until this lands, every button on this message is an
+  // independent row live for its own TTL — which is how tapping `[Do it]` and then `[Cancel]`
+  // on the same card committed a plan and then said "Left as it was — nothing changed."
+  // A suppressed or failed send that never got a row leaves them unstamped, which is exactly
+  // right: nothing was printed, so there is no family and nothing to invalidate.
+  await attachActionsToMessage(ctx, outcome.messageId, minted)
+  return outcome
 }
 
 /**

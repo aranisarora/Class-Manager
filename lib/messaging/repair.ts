@@ -96,83 +96,130 @@ export function extractBracketButtons(text: string): {
 }
 
 /**
- * The span of the JSON object containing `needle`, brace-balanced.
+ * The brace-balanced span starting at the `{` that opens the blob containing `at`.
  *
  * A regex cannot do this: `{"buttons":[{"title":"x"}]}` has nested braces, and every
  * non-greedy pattern that terminates on the first `}` leaves `]}` behind in the message
  * — which is worse than not repairing it, because the residue looks like a typo rather
- * than like machinery. String-aware, so a `}` inside a label does not end the scan.
+ * than like machinery.
+ *
+ * Quote-aware for BOTH `"` and `'`. It was `"`-only, and that was half of why the
+ * stripper never fired on what the model actually writes: the model writes single
+ * quotes, so a `}` inside a label ended the scan early and the repair either bailed or
+ * left residue.
+ *
+ * Apostrophes are the hazard that buys: `'Ravi's class'` desyncs single-quote tracking
+ * and the scan runs to the end of the message. So a failed scan retries ignoring quotes
+ * entirely rather than giving up — over-consuming a blob is recoverable, shipping one is
+ * not.
  */
-function jsonObjectSpan(text: string, needle: string): { start: number; end: number } | null {
-  const at = text.indexOf(needle)
-  if (at === -1) return null
+function braceSpan(text: string, at: number): { start: number; end: number } | null {
   const start = text.lastIndexOf('{', at)
   if (start === -1) return null
 
-  let depth = 0
-  let inString = false
-  let escaped = false
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i]
-    if (escaped) {
-      escaped = false
-      continue
+  const scan = (quoteAware: boolean): number | null => {
+    let depth = 0
+    let quote: string | null = null
+    let escaped = false
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i] as string
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (ch === '\\') {
+        escaped = true
+        continue
+      }
+      if (quoteAware) {
+        if (quote) {
+          if (ch === quote) quote = null
+          continue
+        }
+        if (ch === '"' || ch === "'") {
+          quote = ch
+          continue
+        }
+      }
+      if (ch === '{') depth += 1
+      else if (ch === '}') {
+        depth -= 1
+        if (depth === 0) return i + 1
+      }
     }
-    if (ch === '\\') {
-      escaped = true
-      continue
-    }
-    if (ch === '"') {
-      inString = !inString
-      continue
-    }
-    if (inString) continue
-    if (ch === '{') depth += 1
-    else if (ch === '}') {
-      depth -= 1
-      if (depth === 0) return { start, end: i + 1 }
-    }
+    return null
   }
-  return null
+
+  const end = scan(true) ?? scan(false)
+  return end === null ? null : { start, end }
 }
 
 /**
- * A `{"buttons": […]}` blob, typed into the message body.
+ * A key that only ever appears in the product's own wire shape, in ANY notation.
+ *
+ * `"buttons"` — double-quoted, strict JSON — is what this used to look for, and it is
+ * the wrong thing to look for. **The model does not write strict JSON, because the
+ * prompt does not show it strict JSON.** The action schema is documented to the model as
+ * `{kind:'operation',op,args} · {kind:'steps',steps,summary} · {kind:'reply',text}`
+ * (`lib/agent/tools.ts`) — unquoted keys, single-quoted values — so that is the notation
+ * it writes back when it types an offer into the prose instead of calling the tool.
+ *
+ * Driven, on a live academy: two of three outbound messages ended in one of these, and
+ * the admin saw both.
+ *
+ *     What should we do first?
+ *     {kind:'reply', body: 'Setup Table tennis', link screen: setup, link title: 'Open Setup'}
+ *
+ *     ...I'll get them added.
+ *     {kind:'reply', body: 'Add a coach', buttons: [{title: 'Add a coach', action: {...}}]}
+ *
+ * Neither contains the substring `"buttons"`, so the stripper never ran. This is the
+ * runtime documenting a notation to the model and then failing to recognise it coming
+ * back — so the test is the KEY, never the quoting.
+ *
+ * Deliberately the diagnostic keys only. `title:` and `text:` also appear in these blobs
+ * but appear in ordinary sentences too, and a stripper that eats prose is worse than one
+ * that misses a blob.
+ */
+const WIRE_KEY_RE =
+  /(?:^|[{,[\s])["']?(kind|buttons|action|steps|menu|args|view_spec_id|viewSpecId|catalog_id|ttl_minutes|to_contact_id|to_person_id)["']?\s*:/
+
+/** `title: 'Add a coach'` / `"title":"Add a coach"` — the labels, whatever the quoting. */
+const TITLE_RE = /["']?(?:title|label)["']?\s*:\s*["']([^"'\n]{1,60})["']/g
+
+/**
+ * A wire-shape blob, typed into the message body.
  *
  * The same instinct as a bracket label, one level more literal: the model knows what it
  * wants to offer and writes the **wire shape** instead of calling the tool with it.
  * Counted in `message.body` — three consecutive messages to one parent ended in a raw
- * JSON object. And because the runtime then saw a message carrying no buttons, it bolted
- * its generic `[What can you do?]` fallback on, so the customer received JSON *and* a
- * button that answered none of it.
+ * object. And because the runtime then saw a message carrying no buttons, it bolted its
+ * generic `[What can you do?]` fallback on, so the customer received machinery *and* a
+ * button that answered none of it. That is the whole failure in one message: the
+ * affordance the model meant to offer is lost, and its source code is shown to a
+ * customer in its place.
  *
  * Handled separately from brackets because the repair differs. A bracket label is prose
- * that very nearly reads as an offer; a JSON object is something no person may see under
- * any circumstances. So this **strips whether or not it parses**, and promotes the titles
- * to real `reply` buttons only when it does.
+ * that very nearly reads as an offer; an object literal is something no person may see
+ * under any circumstances. So this **strips whether or not it parses**, and recovers the
+ * labels as real `reply` buttons whenever it can find them — a lenient scan rather than
+ * `JSON.parse`, because the input is by definition not JSON.
  */
-export function extractJsonButtons(text: string): {
+export function extractWireShape(text: string): {
   text: string
   buttons: { title: string; action: { kind: 'reply'; text: string } }[]
 } {
-  if (!text.includes('"buttons"')) return { text, buttons: [] }
-  const span = jsonObjectSpan(text, '"buttons"')
+  if (!text.includes('{')) return { text, buttons: [] }
+  const hit = WIRE_KEY_RE.exec(text)
+  if (!hit) return { text, buttons: [] }
+  const span = braceSpan(text, hit.index)
   if (!span) return { text, buttons: [] }
 
-  let titles: string[] = []
-  try {
-    const parsed = JSON.parse(text.slice(span.start, span.end)) as { buttons?: unknown }
-    if (Array.isArray(parsed?.buttons)) {
-      titles = parsed.buttons
-        .map((b) => String((b as { title?: unknown } | null)?.title ?? '').trim())
-        .filter((t) => t.length > 0)
-    }
-  } catch {
-    // Unparseable is still not something a person may see. Strip it anyway.
-  }
+  const blob = text.slice(span.start, span.end)
+  const titles = [...blob.matchAll(TITLE_RE)].map((m) => (m[1] as string).trim()).filter(Boolean)
 
   // Take the code fence with it when the model wrapped one round the blob, or the
-  // message keeps a pair of empty ``` markers where the JSON used to be.
+  // message keeps a pair of empty ``` markers where the object used to be.
   let { start, end } = span
   const fenceBefore = /```(?:json)?[ \t]*\r?\n?[ \t]*$/.exec(text.slice(0, start))
   if (fenceBefore) start -= fenceBefore[0].length
@@ -184,13 +231,21 @@ export function extractJsonButtons(text: string): {
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
-  return {
-    text: cleaned,
-    buttons: titles.slice(0, LIMITS.buttons).map((title) => ({
-      title: fitTitle(title),
-      action: { kind: 'reply' as const, text: title },
-    })),
+  const buttons = [...new Set(titles)].slice(0, LIMITS.buttons).map((title) => ({
+    title: fitTitle(title),
+    action: { kind: 'reply' as const, text: title },
+  }))
+
+  // One blob per pass is not enough: a model that wrote one usually wrote two. Recurse
+  // on what is left, and stop when a pass changes nothing.
+  if (cleaned !== text) {
+    const again = extractWireShape(cleaned)
+    return {
+      text: again.text,
+      buttons: [...buttons, ...again.buttons].slice(0, LIMITS.buttons),
+    }
   }
+  return { text: cleaned, buttons }
 }
 
 /* ------------------------------------------------------------------------- *
@@ -246,15 +301,15 @@ export function repairOutbound<T extends RepairableMessage>(msg: T): RepairResul
   let bracketButtons: RepairResult<T>['bracketButtons'] = []
 
   // --- the wire shape, typed into the prose ----------------------------------
-  if (typeof out.body === 'string' && out.body.includes('"buttons"')) {
-    const pulled = extractJsonButtons(out.body)
+  if (typeof out.body === 'string' && out.body.includes('{')) {
+    const pulled = extractWireShape(out.body)
     if (pulled.text !== out.body) {
       out.body = pulled.text
       bracketButtons = pulled.buttons
       repairs.push(
         pulled.buttons.length
-          ? `took a {"buttons"} JSON block out of the body, recovering ${pulled.buttons.length} label(s)`
-          : 'took an unparseable {"buttons"} JSON block out of the body',
+          ? `took a wire-shape object out of the body, recovering ${pulled.buttons.length} label(s)`
+          : 'took a wire-shape object out of the body',
       )
     }
   }

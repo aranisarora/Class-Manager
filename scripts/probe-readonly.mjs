@@ -38,7 +38,7 @@ async function as(role, q) {
 
 const tables = ['academy','venue','person','contact','account','player','coach','class','class_slot',
   'class_coach','enrollment','session','session_coach','attendance','tally_line','payment','message',
-  'memory_fact','action','view_spec','audit_entry','recipe','turn','job','sender']
+  'memory_fact','action','view_spec','audit_entry','turn','job','sender']
 
 console.log('table                cm_user   cm_readonly')
 let split = 0

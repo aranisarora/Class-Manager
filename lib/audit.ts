@@ -62,6 +62,24 @@ function snapshotQuery(order: 'asc' | 'desc'): string {
            order by seq ${order === 'desc' ? 'desc' : 'asc'}`
 }
 
+/**
+ * Opens its OWN session, which is why `readDiffIn` exists beside `readDiff` and
+ * takes the caller's `tx` instead.
+ *
+ * Calling this — or anything else that opens a session — from inside another
+ * transaction's callback is how you exhaust the pool. The inner session waits
+ * for a connection, the outer transaction holds one while it waits, and at
+ * `max` concurrent callers the only connection that could free the inner one is
+ * the one the outer is sitting on: every backend goes `idle in transaction` and
+ * stays there. That is the shape of the outage lib/db.ts's `runTransaction` note
+ * describes — 15 of 15 connections held, two of them idle in transaction for
+ * sixteen minutes, every route 500ing. It degrades now instead of accumulating,
+ * because a transaction that goes idle is killed after 30 s, but "recovers in
+ * thirty seconds" is not the same as "does not happen".
+ *
+ * Inside a transaction, use `readDiffIn`. It is also the only one that can see
+ * the snapshots before commit, which is usually the reason you are there.
+ */
 async function loadSnapshots(ctx: SessionCtx, auditId: string, order: 'asc' | 'desc'): Promise<SnapshotRow[]> {
   if (!isUuid(auditId)) return []
   return withSession(ctx, (tx) => unsafeQuery<SnapshotRow>(tx, snapshotQuery(order), [auditId]))

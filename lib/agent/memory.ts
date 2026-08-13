@@ -189,13 +189,30 @@ export async function writeFact(
 // hotSet — the bounded cache the prompt actually carries
 // -----------------------------------------------------------------------------
 
+/**
+ * The academy is REQUIRED, and that is the whole fix.
+ *
+ * It used to be optional, falling back to `TENANT_OF` — a module-level Map populated by
+ * whichever earlier call happened to know the tenant. In a warm process that works. In a
+ * cold one the Map is empty, `tenantOf` returns null, and this returned `''`: **"this
+ * person has no memory."** Not an error, not a log line — the same empty string a person
+ * who genuinely has no memory yet produces, handed to the prompt as fact.
+ *
+ * All five callers already passed it, so this never fired. That is exactly what makes it
+ * worth closing now rather than after: the signature invited the sixth caller to omit it,
+ * and on serverless every request is a cold process. A required parameter is a guarantee
+ * the compiler enforces for callers nobody has written yet — cheaper than remembering,
+ * and it cannot be skipped.
+ */
 export async function hotSet(
   subjectKind: SubjectKind,
   subjectId: string,
-  academyId?: string,
+  academyId: string,
 ): Promise<string> {
   const tenant = tenantOf(subjectKind, subjectId, academyId)
-  if (!tenant) return ''
+  // Unreachable through the type, reachable through an empty string. Loud, because
+  // returning '' here is indistinguishable from an empty memory and always was.
+  if (!tenant) throw new Error(`memory.hotSet: no academy for ${subjectKind} ${subjectId}`)
   try {
     const rows = await withSession(serviceCtx(tenant), async (tx) => {
       const r =

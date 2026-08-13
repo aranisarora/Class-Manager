@@ -279,6 +279,15 @@ function formatQueryResults(v: unknown): string {
  *    filter it; the same query returns a different world per person, which is
  *    the property the whole product is built on.
  *
+ * **Every label below is prompt, and nobody reviews a label as prompt.** The rule
+ * this block is held to: read the label and its value, with no access to the SQL
+ * above it, and say the sentence they license. If that sentence can be false, the
+ * label is wrong — not the predicate. `uncovered_sessions_next_36h` was correct
+ * SQL under a name that told an owner, four times, that his only coach was not
+ * assigned to a class he was assigned to. The fixes here are all of one shape:
+ * name what the predicate actually tests, and hand over the neighbouring fact that
+ * makes the true sentence the available one.
+ *
  * Never a precondition: if the census fails, the turn continues without it.
  */
 async function census(id: Identity): Promise<string | null> {
@@ -289,15 +298,41 @@ async function census(id: Identity): Promise<string | null> {
     contactId: id.contact.id,
   }
 
+  /**
+   * Null means the count query failed. Every `q` below is a bare `select
+   * (subquery), (subquery)` with no FROM, so it returns exactly one row whenever it
+   * runs at all — which makes null an error signal and never "no data". Callers
+   * must not render a count from a null row: `Number(undefined ?? 0)` is 0, and a
+   * refused query rendered as "0 classes, 0 sessions" is the census stating, with
+   * confidence, the opposite of what it failed to read.
+   *
+   * `--` comments in these SQL strings carry no apostrophes on purpose: `db.ts`
+   * blanks string literals BEFORE it strips comments, so one stray quote inside a
+   * comment shifts the pairing of every literal after it in the validator's view of
+   * the statement.
+   */
   const q = async (sql: string): Promise<Record<string, unknown> | null> => {
     const res = await modelQuery(ctx, sql)
     return res.error ? null : ((res.rows[0] as Record<string, unknown>) ?? null)
   }
   const n = (row: Record<string, unknown> | null, key: string): number => Number(row?.[key] ?? 0)
 
-  const many = async (sql: string): Promise<Record<string, unknown>[]> => {
+  /**
+   * `null` means the lookup FAILED. `[]` means it ran and found nothing.
+   *
+   * They were the same value here, and they are opposite sentences downstream: the
+   * family branch turns an empty list into "**nothing is scheduled ahead for them
+   * at all**" — emphasised, with an instruction to say it plainly. `modelQuery`
+   * returns errors rather than throwing (lib/db.ts), so a refusal or a 5s timeout
+   * arrived as `[]` and became a confident negative nobody read out of a row. That
+   * is the one sentence a parent acts on by not turning up.
+   *
+   * Every list in the census goes through here, so the distinction is made once
+   * rather than remembered at three call sites.
+   */
+  const many = async (sql: string): Promise<Record<string, unknown>[] | null> => {
     const res = await modelQuery(ctx, sql)
-    return res.error ? [] : (res.rows as Record<string, unknown>[])
+    return res.error ? null : (res.rows as Record<string, unknown>[])
   }
 
   /**
@@ -314,7 +349,12 @@ async function census(id: Identity): Promise<string | null> {
   const sessionLine = (r: Record<string, unknown>): string => {
     const raw = r.starts_at
     const at = raw instanceof Date ? raw : new Date(String(raw))
-    if (Number.isNaN(at.getTime())) return String(r.class_name ?? 'a class')
+    // A bare class name, under a heading that says "use these times verbatim", is an
+    // invitation to supply the missing half from nowhere — which is exactly the
+    // failure this whole block exists to prevent. Say the time is missing instead.
+    if (Number.isNaN(at.getTime())) {
+      return `${String(r.class_name ?? 'a class')} — start time unreadable, look it up before you state one`
+    }
     const who = r.who ? `${String(r.who)} — ` : ''
     const venue = r.venue ? ` at ${String(r.venue)}` : ''
     return `${who}${String(r.class_name ?? 'a class')}, ${inZone(at, tz).label}${venue}`
@@ -324,18 +364,39 @@ async function census(id: Identity): Promise<string | null> {
     if (id.roles.includes('admin')) {
       const row = await q(`select
           (select count(*) from venue) as venues,
-          (select count(*) from class where active) as classes,
-          (select count(*) from class_slot) as slots,
+          (select count(*) from class where active) as classes_active,
+          -- Named apart because the slot count below is NOT filtered to active
+          -- classes, and "3 classes with 11 weekly slots" is false the moment one is
+          -- archived. Nothing in the product archives a class today, so this is
+          -- almost always 0 and costs nothing to say — but the sentence it prevents
+          -- is a weekly load the owner cannot reconcile with their own timetable.
+          (select count(*) from class where not active) as classes_archived,
+          (select count(*) from class_slot) as slots_all_classes,
           (select count(*) from coach where status = 'active') as coaches_active,
-          (select count(*) from coach where status in ('added','invited')) as coaches_waiting,
+          -- added and invited were one number called "waiting", and the sentence
+          -- attached to it told the admin to invite them. For an invited coach that is
+          -- false — the invite is already out and what is missing is their tap — and
+          -- it is the same failure as uncovered_sessions: a merged predicate named
+          -- after one of the two states it covers. The union is unchanged.
+          (select count(*) from coach where status = 'added') as coaches_uninvited,
+          (select count(*) from coach where status = 'invited') as coaches_invited,
           (select count(*) from account) as families,
-          (select count(*) from player where active) as players,
+          (select count(*) from player where active) as players_active,
           (select count(*) from enrollment where ended_on is null) as enrolled,
           (select count(*) from session where status = 'scheduled' and starts_at > app.now()) as upcoming,
           (select count(*) from session where status = 'scheduled'
              and starts_at between app.now() and app.now() + interval '7 days') as this_week,
+          -- A message ROW is not a delivered message. This counted every unsuppressed
+          -- outbound row and was read out as "sent", while the digest defines sent as
+          -- status in sent/delivered/read — one word, two meanings, and the weaker
+          -- one telling an owner his mailout went out when every row of it had
+          -- failed. Both travel now, so the true sentence is the available one.
           (select count(*) from message where direction = 'outbound'
              and coalesce(suppressed_reason, '') = ''
+             and contact_id <> '${id.contact.id}'::uuid) as outbound_to_others,
+          (select count(*) from message where direction = 'outbound'
+             and coalesce(suppressed_reason, '') = ''
+             and status in ('sent','delivered','read')
              and contact_id <> '${id.contact.id}'::uuid) as sent_to_others`)
       if (!row) return null
       // Each line carries what the count MEANS, because a bare zero is the same
@@ -343,20 +404,39 @@ async function census(id: Identity): Promise<string | null> {
       // coaches" reads as nothing-to-see; "two added, neither invited, so
       // neither can see a thing" is the sentence somebody can act on — and it is
       // still a fact, derived here, not a plan invented by anybody.
-      const waiting = n(row, 'coaches_waiting')
+      const archived = n(row, 'classes_archived')
+      const uninvited = n(row, 'coaches_uninvited')
+      const invited = n(row, 'coaches_invited')
+      const outbound = n(row, 'outbound_to_others')
+      const sent = n(row, 'sent_to_others')
       const bits = [
         `${n(row, 'venues')} venue(s)`,
-        `${n(row, 'classes')} class(es) with ${n(row, 'slots')} weekly slot(s)` +
-          (n(row, 'classes') === 0 ? ' — so there is nothing to remind anyone about yet' : ''),
-        `${n(row, 'coaches_active')} active coach(es)` +
-          (waiting
-            ? `, and ${waiting} added or invited who have never onboarded — they cannot see their sessions, will not be reminded, and will not know they are expected anywhere until they are invited and confirm`
+        `${n(row, 'classes_active')} active class(es) with ${n(row, 'slots_all_classes')} weekly slot(s)` +
+          (n(row, 'classes_active') === 0 ? ' — so there is nothing to remind anyone about yet' : '') +
+          (archived
+            ? ` — but the slot count is every class's, ${archived} archived one(s) included, so it is not the weekly load`
             : ''),
-        `${n(row, 'families')} family account(s), ${n(row, 'players')} player(s), ${n(row, 'enrolled')} live enrolment(s)`,
+        `${n(row, 'coaches_active')} active coach(es)` +
+          (uninvited || invited
+            ? `, and ${uninvited + invited} who cannot see a session, will not be reminded, and will not know they are expected anywhere: ` +
+              [
+                uninvited ? `${uninvited} added but never invited — nothing has been sent to them at all` : '',
+                invited ? `${invited} invited and not yet confirmed — the invite is out; they have not tapped it` : '',
+              ]
+                .filter(Boolean)
+                .join('; ')
+            : ''),
+        `${n(row, 'families')} family account(s), ${n(row, 'players_active')} active player(s), ${n(row, 'enrolled')} live enrolment(s)`,
         `${n(row, 'upcoming')} session(s) scheduled ahead (${n(row, 'this_week')} in the next 7 days)`,
-        `${n(row, 'sent_to_others')} message(s) ever sent to anyone other than this admin` +
-          (n(row, 'sent_to_others') === 0 ? ' — nobody outside this conversation has heard from this business at all' : ''),
-        id.academy.upi_handle ? `UPI handle set` : `no UPI handle yet, so nobody can pay`,
+        `${outbound} message(s) ever addressed to anyone outside this conversation` +
+          (outbound === 0
+            ? ' — nobody outside this conversation has heard from this business at all'
+            : sent < outbound
+              ? `, of which ${sent} actually went out — the other ${outbound - sent} are still queued or failed, so nobody received those`
+              : ''),
+        id.academy.upi_handle
+          ? `UPI handle set`
+          : `no UPI handle on file, so a payment request goes out with nothing to pay to`,
       ]
       return bits.map((b) => `- ${b}`).join('\n')
     }
@@ -367,8 +447,27 @@ async function census(id: Identity): Promise<string | null> {
           (select status from coach where id = '${id.coachId}'::uuid) as status,
           (select count(*) from class_coach where coach_id = '${id.coachId}'::uuid) as classes,
           (select count(*) from session_coach sc join session s on s.id = sc.session_id
-            where sc.coach_id = '${id.coachId}'::uuid and s.status = 'scheduled' and s.starts_at > app.now()) as upcoming`),
-        many(`select c.name as class_name, s.starts_at, v.name as venue
+            where sc.coach_id = '${id.coachId}'::uuid and s.status = 'scheduled' and s.starts_at > app.now()) as upcoming,
+          -- The count above is every assignment row; the list below filters on
+          -- declined_at is null. So a coach who dropped Saturday was told "4
+          -- sessions ahead of you" above a list of 3 — two adjacent facts that
+          -- contradict each other, and the larger one says they are expected
+          -- somewhere they have already said no to. Neither predicate moves; the
+          -- difference travels with them.
+          (select count(*) from session_coach sc join session s on s.id = sc.session_id
+            where sc.coach_id = '${id.coachId}'::uuid and s.status = 'scheduled' and s.starts_at > app.now()
+              and sc.declined_at is not null) as upcoming_declined,
+          -- The list of registers is capped at 3. Without the total, "3 registers
+          -- still unmarked" is what a reader states when there are nine, and it is
+          -- also the cross-check that tells this block apart from a failed lookup.
+          (select count(*) from session_coach sc join session s on s.id = sc.session_id
+            where sc.coach_id = '${id.coachId}'::uuid and s.status = 'scheduled' and s.ends_at < app.now()
+              and not exists (select 1 from attendance a where a.session_id = s.id)) as unmarked_total`),
+        // `confirmed_at` rides along because "they are down for it" and "they said
+        // yes" are different facts, and only the first was ever in front of the
+        // model — the same conflation that made the digest tell an owner a covered
+        // session needed a coach.
+        many(`select c.name as class_name, s.starts_at, v.name as venue, sc.confirmed_at
                 from session_coach sc
                 join session s on s.id = sc.session_id
                 join class c on c.id = s.class_id
@@ -389,19 +488,61 @@ async function census(id: Identity): Promise<string | null> {
                  and not exists (select 1 from attendance a where a.session_id = s.id)
                order by s.starts_at desc limit 3`),
       ])
-      const bits = [
-        `- their coach record is "${String(row?.status ?? 'unknown')}"`,
-        `- assigned to ${n(row, 'classes')} class(es), ${n(row, 'upcoming')} session(s) ahead of them`,
-      ]
-      if (next.length) {
-        bits.push(`- their next sessions, already looked up — use these times verbatim:`)
-        for (const r of next) bits.push(`    · ${sessionLine(r)}`)
+      const bits: string[] = []
+      if (row) {
+        const declined = n(row, 'upcoming_declined')
+        // The status word alone is the state machine, and narrating the state
+        // machine is the documented failure this block was built to stop. What each
+        // word MEANS to this coach travels with it.
+        const status = String(row.status ?? 'unknown')
+        const meaning =
+          status === 'added'
+            ? ` — on the books, invite not sent yet, so nothing has reached them from this business`
+            : status === 'invited'
+              ? ` — the invite is out and they have not confirmed it; confirming is what starts their day`
+              : status === 'ended'
+                ? ` — they have left; nothing new is assigned to them`
+                : ''
+        bits.push(`- their coach record is "${status}"${meaning}`)
+        bits.push(
+          `- assigned to ${n(row, 'classes')} class(es), and named on ${n(row, 'upcoming')} scheduled session(s) ahead` +
+            (declined
+              ? ` — ${declined} of those they have already declined, so they are NOT expected there and the list below leaves them out`
+              : ''),
+        )
+      } else {
+        bits.push(
+          `- their coach record and session counts could not be read this turn. Say nothing about either, and do not read the gap as "none".`,
+        )
       }
-      if (unmarked.length) {
-        bits.push(`- register(s) still unmarked, with the id to mark them:`)
+      if (next && next.length) {
+        bits.push(`- their next session(s), soonest first (up to 4 shown) — use these times verbatim:`)
+        for (const r of next) {
+          bits.push(`    · ${sessionLine(r)}${r.confirmed_at ? '' : ` — they have NOT confirmed this one yet`}`)
+        }
+      } else if (n(row, 'upcoming') - n(row, 'upcoming_declined') > 0) {
+        // Two reads of the same fact, and they disagree — the count found sessions
+        // and the list came back empty or refused. The disagreement is the finding;
+        // resolving it silently in favour of the empty list is how "nothing coming
+        // up" gets said to a coach who is expected somewhere tomorrow.
+        bits.push(
+          `- their next sessions could not be listed this turn, though the count above says there are some — look them up before you name a time.`,
+        )
+      }
+      const unmarkedTotal = n(row, 'unmarked_total')
+      if (unmarked && unmarked.length) {
+        bits.push(
+          `- register(s) still unmarked${
+            unmarkedTotal > unmarked.length ? ` — ${unmarkedTotal} in total, the ${unmarked.length} most recent below` : ''
+          }, with the id to mark them:`,
+        )
         for (const r of unmarked) {
           bits.push(`    · ${sessionLine(r)} — session_id = ${String(r.session_id)}`)
         }
+      } else if (unmarkedTotal > 0) {
+        bits.push(
+          `- ${unmarkedTotal} register(s) are still unmarked but the list of them could not be read this turn — look them up before you say which.`,
+        )
       }
       return bits.join('\n')
     }
@@ -424,16 +565,28 @@ async function census(id: Identity): Promise<string | null> {
                where s.status = 'scheduled' and s.starts_at > app.now()
                order by s.starts_at limit 4`),
       ])
-      const bits = [
-        `- ${n(row, 'players')} of their children/players on the roster, ${n(row, 'enrolled')} live enrolment(s)`,
-      ]
-      if (next.length) {
-        bits.push(`- their next sessions, already looked up — use these times verbatim:`)
+      const bits: string[] = []
+      if (row) {
+        bits.push(
+          `- ${n(row, 'players')} of their children/players active on the roster, ${n(row, 'enrolled')} live enrolment(s)`,
+        )
+      }
+      if (next && next.length) {
+        bits.push(`- their next session(s), soonest first (up to 4 shown) — use these times verbatim:`)
         for (const r of next) bits.push(`    · ${sessionLine(r)}`)
-      } else {
+      } else if (next) {
+        // Only when the query actually RAN and returned nothing. This sentence is the
+        // most consequential one in the census — a parent who reads it stays home —
+        // and until `many` separated failure from emptiness, a refused or timed-out
+        // lookup produced it word for word.
         bits.push(
           `- **nothing is scheduled ahead for them at all.** Not "nothing this week" — nothing. ` +
             `Say so plainly and say what the class normally is; do not infer a next date from the weekly pattern.`,
+        )
+      } else {
+        bits.push(
+          `- their upcoming sessions could not be read this turn. Look them up before you answer anything about when a class is, ` +
+            `and do not tell them there are none — this is a failed lookup, not an empty diary.`,
         )
       }
       return bits.join('\n')
@@ -540,11 +693,25 @@ export async function variableTail(
   out.push(ac.join('\n'))
 
   // --- what exists, from where they stand -------------------------------------
+  // The heading used to read "What exists right now", and it was the one claim in
+  // the block nothing could keep true: this is built once, before the first round,
+  // and the same text is still sitting in the conversation six rounds later — after
+  // a plan has created a class, marked a register or onboarded a coach. A model that
+  // trusts "right now" over its own committed write will contradict itself inside a
+  // single turn. So the heading says when it was read, and the block says what
+  // supersedes it.
   if (whatExists) {
     out.push(
-      `## What exists right now (as this person can see it)\n\n${whatExists}\n\n` +
-        `These are counts, not a plan. They are here so you never have to guess whether something is set up, ` +
-        `and so an empty count is something you can act on rather than something you discover mid-sentence.`,
+      `## What existed when this turn started (as this person can see it)\n\n${whatExists}\n\n` +
+        // The closing clause earns its place in an uncached block because it is the
+        // one thing the prefix structurally cannot say: the prefix does not know when
+        // this text was built. "Never state a number you did not read" is doctrine
+        // rule 11 and is already cached — restating it here would be billed on every
+        // round and cached on none.
+        `Counts and rows already read out of the database, not a plan. They are here so you never have to guess ` +
+        `whether something is set up, and so an empty count is something you can act on rather than something you ` +
+        `discover mid-sentence. They were read before this turn's first round — a write you have committed since ` +
+        `supersedes them.`,
     )
   }
 

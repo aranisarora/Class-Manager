@@ -24,7 +24,6 @@ Postgres. You author SQL against these tables directly.
 
 - Every table has: id uuid pk, created_at timestamptz.
 - Every table except academy, sender, job, sim_* also has academy_id uuid not null.
-  recipe is the one exception: its academy_id is nullable, and null means global.
 - RLS is on for every table and it is the security boundary, not a filter you add.
   **Reading and writing are not symmetrical here, and assuming they are is the
   single most common way a write fails.**
@@ -126,7 +125,6 @@ view_spec(spec jsonb, for_person_id uuid, expires_at tstz, minted_at tstz)
 job(kind text, run_at tstz, dedupe_key text unique, status text, attempts int,
   last_error text, payload jsonb, locked_at, locked_by)   -- GLOBAL
 audit_entry(actor_person_id, intent text, plan jsonb, diff jsonb, undone_at, undo_of)
-recipe(name text, trigger_description text, plan jsonb, captured_from, active bool)
 turn(contact_id, person_id, role_acted, input jsonb, output jsonb, model,
   prompt_tokens, output_tokens, latency_ms, error)
 

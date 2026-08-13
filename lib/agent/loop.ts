@@ -34,7 +34,6 @@ import {
   MENU_BUTTON_TITLE,
   type ToolCtx,
 } from './tools'
-import { captureIfExpensive, matchRecipe } from './recipes'
 
 export type TurnInput = {
   contactId: string
@@ -82,7 +81,6 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
   let replyText = ''
   let trace: ToolTrace[] = []
   let rounds = 0
-  let committedPlans: { auditId: string; intent: string }[] = []
 
   const identity = await resolveIdentity(input.contactId)
   if (!identity) {
@@ -151,23 +149,10 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       replyText = m.said.length ? m.said.join('\n\n') : m.text
       trace = [...trace, ...m.trace]
       rounds = m.rounds
-      committedPlans = m.committedPlans
       if (m.error) error = m.error
     }
   } catch (e) {
     error = e instanceof Error ? e.message : String(e)
-  }
-
-  // §14.3 — the profiler. A committed plan that took the model three rounds to reach
-  // is the definition of "something it keeps re-deriving", and freezing it is a review
-  // step rather than a deploy. Never allowed to affect the turn.
-  if (!error && committedPlans.length) {
-    const captured = await captureIfExpensive({
-      academyId: identity.academyId,
-      rounds,
-      committed: committedPlans,
-    }).catch(() => null)
-    if (captured) trace.push({ round: 0, name: 'recipe:captured', ms: 0, result: captured })
   }
 
   // §5 — "the bot writes facts asynchronously after a turn, never blocking a reply."
@@ -515,7 +500,6 @@ async function modelTurn(
   cachedTokens: number
   trace: ToolTrace[]
   rounds: number
-  committedPlans: { auditId: string; intent: string }[]
   error?: string
 }> {
   const outcomes: SendOutcome[] = []
@@ -530,7 +514,6 @@ async function modelTurn(
     executed: [],
     repliedTo: new Set<string>(),
     saidToUser: [],
-    committedPlans: [],
   }
 
   const [clock, lookups] = await Promise.all([
@@ -550,23 +533,6 @@ async function modelTurn(
       'This is a task you scheduled for yourself. Deciding to do nothing is the common and correct outcome — ' +
         'only send something if this person would have asked for it.',
     )
-  }
-  // §14.3 — recipes optimise, they never gate. A match is offered as a
-  // known-good shape; an unmatched request falls through to the primitives.
-  if (input.text) {
-    try {
-      const recipe = await matchRecipe(input.text, { academyId: identity.academyId })
-      if (recipe) {
-        situation.push(
-          `A captured plan already exists for something like this — "${recipe.name}"` +
-            (recipe.trigger_description ? ` (${recipe.trigger_description})` : '') +
-            `. Its steps, with ${recipe.params.length ? recipe.params.join(', ') : 'no'} placeholders to fill: ` +
-            `${JSON.stringify(recipe.plan).slice(0, 1200)}. Use it if it fits; ignore it if this case is different.`,
-        )
-      }
-    } catch {
-      /* a recipe lookup must never be the reason a turn fails */
-    }
   }
 
   const history = await recentHistory(session, identity)
@@ -920,7 +886,6 @@ async function modelTurn(
     cachedTokens,
     trace,
     rounds,
-    committedPlans: toolCtx.committedPlans ?? [],
     ...(forcedError ? { error: forcedError } : {}),
   }
 }

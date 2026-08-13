@@ -1,0 +1,38 @@
+-- =============================================================================
+-- 0017 · Drop recipe
+--
+-- §14.3's recipe loop is deleted, not deferred.
+--
+-- Three halves were written and never joined. Capture froze a committed plan and
+-- generalised its ids into `{{placeholders}}`; `matchRecipe` found one by token
+-- overlap; and `applyRecipe` — the only thing in the product that could bind a
+-- placeholder and run the result — had no callers anywhere. So the generalisation
+-- was decorative. What actually reached the model was
+-- `JSON.stringify(plan).slice(0, 1200)` pasted into the variable tail as prose with
+-- "use it if it fits", which on any plan longer than a step or two cut mid-JSON and
+-- handed the model a malformed worked example as its known-good shape.
+--
+-- Capture DID fire, so this table has rows — a live turn logged
+-- `recipe:captured -> send-invite-draft`. Every one of them is a frozen plan
+-- nothing can replay and nobody reviewed, carrying resolved copy and ids lifted
+-- from a real conversation. A table that only grows, feeding a prompt path that no
+-- longer exists, is worse than either half alone.
+--
+-- Nothing has an FK to `recipe`, and no trigger or function reads it, so the table
+-- is the whole feature: dropping it takes its primary key, its `unique
+-- (academy_id, name)` constraint, the `recipe_global_name_key` partial index
+-- (0002), the `recipe_cm_service_all` policy (0003), its RLS setting and the
+-- blanket grants of 0002/0006 with it. Those are deliberately NOT named
+-- separately: `drop policy if exists` on a table that is already gone is an error
+-- rather than a no-op, so a file that tried to be thorough would stop being
+-- re-runnable — the same reason 0011 is one line.
+--
+-- 0002 still creates `recipe` and 0003 still creates its policy. This file sorts
+-- after both, so a full ordered re-apply still ends with the table gone. Applying
+-- 0003 ALONE (`node scripts/apply-migrations.mjs 0003`) against a database this
+-- file has already touched will fail on `drop policy ... on recipe`, because the
+-- table is not there to name — take the recipe blocks out of 0002 and 0003 the
+-- next time either is edited.
+-- =============================================================================
+
+drop table if exists recipe;

@@ -170,7 +170,7 @@ lib/jobs/                 20 job kinds, each re-checking its own precondition
 lib/web/                  signed links, the component registry, view specs
 app/emulator/             the world, tray, panes, clock, event log, faults
 app/w/[token]/            setup, the register, rendered views — no login
-supabase/migrations/      29 tables, RLS on every one
+supabase/migrations/      28 tables, RLS on every one
 scripts/drive.ts          the harness — talk to it, then read the tables back
 ```
 
@@ -199,12 +199,14 @@ scripts/drive.ts          the harness — talk to it, then read the tables back
   agent and diffable runs (§17, phase 12) were built and removed as over-engineered; `npm run
   drive` is the harness now, and a person driving it is the eval. `drive score` and
   [`DRIVING.md`](./DRIVING.md) are what turn that from an impression into numbers.
-- **The recipe loop is not connected end to end.** Capture, generalisation and application are
-  each written and each correct; `applyRecipe` has no callers, and what fires today pastes a
-  matched plan into the variable tail as prose for the model to re-compose rather than replaying
-  it. So the round saving §14.3 promises is a hope that the model copies well, not a structural
-  guarantee.
+- **Recipes (§14.3) were deleted, not deferred** — the table, `lib/agent/recipes.ts`, the capture
+  site and the prompt fragment are gone as of `0017_drop_recipe.sql`. Capture, generalisation and
+  matching were each written and each correct, and never joined: `applyRecipe` — the only thing
+  that could bind a `{{placeholder}}` and run the result — had no callers, so what fired on a live
+  turn was a matched plan `JSON.stringify`d, sliced at 1200 characters, and pasted into the
+  variable tail as prose for the model to re-compose. A worked example cut mid-JSON is worse than
+  no worked example. If the round saving is wanted back, it has to be built as a replay the
+  runtime performs, not as a paragraph the model is asked to copy.
 - Model quality varies turn to turn, as it will: the structural guarantees hold every time, but
   which tool the model reaches for first does not. Given the same sentence twice, one turn
-  created the class and one asked first — that variance is what §14.3's recipes exist to remove,
-  once the line above is closed.
+  created the class and one asked first. Nothing in the product currently narrows that.

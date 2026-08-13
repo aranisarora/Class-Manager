@@ -134,7 +134,7 @@ const TABLES = [
   'academy_admin', 'memory_fact', 'class', 'class_slot', 'class_coach',
   'enrollment', 'session', 'session_coach', 'attendance', 'tally_line',
   'payment', 'sender', 'message', 'action', 'view_spec', 'job', 'audit_entry',
-  'recipe', 'turn', 'sim_clock', 'sim_fault',
+  'turn', 'sim_clock', 'sim_fault',
 ]
 
 /** Table names with no natural English reading of their own. */

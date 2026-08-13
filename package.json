@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "seed": "tsx scripts/seed.ts",
     "db:push": "tsx scripts/db-push.ts",
-    "drive": "tsx scripts/drive.ts"
+    "drive": "tsx scripts/drive.ts",
+    "verify:static": "node scripts/verify-static.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.30.0",
