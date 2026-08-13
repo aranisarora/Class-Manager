@@ -9,278 +9,203 @@ a comment cannot hold — **how a defect was found**, and **what is still unveri
 that the next person can tell evidence from reasoning without re-deriving either.
 
 Every claim below is marked **drove it** (ran it against a live academy and read the rows
-back) or **read it** (confident from the code, did not run it). Do not promote one to the
-other without running it.
+back) or **read it** (confident from the code, did not run it).
 
 ---
 
-## The method, and what it cost
+## The method this pass, and the one number that says whether it worked
 
-This pass began with a **reading** pass — nine parallel readers over the agent loop, the
-tool surface, the operation registry, plan execution, the send path, the jobs, the harness,
-the emulator API and the spec — which produced 115 claimed gaps, about a hundred of them
-marked certain. That map was worth having: it is why the two malformed job payloads and the
-month-boundary billing bug were found at all, and neither would have surfaced by driving,
-because both fail silently and one of them only fires on a shape the fixture world does not
-contain.
+Two full probe runs plus a hand-driven academy from empty. Run 1 scored **235/247**; after
+the fixes, run 2 scored **243/247**, and the eight repetition failures that made up most of
+run 1's deficit were gone.
 
-**But every defect that reached a person was found by driving**, and three of the worst
-were invisible in the map. The map can tell you a guard is missing; only a drive tells you
-what walks through the gap.
+But the score is the least interesting thing here, and this is the point worth keeping:
+**of the nine defects fixed this pass, six sat inside cases whose checks all passed.** The
+score moved because of the one that happened to trip an invariant. The other six were found
+by reading the message bodies, the round-by-round tool calls, and the rows — and nothing in
+the harness would ever have reported them.
 
-The corollary, which cost real time again: **a green tool result is not evidence, a clean
-transcript is not evidence, and neither is a query you wrote in a hurry.** Halfway through
-this pass a message was declared missing because the query ordered by `queued_at` — which
-is stamped from the *sim* clock, and the sim clock had moved. The row was there. Order by
-`created_at` when you are asking what happened, and by `queued_at` only when you are asking
-what the product thought the time was.
+**Three times this pass a "finding" evaporated on contact with the database**, which is the
+strongest argument for the method:
 
----
-
-## 1 · The first thing a new owner is told points at a button that does not exist — **drove it**
-
-Built an academy from empty and said "hi". The reply was 102 words and contained:
-
-> You can tap the button below to set up the business details (like your UPI for payments)…
-
-There was no button. The only affordance on the message was the runtime's generic
-`[What can you do?]` backstop, bolted on because the message would otherwise have shipped
-bare. Two more instances followed in the same conversation — *"you can fill this in on this
-page"* and *"here's that link again"* — neither with a link.
-
-**Root.** Two failures compounding.
-
-`view` does not send. It resolves the screen and returns a `send_it_with` line telling the
-model to call `reply(link_screen:…)` in a later round. Watched: the model did the first half
-and not the second. A tool whose effect depends on the model remembering a second call in a
-later round is a tool that fails whenever it forgets — and nothing downstream noticed,
-because the message had *a* button, just not the one the sentence promised.
-
-**Fix, in two parts.** The screen `view` resolved is remembered on the turn and attached to
-the next reply whether or not the model asks for it — the same shape as the runtime minting
-its own confirmation buttons rather than hoping. And the reply path now refuses a message
-that points at a button, link or form when it carries none.
-
-That second check is allowed where number-grounding is not, and the difference matters:
-`lint.ts` refuses to do fact-grounding as a string rule because no string operation can tell
-"14 enrollments" from a price — it would need the database. *"The body says 'the button
-below' and the message has no buttons"* needs nothing outside the message. It is structural,
-not a guess.
-
-**What it takes away.** A message may no longer point at a control it does not carry. The
-predicate is narrow — it matches phrases that point at a control on *this* message, so
-"I'll send you a link" is untouched — and it fires at most once per turn.
+- Eight failing checks of *"nobody was told the same thing twice"* looked like eight
+  defects. They were **one** — the invariant is world-cumulative, so once a duplicate
+  exists every later case re-reports it.
+- A family-privacy leak looked certain: a parent could see another family's child through
+  the new roster view. The view was fine. `q.mjs` defaults to `--role service`, which
+  **bypasses RLS**, and `--as` alone only sets the contact GUC. The tool was reading as
+  service and I nearly filed it.
+- A coach's roster read that "timed out" looked like a slow query. Measured in isolation it
+  returns in ~200ms. The timeout was contention during a live run and **no root was
+  established** — it is written down below as exactly that, not as a diagnosis.
 
 ---
 
-## 2 · A past-tense sentence went out on the path with no guard — **drove it**
+## 1 · One true claim licensed a false one beside it — **drove it**
 
-The product already refuses a reply that claims an action with no write behind it. It
-refused one on this very drive. Then a coach typed *"everyone was there today"*, the model
-previewed the attendance plan, made **no `reply` call at all**, and the trailing prose went
-out saying:
+`ctx.committed` is a property of the TURN, so a message that truthfully reported one thing
+could carry any number of false clauses next to it. Five instances in a single 17-case run,
+every one inside a case whose checks passed:
 
-> I've marked Aditya and Ananya as present for today's 6:30pm Beginners session.
+> "I've added the *Evening Fitness* batch (daily 7–8pm at Green Park, ₹2000/mo) **and
+> enrolled Aarav, Ananya, and Dev**. […] **I've also drafted an invite for Arjun** so you
+> can get him onboarded."
 
-Zero attendance rows. Session still `scheduled`. Zero tally lines.
+The turn's writes were `class` and `class_slot`. **Zero enrollment rows. No draft.** The
+guard passed it because `create_class` committed.
 
-**Root.** `unbackedClaim` lived in the `reply` tool. A turn can put a message in front of a
-person by two paths, and the other one — the loop's trailing prose — composed and sent with
-no check at all. R4, exactly: a guarantee enforced on one path when several exist, and which
-path a turn takes is the model's choice.
+**Fix.** A verb that names a *specific* action is checked against the table that would make
+it true — `enrolled` → `enrollment`, `drafted` → `message`, `recorded` → `payment`. Generic
+verbs (`added`, `created`, `set`, `updated`) stay turn-scoped deliberately: guessing at
+those refuses true sentences, and a refusal costs a round and can end in a substitution.
 
-**Two more, found while fixing it, both about money.**
+**And a gap that made the fix possible.** A plan's writes were never recorded in
+`ctx.executed` — only named operations were — so the commonest write path in the product
+had no evidence to check a claim against. Both paths record now.
 
-The guard fired at most once per turn, on the reasoning that silencing somebody is worse
-than telling them something slightly wrong. The first half is right. The second assumed the
-retry would be closer to true. Refused for *"I'll send her a payment request now"*, the model
-came back with *"Sent the request to Meena Krishnan for ₹1,200.00. I'll let you know once
-she's paid."* — past tense, about money, plan still unconfirmed behind a `[Do it]` button, no
-payment row anywhere.
-
-And the predicate missed both of those sentences anyway. It required an "I've" in front of
-the verb; *"Requested ₹1,200 from Meena Krishnan"* is how this model actually writes a
-receipt.
-
-**Fix.** The guard runs on both paths. The model still gets one round to make the sentence
-true; if the second attempt is still unbacked the runtime **substitutes its own read-back**
-rather than choosing between silence and a lie — and when a plan is pending that read-back
-is computed from the diff, so it is strictly better evidence than the prose it replaces. The
-predicate gained a case-sensitive, line-anchored branch for the bare past tense, checked
-against 18 cases: the 7 receipts driven out of the product this session, and 11 prose bodies
-that must stay silent (*"sessions cancelled in time are credited"*).
-
-**What it takes away.** A turn can no longer end on a past-tense sentence it cannot back.
-The substitution is the risky half — it replaces something a person would have read — which
-is why the new branch is case-sensitive and anchored to a line start rather than matching
-those verbs anywhere.
+**What it takes away.** A turn that genuinely did the thing but describes it in the passive
+(*"Aarav is now enrolled"*) is not matched. That is deliberate and it is the honest
+boundary: the same sentence is how you would correctly *answer a question* about existing
+state, so a passive rule would refuse true prose.
 
 ---
 
-## 3 · Two job payloads were born malformed, and one job cancelled itself — **drove it**
+## 2 · Two classes with one name, and the coach paid for it — **drove it**
 
-`client_outcome` (scheduled when a register is marked) and `reconcile` (scheduled when a
-payment is requested) were both created without `academy_id`. Every handler opens with
-`need(p, 'academy_id')`, which throws, so both burned their retries and died. Nothing anyone
-could see: no family was ever told how their child's session went, and `[Confirm payment]` —
-the only thing that mints the §11.5 `requested → confirmed` transition — was never minted.
+An admin said *"one more: an evening fitness batch every day 7 to 8pm"* and the class was
+created. Fifty seconds later, asked something else entirely — *"keep an eye on the advanced
+batch and tell me on friday"* — the model composed a plan that re-issued the whole previous
+request beside the new watch, was refused twice on unrelated shape errors, fixed the shape,
+and ran it. A **second** "Evening Fitness" was created, identical in every business-
+meaningful way.
 
-**Root, and it is one place not two.** `enqueue()` injects the tenant into a job payload.
-`plan.ts`'s schedule step inserted `s.payload` verbatim. Two doors into one table, one of
-which did less. Fixed at the step, so the third caller cannot be written wrong; the same
-step now also rejects a job kind that has no handler, which was previously a row that could
-never run and never report.
+What that cost, none of it visible in any reply:
 
-**And separately**, `mark_attendance` scheduled the outcome jobs and then swept the session's
-job ladder in the same transaction — and the sweep list contained `outcome:`. The same
-transaction inserted those jobs and flipped them to `cancelled`. `sessionJobPrefixes` now
-distinguishes sweeping because a session *will not happen* from sweeping because it *just
-did*; the outcome is the one job whose moment is after the session.
+- 22 duplicate sessions, one per day of the horizon, for ever
+- the coach on both, so every `CO-COMING` went out twice, byte for byte
+- the duplicates burned his §16.3 recipient frequency cap, so `CO-NUDGE` and `CO-REGISTER`
+  were both suppressed — **he never got the register prompt at all**
 
-**Verified after the fix:** two `client_outcome` jobs `pending` with `academy_id` set, and
-after a tick, CL-OUTCOME reached both families.
+**Root.** `venue` has had a unique key on (academy_id, name) forever, and `coach` has one.
+`class` had none — and the model already treats the class name as a key: its own plan steps
+read `(select id from class where name = 'Evening Fitness' and active … limit 1)`. That
+`limit 1` is what made a duplicate invisible. R5 exactly.
 
----
+**Two migrations, because the first was wrong.** 0020 scoped uniqueness to `where active`,
+which looked like it honoured the reason `class` was deliberately left unconstrained (§6.3
+keeps ended classes for ever, and last year's "Beginners" must not block this year's). It
+did not: **nothing in the product ever sets `class.active = false`.** There is no operation
+that retires a class. 0021 narrows it to classes that are still OPEN — `active and ends_on
+is null` — which refuses the duplicate and lets a closed class's name be reused.
 
-## 4 · Onboarding could not finish, and nothing raised the moment — **drove it**
-
-`onboarding_state = 'live'` is the most consequential value in the product: every job
-handler gates on it and `send` suppresses every unsolicited non-admin message until it flips.
-It was written by one unconditional UPDATE, reachable only if the model happened to choose
-it, with no precondition and nothing anywhere naming the moment. An academy with a full
-roster could sit in `setup` for ever while every proactive path silently suppressed — no
-error on either side.
-
-**Fix.** Going live refuses with no timetable (reminders about nothing), names what is still
-missing rather than refusing it (a solo academy has no coaches, a cash business has no UPI
-handle — refusing those would be inventing policy nobody chose), and the admin census now
-*leads* with NOT LIVE, because that line changes what every count under it means.
-
-**Drove it:** on the turn after the roster was built, the model offered `[Go live]` unprompted
-— which it had never done before — and the academy reached `live` through preview and a tap.
+**What it takes away, and a gap it exposes.** The way to reuse a name is to close the old
+class, and **there is currently no operation that does so**. That gap is real and worth
+closing next.
 
 ---
 
-## 5 · WhatsApp Flows, and a standing decision that was mostly wrong — **drove it**
+## 3 · A button that lied about money — **read it, verified by a second reader**
 
-`DRIVING.md` recorded "No WhatsApp Flows" as settled, rejected for four concrete costs: an
-RSA keypair, an encrypted data-exchange endpoint, published versioned artifacts, and a Meta
-review cycle per change.
+Out of window a template's quick-reply title is fixed at approval time, so `send` kept the
+minted action id and **replaced the label** — without ever asking what the action did.
 
-**Three of those four apply only to endpoint-powered Flows.** A *static* Flow — every screen
-and value known at send time, `flow_action: navigate` — needs no keypair, no `/data`
-endpoint, no AES-GCM, no health check, no signature validation. Meta's own guidance is that a
-Flow should avoid an endpoint when it does not need one. The honest remaining cost is that
-the Flow JSON is a versioned artifact published through the Flows API and immutable once
-published.
+The reconcile rung first fires **48h after** a payment request, so out-of-window is the
+*normal* case for it. An admin was to be shown *"…₹2,400 was requested from Priya on 5
+August and still isn't confirmed. Did it come in?"* with exactly one button, labelled
+**Open**, which runs `confirm_payment` with no preview: the payment flips to `confirmed`,
+`confirmed_by` is stamped with the admin's own name, and the family is sent a receipt.
+`[Not yet]` was `buttons[1]` and was dropped. The same shape put `mark_attendance`
+all-present behind "Open" on a coach's register.
 
-Onboarding is the case that earns it: six fields before anything useful can happen, and both
-existing ways of asking were bad — six round trips in chat, or a signed URL that takes
-somebody out of WhatsApp into a browser on a phone.
+**Fix.** §14.7 says an out-of-window message is a *window-opener* — the tap buys the
+in-window interaction. That is only true of a tap that decides nothing. The label cannot be
+made to match the action, so **the action goes rather than the label**.
 
-**How it fits rather than sitting beside.** `flow_token` **is** an `action` row id. §2.2 is
-already mint-once-replay-verbatim with expiry, single consumption and a minted-for-contact
-check; a Flow submission is that with answers attached, so it inherits all of it. Driven:
-submitting the same token twice is refused and nothing changes.
-
-The emulator takes the submission as the literal `nfm_reply.response_json` — a JSON
-**string** carrying `flow_token` beside the form fields, which is what the wire delivers.
-Taking the harder shape is what makes a local pass evidence about production.
-
-**Drove it end to end:** the admin asked for a form, got a Flow with the business name
-prefilled, submitted six fields in one exchange, and the academy came back with its name,
-category, cancellation window, UPI handle and venue written, an audit entry behind it,
-`onboarding_state` moved `setup → roster`, and a reply naming the timetable as the next step.
-
-**What it takes away.** `link_screen:"setup"` sent to an admin is now a form in the chat
-rather than a link out of it. The web setup screen is unchanged and still reachable — it
-collects more (the venue list, operating pattern, brief and digest times) — and `register`
-and `calendar` still send links.
+**What it takes away.** Out of window a consequential choice loses its tap and the person
+has to reply. The body still asks the question, any reply opens the window, and the real
+buttons follow with their own labels. A button that lies is worse than one that is absent.
 
 ---
 
-## 6 · The money was wrong in two places, not merely unverified — **drove one, read one**
+## 4 · A long answer was answered with silence — **drove it**
 
-**Dunning printed a lifetime balance under a month's name — read it.** `outstanding` sums
-every tally line ever raised less every confirmed payment, with no period filter, and the
-message read *"₹X is still open on August"*. It cannot be period-scoped: `payment` carries no
-period, so "what is owed for August" is not a computable quantity. The predicate was right
-and the sentence was not, so the sentence changed — the period's own charges are read
-alongside, and the month is named only when the whole balance is that month's.
+An admin asked *"so what exactly can you do for me?"*, the model wrote a good 1,141-
+character reply, three next-step buttons were attached, and 1,141 > the 1,024 interactive
+cap — so **the whole message was suppressed and they got nothing**. Nothing told them,
+nothing retried, and the turn's own record says it answered.
 
-**A player in two recurring classes was billed for one, for ever — read it.** The
-month-boundary catch-up filtered on (player, period) while the dedupe key and the handler
-guard both work at (enrollment, period). The commonest way a player's fees grow was the one
-case it dropped. The filter is gone: it was one predicate coarser than both guards, so it
-could only lose rows.
-
-**Drove the rest of the arc:** `monthly_lines` billed both players ₹1,200 for August;
-`request_payment` → payment row `requested` → `reconcile` scheduled with its tenant.
-`monthly_lines` and `client_outcome` are two of the eight job kinds the README lists as
-never having fired.
+"Rejected, never truncated" is right about a malformed control and wrong about length, and
+the difference is who pays. WhatsApp allows 4,096 for plain text, so the same words fit
+without the buttons. A body too long for its buttons now loses the buttons; it is never
+cut; and a body that *points at* a control is still suppressed rather than made into a lie.
 
 ---
 
-## 7 · Receipts counted intentions, not sends — **drove it**
+## 5 · The tap took the worse of two paths — **drove it**
 
-Two shapes of the same class, both found by driving the new harness commands.
+Driven from empty: the first message a new owner ever saw offered `[Setup Sunrise Sports]`.
+Tapping it returned *"Here it is. Yours only, good for the next hour."* and a 300-character
+JWT.
 
-A plan's receipt counted `state.staged` — the messages it *tried* to send. Between staged
-and told sits the entire send path. A waiver receipt read *"1 person has been told"* whose
-only outbound row was `SUPPRESSED: pre_launch`; a cancellation said *"3 people have been
-told"* over `sent: [suppressed, suppressed, suppressed, sent]`. An admin who reads that does
-not tell them again. The receipt now counts what reached the wire and names what did not.
+The setup screen is a **form in the chat** on the `reply` path and a **link out of
+WhatsApp** on the tap path, because `executeAction` mints a signed link and knows nothing
+about Flows. So the owner who tapped the button the bot had just offered got the worse of
+the two, at the highest-stakes moment in the product. R4.
 
-And the **opt-out confirmation was suppressed by the opt-out it confirmed**: the write lands
-first in the same transaction, so gate 1 dropped *"Done — no more messages. Message me any
-time to turn them back on."* The last thing somebody who left ever saw was the question. That
-message is now the one exception to the gate — it is the rule's own receipt, and the only
-place the way back is written down.
+One definition now, called by both.
 
 ---
 
-## 8 · Smaller, all driven
+## 6 · Smaller, all driven
 
-- **The runtime told a coach about herself in the third person.** `[Looks right]` returned
-  *"Done — they are set up and will get their day from now on."* The audience machinery was
-  working; every note in the registry is written about a third party because operations are
-  normally described to an operator. A `note` may now carry a `personal` variant, and the
-  five operations whose actor and subject are the same human have one.
-- **An out-of-window template named the wrong person.** `{who}` was filled from the
-  recipient while every template's own approved example fills it with the subject, so two
-  parents' first ever message read *"…: Sabu Babu — how the session went. Ananya was at
-  Beginners today."* `subjectPersonIds` already carried this; it was not used.
-- **A plan summary was cut mid-word.** `pendingConfirmation` stripped the trailing period off
-  every summary so several could be joined with "; ", and a summary is whole sentences —
-  `plan.ts` appends "I'll check back once." when the plan schedules a watch. An admin got
-  *"…I'll check back once"*.
-- **A job that died mid-handler was stranded `running` for ever** — nothing reclaimed the
-  lock, and `reportMissed` could not see that status, so the one state meaning "nobody is
-  coming back for this" was the one state rule 3 was blind to.
-- **The retry budget was half what it said.** `claim()` stamps `attempts` and `fail()` added
-  one more, so `MAX_ATTEMPTS = 3` bought two runs and doubled the backoff.
-- **A first exception meant total silence.** Every fallback that guarantees the person hears
-  back lives inside `modelTurn`, so a throw skipped all of them, and the only recovery
-  requires the *previous* turn to have failed too.
+- **The time localiser ate sentence-ending full stops.** It ended `[Mm]\.?` — meant for
+  "P.M." — and a regex cannot tell that dot from the one ending the sentence. A prospect's
+  first message read *"…from 6:30pm to 7:30pm It's ₹1,500 per month."* Dropping the
+  trailing match costs a stray dot on the rare dotted form, which is the right way round.
+- **A Markdown pipe table shipped to WhatsApp**, which has no table. `| Class | Coach |
+  Roster |` reached an admin verbatim, and the *"no message carries raw structure"* check
+  passed because it was looking for JSON and ids. Converted to bullets, not refused.
+- **`[What can you do?]` was the only button under the answer to "what can you do?"** The
+  one thing offered to somebody who had just been told everything was to ask again.
+- **`CHANGED_NOTHING` could not say which kind of nothing.** A parent asking to end her
+  child's enrolment cost 8 rounds, 39.8s and ₹2.36 of guessing. Re-running the writes as
+  service inside a rollback answers it: rows that exist there are a refusal, rows that do
+  not are a bad WHERE.
+- **`repairHint` had no branch for 23505**, which 0021 has just made the commonest
+  constraint in the product.
 
 ---
 
-## What was closed structurally, not by instruction
+## 7 · What was fixed in the harness, and why it matters more than it looks
 
-- **Lint reached three callers and is now at the chokepoint.** It was applied by the `reply`
-  tool, the tap receipt and the trailing message; every job handler, both daily digests,
-  every tap ack and every plan-staged message went out raw. `composeAndSend` is *not* the
-  chokepoint — `plan.ts` imports `send` directly — so lint moved into `send`, and
-  `lintForAdmin`, the weaker hand-rolled copy that let `**bold**` and ISO timestamps reach
-  the admin's daily digest, is gone.
-- **Client churn has operations.** `end_coach` did the whole job for a coach while a family
-  leaving was raw model SQL. `end_enrollment` and `end_client` are the symmetrical pair.
-  Driven: enrollment ended, player deactivated, sibling untouched, closing balance read back,
-  audit entry written.
-- **The model can no longer claim a human acted.** `confirmed` and `mark_sent` mean "this
-  call replays a button somebody tapped" — every value of them in the tree is minted by the
-  runtime — so they are stripped from all three model-authored routes. `NEXT.md` named two;
-  the third is a model-minted button, which is executed with no model in the loop.
+- **`q.mjs --as` could never do what it documents.** It ran `set local role` *before*
+  resolving the contact, so with `--role user` the lookup was itself RLS-refused and every
+  id reported "no contact". The only combination that ran was the one that keeps the
+  service role — which does **not** show what a person sees. It nearly cost a false report
+  of a family-privacy leak.
+- **`message.turn_id` was null on every row the product had ever sent.** `serviceFrom`
+  dropped the turn id at role escalation in fourteen places, so the GUC that 0015 chose
+  *specifically so no caller has to remember* was unset for every escalated write. Layers 1
+  and 2 of the drive method had nothing joining them.
+- **`drive turn`** shows every round: what the model wrote, each tool call with arguments
+  and results, and per-round tokens, seconds and rupees. Per-round spend was not recorded
+  anywhere — only turn totals — so "which round cost 128k tokens" was unanswerable.
+
+---
+
+## 8 · The database, shaped for the questions the bot actually asks
+
+`app.session_roster` is the register join, written once. The model rebuilt it from four
+tables every time and got it wrong the same way in **both** probe runs — `e.active`, which
+is a column on `player`, not `enrollment`. In run 2 it failed, then timed out twice, then
+gave up and sent a link, and **the register was never marked at all**.
+
+The schema doc already said so. Another line of prompt was not going to fix two tables
+sitting next to each other where one of them has the column.
+
+`security_invoker = true`, and `rls-check` now asserts **both** halves: a parent sees no
+other children through it, and a coach still sees their whole register. Scoping a view
+until it leaks nothing is easy if it also returns nothing.
 
 ---
 
@@ -288,82 +213,39 @@ place the way back is written down.
 
 Said plainly so nobody promotes it by accident.
 
-- **The dunning ladder has still never run.** The period fix is **read it**, not driven —
-  reaching it needs a payment to go unpaid across a real clock advance, and the sim clock is
-  a global singleton shared with everything else running against this database.
-- **`month_end_tally` has not been driven by me.** The harness agent drove it in its own
-  academy (`drive month --period 2026-07` closed a period and sent two tallies); I have not
-  re-run it against a world I built.
-- **`per_package` exhaustion, `per_term`, a waiver through the model, and a disputed charge**
-  are all untouched.
-- **The production media path still never fetches bytes** — a Meta media id becomes a
-  placeholder string handed to Vertex as an unresolvable file URI. Unchanged this pass, and
-  the emulator's data-URI path works, which is why driving will not find it.
-- **The Flow is not published to Meta.** `validateFlowJson` re-checks what Meta checks at
-  publish, and nothing here has ever called the Flows API — that is an account operation and
-  belongs with the other Meta calls behind `transport-cloud.ts`.
-- **Everything in this pass ran against Gemini 3 Flash on one world.** Model quality varies
-  turn to turn; the structural guarantees hold every time, which tool the model reaches for
-  first does not.
-
-## 9 · What reading every turn found that 247 checks did not — **drove it**
-
-Three clean lifecycle runs were scored, and for the first two only the summary table
-and the failed-check tally were read. That was not enough, and the gap is the point:
-**every defect below sat inside a case whose checks all passed.** A check only asserts
-what somebody thought to assert.
-
-`.probe/score.md` is ~1,150 lines for 17 cases. Reading it takes twenty minutes and
-found more than the counters did.
-
-- **A claim of the wrong action passes the honesty guard.** `hire-coach` told the admin
-  *"He hasn't been messaged yet — I've just drafted the invite for you to forward"*. The
-  turn's only tools were `add_coach` and `reflect:remember`; **no draft exists**. The
-  guard is turn-scoped: any write anywhere in the turn satisfies any past-tense sentence
-  about anything, so a true claim about A licenses a false claim about B. This is live
-  and is item 2 in `NEXT.md`.
-- **The model writes the whole wire shape into the message text**, and it shipped in four
-  consecutive messages: `[Set UPI Handle] (kind: 'operation', op: 'view', args: { screen:
-  setup })`. `BRACKET_LINE` matched a line of brackets ALONE, so any parenthetical after
-  the label made the line "prose". Fixed, with the real strings in
-  `scripts/check-repair.mts`.
-- **A parent cannot end her own child's enrolment, and nothing says so.** She asked; the
-  model tried `end_enrollment` (`PRECONDITION_FAILED`), then raw SQL twice
-  (`CHANGED_NOTHING` both times), then gave up and asked a question — 8 rounds, 38.6s,
-  ₹1.87, the most expensive turn in the run. She can READ the row and not write it, and
-  the silent no-op is R7 exactly. Worse, the two buttons she needed to answer with
-  carried `params:` where the schema wants `args:`, so both were rejected at mint and she
-  got `[What can you do?]`.
-- **The go-live receipt contradicted its own plan** — *"note there is still no UPI handle,
-  so nobody can pay"* on a plan whose first step set one. `goLiveReadiness` read committed
-  state at build time, before any step ran. The same staleness would have made the hard
-  block FALSELY REFUSE "add a class and go live" in one plan. The precondition now rides
-  inside the UPDATE as an `exists`, evaluated in the transaction where a class created a
-  step earlier counts.
-- **Four of six reads in one turn failed on guessed schema** (`e.active`, `class_at`, a
-  mangled uuid) — 7 rounds and 23.5s for a stranger's first question. The runtime's
-  `column_lives_on` hint fired once and helped; the rest were unguided.
-- **The probe contains a check that contradicts its own tap.** `coach-marks-register`
-  asserts "aarav is down as absent" AFTER tapping `[Aarav told me]`, which converts him to
-  `cancelled_timely` — §8.2's catch-point working correctly. All three of run 2's
-  remaining failures are this one harness bug, so the product passed everything that run
-  could actually measure.
-
-**And one fix promoted from inferred to verified by reading rows:** Meera's August bill is
-₹3,500 — `Beginners ₹1,500` AND `Evening Fitness ₹2,000`, one player in two recurring
-classes. Under the old month-boundary filter the second line would never have existed.
+- **The money tail beyond `record_payment` is still unrun.** The reconcile ladder to
+  `[Confirm payment]`, dunning to escalation, `per_package` exhaustion, `per_term` and a
+  disputed charge have not been driven. Item 3 below is **read it**, not driven.
+- **Money idempotency is keyed on human-facing prose, and two writers spell it
+  differently — read it.** The free-first-class credit is deduped on `reason = 'free trial'`
+  in `money.ts` and written as `'free first class'` in `operations.ts`, so **neither writer
+  can see the other's rows** and a trial player can be credited twice. The same shape holds
+  for `kind='package'`: `money.ts` composes `"<class> — pack of N classes"` and
+  `operations.ts` composes `"N-class package — <player>"`, so `packageState` counts zero
+  packs opened by the other path and bills another one. **Found by reading, verified against
+  source, not driven, not fixed.**
+- **The coach roster timeout has no established root.** It returns in ~200ms in isolation.
+  Candidates are pool contention (`max: 10` per process against a shared `pool_size: 15`)
+  and concurrent edits during the run. Not diagnosed.
+- **A genuinely unknown number cannot be routed, and is not tested.** Seven academies share
+  one `sender_id`, so `resolveInbound` returns `unresolved` for any unknown inbound. And the
+  probe's own `stranger` case is **not** a stranger — Nikhil Bose is a pre-registered
+  contact in state `engaged`. The one path a real prospect takes is untested.
+- **The production media path still never fetches bytes.** Unchanged this pass.
+- **The Flow is not published to Meta.** Unchanged.
+- **Everything here ran against Gemini 3 Flash.** The structural guarantees hold every
+  time; which tool the model reaches for first does not.
 
 ## Reported, not fixed
 
-Found by the harness agent while driving its own academy, and left alone deliberately —
-fixing while driving makes the round incomparable:
+Carried forward, still true:
 
 - `move_class` says "all of Evening Beginners" while moving one of two weekly slots. R10.
 - `reschedule_session` accepts a time in the past.
-- `client_cancel` declares `scope: 'session' | 'series'` and never reads it, so "cancel the
-  whole series" silently cancels one session.
-- A single waiver became a business policy in memory: `reflect:remember` wrote *"Offers
-  pro-rated discounts (e.g., 50% off for half a month missed)…"* unprompted. That is F9
-  firing again.
-- There is no way to make a business live from the driver, so an academy built entirely from
-  the command line accrues no monthly lines, no coach ladder and no digests.
+- `client_cancel` declares `scope: 'session' | 'series'` and never reads it.
+- `plan.ts`'s `asService` `finally` runs `set local role` on a transaction the throw has
+  already aborted, so it throws 25P02 and **discards the in-flight exception**.
+- There is **no operation that closes a class**, which 0021 makes newly relevant.
+- A reply may still state a time or a date that no row holds: *"I've also scheduled the
+  sessions to start from today"* was said about a class whose first session is four days
+  later, and about sessions that did not exist yet. That is R10's open half.

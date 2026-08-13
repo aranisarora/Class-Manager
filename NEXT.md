@@ -99,9 +99,45 @@ to synthesis as if it were copy, because it is.**
 
 ---
 
+## The surface split, decided
+
+**The web is for looking at spatial things. Every form is a Flow.**
+
+This is a direction, not an observation, and it settles what had been drifting: `setup`
+and `register` are *forms*, and a form that takes somebody out of WhatsApp into a browser
+on a phone is a worse form. The web surface earns its place only where a screen shows
+something a chat cannot — a timetable, a calendar, anything you read spatially.
+
+- `setup` — a Flow. Both paths now send the Flow (§5 in `FINDINGS.md`); the web setup
+  screen is no longer the default and is next to remove.
+- `register` — **still a web link, and should be a Flow.** It is a form: tick who came,
+  add a note, send it back. This is the largest piece of the split still to build.
+- `calendar` — stays web. It is the case the web surface exists for.
+
+**Dedicated onboarding Flows are wanted for admins, coaches and probably clients.**
+`onboarding_setup` is the admin one and it is built. The coach's *"is this right?"* and a
+client's first-contact details are the same shape and do not exist yet.
+
+The old objection to Flows was re-derived last pass and was mostly wrong: three of its
+four costs apply only to endpoint-powered Flows. A static Flow needs no keypair, no
+`/data` endpoint, no encryption. Do not re-open it.
+
 ## The work, ranked
 
-### 1. Make the honesty guard claim-scoped, not turn-scoped
+### 0. Done this pass — do not re-find these
+
+Nine defects fixed and driven; the detail and the evidence are in `FINDINGS.md`. Items 1
+and 2 below are **closed**. What is worth carrying forward from them:
+
+- the honesty guard is claim-scoped now, and a plan's writes are recorded, but the
+  **passive voice** (*"Aarav is now enrolled"*) is deliberately not matched
+- `CHANGED_NOTHING` now distinguishes an RLS refusal from a bad WHERE, which was the
+  expensive half of the parent-cannot-end-enrolment turn; whether a parent *should* be
+  able to is still an unanswered policy question
+- `class` has a unique key on open classes, which newly requires **an operation that
+  closes a class** — there is none
+
+### 1. ~~Make the honesty guard claim-scoped, not turn-scoped~~ — done
 
 **Why.** **Verified** by reading a clean run turn by turn. Asked to hire a coach, the model
 told the admin *"He hasn't been messaged yet — I've just drafted the invite for you to
