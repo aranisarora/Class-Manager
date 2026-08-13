@@ -410,5 +410,43 @@ export function repairOutbound<T extends RepairableMessage>(msg: T): RepairResul
   return { message: out, repairs, bracketButtons }
 }
 
+/* ------------------------------------------------------------------------- *
+ * "Tap the button below" — and there is no button.
+ *
+ * Lives here rather than in `lib/agent/tools.ts` because two very different
+ * callers need the same answer and one of them is `send`: the reply path refuses
+ * a message that points at a control it does not carry, and the send path has to
+ * know whether a message may safely LOSE its buttons (when the body is too long
+ * to be interactive) or must be suppressed instead. `send` cannot import from
+ * the agent — tools → compose → send is already a chain, and reaching back would
+ * close the loop.
+ *
+ * Deliberately narrow: only phrases that point at a control on THIS message.
+ * "I'll send you a link" is a promise about a later message and is not matched.
+ * ------------------------------------------------------------------------- */
+
+/** The control words a message can point at. */
+const CONTROL = '(?:button|link|form|screen|page)'
+
+const POINTS_AT_AFFORDANCE = new RegExp(
+  [
+    // "tap the button", "click this link", "use the form"
+    `\\b(?:tap|click|press|hit|open|use)\\s+(?:the\\s+|this\\s+|that\\s+|it\\s+)?${CONTROL}\\b`,
+    // "the button below", "below to set up"
+    `\\b${CONTROL} below\\b`,
+    '\\bbelow to\\b',
+    // "here's the setup screen", "here's that link again"
+    `\\bhere'?s\\s+(?:the|that|your|a)\\s+(?:[\\w-]+\\s+){0,3}${CONTROL}\\b`,
+    // "on this page", "in the form"
+    `\\b(?:on|in)\\s+(?:this|the)\\s+${CONTROL}\\b`,
+  ].join('|'),
+  'i',
+)
+
+/** Does this body promise the reader a control on THIS message? */
+export function pointsAtAffordance(body: string): boolean {
+  return POINTS_AT_AFFORDANCE.test(body)
+}
+
 /** The wire shapes, for the two places that build a real `Button[]`/`ListSection[]`. */
 export type { Button, ListSection }

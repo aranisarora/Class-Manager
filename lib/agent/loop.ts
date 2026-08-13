@@ -16,7 +16,12 @@ import { resolveIdentity } from '@/lib/identity'
 import { consumeAction, type ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { LIMITS, type SendOutcome } from '@/lib/messaging/types'
-import { ONBOARDING_SETUP, parseFlowResponse, type OnboardingSetupValues } from '@/lib/messaging/flows'
+import {
+  ONBOARDING_SETUP,
+  parseFlowResponse,
+  setupFlowFor,
+  type OnboardingSetupValues,
+} from '@/lib/messaging/flows'
 import { buildSetupSteps, summariseSetup } from '@/lib/setup-plan'
 import { signLink, linkUrl, TTL } from '@/lib/web/jwt'
 import type { Identity, Job, Role } from '@/lib/types'
@@ -36,6 +41,7 @@ import {
   unsupportedClaims,
   withFollowUps,
   MENU_BUTTON_TITLE,
+  backstopButtons,
   type ToolCtx,
 } from './tools'
 
@@ -392,6 +398,36 @@ async function executeAction(
     const builtIn = 'screen' in payload ? payload.screen : null
     const purpose = builtIn ?? 'view'
     const ref = 'screen' in payload ? payload.ref : payload.viewSpecId
+
+    // The setup screen is a form in the chat, not a trip to a browser — and it
+    // was only that on the `reply` path. A tap arrived here instead and always
+    // minted a link, so the admin who tapped the button the bot had just offered
+    // got the worse of the two. Same decision, same prefill, one definition.
+    //
+    // `viewSpecId === 'setup'` counts: the model mints buttons both ways and the
+    // person tapping cannot tell them apart, so neither should this.
+    const setupFlow =
+      builtIn === 'setup' || (!builtIn && ref === 'setup')
+        ? setupFlowFor({
+            isAdmin: identity.roles.includes('admin'),
+            toContactId: identity.contact.id,
+            selfContactId: identity.contact.id,
+            academy: identity.academy,
+          })
+        : null
+    if (setupFlow) {
+      outcomes.push(
+        await composeAndSend(session, {
+          toContactId: identity.contact.id,
+          body:
+            'Everything about the business on one screen — name, places you play, your weekly times, ' +
+            'how much notice you want for cancellations, and where people pay you.\n\n' +
+            'Or just tell me any of it here and I’ll set it up the same way.',
+          flow: setupFlow,
+        }),
+      )
+      return { outcomes, summary: 'setup form' }
+    }
     const token = await signLink(
       {
         academy_id: identity.academyId,
@@ -478,9 +514,7 @@ async function executeAction(
         // table names and operation notes, and both leak — "2 persons", "(§2.6)".
         // Everything user-facing goes through the same lint, whoever wrote it.
         body: lint(res.summary, identity),
-        buttons: follow.length
-          ? follow.slice(0, LIMITS.buttons)
-          : [{ title: MENU_BUTTON_TITLE, action: { kind: 'menu', menu: 'root' } }],
+        buttons: follow.length ? follow.slice(0, LIMITS.buttons) : backstopButtons(identity, res.summary),
       }),
     )
   }
@@ -1027,9 +1061,8 @@ async function modelTurn(
       // which after a question is a non-sequitur.
       buttons =
         (pulled.buttons.length ? (pulled.buttons as { title: string; action: ActionPayload }[]) : null) ??
-        (closingQuestionButtons(text.trim()) as { title: string; action: ActionPayload }[] | null) ?? [
-          { title: MENU_BUTTON_TITLE, action: { kind: 'menu', menu: 'root' } },
-        ]
+        (closingQuestionButtons(text.trim()) as { title: string; action: ActionPayload }[] | null) ??
+        backstopButtons(identity, text.trim())
     }
     // Whichever path the message leaves by, §4.3 holds.
     buttons = withFollowUps(buttons, toolCtx) as { title: string; action: ActionPayload }[] | undefined

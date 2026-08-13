@@ -245,6 +245,65 @@ export const FLOWS: Record<string, FlowDefinition> = {
   [ONBOARDING_SETUP.id]: ONBOARDING_SETUP,
 }
 
+/**
+ * The setup screen, as a form in the chat — if this person is the one it is for.
+ *
+ * **One definition, because there are two ways to arrive here and they disagreed.**
+ * The `reply` tool built this inline, so a model that wrote `link_screen:"setup"`
+ * got the Flow. A button tap resolving the same screen went through
+ * `executeAction`, which mints a signed link and knows nothing about Flows — so
+ * the admin who *tapped the button the bot had just offered them* was sent out of
+ * WhatsApp into a browser, and the one who was answered in prose got the form.
+ *
+ * Driven from empty: the first message offered `[Setup Sunrise Sports]`, the tap
+ * returned "Here it is. Yours only, good for the next hour." and a JWT. That is
+ * the highest-stakes moment in the product — a new owner's first action — taking
+ * the worse of two paths, and R4 exactly: a guarantee enforced on one path when
+ * several exist.
+ *
+ * Returns null when it is not this person's form, in which case the caller falls
+ * back to a link. `flow_token` is an action minted for one contact (§2.2), so
+ * "the admin themselves" is not a nicety — it is what makes the token bind.
+ */
+export function setupFlowFor(o: {
+  isAdmin: boolean
+  /** The contact the message is addressed to. */
+  toContactId: string
+  /** The contact who is having this conversation. */
+  selfContactId: string
+  academy: {
+    name: string
+    category?: string | null
+    cancellation_window_hours?: number | null
+    upi_handle?: string | null
+  }
+}): { flow: string; data: Record<string, string> } | null {
+  if (!o.isAdmin || o.toContactId !== o.selfContactId) return null
+  return {
+    flow: ONBOARDING_SETUP.id,
+    /**
+     * EVERY field the form writes, prefilled from what is on the row now.
+     *
+     * The form is a full overwrite of the business shape, and it prefilled two of
+     * its five fields — so an admin who opened it a second time to change one
+     * thing submitted blanks for the rest, and the UPI handle they had already
+     * given was silently nulled and the cancellation window reset. A form that
+     * overwrites what it does not show is a data-loss bug wearing a convenience
+     * feature's clothes.
+     *
+     * The venue is deliberately absent: it is the one field that adds a row rather
+     * than replacing one, so an empty box means "no new place", not "delete the
+     * places I have".
+     */
+    data: {
+      name: o.academy.name,
+      category: o.academy.category ?? '',
+      cancellation_window_hours: String(o.academy.cancellation_window_hours ?? 24),
+      upi_handle: o.academy.upi_handle ?? '',
+    },
+  }
+}
+
 export function isFlowId(s: string): s is keyof typeof FLOWS {
   return s in FLOWS
 }

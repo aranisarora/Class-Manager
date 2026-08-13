@@ -22,6 +22,7 @@
  */
 
 import { serviceFrom, withSession } from '@/lib/db'
+import { pointsAtAffordance } from '@/lib/messaging/repair'
 import type { SessionCtx, Tx } from '@/lib/db'
 import { lint } from '@/lib/agent/lint'
 import { CATALOG, isCatalogId } from './catalog'
@@ -580,6 +581,44 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     // ── Gate 5 · the real API's limits (§17) ──────────────────────────────────
     // Rejected, never truncated. A 21-character button title is a compose bug; cutting it
     // to 20 ships the bug. "If a message cannot render in the emulator, it does not ship."
+    /**
+     * **A body too long for its buttons loses the buttons, not the message.**
+     *
+     * "Rejected, never truncated" is right about a malformed control: a
+     * 21-character button title is a compose bug and cutting it to 20 ships the
+     * bug. It is wrong about length, and the difference is who pays. Driven from
+     * empty: an admin asked "so what exactly can you do for me?", the model wrote
+     * a good 1,141-character answer, three real next-step buttons were attached,
+     * and 1,141 > the 1,024 interactive cap — so the whole thing was suppressed
+     * and **the admin got silence**. Nothing told them, nothing retried, and the
+     * turn's own record says it answered.
+     *
+     * WhatsApp's cap is 1,024 for an interactive message and 4,096 for plain
+     * text, so the same words fit perfectly well without the buttons. Dropping
+     * the affordance costs a tap; dropping the message costs the answer. The
+     * body is never cut.
+     *
+     * Not done when the body points at a control — "tap the button below" with
+     * the button removed is the exact lie the reply path already refuses, and
+     * silence is better than that.
+     */
+    if (msg.buttons?.length || msg.list) {
+      const stripped = { ...msg, buttons: undefined, list: undefined }
+      if (validateOutbound(msg).length > 0 && validateOutbound(stripped).length === 0) {
+        if (pointsAtAffordance(msg.body ?? '')) {
+          console.error(
+            `[send] too long for its buttons AND points at one, for contact ${msg.toContactId} — suppressed`,
+          )
+          return suppress(tx, row, msg, 'limit_violation', inWindow)
+        }
+        console.error(
+          `[send] body ${[...(msg.body ?? '')].length} chars > interactive cap for contact ` +
+            `${msg.toContactId}: sent as text, affordance dropped`,
+        )
+        msg = stripped
+      }
+    }
+
     const violations = validateOutbound(msg)
     if (violations.length) {
       console.error(

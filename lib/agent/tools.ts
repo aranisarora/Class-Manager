@@ -11,11 +11,12 @@
 import { assertSingleReadStatement, modelQuery, serviceFrom, withSession, type SessionCtx } from '@/lib/db'
 import { now } from '@/lib/clock'
 import { newId } from '@/lib/ids'
+import type { ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { CATALOG, type CatalogId } from '@/lib/messaging/catalog'
-import { ONBOARDING_SETUP } from '@/lib/messaging/flows'
+import { setupFlowFor } from '@/lib/messaging/flows'
 import { EXTRA_LIMITS, LIMITS, type SendOutcome, type SuppressReason } from '@/lib/messaging/types'
-import { extractBracketButtons, fitTitle } from '@/lib/messaging/repair'
+import { extractBracketButtons, fitTitle, pointsAtAffordance } from '@/lib/messaging/repair'
 import { AGENT_TASK_CAP, dedupe, enqueue, liveAgentTasks } from '@/lib/jobs'
 import { signLink, linkUrl, TTL } from '@/lib/web/jwt'
 import { ViewSpecSchema } from '@/lib/web/registry'
@@ -305,26 +306,8 @@ export function unsupportedClaims(body: string, ctx: ToolCtx): string[] {
  * send you a link" is a promise about a later message and is not matched.
  * ------------------------------------------------------------------------- */
 
-/** The control words a message can point at. */
-const CONTROL = '(?:button|link|form|screen|page)'
-
-const POINTS_AT_AFFORDANCE = new RegExp(
-  [
-    // "tap the button", "click this link", "use the form"
-    `\\b(?:tap|click|press|hit|open|use)\\s+(?:the\\s+|this\\s+|that\\s+|it\\s+)?${CONTROL}\\b`,
-    // "the button below", "below to set up"
-    `\\b${CONTROL} below\\b`,
-    '\\bbelow to\\b',
-    // "here's the setup screen", "here's that link again"
-    `\\bhere'?s\\s+(?:the|that|your|a)\\s+(?:[\\w-]+\\s+){0,3}${CONTROL}\\b`,
-    // "on this page", "in the form"
-    `\\b(?:on|in)\\s+(?:this|the)\\s+${CONTROL}\\b`,
-  ].join('|'),
-  'i',
-)
-
 function pointsAtMissingAffordance(body: string, hasAffordance: boolean): boolean {
-  return !hasAffordance && POINTS_AT_AFFORDANCE.test(body)
+  return !hasAffordance && pointsAtAffordance(body)
 }
 
 /* ------------------------------------------------------------------------- *
@@ -502,6 +485,46 @@ const SUPPRESSION_HELP: Record<SuppressReason, string> = {
  * whole message over, which is what happened the first time this shipped.
  */
 export const MENU_BUTTON_TITLE = 'What can you do?'
+
+/**
+ * The backstop button, chosen for the message it is about to sit under.
+ *
+ * `[What can you do?]` is the most-minted button in the product and it announces
+ * capability instead of demonstrating it — §4.3's whole complaint. Driven from
+ * empty: an admin typed *"what can you do?"*, got a good four-bullet answer, and
+ * the single affordance underneath it was **[What can you do?]**. The one thing
+ * offered to somebody who had just been told everything was to ask again.
+ *
+ * A menu is a reasonable backstop under a message that answered something else.
+ * It is a dead end under the answer to this question, and it is a wasted slot
+ * while a business still has an obvious next step — which the runtime knows,
+ * because `onboarding_state` is the thing every job in the product gates on.
+ *
+ * Returns the menu unchanged when there is nothing better to say, so this can
+ * only improve a message, never empty one.
+ */
+export function backstopButtons(
+  identity: Identity,
+  body: string,
+): { title: string; action: ActionPayload }[] {
+  const menu = [{ title: MENU_BUTTON_TITLE, action: { kind: 'menu', menu: 'root' } as ActionPayload }]
+  if (!identity.roles.includes('admin')) return menu
+
+  // Only when the business has not finished being built. After go-live the next
+  // step is whatever the person is doing, and guessing at it is worse than a menu.
+  const state = identity.academy.onboarding_state
+  if (state === 'live') {
+    // …except directly under the capability answer, where the menu is circular.
+    return /\bwhat (?:can|do) (?:you|i) /i.test(body) ? [] : menu
+  }
+
+  const steps: { title: string; action: ActionPayload }[] = [
+    { title: 'Add a class', action: { kind: 'reply', text: 'I want to add a class' } },
+    { title: 'Add a coach', action: { kind: 'reply', text: 'I want to add a coach' } },
+    { title: 'Set up the business', action: { kind: 'view', screen: 'setup' } },
+  ]
+  return steps.slice(0, LIMITS.buttons)
+}
 
 /* ------------------------------------------------------------------------- *
  * §4.3 — after every action, the natural next step as a button.
@@ -2018,32 +2041,14 @@ export async function runTool(
        * and the setup screen is the admin's by the check in `builtInScreen`.
        */
       const wantsSetup = String(args?.link_screen ?? '').trim() === 'setup'
-      const setupFlow =
-        wantsSetup && to === ctx.identity.contact.id && ctx.identity.roles.includes('admin')
-          ? {
-              flow: ONBOARDING_SETUP.id,
-              /**
-               * EVERY field the form writes, prefilled from what is on the row now.
-               *
-               * The form is a full overwrite of the business shape, and it prefilled two
-               * of its five fields — so an admin who opened it a second time to change
-               * one thing submitted blanks for the rest, and the UPI handle they had
-               * already given was silently nulled and the cancellation window reset. A
-               * form that overwrites what it does not show is a data-loss bug wearing a
-               * convenience feature's clothes.
-               *
-               * The venue is deliberately absent: it is the one field that adds a row
-               * rather than replacing one, so an empty box means "no new place", not
-               * "delete the places I have".
-               */
-              data: {
-                name: ctx.identity.academy.name,
-                category: ctx.identity.academy.category ?? '',
-                cancellation_window_hours: String(ctx.identity.academy.cancellation_window_hours ?? 24),
-                upi_handle: ctx.identity.academy.upi_handle ?? '',
-              },
-            }
-          : undefined
+      const setupFlow = wantsSetup
+        ? (setupFlowFor({
+            isAdmin: ctx.identity.roles.includes('admin'),
+            toContactId: to,
+            selfContactId: ctx.identity.contact.id,
+            academy: ctx.identity.academy,
+          }) ?? undefined)
+        : undefined
 
       // §14.6 — a link is a button, and it is the only action its message can carry, so
       // it is resolved before the backstops below decide the message is bare.
