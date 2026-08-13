@@ -440,7 +440,7 @@ message (
 )
 
 action (                          -- §2.2, the payload rule
-  kind                   text not null,    -- operation | steps | <recipe verb>
+  kind                   text not null,    -- operation | steps | ... deliberately open (§6.5)
   payload                jsonb not null,   -- fully resolved. no ids to look up.
   minted_at              timestamptz not null default now(),
   minted_for_contact_id  uuid not null references contact(id),
@@ -961,15 +961,17 @@ For every plan, whatever its steps, the runtime guarantees:
 - **RLS applies to every step**, so a plan cannot reach past what its author could have done by hand
 - **The whole plan is one audit entry**, carrying the intent that produced it
 
-**Named operations become recipes, not gates.** `end_coach`, `cancel_session`, `move_class`, `waive` still exist and are still the right thing to reach for — they are known-good plans with known-good copy, cheaper and more consistent than composing from scratch, and their signatures sit in the cached prefix (§4.4) so choosing one is free. **But they are no longer the only way to do something multi-step.** A consequence chain nobody anticipated — end this enrollment, credit the unused half-month, tell the parent, tell the coach, check back in a fortnight — does not need a deploy.
+**Named operations are shortcuts, not gates.** `end_coach`, `cancel_session`, `move_class`, `waive` still exist and are still the right thing to reach for — they are known-good plans with known-good copy, cheaper and more consistent than composing from scratch, and their signatures sit in the cached prefix (§4.4) so choosing one is free. **But they are no longer the only way to do something multi-step.** A consequence chain nobody anticipated — end this enrollment, credit the unused half-month, tell the parent, tell the coach, check back in a fortnight — does not need a deploy.
 
-### 14.3 Recipes
+### 14.3 Recipes — removed
 
-Common actions get **promoted into recipes** — saved compositions of the same primitives: a pre-resolved plan, pre-built UI, a prompt fragment not re-derived each time. Booking, cancelling, confirming, attendance, dunning and menu navigation run this way: instant, near-free, and **visually consistent** — the same well-made shapes every time, not an improvised UI per conversation.
+**Deleted, not deferred**, by `supabase/migrations/0017_drop_recipe.sql`. The section number stays because §14.4 onwards is cited by number from the code; there is no §14.3 capability.
 
-**A recipe is captured model output, not hand-written code.** The model composes a plan once; it is validated, reviewed, and frozen as the canonical version of that action. This matters more than it sounds. A recipe written by hand slowly diverges from what the model would now do, so the product gets *worse* at exactly its most common actions as the model gets better — the opposite of what you want, and invisible until someone compares the two paths. Captured plans cannot diverge, because they are the same artifact.
+The idea was that common actions get promoted into saved compositions of the same primitives — a plan captured from validated model output and frozen as the canonical version of that action, so booking, cancelling, confirming, attendance and dunning ran as the same well-made shape every time rather than an improvised one per conversation.
 
-**Recipes optimize; they never gate.** A request no recipe matches falls through to the primitives — that is the design working. Instrumentation is the profiler: whatever the model keeps re-deriving becomes the next recipe, and promoting one is a review step, not a deploy.
+What was built was three halves that never joined. Capture froze a committed plan and generalised its ids into `{{placeholders}}`; matching found one by token overlap; and the piece that would bind a placeholder and replay the plan had no callers anywhere in the product. So the live path pasted a matched plan into the variable tail as prose, `JSON.stringify`d and sliced at 1200 characters, and asked the model to re-compose it — which on any multi-step plan cut the JSON in half and offered the model a malformed worked example as its known-good shape. **A shortcut through composition that still runs through the model is not a shortcut; it is a longer prompt.**
+
+Nothing replaces it. If the round saving is wanted back, it has to be a replay the runtime performs end to end — bind, preview, execute, and let the captured `message` steps carry the copy — never a paragraph the model is asked to copy from.
 
 ### 14.4 Composed messages
 
@@ -1190,7 +1192,7 @@ Each phase has an acceptance criterion. Do not start a phase before its predeces
 |---|---|---|---|
 | 0 | **Foundations** | Schema (§6). RLS policies + pgTAP regression tests. `job` table and runner with a drivable clock. Transport interface. Sender routing table | Cross-tenant and cross-role reads return zero rows. Build fails if any table lacks RLS. A job enqueued twice runs once |
 | 1 | **Emulator** | §17 — world, contact tray, arbitrary panes, live updates, clock, event log, seeds, recording, failure injection | A message renders correctly in the emulator and on a real test number. Clock advance fires a scheduled job. A run replays deterministically |
-| 2 | **Agent loop** | Primitives (§14.1), `transaction(steps[])` (§14.2.1), `agent_task` (§13.1), action minting incl. `operation` and `steps` kinds, write-diff preview, layered context (§4), memory store and hot set (§5), one recipe captured end to end | A tap executes with no model call. An expired action refuses. A multi-row write shows its diff before commit. **A rolled-back transaction has messaged nobody.** A self-scheduled task fires, runs under its minter's RLS, and expires |
+| 2 | **Agent loop** | Primitives (§14.1), `transaction(steps[])` (§14.2.1), `agent_task` (§13.1), action minting incl. `operation` and `steps` kinds, write-diff preview, layered context (§4), memory store and hot set (§5) | A tap executes with no model call. An expired action refuses. A multi-row write shows its diff before commit. **A rolled-back transaction has messaged nobody.** A self-scheduled task fires, runs under its minter's RLS, and expires |
 | 3 | **Catalog & sessions** | Classes, slots, enrollments, all four `rate_unit`s, `materialize_sessions`, setup on the web surface | A class created in setup produces correct sessions three weeks out, and editing a slot rematerialises future sessions without losing cancellations or marked attendance |
 | 4 | **Coach day** | §8.2 ladder with per-person timings, register page, coverage derivation, cover offers, unprompted actions | Full ladder observable by advancing the clock. Uncovered escalation fires. A confirmed coach is never asked twice. "I'm here" works with no prompt. A per-person override changes when a prompt fires |
 | 5 | **Client day** | Reminders, cancel with scope, outcomes, class-starting relay | Cancel inside window writes `cancelled_timely`, outside writes `absent`. Mis-tap protection confirmed |

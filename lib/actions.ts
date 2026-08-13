@@ -15,6 +15,16 @@
  * `CO-COVER-OFFER` race correct: two coaches tap `[Claim this session]` in the same second,
  * both rows are `consumed_at is null` when they start, and exactly one UPDATE returns a row.
  * Read-then-write would let both win and put two coaches at one court.
+ *
+ * That same statement now retires the siblings of a tap that decided something (0016). A
+ * message's buttons were unrelated rows, so `[Do it]` and `[Cancel]` were each live for a
+ * day: the plan committed on the first tap, and the second one still replied *"Left as it
+ * was — nothing changed."* The invalidation rides inside the claim rather than following it,
+ * because a second statement is one more thing that can fail to run — and a claim that
+ * succeeded while the invalidation did not is precisely the state that tells the lie.
+ *
+ * It is deliberately narrow, and the WHERE clause says why: an informational card whose
+ * buttons are all `noop` — `[I'll be there]` beside `[Can't make it]` — retires nothing.
  */
 
 import { withSession } from '@/lib/db'
@@ -100,6 +110,65 @@ export async function mintAction(
   })
 }
 
+/**
+ * Close the family: tell a batch of just-minted actions which message they were printed on.
+ *
+ * The ordering is forced and cannot be fixed by minting later — a button carries an action
+ * id, so the ids have to exist before the message can be built, and the `message` row is
+ * written by `send` at the end of that. So the link is stamped on the way back, the moment
+ * the send returns an id. Both mint paths (`composeAndSend`, `flushOutbox`) call this; a
+ * button whose message never got a row keeps `message_id` null and behaves exactly as every
+ * button did before 0016.
+ *
+ * Never re-stamps (`message_id is null`). An action belongs to one message, and moving one
+ * into another family would let a tap over there expire buttons somebody is still looking at.
+ */
+export async function attachActionsToMessage(
+  ctx: SessionCtx,
+  messageId: string | null,
+  actionIds: string[],
+): Promise<void> {
+  if (!messageId || !UUID_RE.test(messageId)) return
+  const ids = actionIds.filter((id) => UUID_RE.test(id))
+  if (!ids.length) return
+
+  // Loud, never thrown — and this is the one place in this file where that is the right way
+  // round. By the time this runs the message is on somebody's phone; a throw would travel up
+  // into `flushOutbox`'s catch and be recorded as a message that failed to send, which is a
+  // false statement about delivery told to prevent a false statement about work. The failure
+  // it degrades to is exactly pre-0016 behaviour — siblings that outlive their message — and
+  // it says so in the log rather than passing for success.
+  let stamped = 0
+  try {
+    stamped = await withSession({ role: 'service', academyId: ctx.academyId }, async (tx) => {
+      const rows = await tx<{ id: string }[]>`
+        update action
+           set message_id = ${messageId}
+         where id = any (${ids}::uuid[])
+           and academy_id = ${ctx.academyId}
+           and message_id is null
+        returning id`
+      return rows.length
+    })
+  } catch (e) {
+    console.error(
+      `[actions] could not stamp message ${messageId} onto ${ids.length} action(s): ` +
+        `${(e as Error).message} — every button on that message stays independently live`,
+    )
+    return
+  }
+
+  // Postgres does not raise on a WHERE that matches nothing, and this one matching nothing is
+  // invisible in every other way: the message goes out, the buttons work, and the only symptom
+  // is the bug 0016 exists to kill coming back — `[Cancel]` still live after the plan committed.
+  if (stamped !== ids.length) {
+    console.error(
+      `[actions] stamped ${stamped}/${ids.length} action(s) onto message ${messageId} — ` +
+        `the rest cannot be retired when a sibling on that message is tapped`,
+    )
+  }
+}
+
 export type ConsumeResult =
   | { ok: true; payload: ActionPayload }
   | { ok: false; reason: 'expired' | 'already_used' | 'wrong_contact' | 'missing' }
@@ -132,15 +201,74 @@ export async function consumeAction(
 
   const claimed = await withSession(claimCtx, async (tx) => {
     const rows = await tx<{ payload: unknown }[]>`
-      update action
-         set consumed_at = app.now(),
-             consumed_by_contact_id = ${byContactId}
-       where id = ${actionId}
-         and academy_id = ${ctx.academyId}
-         and minted_for_contact_id = ${byContactId}
-         and consumed_at is null
-         and (expires_at is null or expires_at > app.now())
-      returning payload`
+      with claimed as (
+        update action
+           set consumed_at = app.now(),
+               consumed_by_contact_id = ${byContactId}
+         where id = ${actionId}
+           and academy_id = ${ctx.academyId}
+           and minted_for_contact_id = ${byContactId}
+           and consumed_at is null
+           and (expires_at is null or expires_at > app.now())
+        returning id, payload, message_id
+      ),
+      -- The other buttons on the same message, under the two conditions below. A
+      -- data-modifying CTE runs exactly once whether or not the outer query reads it, so
+      -- this is not dead code -- it is the claim and the invalidation in one statement,
+      -- which is the only way the two cannot come apart. Nothing is updated twice:
+      -- a.id <> c.id excludes the row the claim just took.
+      --
+      -- NOTE FOR ANYONE EDITING THESE COMMENTS: no backticks and no apostrophes. This
+      -- whole query is a JS tagged template, so one backtick ends the string and takes
+      -- the rest of the file with it. That is not hypothetical -- it is how this block
+      -- first arrived.
+      superseded as (
+        update action a
+           set expires_at = app.now(),
+               expired_reason = 'superseded_by_action:' || c.id::text
+          from claimed c
+         where a.message_id = c.message_id      -- null groups with nothing; see 0016
+           and a.id <> c.id
+           and a.academy_id = ${ctx.academyId}
+           -- Belt to the policy, and the reason the policy can never quietly narrow this:
+           -- a message goes to one contact, so its buttons are all minted for the tapper,
+           -- and action_cm_user_update (0003) allows exactly those rows. An RLS refusal
+           -- here would be silent and would leave the false "nothing changed" alive.
+           and a.minted_for_contact_id = ${byContactId}
+           and a.consumed_at is null
+           and (a.expires_at is null or a.expires_at > app.now())
+           -- Two gates, and the fix is wrong without either one.
+           --
+           -- FIRST, the tap has to have DECIDED something. operation and steps did the
+           -- work, noop declined it, handoff gave the conversation away -- after any of
+           -- those, a sibling still claiming "nothing changed", or still able to commit, is
+           -- false or dangerous. reply, view and menu retire nothing: they assert
+           -- nothing about work and they are the surfaces people come back to. The root menu
+           -- is a list of reply rows, and the confirmation card own [Show me all 12] is
+           -- a reply that must leave [Do it] and [Cancel] exactly where they were --
+           -- retiring on those would trade a false sentence for a menu that works once. A
+           -- reply also goes back through the model, which is there to notice.
+           and c.payload ->> 'kind' in ('operation', 'steps', 'noop', 'handoff')
+           -- SECOND, the message has to be one where something can actually be committed.
+           -- Without this the fix breaks the commonest cards in the product, which pair two
+           -- noops and mean both: the session reminder offers [I will be there] and
+           -- [Cannot make it], and the trial confirmation offers [Add to calendar] and
+           -- [Directions]. Nothing on those can change a row, so no tap can make a sibling
+           -- false -- but retiring siblings would mean a parent who tapped "I will be there"
+           -- this morning cannot tell us at four o clock that they cannot make it. That is a
+           -- worse bug than the one this exists to fix.
+           --
+           -- Consumed and expired rows count here: the card nature does not change when
+           -- its [Do it] is taken, and that tap is the exact case this has to catch.
+           and exists (
+             select 1
+               from action w
+              where w.message_id = c.message_id
+                and w.payload ->> 'kind' in ('operation', 'steps')
+           )
+        returning a.id
+      )
+      select payload from claimed`
     return rows.length ? rows[0].payload : null
   })
 
@@ -177,7 +305,17 @@ export async function consumeAction(
     // Order matters: someone else's button is the wrong contact whatever else is true of it.
     if (row.minted_for_contact_id !== byContactId) return { ok: false, reason: 'wrong_contact' }
     if (row.consumed_at) return { ok: false, reason: 'already_used' }
-    if (row.expired) return { ok: false, reason: 'expired' }
+    if (row.expired) {
+      // A button retired by its sibling lands here, and `expired` is what it must report:
+      // `TAP_REFUSAL.expired` in lib/agent/loop.ts says *"That button has expired — tell me
+      // what you'd like and I'll sort it out"*, which is true of this row and invites the
+      // correction. It is emphatically NOT `already_used` — "that one's already done" about
+      // a `[Cancel]` whose sibling committed is the same lie 0016 exists to kill, told from
+      // the other end. The row keeps the whole truth in `expired_reason`, which is where the
+      // emulator and anyone asking "why did Cancel stop working?" reads it — this path stays
+      // quiet because a sibling being retired is the system working, not a fault.
+      return { ok: false, reason: 'expired' }
+    }
     return { ok: false, reason: 'missing' }
   })
 }

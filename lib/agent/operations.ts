@@ -1,5 +1,9 @@
 /**
- * lib/agent/operations.ts — named operations as RECIPES, not gates (§14.2.1).
+ * lib/agent/operations.ts — named operations as known-good plans, not gates (§14.2.1).
+ *
+ * ("Recipes" is what this said, and it meant the everyday word, not the `recipe`
+ * table — that feature is gone, see 0017_drop_recipe.sql. Reworded so the two
+ * cannot be confused by the next reader.)
  *
  * `end_coach`, `cancel_session`, `move_class`, `waive` still exist and are
  * still the right thing to reach for: they are known-good plans with known-good
@@ -210,6 +214,46 @@ function normalName(s: string): string {
     .replace(/[^a-z0-9 ]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+/**
+ * Who already owns this phone number in this academy — the one question every
+ * operation that is handed a phone has to ask, and two of them did not.
+ *
+ * **Driven, twice in three minutes, on a live academy.** An admin said *"add my coach
+ * Ravi Menon, his number is 9900000042"*, and then — as people do — said the same thing
+ * again. `add_coach` minted `person` unconditionally both times, so the database ended
+ * with two Ravi Menons:
+ *
+ * | coach      | status    | contacts | class links |
+ * |------------|-----------|----------|-------------|
+ * | `555057b5` | `added`   | 1        | 1           |
+ * | `900a6585` | `invited` | **0**    | 1           |
+ *
+ * The second person got no contact at all, because the contact insert carried
+ * `on conflict (academy_id, phone_e164) do nothing` and the phone was already taken —
+ * R7, doing nothing succeeding. So the real Ravi, the one holding the phone, was left
+ * stuck at `added` and never invited; a phantom with no way to reach it was marked
+ * `invited`; the class was silently double-staffed; and the admin was told *"Noted —
+ * Ravi Menon's invite is out."* Every layer reported success.
+ *
+ * `contact (academy_id, phone_e164)` is UNIQUE, so the schema already believes a phone
+ * identifies one human here. This is the code finally agreeing with it. `book_trial`'s
+ * comment asked for exactly this — *"the next operation that needs a human cannot invent
+ * a third answer"* — and then two operations invented one, which is why this is a
+ * function and not a fix in one `build`.
+ *
+ * Runs under the caller's own session, so "no such person" and "not yours to see" are
+ * the same answer — the answer RLS is entitled to give.
+ */
+async function resolvePersonByPhone(ctx: SessionCtx, phoneE164: string): Promise<string | null> {
+  const [row] = await q<{ person_id: string | null }>(
+    ctx,
+    `select person_id from contact
+      where academy_id = ${uid(ctx.academyId)} and phone_e164 = ${lit(phoneE164)}
+      limit 1`,
+  )
+  return row?.person_id ?? null
 }
 
 /** `isoDay` itself when it already matches, else the next day that does. */
@@ -512,6 +556,7 @@ const endCoach: OperationDef = {
     steps.push({
       write: `update coach set status = 'ended', ended_on = date ${lit(endIso)}
                 where id = ${uid(args.coach_id)} and academy_id = ${uid(ctx.academyId)}`,
+      requireRows: 1,
     })
 
     if (future.length) {
@@ -669,6 +714,7 @@ const cancelSession: OperationDef = {
       {
         write: `update session set status = 'cancelled', cancel_reason = ${lit(args.reason ?? null)}
                  where id = ${uid(s.id)} and academy_id = ${uid(ctx.academyId)}`,
+        requireRows: 1,
       },
     ]
 
@@ -822,6 +868,7 @@ const moveClass: OperationDef = {
         write: `update class_slot set weekday = ${lit(newWeekday)},
                        start_time = time ${lit(String(newStart))}, end_time = time ${lit(String(newEnd))}
                  where id = ${uid(slot.id)} and academy_id = ${uid(ctx.academyId)}`,
+        requireRows: 1,
       },
     ]
 
@@ -897,6 +944,7 @@ const rescheduleSession: OperationDef = {
                        ends_at = timestamptz ${lit(end.toISOString())}
                        ${args.venue_id ? `, venue_id = ${uid(args.venue_id)}` : ''}
                  where id = ${uid(s.id)} and academy_id = ${uid(ctx.academyId)}`,
+        requireRows: 1,
       },
       ...cancelJobsForSession(s.id),
     ]
@@ -1339,7 +1387,11 @@ const markAttendance: OperationDef = {
       steps.push({
         schedule: {
           kind: 'client_outcome',
-          run_at: new Date().toISOString(),
+          // Domain now, not host now. The runner compares `run_at` against `app.now()`,
+          // so a job stamped from the host clock is scheduled in a different timeline:
+          // whenever the domain clock is behind the host, "run this immediately" becomes
+          // "run this at a moment that has not arrived yet", and the job simply waits.
+          run_at: (await now()).toISOString(),
           dedupe_key: dedupe.clientOutcome(s.id, e.player_id),
           payload: { session_id: s.id, player_id: e.player_id, status: e.status },
         },
@@ -1431,6 +1483,7 @@ const confirmCoach: OperationDef = {
         // a no-op because of `coalesce`, not because anyone remembered.
         write: `update session_coach set ${sets.join(', ')}
                  where session_id = ${uid(args.session_id)} and coach_id = ${uid(coachId)}`,
+        requireRows: 1,
       },
       {
         write: `update job set status = 'cancelled'
@@ -1516,6 +1569,7 @@ const declineCoach: OperationDef = {
       {
         write: `update session_coach set declined_at = app.now(), confirmed_at = null
                  where session_id = ${uid(s.id)} and coach_id = ${uid(coachId)}`,
+        requireRows: 1,
       },
     ]
 
@@ -2058,6 +2112,7 @@ const optOut: OperationDef = {
       {
         write: `update contact set opted_out_at = app.now(), state = 'opted_out'
                  where id = ${uid(contactId)} and academy_id = ${uid(ctx.academyId)}`,
+        requireRows: 1,
       },
       {
         message: {
@@ -2119,6 +2174,7 @@ const setTiming: OperationDef = {
       {
         write: `update person set settings = coalesce(settings, '{}'::jsonb) || ${jsonLit(settings)}
                  where id = ${uid(personId)} and academy_id = ${uid(ctx.academyId)}`,
+        requireRows: 1,
       },
     ]
   },
@@ -2210,7 +2266,11 @@ const createClass: OperationDef = {
     steps.push({
       schedule: {
         kind: 'materialize_sessions',
-        run_at: new Date().toISOString(),
+        // See `client_cancel`: host now and domain now are different timelines. This one
+        // is the worse of the two to get wrong — it is what turns a newly created class
+        // into actual sessions, so a class created while the domain clock trails the host
+        // gets no sessions at all, and nothing anywhere reports it.
+        run_at: (await now()).toISOString(),
         dedupe_key: dedupe.materializeSessions(classId, startsOn),
         payload: { class_id: classId, academy_id: ctx.academyId },
       },
@@ -2230,25 +2290,61 @@ const addCoach: OperationDef = {
     class_ids: z.array(uuid).optional().default([]),
   }),
   async build(ctx, args, id) {
-    const personId = newId()
-    const coachId = newId()
     const phone = args.phone_e164.replace(/[^\d+]/g, '')
+    // One phone is one human here — see `resolvePersonByPhone` for the two Ravi Menons
+    // this produced on a live drive.
+    const existingPersonId = await resolvePersonByPhone(ctx, phone)
+    const personId = existingPersonId ?? newId()
+    const coachId = newId()
+
+    if (existingPersonId) {
+      const [already] = await q<{ id: string; status: string; full_name: string }>(
+        ctx,
+        `select c.id, c.status, p.full_name from coach c join person p on p.id = c.person_id
+          where c.academy_id = ${uid(ctx.academyId)} and c.person_id = ${uid(existingPersonId)}
+          limit 1`,
+      )
+      // Refusing beats silently making a second one. The admin who says "add Ravi"
+      // twice is not asking for two Ravis, and the model cannot tell the difference
+      // from a tool result that says `ok: true` either way.
+      if (already) {
+        throw new Error(
+          `add_coach: ${already.full_name} is already a coach here (${already.status}), on that same number. ` +
+            `Do not add them again — that would be a second person behind one phone. ` +
+            `If they need inviting, use send_invite_draft with coach_id ${already.id}. ` +
+            `If they left and are coming back, say so and change that coach's status instead.`,
+        )
+      }
+    }
+
     const steps: PlanStep[] = [
       { note: `${args.full_name} added as a coach — nobody is messaged yet` },
-      {
-        write: `insert into person (id, academy_id, full_name)
+      // Only when this phone is nobody yet. Reusing the person who already owns it is
+      // what keeps one human from becoming two.
+      ...(existingPersonId
+        ? []
+        : ([
+            {
+              write: `insert into person (id, academy_id, full_name)
                 values (${uid(personId)}, ${uid(ctx.academyId)}, ${lit(args.full_name)})`,
-      },
-      {
-        write: `insert into contact (academy_id, person_id, phone_e164, state, role_hint)
-                values (${uid(ctx.academyId)}, ${uid(personId)}, ${lit(phone)}, 'registered', 'coach')
-                on conflict (academy_id, phone_e164) do nothing`,
-      },
+              requireRows: 1,
+            },
+            {
+              // No `on conflict do nothing`. It is what turned "this phone is already
+              // somebody" into silence, and left a coach with no way to be reached.
+              // We have just established the phone is free; if it is not, the world
+              // moved under this plan and the plan must fail rather than orphan a row.
+              write: `insert into contact (academy_id, person_id, phone_e164, state, role_hint)
+                values (${uid(ctx.academyId)}, ${uid(personId)}, ${lit(phone)}, 'registered', 'coach')`,
+              requireRows: 1,
+            },
+          ] as PlanStep[])),
       {
         write: `insert into coach (id, academy_id, person_id, pay_amount, pay_unit, status)
                 values (${uid(coachId)}, ${uid(ctx.academyId)}, ${uid(personId)},
                         ${args.pay_amount === null || args.pay_amount === undefined ? 'null' : moneyLit(args.pay_amount)},
                         ${lit(args.pay_unit ?? null)}, 'added')`,
+        requireRows: 1,
       },
     ]
     for (const c of args.class_ids) {
@@ -2289,27 +2385,44 @@ const addFamily: OperationDef = {
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
     const today = zoned(await now(), a.timezone).toFormat('yyyy-MM-dd')
-    const holderPersonId = newId()
-    const accountId = newId()
     const phone = args.phone_e164.replace(/[^\d+]/g, '')
+    // The same question `add_coach` was not asking. A parent added twice — from a
+    // photographed register and then by hand, which is the normal way this happens —
+    // became two people behind one phone, one of them holding the money.
+    const existingPersonId = await resolvePersonByPhone(ctx, phone)
+    const holderPersonId = existingPersonId ?? newId()
+    const accountId = newId()
     const steps: PlanStep[] = [
       {
         note: `${args.holder_name} and ${args.players.length} player${
           args.players.length === 1 ? '' : 's'
         } — nobody is messaged (§2.6)`,
       },
-      {
-        write: `insert into person (id, academy_id, full_name)
+      ...(existingPersonId
+        ? []
+        : ([
+            {
+              write: `insert into person (id, academy_id, full_name)
                 values (${uid(holderPersonId)}, ${uid(ctx.academyId)}, ${lit(args.holder_name)})`,
-      },
+              requireRows: 1,
+            },
+            {
+              // See `add_coach`: `on conflict do nothing` here is how a household ends
+              // up with an account nobody can be reached about.
+              write: `insert into contact (academy_id, person_id, phone_e164, state, role_hint)
+                values (${uid(ctx.academyId)}, ${uid(holderPersonId)}, ${lit(phone)}, 'registered', 'account_holder')`,
+              requireRows: 1,
+            },
+          ] as PlanStep[])),
       {
-        write: `insert into contact (academy_id, person_id, phone_e164, state, role_hint)
-                values (${uid(ctx.academyId)}, ${uid(holderPersonId)}, ${lit(phone)}, 'registered', 'account_holder')
-                on conflict (academy_id, phone_e164) do nothing`,
-      },
-      {
+        // An account per holder, not per call. Adding a second player later must land
+        // in the household that already exists rather than opening a rival one that
+        // splits the balance in half.
         write: `insert into account (id, academy_id, holder_person_id, display_name)
-                values (${uid(accountId)}, ${uid(ctx.academyId)}, ${uid(holderPersonId)}, ${lit(args.holder_name)})`,
+                select ${uid(accountId)}, ${uid(ctx.academyId)}, ${uid(holderPersonId)}, ${lit(args.holder_name)}
+                 where not exists (select 1 from account
+                                    where academy_id = ${uid(ctx.academyId)}
+                                      and holder_person_id = ${uid(holderPersonId)})`,
       },
     ]
     for (const p of args.players) {
@@ -2331,8 +2444,17 @@ const addFamily: OperationDef = {
         })
       }
       steps.push({
+        // The account is read back rather than assumed: when the holder was already
+        // here, the row above inserted nothing and `accountId` names no account. Same
+        // subquery `book_trial` uses, so both paths land in one household.
         write: `insert into player (id, academy_id, account_id, person_id)
-                values (${uid(playerId)}, ${uid(ctx.academyId)}, ${uid(accountId)}, ${uid(playerPersonId)})`,
+                select ${uid(playerId)}, ${uid(ctx.academyId)},
+                       (select id from account
+                         where academy_id = ${uid(ctx.academyId)}
+                           and holder_person_id = ${uid(holderPersonId)}
+                         order by created_at limit 1),
+                       ${uid(playerPersonId)}`,
+        requireRows: 1,
       })
       if (p.class_id) {
         steps.push({
@@ -2393,11 +2515,16 @@ const onboardCoach: OperationDef = {
         // next door. Under the coach's own session the update matched zero rows and
         // said nothing, and the coach was told they were set up.
         service: true,
+        // The historical case this guard exists for: a coach tapped `[Looks right]`,
+        // RLS gave them no UPDATE on their own row, Postgres changed nothing and raised
+        // nothing, and they were told *"Great! You're all set up."* They stayed
+        // `invited` forever and the admin kept being told nobody had confirmed.
         write: `update coach
                    set status = 'active',
                        onboarded_at = coalesce(onboarded_at, app.now()),
                        invited_at = coalesce(invited_at, app.now())
                  where id = ${uid(coachId)} and academy_id = ${uid(ctx.academyId)} and ended_on is null`,
+        requireRows: 1,
       },
       { note: 'they are set up and will get their day from now on' },
     ]
@@ -2425,8 +2552,26 @@ const sendInviteDraft: OperationDef = {
       `select s.phone_e164 from sender s join academy ac on ac.sender_id = s.id
         where ac.id = ${uid(ctx.academyId)}`,
     )
-    let name = 'them'
+    /**
+     * An invite nobody is named in is not an invite. **Driven:** an admin said "add a new
+     * coach Vikram Shetty, number 9845019999", the model put `add_coach` and
+     * `send_invite_draft` in ONE plan, and the admin was handed
+     *
+     *     Hi them — we've moved Ace TT Academy's scheduling onto WhatsApp.
+     *
+     * to forward to a real person. `name` started as the string `'them'` and the lookup
+     * that should have replaced it missed, so the placeholder shipped — R7, a lookup that
+     * finds nothing succeeding.
+     *
+     * The miss is not random and the message says so. Operations are expanded and built
+     * BEFORE the transaction opens, so a coach an earlier step of the same plan creates
+     * does not exist yet when this step's `build` runs. The two acts have to be two plans,
+     * which is exactly what the model does when it is told — watched immediately after:
+     * it read this refusal, called `send_invite_draft` alone with the existing coach id,
+     * and the invite went out addressed properly.
+     */
     let personId = args.person_id ?? null
+    let name: string | null = null
     if (args.coach_id) {
       const [c] = await q<{ person_id: string; full_name: string }>(
         ctx,
@@ -2440,6 +2585,18 @@ const sendInviteDraft: OperationDef = {
     } else if (personId) {
       const [p] = await q<{ full_name: string }>(ctx, `select full_name from person where id = ${uid(personId)}`)
       if (p) name = p.full_name
+    }
+
+    if (!name) {
+      throw new Error(
+        args.coach_id || args.person_id
+          ? 'send_invite_draft: that id matches nobody I can see, so there is no name to address the invite to. ' +
+            'If the coach is created by an earlier step of THIS plan, they do not exist yet — this operation is ' +
+            'built before the plan runs. Commit the plan that adds them first, read the coach id back, then draft ' +
+            'the invite in a second plan.'
+          : 'send_invite_draft: say who this invite is for — pass coach_id (or person_id). Without one the draft ' +
+            'is addressed to "them", which is not something anyone can forward.',
+      )
     }
 
     const prefill = `Hi ${a.name}`
@@ -2582,6 +2739,7 @@ const undo: OperationDef = {
     steps.push({
       write: `update audit_entry set undone_at = app.now() where id = ${uid(args.audit_id)}`,
       service: true,
+      requireRows: 1,
     })
 
     // A correction to exactly the people who were told, and nobody else.
@@ -2618,6 +2776,7 @@ const setOnboardingState: OperationDef = {
       },
       {
         write: `update academy set onboarding_state = ${lit(args.state)} where id = ${uid(ctx.academyId)}`,
+        requireRows: 1,
       },
     ]
   },
@@ -2661,9 +2820,12 @@ const forget: OperationDef = {
     return [
       { note: `retiring a remembered fact` },
       {
+        // "I've forgotten that" is a false sentence when nothing was retired, and the
+        // person has no way to find out. Better to say there was nothing to forget.
         write: `update memory_fact set retired_at = app.now()
                  where academy_id = ${uid(ctx.academyId)} and ${where}`,
         service: true,
+        requireRows: 1,
       },
     ]
   },

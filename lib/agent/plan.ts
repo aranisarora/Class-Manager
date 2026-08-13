@@ -24,8 +24,9 @@ import {
   type Tx,
 } from '@/lib/db'
 import { idem, newId } from '@/lib/ids'
+import { now } from '@/lib/clock'
 import { resolveIdentity } from '@/lib/identity'
-import { mintAction, type ActionPayload } from '@/lib/actions'
+import { attachActionsToMessage, mintAction, type ActionPayload } from '@/lib/actions'
 import { send } from '@/lib/messaging/send'
 import { repairOutbound } from '@/lib/messaging/repair'
 import { LIMITS, type Button, type OutboundMessage, type SendOutcome } from '@/lib/messaging/types'
@@ -471,7 +472,10 @@ async function periodNow(tx: Tx, ctx: SessionCtx): Promise<string> {
     `select to_char(date_trunc('month', app.now() at time zone a.timezone), 'YYYY-MM-DD') as period
        from academy a where a.id = ${uid(ctx.academyId)}`,
   )) as unknown as { period: string }[]
-  return rows[0]?.period ?? new Date().toISOString().slice(0, 8) + '01'
+  // The fallback is the billing period a money row lands in, so it has to come from the
+  // same clock the row above it would have used. The host clock is a different timeline —
+  // it would file an adjustment under whichever month the server happens to be in.
+  return rows[0]?.period ?? (await now()).toISOString().slice(0, 8) + '01'
 }
 
 /* ------------------------------------------------------------------------- *
@@ -1002,7 +1006,18 @@ async function flushOutbox(
       if (repairs.length) {
         console.warn(`[plan] repaired a staged message to ${m.toContactId}: ${repairs.join('; ')}`)
       }
-      outcomes.push(await send(svc, msg))
+      const outcome = await send(svc, msg)
+      // The message id exists only now, so this is where the buttons learn which message
+      // they were printed on (0016). Without it every button on a staged message stays an
+      // independent row: tap `[Do it]`, the plan commits — then tap `[Cancel]` on the same
+      // message and it fires its own `noop`, replying "Left as it was — nothing changed."
+      // about work that did happen, on the one path with no model in the loop to catch it.
+      //
+      // `msg.buttons`, not the array minted above: repair and the wire's cap can drop one,
+      // and a button that was never printed belongs to no message. It keeps a null
+      // `message_id` and simply lapses at its TTL, as every action did before 0016.
+      await attachActionsToMessage(svc, outcome.messageId, (msg.buttons ?? []).map((b) => b.actionId))
+      outcomes.push(outcome)
     } catch (e) {
       outcomes.push({
         status: 'failed',

@@ -326,7 +326,7 @@ export type ActionRow = {
   id: string
   created_at: Date
   academy_id: string
-  /** operation | steps | <recipe verb> — deliberately not a fixed list (§6.5). */
+  /** operation | steps | reply | view | menu | noop — deliberately not a fixed list (§6.5). */
   kind: string
   payload: Json
   minted_at: Date
@@ -392,17 +392,9 @@ export type RowSnapshot = {
   at: Date
 }
 
-export type Recipe = {
-  id: string
-  created_at: Date
-  /** null = global recipe. */
-  academy_id: string | null
-  name: string
-  trigger_description: string | null
-  plan: Json
-  captured_from: string | null
-  active: boolean
-}
+// `Recipe` lived here. The feature was removed (see 0017_drop_recipe.sql): capture
+// froze a plan nothing could bind, and a captured plan's only test of "good" was
+// that it was expensive and did not crash.
 
 export type Turn = {
   id: string

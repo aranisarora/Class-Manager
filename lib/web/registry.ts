@@ -459,8 +459,8 @@ export const REGISTRY: Record<ComponentType, RegistryEntry> = {
  * What the model may **author**, which is deliberately narrower than what the product
  * can **render**.
  *
- * All nine components stay in `REGISTRY` and all nine still render — a captured view,
- * a recipe or a future built-in screen can use any of them. What changed is the menu
+ * All nine components stay in `REGISTRY` and all nine still render — a captured view
+ * or a future built-in screen can use any of them. What changed is the menu
  * the model chooses from, and the reason is measured: across 93 driven turns it minted
  * **one** view of any type. §15's failure table already says the answer to "component
  * doesn't exist" is "fall back to `table` — it renders any tabular result", so a
