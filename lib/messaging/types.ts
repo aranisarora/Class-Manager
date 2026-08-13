@@ -164,6 +164,11 @@ export type OutboundMessage = {
   /** Set by onboarding flows that are allowed to send before `academy.onboarding_state='live'`. */
   preLaunchOk?: boolean
   /**
+   * The acknowledgement of an opt-out — the one message the opt-out gate lets past.
+   * See `MessageStep.opt_out_ack` for why, and note it is runtime-set only.
+   */
+  optOutAck?: boolean
+  /**
    * Additive (not in CONTRACTS §5, safe to omit): named parameters for the §16.2 template
    * used when this message goes out of window. Omitted, `send` fills them from what it
    * knows — academy name, the catalog row's event phrase, the composed body as the detail —

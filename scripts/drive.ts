@@ -46,6 +46,7 @@
  */
 import { c, loadEnvFiles } from './_env'
 import type { OperationName } from '@/lib/agent/operations'
+import type { PlanStep } from '@/lib/agent/plan'
 import type { LinkPurpose } from '@/lib/web/jwt'
 
 loadEnvFiles()
@@ -450,6 +451,127 @@ async function accountFor(academyId: string, holderContactId?: string): Promise<
   return { id: String(rows[0].id), name: String(rows[0].display_name) }
 }
 
+/**
+ * **Run a plan the model would have composed, as this person.**
+ *
+ * Not everything the product does has a named operation. §14.2.1 is explicit that the
+ * model composes steps and the runtime guarantees the properties, and the spec's own
+ * worked example — a family leaving, `update enrollment set ended_on = …` — is exactly
+ * that shape. So an ending like that could only be driven by talking the model into
+ * writing the plan, which tests the model's persuadability rather than the product.
+ *
+ * This mints the same `steps` action the runtime mints for a previewed change and taps
+ * it, so the plan runs down `executePlan` with the same atomicity, the same diff and the
+ * same staged messages. It runs as the person tapping, so RLS still caps it at what they
+ * could have done by hand — which is why these are minted for the admin.
+ */
+async function drivePlan(o: {
+  contactId: string
+  academyId: string
+  steps: PlanStep[]
+  summary: string
+  label: string
+}): Promise<void> {
+  const { mintAction } = await import('@/lib/actions')
+  const id = await mintAction(
+    { role: 'service', academyId: o.academyId },
+    { payload: { kind: 'steps', steps: o.steps, summary: o.summary }, forContactId: o.contactId, ttlMinutes: 60 },
+  )
+  console.log(c.yellow('  no named operation does this — minted the plan §14.2.1 says the model composes, and tapped it'))
+  console.log(c.dim('  (that runs the change; it does not test whether the bot would have composed it)'))
+  for (const s of o.steps) console.log(c.dim(`    ${clip(JSON.stringify(s), 160)}`))
+  await tapActionId(o.contactId, id, o.label)
+}
+
+// -----------------------------------------------------------------------------
+// Resolving the things the scheduling and churn halves need.
+// -----------------------------------------------------------------------------
+
+/** Today where the business is. Every date argument in the product is a local date. */
+async function todayIn(academyId: string): Promise<string> {
+  const rows = await q<any>(
+    `select ((app.now() at time zone a.timezone)::date)::text as d from academy a where a.id = '${academyId}'::uuid`,
+    academyId,
+  )
+  return String(rows[0]?.d ?? '')
+}
+
+/**
+ * A class by name — or a refusal that lists what there is.
+ *
+ * Names are matched case-insensitively on a substring, and **an ambiguous match is an
+ * error rather than the first hit**. R5 is a comparison made on unnormalised values, and
+ * "the first class whose name contains 'beginners'" in a business with two of them is
+ * that root with a driver's face on.
+ */
+async function classFor(academyId: string, wanted?: string): Promise<{ id: string; name: string }> {
+  const all = await q<any>(
+    `select id, name from class where academy_id = '${academyId}'::uuid and active order by name`,
+    academyId,
+  )
+  if (!all.length) {
+    die(
+      c.red('that business has no active classes.'),
+      c.dim('  `drive class --name "6:30 Beginners" --day mon,wed --time 18:30-19:30` makes one.'),
+    )
+  }
+  const hits = wanted
+    ? all.filter((x: any) => String(x.name).toLowerCase().includes(wanted.toLowerCase()))
+    : all
+  if (hits.length === 1) return { id: String(hits[0].id), name: String(hits[0].name) }
+  die(
+    c.red(
+      hits.length === 0
+        ? `no class in that business matches "${wanted}".`
+        : wanted
+          ? `"${wanted}" matches ${hits.length} classes — say which:`
+          : `that business has ${all.length} classes — say which with --class:`,
+    ),
+    ...(hits.length ? hits : all).map((x: any) => c.dim(`    ${x.name}`)),
+  )
+}
+
+/**
+ * The players on a holder's account, with whichever enrollment is still running.
+ *
+ * "Still running" is `ended_on is null OR ended_on >= today`, not `is null`. A child whose
+ * last day is the 31st is enrolled today, and reading only the null case reported them as
+ * "not enrolled in anything" — which would have made `end player` refuse to change a
+ * leaving date that had already been set.
+ */
+async function playersOf(academyId: string, holderContactId: string): Promise<any[]> {
+  return q<any>(
+    `select pl.id as player_id, p.full_name, ac.id as account_id, ac.display_name,
+            e.id as enrollment_id, e.ended_on::text as ended_on, cl.name as class_name, ac.holder_person_id
+       from contact c
+       join account ac on ac.holder_person_id = c.person_id and ac.academy_id = c.academy_id
+       join player pl on pl.account_id = ac.id and pl.active
+       join person p on p.id = pl.person_id
+       left join enrollment e on e.player_id = pl.id
+         and (e.ended_on is null or e.ended_on >= (app.now() at time zone
+              (select timezone from academy where id = '${academyId}'::uuid))::date)
+       left join class cl on cl.id = e.class_id
+      where c.id = '${holderContactId}'::uuid
+      order by p.full_name`,
+    academyId,
+  )
+}
+
+/**
+ * The billing period a money command is about — `--period 2026-07`, or the month the
+ * business is in now.
+ *
+ * `tally_line.period` is the first of the month as a date, so the flag is normalised to
+ * that here rather than in three call sites, which is where R5 gets in.
+ */
+async function periodFor(academyId: string): Promise<string> {
+  const raw = (flag('period') ?? '').trim()
+  if (!raw) return `${(await todayIn(academyId)).slice(0, 7)}-01`
+  const m = /^(\d{4})-(\d{2})(?:-\d{2})?$/.exec(raw)
+  if (!m) die(c.red(`--period wants a month as YYYY-MM (got "${raw}")`))
+  return `${m[1]}-${m[2]}-01`
+}
+
 // -----------------------------------------------------------------------------
 // Printing a turn: the reply, the buttons, and the flight recorder.
 // -----------------------------------------------------------------------------
@@ -677,12 +799,22 @@ const HELP: [string, string][] = [
   ['drop <academyId|"name">', 'delete a business and everything in it'],
   ['remove <contactId>', 'delete one person and their rows'],
   ['new [academyId] --name X --role client|coach|admin|prospect', 'add a person, wired up'],
+  ['new … --class "<class>" [--invite] [--rate N --unit per_month]', 'and put them ON that class'],
   ['say <contactId> "<text>" [--media f]', 'type as that person, with an attachment'],
   ['stranger <+91...> "<text>" [--media f]', 'an unknown number, cold'],
   ['tap <contactId> [n] [--title|--action|--message]', 'tap a button OR a list row, new or old'],
   ['confirm <coachContactId> [--session] [--arrived]', 'a coach says yes'],
   ['decline <coachContactId> [--session] [--yes]', "a coach says they can't"],
   ['claim <coachContactId> [--session]', 'a coach takes an uncovered session'],
+  ['present <coachContactId> [--session]', 'the [All present] chat button, tapped'],
+  ['class --name X --day mon,wed --time 18:30-19:30', 'create a class and its sessions'],
+  ['cancel [--session <id>] [--class X] [--reason]', 'cancel one session'],
+  ['move --session <id> --to <iso> | --class X --day tue', 'reschedule one, or move the slot'],
+  ['timing <contactId> --key <name> --value 90', "one person's prompt timing (§8.2)"],
+  ['end coach <contactId> [--on] [--reassign] [--notify]', 'a coach leaves (§8.3)'],
+  ['end player <holderContactId> [--player X] [--all]', 'a family leaves — ends the enrollment'],
+  ['end contact <contactId> [--yes]', 'stop messaging that number'],
+  ['waive <holderContactId> --amount N --reason "…"', 'a credit, a waiver, a pro-rate'],
   ['pay request <holderContactId> [--amount]', 'ask an account for what is owed'],
   ['pay attest <holderContactId> [--ref] [--media]', 'the family says they have paid'],
   ['pay confirm [adminContactId] [--payment]', 'the admin says it came in (Rail 1)'],
@@ -692,10 +824,13 @@ const HELP: [string, string][] = [
   ["submit <contactId> --json '{...}'", "post that page's form, as they would"],
   ['clock +2h | --to <iso> | --next | --reset', 'move domain time, then run what is due'],
   ['tick', 'run due jobs without moving time'],
+  ['month [--period 2026-07] [--academy X]', 'close a period: lines, tally, dunning'],
+  ['deliver [--read] [--limit N]', 'sent → delivered → read, one rung a call'],
+  ['fault [<kind> on|off] [--rate 0.5]', 'inject a failure (§17), or list them'],
   ['thread <contactId> [--others] [--full]', 'the conversation + flight recorder'],
   ['cost [contactId] [--academy X]', 'tokens, cache ratio, latency per turn'],
   ['score [contactId] [--academy X]', 'the seven axes, as numbers'],
-  ['money [contactId] [--academy X]', 'billed vs confirmed vs awaiting vs failed'],
+  ['money [contactId] [--academy X] [--period 2026-07|all]', 'billed vs confirmed vs awaiting vs failed'],
 ]
 
 /**
@@ -820,7 +955,112 @@ async function main(): Promise<void> {
       const academyId = positional[0] ?? (await anyAcademyId())
       const name = flag('name')
       const role = (flag('role') ?? 'client') as 'client' | 'coach' | 'admin' | 'prospect'
-      if (!name) die(c.red('drive new [academyId] --name "<person>" --role client|coach|admin|prospect [--phone +91...]'))
+      if (!name) {
+        die(
+          c.red('drive new [academyId] --name "<person>" --role client|coach|admin|prospect [--phone +91...]'),
+          c.dim('  --class "6:30 Beginners"   which class — a client is enrolled in it, a coach is assigned to it'),
+          c.dim('  --invite                   (coach) also draft and mark the invite sent, which is what makes them `invited`'),
+          c.dim('  --rate 2400 --unit per_month   (client) what they pay, so month-end has something to bill'),
+        )
+      }
+
+      /**
+       * **A roster you can build on purpose.**
+       *
+       * `/api/emulator/contact` makes a person and guesses the rest: a client lands in
+       * "the first active class that runs", which in a business with three of them is a
+       * coin toss, and a coach is inserted `active`, `onboarded_at` already set, assigned
+       * to nothing. So the coach ladder had nothing to fire on — `coach_not_onboarded`
+       * wants `status = 'invited'`, `coach_day` and `coach_coming` want an assignment —
+       * and every driven coach was born past the whole of §8.1.
+       *
+       * With `--class` this goes down the product's own path instead: `add_coach` writes
+       * the coach `added`, wires `class_coach` AND back-fills `session_coach` for every
+       * upcoming session, and `add_family` enrols the player in the class you named at the
+       * rate you named. Both are the operations an admin's own sentence reaches, so what
+       * is built here is what the product builds.
+       */
+      const wantedClass = flag('class')
+      if (wantedClass && (role === 'coach' || role === 'client')) {
+        const cls = await classFor(academyId, wantedClass)
+        const admin = await adminContactOf(academyId)
+        const phone = flag('phone') ?? `+9199${String(Math.floor(Date.now() / 1000) % 100000000).padStart(8, '0')}`
+        console.log(c.dim(`  ${name} · ${role} · ${cls.name} · ${phone}`))
+        if (role === 'coach') {
+          await driveOperation({
+            contactId: admin.contactId, academyId, op: 'add_coach',
+            args: {
+              full_name: name, phone_e164: phone, class_ids: [cls.id],
+              ...(flag('rate') ? { pay_amount: Number(flag('rate')) } : {}),
+              ...(flag('unit') ? { pay_unit: flag('unit') } : {}),
+            },
+            match: { full_name: name },
+            label: `Add ${name} as a coach`,
+          })
+        } else {
+          await driveOperation({
+            contactId: admin.contactId, academyId, op: 'add_family',
+            args: {
+              holder_name: name, phone_e164: phone,
+              players: [
+                {
+                  name: flag('player') ?? name,
+                  class_id: cls.id,
+                  ...(flag('rate') ? { rate_amount: Number(flag('rate')) } : {}),
+                  ...(flag('unit') ? { rate_unit: flag('unit') } : {}),
+                  ...(flag('since') ? { started_on: flag('since') } : {}),
+                },
+              ],
+            },
+            match: { holder_name: name },
+            label: `Add ${name}'s family`,
+          })
+        }
+        const made = await q<any>(
+          `select ct.id as contact_id, p.full_name,
+                  (select co.status from coach co where co.person_id = p.id) as coach_status,
+                  (select count(*) from class_coach cc join coach co on co.id = cc.coach_id
+                    where co.person_id = p.id) as classes,
+                  (select count(*) from session_coach sc join coach co on co.id = sc.coach_id
+                    where co.person_id = p.id) as sessions,
+                  (select count(*) from enrollment e join player pl on pl.id = e.player_id
+                    join account ac on ac.id = pl.account_id
+                   where ac.holder_person_id = p.id and e.ended_on is null) as enrollments
+             from contact ct join person p on p.id = ct.person_id
+            where ct.academy_id = '${academyId}'::uuid and ct.phone_e164 = ${sql(phone)}`,
+          academyId,
+        )
+        if (!made[0]) die(c.red('  nothing was created — read the reply above; the operation refused.'))
+        console.log(`  contact_id ${c.cyan(String(made[0].contact_id))}`)
+        console.log(
+          c.dim(
+            role === 'coach'
+              ? `  coach: ${made[0].coach_status} · ${made[0].classes} class(es) · ${made[0].sessions} upcoming session(s) assigned`
+              : `  ${made[0].enrollments} open enrollment(s)`,
+          ),
+        )
+        if (role === 'coach' && has('invite')) {
+          // §8.1 — `added` is not `invited`, and only `invited` is what the admin's
+          // "they never onboarded" escalation looks for. The status moves on the second
+          // call, when the admin says they have forwarded the draft.
+          const coach = await coachContext(String(made[0].contact_id))
+          await driveOperation({
+            contactId: admin.contactId, academyId, op: 'send_invite_draft',
+            args: { coach_id: coach.coachId, mark_sent: true },
+            // `mark_sent` is in the match, not just the args: the draft and the "I have
+            // sent it" are the same operation with one different argument, and matching on
+            // the coach alone taps the *draft* button — which composes the invite again and
+            // leaves the coach `added`, exactly the status this is here to move off.
+            match: { coach_id: coach.coachId, mark_sent: 'true' },
+            label: `Sent ${name}'s invite`,
+          })
+          const st = await q<any>(`select status, invited_at from coach where id = '${coach.coachId}'::uuid`, academyId)
+          console.log(c.dim(`  coach row: status ${st[0]?.status} · invited_at ${st[0]?.invited_at ?? '·'}`))
+        }
+        break
+      }
+      if (wantedClass) die(c.red(`--class means nothing for a ${role} — it wires a coach's assignment or a client's enrollment.`))
+
       const out = await api('/api/emulator/contact', {
         academyId,
         name,
@@ -914,6 +1154,7 @@ async function main(): Promise<void> {
           c.dim('  --action <actionId>    tap exactly that action, however old'),
           c.dim('  --message <messageId>  index into that message instead of the newest'),
           c.dim('  --title "Yes, I\'m"     the newest affordance whose title contains this'),
+          c.dim('  --older                tap the nearest older message, when the newest offers nothing'),
           c.dim('  `drive thread <contactId>` prints every affordance with its number and id'),
         )
       }
@@ -927,17 +1168,19 @@ async function main(): Promise<void> {
         break
       }
 
-      // `payload ? 'buttons'` would be true of every outbound row in the product: the send
-      // path writes the whole key set and leaves the unused ones JSON null. The type check
-      // is the one that means "this message actually offered something".
-      const rows = await q<any>(
+      // Everything the bot said, affordance or not. The filter used to be in the SQL, which
+      // meant the driver could not tell "the newest message offers nothing" from "the newest
+      // message offers this" — and quietly answered the second question when you asked the
+      // first. `affordancesOf` is the one definition of "offered something", so it decides
+      // here too rather than a `jsonb_typeof` predicate that has to agree with it.
+      const recent = await q<any>(
         `select id, payload, body, created_at from message
           where contact_id = '${contactId}'::uuid and direction = 'outbound'
             and suppressed_reason is null
-            and (jsonb_typeof(payload->'buttons') = 'array' or jsonb_typeof(payload->'list') = 'object')
           order by created_at desc limit 25`,
         academyId,
       )
+      const rows = recent.filter((r: any) => affordancesOf(r.payload).length > 0)
       const candidates = messageId ? rows.filter((r: any) => String(r.id) === messageId) : rows
       if (!candidates.length) {
         die(
@@ -966,6 +1209,24 @@ async function main(): Promise<void> {
         if (!picked) die(c.red(`no affordance in the last 25 messages has a title containing "${wantTitle}".`))
       } else {
         const target = candidates[0]
+        // **The fallback that made this command lie.** `tap <contact> 2` means "the second
+        // thing it just offered me", and when the newest message offered nothing this walked
+        // silently backwards to an older one and answered about that instead — so a message
+        // with a list was skipped, an old two-button prompt was read, and the driver reported
+        // *"there is no button 3 — there are 2"* with total confidence. Wrong answers that
+        // read as findings are worse than a missing feature, so it refuses and names both
+        // messages. `--older` is the way to mean it.
+        const skipped = messageId ? 0 : recent.findIndex((r: any) => String(r.id) === String(target.id))
+        if (skipped > 0 && !has('older')) {
+          die(
+            c.red(`the last ${skipped} message(s) to that contact carry nothing to tap.`),
+            ...recent.slice(0, skipped).map((r: any) => c.dim(`    newest → ${clip(r.body, 90)}`)),
+            c.red(`  the nearest message that offers anything is ${skipped} back:`),
+            c.dim(`    ${clip(target.body, 90)}`),
+            ...affordancesOf(target.payload).map((a) => c.dim(`      [${a.n}] ${a.title}  (${a.kind})`)),
+            c.dim('  --older to tap it anyway, or --message <id> / --action <id> / --title "…" to say which.'),
+          )
+        }
         const all = affordancesOf(target.payload)
         picked = all[which - 1]
         fromBody = String(target.body ?? '')
@@ -1041,6 +1302,304 @@ async function main(): Promise<void> {
           console.log(c.dim(`  the product is double-checking — \`drive tap ${contactId} 1\` to go through with it`))
         }
       }
+      break
+    }
+
+    /**
+     * **The register's majority case, in chat.** §8.2 step 5 mints `[All present]` as a chat
+     * button carrying the fully resolved roster, precisely so the common case costs one tap
+     * and no model call — and `drive register` drives the *page* instead, which is the
+     * minority path the spec expects most coaches never to see. So the button the product
+     * was designed around has never been pressed, and `CO-REGISTER`'s tap rate reads 0%
+     * because nothing could press it rather than because nobody wanted to.
+     */
+    case 'present': {
+      const contactId = positional[0]
+      if (!contactId) {
+        die(
+          c.red('drive present <coachContactId> [--session <id>]   — the [All present] button, tapped'),
+          c.dim('  `drive register <coachContactId> --absent "…"` is the page, for anything but everyone present'),
+        )
+      }
+      const coach = await coachContext(contactId)
+      let sessionId = flag('session') ?? ''
+      if (!sessionId) {
+        const s = await q<any>(
+          `select s.id, s.starts_at, cl.name from session s
+             join class cl on cl.id = s.class_id
+             join session_coach sc on sc.session_id = s.id and sc.coach_id = '${coach.coachId}'::uuid
+            where s.status <> 'cancelled' and s.ends_at < app.now()
+              and not exists (select 1 from attendance a where a.session_id = s.id)
+            order by s.ends_at desc limit 1`,
+          coach.academyId,
+        )
+        if (!s[0]) {
+          die(
+            c.red('that coach has no finished session with an unmarked register — pass --session <id>.'),
+            c.dim('  `drive clock --next` steps to the next scheduled moment; a register exists once a class has ended.'),
+          )
+        }
+        sessionId = String(s[0].id)
+        console.log(c.dim(`  ${s[0].name} @ ${s[0].starts_at}`))
+      }
+      // The same args CO-REGISTER's own button carries: the roster resolved at mint time,
+      // never `all_present` — so a tap here and a tap on their phone run the same plan.
+      const roster = await q<any>(
+        `select e.player_id, p.full_name
+           from session s
+           join enrollment e on e.class_id = s.class_id and e.ended_on is null
+           join player pl on pl.id = e.player_id and pl.active
+           join person p on p.id = pl.person_id
+          where s.id = '${sessionId}'::uuid`,
+        coach.academyId,
+      )
+      if (!roster.length) die(c.red('nobody is enrolled in that class — there is no register to mark.'))
+      console.log(c.dim(`  ${roster.length} present: ${roster.map((r: any) => r.full_name).join(', ')}`))
+      await driveOperation({
+        contactId, academyId: coach.academyId, op: 'mark_attendance',
+        args: {
+          session_id: sessionId,
+          entries: roster.map((r: any) => ({ player_id: String(r.player_id), status: 'present' })),
+        },
+        match: { session_id: sessionId },
+        label: 'All present',
+      })
+      const marked = await q<any>(
+        `select a.status, count(*)::int as n from attendance a where a.session_id = '${sessionId}'::uuid group by 1`,
+        coach.academyId,
+      )
+      console.log(c.dim(`  attendance: ${marked.map((m: any) => `${m.n} ${m.status}`).join(' · ') || 'nothing written'}`))
+      break
+    }
+
+    /**
+     * **Scheduling, without talking anybody into it.** Classes, session moves, cancellations
+     * and per-person timing all have operations and none of them had a driver, so a session
+     * could only come into existence as a fixture or as a side effect of a conversation.
+     * That is why §7.1's "the timetable is the product" half is the least driven part of
+     * this: nothing could create a class, so nothing downstream of one was ever reached
+     * from a clean business.
+     */
+    case 'class': {
+      const name = flag('name') ?? positional[0]
+      const days = (flag('day') ?? flag('days') ?? '').trim()
+      const time = (flag('time') ?? '').trim()
+      if (!name || !days || !time) {
+        die(
+          c.red('drive class --name "6:30 Beginners" --day mon,wed --time 18:30-19:30'),
+          c.dim('  [--from 2026-08-20]      first day it runs (default: today)'),
+          c.dim('  [--rate 2400 --unit per_month|per_session|per_term|per_package]'),
+          c.dim('  [--coach <contactId>]    comma-separated; they are assigned to every session it makes'),
+        )
+      }
+      const academyId = await theAcademy(flag('as'))
+      const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+      const weekdays = days.split(/[,\s]+/).filter(Boolean).map((d) => {
+        const i = DAYS.indexOf(d.slice(0, 3).toLowerCase())
+        // `class_slot.weekday` is Postgres dow — 0 is Sunday. A day name that silently
+        // became Sunday is F6 ("a Saturday class started on a Sunday") with a driver
+        // holding the pen, so an unknown name is refused rather than defaulted.
+        if (i === -1) die(c.red(`"${d}" is not a day — one of ${DAYS.join(', ')}`))
+        return i
+      })
+      const span = /^(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$/.exec(time)
+      if (!span) die(c.red(`--time wants HH:MM-HH:MM (got "${time}")`))
+      const coachIds: string[] = []
+      for (const cid of (flag('coach') ?? '').split(',').map((s) => s.trim()).filter(Boolean)) {
+        coachIds.push((await coachContext(cid)).coachId)
+      }
+      const startsOn = flag('from') ?? (await todayIn(academyId))
+      console.log(
+        c.dim(`  ${name} · ${weekdays.map((w) => DAYS[w]).join('/')} ${span[1]}-${span[2]} · from ${startsOn}` +
+          (coachIds.length ? ` · ${coachIds.length} coach(es)` : ' · no coach')),
+      )
+      await driveOperation({
+        contactId: (await adminContactOf(academyId)).contactId,
+        academyId, op: 'create_class',
+        args: {
+          name,
+          starts_on: startsOn,
+          slots: weekdays.map((w) => ({ weekday: w, start_time: `${span[1]}:00`, end_time: `${span[2]}:00` })),
+          ...(flag('rate') ? { rate_amount: Number(flag('rate')) } : {}),
+          ...(flag('unit') ? { rate_unit: flag('unit') } : {}),
+          coach_ids: coachIds,
+        },
+        match: { name },
+        label: `Create ${name}`,
+      })
+      const made = await q<any>(
+        `select cl.name, count(s.id)::int as sessions, min(s.starts_at) as first
+           from class cl left join session s on s.class_id = cl.id and s.status = 'scheduled'
+          where cl.academy_id = '${academyId}'::uuid and lower(cl.name) = lower(${sql(name)})
+          group by cl.name`,
+        academyId,
+      )
+      console.log(
+        made[0]
+          ? c.dim(`  class row: ${made[0].name} · ${made[0].sessions} scheduled session(s) · first ${made[0].first ?? '·'}`)
+          : c.red('  no class by that name exists — the plan did not write one'),
+      )
+      // A class has no sessions the moment it is written: `create_class` schedules
+      // `materialize_sessions` and that job fills the horizon. Saying zero and stopping
+      // reads as a class that does not run, so the job is named instead.
+      if (made[0] && Number(made[0].sessions) === 0) {
+        const pending = await q<any>(
+          `select run_at, status from job
+            where kind = 'materialize_sessions' and payload->>'academy_id' = '${academyId}'
+              and status = 'pending' order by run_at limit 1`,
+          academyId,
+        )
+        console.log(
+          pending[0]
+            ? c.yellow(`  no sessions yet — materialize_sessions is due ${new Date(pending[0].run_at).toISOString()}; \`drive tick\` runs it`)
+            : c.red('  no sessions and no materialize_sessions job — nothing will ever put one on the calendar'),
+        )
+      }
+      break
+    }
+
+    case 'cancel': {
+      const academyId = await theAcademy(positional[0])
+      let sessionId = flag('session') ?? ''
+      if (!sessionId) {
+        const wanted = flag('class')
+        const where = wanted ? `and cl.id = '${(await classFor(academyId, wanted)).id}'::uuid` : ''
+        const s = await q<any>(
+          `select s.id, s.starts_at, cl.name from session s join class cl on cl.id = s.class_id
+            where s.status = 'scheduled' and s.starts_at > app.now() ${where}
+            order by s.starts_at limit 1`,
+          academyId,
+        )
+        if (!s[0]) {
+          die(
+            c.red('no upcoming scheduled session to cancel — pass --session <id>.'),
+            c.dim('  `drive world` lists the classes and how many sessions each has ahead of it.'),
+          )
+        }
+        sessionId = String(s[0].id)
+        console.log(c.dim(`  ${s[0].name} @ ${s[0].starts_at}`))
+      }
+      await driveOperation({
+        contactId: (await adminContactOf(academyId)).contactId,
+        academyId, op: 'cancel_session',
+        args: { session_id: sessionId, reason: flag('reason') ?? 'cancelled from the driver', notify: !has('quiet') },
+        match: { session_id: sessionId },
+        label: 'Cancel this session',
+      })
+      const after = await q<any>(
+        `select s.status, (select count(*) from job j
+                            where j.dedupe_key like '%' || '${sessionId}' || '%' and j.status = 'pending') as pending_jobs
+           from session s where s.id = '${sessionId}'::uuid`,
+        academyId,
+      )
+      console.log(c.dim(`  session row: status ${after[0]?.status} · ${after[0]?.pending_jobs} pending job(s) still keyed to it`))
+      break
+    }
+
+    /**
+     * Moving a class and moving one session are two different acts with two different
+     * blast radii — a slot change rewrites every session after a date, a reschedule moves
+     * one and is the makeup. Which one you meant is `--session`, and there is no default.
+     */
+    case 'move': {
+      const sessionId = flag('session')
+      const to = flag('to')
+      if (sessionId) {
+        if (!to) die(c.red('drive move --session <id> --to "2026-08-20T18:30:00+05:30" [--quiet]'))
+        const academyId = await theAcademy(positional[0])
+        if (Number.isNaN(new Date(to).getTime())) die(c.red(`--to is not a time I can read: "${to}"`))
+        const before = await q<any>(
+          `select s.starts_at, cl.name from session s join class cl on cl.id = s.class_id where s.id = '${sessionId}'::uuid`,
+          academyId,
+        )
+        if (!before[0]) die(c.red(`no session ${sessionId} in that business.`))
+        console.log(c.dim(`  ${before[0].name} · ${before[0].starts_at} → ${new Date(to).toISOString()}`))
+        await driveOperation({
+          contactId: (await adminContactOf(academyId)).contactId,
+          academyId, op: 'reschedule_session',
+          args: { session_id: sessionId, new_starts_at: new Date(to).toISOString(), notify: !has('quiet') },
+          match: { session_id: sessionId },
+          label: 'Move this session',
+        })
+        const after = await q<any>(`select starts_at, ends_at from session where id = '${sessionId}'::uuid`, academyId)
+        console.log(c.dim(`  session row: ${after[0]?.starts_at} → ${after[0]?.ends_at}`))
+        break
+      }
+      const academyId = await theAcademy(positional[0])
+      const cls = await classFor(academyId, flag('class'))
+      const day = flag('day')
+      const time = flag('time')
+      if (!day && !time) die(c.red('drive move --class "X" [--day tue] [--time 19:00-20:00] [--from 2026-09-01]  |  --session <id> --to <iso>'))
+      const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+      let weekday: number | null = null
+      if (day) {
+        weekday = DAYS.indexOf(day.slice(0, 3).toLowerCase())
+        if (weekday === -1) die(c.red(`"${day}" is not a day — one of ${DAYS.join(', ')}`))
+      }
+      let span: RegExpExecArray | null = null
+      if (time) {
+        span = /^(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$/.exec(time.trim())
+        if (!span) die(c.red(`--time wants HH:MM-HH:MM (got "${time}")`))
+      }
+      console.log(c.dim(`  ${cls.name} → ${day ? DAYS[weekday as number] : 'same day'} ${time ?? 'same time'} from ${flag('from') ?? 'today'}`))
+      await driveOperation({
+        contactId: (await adminContactOf(academyId)).contactId,
+        academyId, op: 'move_class',
+        args: {
+          class_id: cls.id,
+          new_weekday: weekday,
+          new_start_time: span ? `${span[1]}:00` : null,
+          new_end_time: span ? `${span[2]}:00` : null,
+          from_date: flag('from') ?? null,
+          notify: !has('quiet'),
+        },
+        match: { class_id: cls.id },
+        label: `Move ${cls.name}`,
+      })
+      const slots = await q<any>(
+        `select weekday, start_time::text as start_time, end_time::text as end_time
+           from class_slot where class_id = '${cls.id}'::uuid order by weekday`,
+        academyId,
+      )
+      for (const s of slots) console.log(c.dim(`  class_slot: ${DAYS[Number(s.weekday)]} ${s.start_time}-${s.end_time}`))
+      break
+    }
+
+    /**
+     * §8.2 — "the timings are defaults, not constants." Every ladder in the product hangs
+     * off them and there was no way to change one, so the per-person override has never
+     * been exercised and neither has the precedence between person, academy and default.
+     */
+    case 'timing': {
+      const contactId = positional[0]
+      const key = flag('key')
+      const value = flag('value')
+      const KEYS = [
+        'coach_coming_lead_minutes', 'coach_nudge_lead_minutes', 'admin_escalate_lead_minutes',
+        'client_reminder_lead_hours', 'register_expiry_hours',
+      ]
+      if (!contactId || !key || value === undefined) {
+        die(
+          c.red('drive timing <contactId> --key <name> --value 90 [--reason "…"]'),
+          c.dim(`  keys: ${KEYS.join(', ')}`),
+          c.dim('  --value none clears the override and puts them back on the academy default'),
+        )
+      }
+      if (!KEYS.includes(key)) die(c.red(`no timing called "${key}" — one of ${KEYS.join(', ')}`))
+      const academyId = await academyOfContact(contactId)
+      const parsed = /^(none|null)$/i.test(value) ? null : Number(value)
+      if (parsed !== null && !Number.isFinite(parsed)) die(c.red(`--value wants a number or "none" (got "${value}")`))
+      await driveOperation({
+        contactId, academyId, op: 'set_timing',
+        args: { key, value: parsed, reason: flag('reason') ?? null },
+        match: { key },
+        label: `${key} = ${parsed ?? 'default'}`,
+      })
+      const back = await q<any>(
+        `select p.settings from contact c join person p on p.id = c.person_id where c.id = '${contactId}'::uuid`,
+        academyId,
+      )
+      console.log(c.dim(`  person.settings: ${JSON.stringify(back[0]?.settings ?? {})}`))
       break
     }
 
@@ -1137,6 +1696,201 @@ async function main(): Promise<void> {
         match: { payment_id: paymentId },
         label: 'Yes, received',
       })
+      break
+    }
+
+    /**
+     * **Every ending, from the command line.** §8.3 calls churn a routine operation and the
+     * product agrees — `end_coach`, `client_cancel`, `opt_out` all exist — but nothing here
+     * could reach any of them, so the only way to end anything was to talk the model into
+     * it. That measures the model's persuadability, not the product: not one coach in any
+     * driven world has ever had an `ended_on`, so §8.3's uncovered-session cascade, the
+     * final statement and the parents-hear-only-if-it-changed rule have never run.
+     *
+     * A family leaving is deliberately the odd one out. There is no operation for it — §14.2.1
+     * shows it as a model-composed transaction — so this drives it as one, and says so.
+     */
+    case 'end': {
+      const sub = (positional[0] ?? '').toLowerCase()
+      const who = positional[1]
+      if (!['coach', 'player', 'contact'].includes(sub)) {
+        die(
+          c.red('drive end coach|player|contact ...'),
+          c.dim('  end coach   <coachContactId>  [--on 2026-09-30] [--reassign <coachContactId>] [--notify]'),
+          c.dim('  end player  <holderContactId> [--player "Aarav"] [--all] [--on 2026-08-31]'),
+          c.dim('  end contact <contactId>       [--yes]     stop messaging that number (§11.4)'),
+        )
+      }
+      if (!who) die(c.red(`drive end ${sub} <contactId>`))
+
+      if (sub === 'coach') {
+        const coach = await coachContext(who)
+        const endDate = flag('on') ?? (await todayIn(coach.academyId))
+        let reassign: string | null = null
+        if (flag('reassign')) {
+          const to = await coachContext(String(flag('reassign')))
+          if (to.academyId !== coach.academyId) die(c.red('that replacement coaches at a different business.'))
+          reassign = to.coachId
+          console.log(c.dim(`  their sessions go to ${to.name}`))
+        }
+        const left = await q<any>(
+          `select count(*)::int as n from session s
+             join session_coach sc on sc.session_id = s.id and sc.coach_id = '${coach.coachId}'::uuid
+            where s.status = 'scheduled' and s.starts_at > ('${endDate}'::date + interval '1 day')`,
+          coach.academyId,
+        )
+        console.log(c.dim(`  ${coach.name} · last day ${endDate} · ${left[0]?.n ?? 0} session(s) assigned past it`))
+        await driveOperation({
+          contactId: (await adminContactOf(coach.academyId)).contactId,
+          academyId: coach.academyId,
+          op: 'end_coach',
+          args: {
+            coach_id: coach.coachId,
+            end_date: endDate,
+            reassign_to_coach_id: reassign,
+            notify_parents: has('notify'),
+          },
+          match: { coach_id: coach.coachId },
+          label: `${coach.name} leaves on ${endDate}`,
+        })
+        // §8.3 step 4: what is left becomes uncovered, which is a state the product already
+        // understands. Reading it back is the only way to know the cascade actually ran.
+        const after = await q<any>(
+          `select co.status, co.ended_on::text as ended_on,
+                  (select count(*) from session s
+                     join session_coach sc on sc.session_id = s.id and sc.coach_id = co.id
+                    where s.status = 'scheduled' and s.starts_at > app.now() and sc.declined_at is null) as still_on
+             from coach co where co.id = '${coach.coachId}'::uuid`,
+          coach.academyId,
+        )
+        console.log(
+          c.dim(`  coach row: status ${after[0]?.status} · ended_on ${after[0]?.ended_on ?? '·'} · ${after[0]?.still_on} upcoming session(s) still theirs`),
+        )
+        break
+      }
+
+      if (sub === 'contact') {
+        const academyId = await academyOfContact(who)
+        await driveOperation({
+          contactId: who, academyId, op: 'opt_out',
+          args: { contact_id: who, confirmed: has('yes') },
+          match: { contact_id: who },
+          label: 'Stop messaging me',
+        })
+        if (!has('yes')) {
+          console.log(c.dim(`  the product is double-checking — \`drive tap ${who} 1\` to go through with it`))
+        }
+        const state = await q<any>(`select state, opted_out_at from contact where id = '${who}'::uuid`, academyId)
+        console.log(c.dim(`  contact row: state ${state[0]?.state} · opted_out_at ${state[0]?.opted_out_at ?? '·'}`))
+        break
+      }
+
+      // player — a family leaving. The one ending with no operation behind it.
+      const academyId = await academyOfContact(who)
+      const wanted = flag('player')
+      const roster = await playersOf(academyId, who)
+      if (!roster.length) die(c.red('that contact holds no account, so no player of theirs can leave.'))
+      const leaving = has('all')
+        ? roster
+        : wanted
+          ? roster.filter((r: any) => String(r.full_name).toLowerCase().includes(wanted.toLowerCase()))
+          : roster
+      if (!leaving.length) die(c.red(`nobody on that account matches "${wanted}".`))
+      // A player in two classes is two rows here and one child. Counting rows asked
+      // "which of these two Iras do you mean", which is R5 with a family in it.
+      const distinct = new Set(leaving.map((r: any) => String(r.player_id)))
+      if (distinct.size > 1 && !has('all')) {
+        die(
+          c.red(`that account has ${distinct.size} players — name one with --player, or --all for the family:`),
+          ...[...distinct].map((id) => {
+            const rows = leaving.filter((r: any) => String(r.player_id) === id)
+            return c.dim(`    ${rows[0].full_name}  ${rows.map((r: any) => r.class_name ?? 'not enrolled').join(', ')}`)
+          }),
+        )
+      }
+      const open = leaving.filter((r: any) => r.enrollment_id)
+      if (!open.length) {
+        die(
+          c.red('none of them has an open enrollment — there is nothing to end.'),
+          ...leaving.map((r: any) => c.dim(`    ${r.full_name}: ${r.class_name ?? 'not enrolled in anything'}`)),
+        )
+      }
+      const endDate = flag('on') ?? (await todayIn(academyId))
+      for (const r of open) {
+        console.log(
+          c.dim(`  ${r.full_name} leaves ${r.class_name} on ${endDate}${r.ended_on ? ` (was ${r.ended_on})` : ''}`),
+        )
+      }
+      await drivePlan({
+        contactId: (await adminContactOf(academyId)).contactId,
+        academyId,
+        steps: open.map((r: any) => ({
+          write:
+            `update enrollment set ended_on = '${endDate}'::date ` +
+            `where id = '${r.enrollment_id}'::uuid and academy_id = '${academyId}'::uuid`,
+        })),
+        summary: `${open.map((r: any) => r.full_name).join(', ')} leaving on ${endDate}`,
+        label: `${open.length} enrollment(s) ended`,
+      })
+      const back = await q<any>(
+        `select p.full_name, e.ended_on::text as ended_on, cl.name
+           from enrollment e join player pl on pl.id = e.player_id
+           join person p on p.id = pl.person_id join class cl on cl.id = e.class_id
+          where e.id in (${open.map((r: any) => `'${r.enrollment_id}'::uuid`).join(',')})`,
+        academyId,
+      )
+      for (const r of back) console.log(c.dim(`  enrollment row: ${r.full_name} · ${r.name} · ended_on ${r.ended_on ?? '·'}`))
+      break
+    }
+
+    /**
+     * **A waiver, a credit, a pro-rate — the ending that is only about money.**
+     *
+     * `waive` is the product's one adjustment primitive (§6.4) and had no driver, so the
+     * whole "somebody is owed less than the tally says" half of month-end has never run.
+     */
+    case 'waive': {
+      const who = positional[0]
+      const amount = Number(flag('amount') ?? NaN)
+      const reason = flag('reason')
+      if (!who || !Number.isFinite(amount) || !reason) {
+        die(
+          c.red('drive waive <holderContactId> --amount 1200 --reason "missed the whole month" [--period 2026-08] [--player "Aarav"]'),
+          c.dim('  a positive amount is a credit — the operation signs it; --amount 1200 takes 1200 off what they owe'),
+        )
+      }
+      const academyId = await academyOfContact(who)
+      const account = await accountFor(academyId, who)
+      const period = await periodFor(academyId)
+      let playerId: string | null = null
+      if (flag('player')) {
+        const roster = await playersOf(academyId, who)
+        const hit = roster.filter((r: any) =>
+          String(r.full_name).toLowerCase().includes(String(flag('player')).toLowerCase()),
+        )
+        if (hit.length !== 1) {
+          die(
+            c.red(`"${flag('player')}" matches ${hit.length} players on that account:`),
+            ...roster.map((r: any) => c.dim(`    ${r.full_name}`)),
+          )
+        }
+        playerId = String(hit[0].player_id)
+      }
+      console.log(c.dim(`  ${account.name} · ${money(amount)} off ${period} · ${reason}`))
+      await driveOperation({
+        contactId: (await adminContactOf(academyId)).contactId,
+        academyId, op: 'waive',
+        args: { account_id: account.id, player_id: playerId, amount, reason, period },
+        match: { account_id: account.id },
+        label: `Waive ${money(amount)}`,
+      })
+      const lines = await q<any>(
+        `select kind, description, amount, period::text as period from tally_line
+          where account_id = '${account.id}'::uuid and period = '${period}'::date
+          order by created_at desc limit 5`,
+        academyId,
+      )
+      for (const l of lines) console.log(c.dim(`  tally_line: ${l.period} ${l.kind.padEnd(10)} ${money(l.amount).padStart(9)}  ${clip(l.description, 50)}`))
       break
     }
 
@@ -1400,6 +2154,197 @@ async function main(): Promise<void> {
       break
     }
 
+    /**
+     * **Close a month, and say what is missing.**
+     *
+     * Month-end could only be provoked by shoving the global clock past a job's `run_at`
+     * and hoping the right things fired — which is the trap DRIVING.md names: every job
+     * whose precondition has passed declines politely, the transcript reads calm, and all
+     * you have proved is that declining works. So the whole of §6.4's rollover — the lines
+     * written on the 1st, CL-TALLY reading the month back, the dunning ladder after it —
+     * has never been watched on purpose.
+     *
+     * This moves no time at all. It runs the planner and everything already due, down the
+     * same road `tick` takes, and then asks the tables what the period actually holds. The
+     * planner is a **catch-up** rather than a schedule (see `planMonthBoundary`), so a
+     * period whose 1st has passed is billable now, and one whose read-back is still in the
+     * future is refused loudly rather than reported as a quiet zero.
+     */
+    case 'month': {
+      const academyId = await theAcademy(positional[0])
+      const period = await periodFor(academyId)
+      const a = (await q<any>(
+        `select name, onboarding_state, timezone from academy where id = '${academyId}'::uuid`,
+        academyId,
+      ))[0]
+      console.log(`\n${c.bold(String(a?.name))} ${c.dim(`· period ${period.slice(0, 7)} · onboarding: ${a?.onboarding_state}`)}`)
+      if (a?.onboarding_state !== 'live') {
+        // Both money handlers open with `if (academy.onboarding_state !== 'live') skip(…)`,
+        // so on a business still being set up this command would report an empty month and
+        // be telling the truth about the wrong thing.
+        console.log(c.yellow('  this business is not live — month_end_tally and dunning skip it by design (§6.4)'))
+      }
+
+      const ran = await api('/api/emulator/tick', {})
+      const moneyKinds = /monthly|tally|dunning|reconcile/i
+      const log = (ran.jobs?.log ?? []).filter((l: unknown) => moneyKinds.test(String(typeof l === 'string' ? l : JSON.stringify(l))))
+      console.log(
+        c.dim(`  planned ${ran.planned} · ran ${ran.jobs?.ran ?? 0} · skipped ${ran.jobs?.skipped ?? 0} · failed ${ran.jobs?.failed ?? 0}`),
+      )
+      for (const l of log) console.log(c.dim(`    ${clip(typeof l === 'string' ? l : JSON.stringify(l), 160)}`))
+
+      const lines = await q<any>(
+        `select tl.kind, count(*)::int as n, sum(tl.amount) as total
+           from tally_line tl where tl.period = '${period}'::date
+          group by tl.kind order by tl.kind`,
+        academyId,
+      )
+      console.log(`\n${c.bold('billed')}`)
+      if (!lines.length) console.log(c.yellow(`  nothing is billed for ${period.slice(0, 7)}`))
+      for (const l of lines) console.log(`  ${String(l.kind).padEnd(10)} ${String(l.n).padStart(3)} line(s)  ${money(l.total).padStart(10)}`)
+
+      // The same question `planMonthBoundary` asks: who should carry a recurring line for
+      // this period and does not. A silent nothing here is R7 wearing month-end's clothes.
+      const missing = await q<any>(
+        `select p.full_name, cl.name as class_name, coalesce(e.rate_unit, cl.rate_unit) as unit
+           from enrollment e
+           join class cl on cl.id = e.class_id and cl.active
+           join player pl on pl.id = e.player_id and pl.active
+           join person p on p.id = pl.person_id
+          where coalesce(e.rate_unit, cl.rate_unit) in ('per_month','per_term','per_package')
+            and e.started_on <= ('${period}'::date + interval '1 month' - interval '1 day')
+            and (e.ended_on is null or e.ended_on >= '${period}'::date)
+            and not exists (select 1 from tally_line tl
+                             where tl.player_id = e.player_id and tl.period = '${period}'::date
+                               and tl.kind in ('monthly','term','package'))
+          order by p.full_name`,
+        academyId,
+      )
+      for (const m of missing) console.log(c.red(`  no line for ${m.full_name} · ${m.class_name} · ${m.unit}`))
+
+      const jobs = await q<any>(
+        `select kind, status, run_at, dedupe_key, last_error from job
+          where payload->>'academy_id' = '${academyId}'
+            and kind in ('monthly_lines','month_end_tally','dunning')
+            and dedupe_key like '%${period}%'
+          order by run_at`,
+        academyId,
+      )
+      console.log(`\n${c.bold('jobs for that period')}`)
+      if (!jobs.length) console.log(c.yellow('  none — the planner found nothing to bill for it'))
+      for (const j of jobs) {
+        const line = `  ${String(j.kind).padEnd(16)} ${String(j.status).padEnd(9)} ${new Date(j.run_at).toISOString()}  ${clip(j.dedupe_key, 46)}`
+        console.log(j.status === 'failed' ? c.red(line) : j.status === 'done' ? c.dim(line) : line)
+        if (j.last_error) console.log(c.red(`      ${clip(j.last_error, 160)}`))
+      }
+
+      const said = await q<any>(
+        `select m.catalog_id, p.full_name, m.status, m.body
+           from message m join contact ct on ct.id = m.contact_id join person p on p.id = ct.person_id
+          where m.catalog_id in ('CL-TALLY','CL-DUNNING','AD-RECONCILE')
+          order by m.created_at desc limit 8`,
+        academyId,
+      )
+      console.log(`\n${c.bold('what anybody was actually told')}`)
+      if (!said.length) console.log(c.yellow('  nobody has been sent a tally, a reminder or a reconcile prompt'))
+      for (const s of said) {
+        console.log(`  ${c.dim(String(s.catalog_id).padEnd(13))} ${String(s.full_name).padEnd(20)} ${c.dim(String(s.status))}  ${clip(s.body, 90)}`)
+      }
+      console.log()
+
+      // The one thing this command cannot do, said out loud. The clock is global and shared,
+      // so guessing on the driver's behalf would move somebody else's world.
+      const nowMs = new Date(String(ran.nowIso)).getTime()
+      const waiting = jobs.filter((j: any) => j.status === 'pending' && new Date(j.run_at).getTime() > nowMs)
+      if (waiting.length) {
+        die(
+          c.red(`${period.slice(0, 7)} is not closed — ${waiting.length} of its jobs are not due yet.`),
+          ...waiting.slice(0, 6).map((j: any) => c.dim(`    ${j.kind} at ${new Date(j.run_at).toISOString()}`)),
+          c.dim('  the clock is one global singleton shared with everything else running; this command will not move it.'),
+          c.dim('  `drive month --period <an earlier month>` closes one whose read-back date has passed.'),
+        )
+      }
+      if (!lines.length && !jobs.length) {
+        die(
+          c.red(`nothing bills for ${period.slice(0, 7)} in that business — there is no month to close.`),
+          c.dim('  a period only bills if somebody is enrolled in it on a per_month, per_term or per_package rate.'),
+        )
+      }
+      break
+    }
+
+    /**
+     * **The delivery ladder, which nothing advanced.**
+     *
+     * The emulator transport accepts a message, returns a wire id and stops, so every
+     * message any drive run has ever produced sat at `status='sent'` for ever. Everything
+     * downstream of delivery is therefore untested by construction: §16.3's quality proxies
+     * (delivery failures, read rate), §9.1's "10, check delivery, read and block signals,
+     * then the rest in batches", and any reply path that waits on blue ticks.
+     *
+     * One rung per call, per message, because `delivered` has to be a state a driver can
+     * see rather than a value that flashes past on the way to `read`.
+     */
+    case 'deliver': {
+      const mode = has('read') ? 'read' : 'delivered'
+      const out = await api('/api/emulator/delivery', {
+        mode,
+        ...(flag('limit') ? { limit: Number(flag('limit')) } : {}),
+      })
+      console.log(c.green(`${out.delivered} sent → delivered · ${out.read} delivered → read`))
+      // Said plainly because it is true and surprising: the endpoint takes no academy and
+      // walks every business in the world.
+      console.log(c.dim('  (the ladder advances world-wide — the endpoint is not scoped to one business)'))
+      for (const business of await academiesInScope(positional[0])) {
+        const rows = await q<any>(
+          `select status, count(*)::int as n from message
+            where direction = 'outbound' and suppressed_reason is null
+            group by status order by count(*) desc`,
+          business.id,
+        )
+        console.log(
+          `  ${clip(business.name, 24).padEnd(26)} ${rows.map((r: any) => `${r.n} ${r.status}`).join(' · ') || 'nothing sent'}`,
+        )
+      }
+      break
+    }
+
+    /**
+     * **Failure injection, from the command line.** §17 names five ways the world breaks
+     * and the table behind them has been writable by nothing but a browser, so no failure
+     * path in this product has ever been reached from a driven run. `send_fail` is the one
+     * that matters most: the send ladder's whole reason to exist is that a message can fail
+     * after it is queued, and it has only ever been watched succeeding.
+     */
+    case 'fault': {
+      const KINDS = ['send_fail', 'number_blocked', 'media_timeout', 'link_expired', 'model_error']
+      const kind = positional[0]
+      const state = (positional[1] ?? '').toLowerCase()
+      if (!kind) {
+        const now = await api<any>('/api/emulator/fault')
+        console.log(c.bold('\nfaults'))
+        if (!now.faults?.length) console.log(c.dim('  none set — the world is behaving'))
+        for (const f of now.faults ?? []) {
+          console.log(`  ${String(f.kind).padEnd(16)} ${f.active ? c.red('on') : c.dim('off')}  rate ${f.rate}`)
+        }
+        console.log(c.dim(`\n  drive fault <${KINDS.join('|')}> on|off [--rate 0.5]\n`))
+        break
+      }
+      if (!KINDS.includes(kind)) die(c.red(`no fault called "${kind}" — one of ${KINDS.join(', ')}`))
+      if (!['on', 'off'].includes(state)) die(c.red(`say on or off: \`drive fault ${kind} on [--rate 0.5]\``))
+      const rate = flag('rate') ? Number(flag('rate')) : undefined
+      if (rate !== undefined && !(rate >= 0 && rate <= 1)) die(c.red('--rate is between 0 and 1'))
+      const out = await api('/api/emulator/fault', { kind, active: state === 'on', ...(rate === undefined ? {} : { rate }) })
+      for (const f of out.faults ?? []) {
+        console.log(`  ${String(f.kind).padEnd(16)} ${f.active ? c.red('on') : c.dim('off')}  rate ${f.rate}`)
+      }
+      // `sim_fault` is one global table with no academy column, so an injected failure is
+      // every tenant's. Leaving one on is how somebody else's run turns red for no reason
+      // they can find.
+      if (state === 'on') console.log(c.yellow(`  every business in this world is now failing this way — \`drive fault ${kind} off\` when you are done`))
+      break
+    }
+
     case 'clock': {
       /**
        * **There is one clock, and it belongs to the world rather than to a business.**
@@ -1628,6 +2573,38 @@ async function main(): Promise<void> {
                  where not exists (select 1 from audit_entry a
                                     where a.turn_id = cl.id and a.diff is not null)) as unbacked`)
 
+      /**
+       * --- 2 · Correctness -------------------------------------------------------
+       *
+       * Whether the thing done was the RIGHT thing is not derivable and this does not
+       * pretend otherwise — it prints what has to be read, which is the diff against what
+       * was asked, and it was printing nothing at all. "Read `audit_entry`" in a document
+       * nobody has open is the same as no axis: two of the axes here exist because
+       * somebody counted by hand, and this is the one that still needs a person.
+       *
+       * The one part that IS a query is worth having on its own: a committed plan whose
+       * diff touched no rows. Postgres does not consider an `update … where` matching
+       * nothing an error, so the reply says it is done and the tables disagree — R7, the
+       * only root whose failures a reader of the transcript scores as a pass.
+       */
+      const forAudit = contactId ? `and ae.turn_id in (select t.id from turn t where t.contact_id = '${contactId}'::uuid)` : ''
+      const correct = await one(`
+        select count(*) as writes,
+               count(*) filter (where jsonb_array_length(coalesce(ae.diff->'diffs', '[]'::jsonb)) = 0) as touched_nothing,
+               count(*) filter (where ae.undone_at is not null) as undone
+          from audit_entry ae
+         where ae.created_at > app.now() - interval '30 days' ${forAudit}`)
+      const lastWrites = await q<any>(
+        `select ae.intent, ae.created_at,
+                jsonb_array_length(coalesce(ae.diff->'diffs', '[]'::jsonb)) as tables,
+                (select string_agg(distinct d->>'table', ', ')
+                   from jsonb_array_elements(coalesce(ae.diff->'diffs', '[]'::jsonb)) d) as touched
+           from audit_entry ae
+          where ae.created_at > app.now() - interval '30 days' ${forAudit}
+          order by ae.created_at desc limit 6`,
+        academyId,
+      )
+
       // --- 3 · Friction ----------------------------------------------------------
       const friction = await one(`
         select round(avg(rounds), 2) as rounds,
@@ -1671,6 +2648,20 @@ async function main(): Promise<void> {
         academyId,
       )
 
+      // --- 7 · Cost --------------------------------------------------------------
+      // `drive cost` prints the per-turn table; this is the one number you put next to
+      // the other six. Rounds are the driver — the stable prefix is paid on every
+      // uncached round, so a turn that went round twice cost twice.
+      const spend = await one(`
+        select count(*) as turns,
+               coalesce(sum(prompt_tokens), 0) as tin,
+               coalesce(sum(cached_tokens), 0) as cached,
+               coalesce(sum(output_tokens), 0) as tout,
+               coalesce(sum(latency_ms), 0) as ms,
+               round(avg(latency_ms)/1000.0, 1) as secs,
+               count(*) filter (where rounds > 2) as over_two
+          from turn t where t.created_at > app.now() - interval '30 days' ${forContact}`)
+
       // --- 6 · Plainness ---------------------------------------------------------
       const plain = await one(`
         select round(avg(array_length(regexp_split_to_array(trim(m.body), '\\s+'), 1)), 1) as avg_words,
@@ -1692,6 +2683,21 @@ async function main(): Promise<void> {
             : c.dim('all backed by a write from that turn')),
       )
       console.log(c.dim('  (past-tense detection is a heuristic — read the flagged turns, do not trust the count)'))
+
+      h(`2 · correctness ${c.dim('— was it the right thing, done right? (not derivable — read these)')}`)
+      console.log(
+        `  ${correct.writes} committed plan(s) · ` +
+          (Number(correct.touched_nothing) > 0
+            ? c.red(`${correct.touched_nothing} whose diff touched no rows`)
+            : c.dim('every one of them touched at least one row')) +
+          ` · ${correct.undone} undone`,
+      )
+      for (const w of lastWrites) {
+        console.log(
+          `    ${c.dim(new Date(w.created_at).toISOString().slice(5, 16))} ${clip(w.intent, 46).padEnd(48)} ` +
+            (Number(w.tables) === 0 ? c.red('touched nothing') : c.dim(String(w.touched))),
+        )
+      }
 
       h(`3 · friction   ${c.dim('— how much work did the person do?')}`)
       console.log(
@@ -1736,6 +2742,18 @@ async function main(): Promise<void> {
           ' · ' +
           (Number(plain.jargon) ? c.red(`${plain.jargon} with invented vocabulary`) : c.dim('no invented vocabulary')),
       )
+
+      h(`7 · cost       ${c.dim('— seconds and tokens, and rounds are the driver')}`)
+      console.log(
+        `  ${spend.turns} turns · ${Number(spend.tin).toLocaleString()} in (${pct(spend.cached, spend.tin)} cached) / ` +
+          `${Number(spend.tout).toLocaleString()} out · ${(Number(spend.ms) / 1000).toFixed(0)}s total · ${spend.secs ?? '—'}s avg`,
+      )
+      console.log(
+        (Number(spend.over_two) > 0
+          ? c.yellow(`  ${spend.over_two} turn(s) went more than two rounds`)
+          : c.dim('  no turn went more than two rounds')) +
+          c.dim('  · WhatsApp cannot stream, so these seconds are seconds of silence'),
+      )
       console.log()
       }
       break
@@ -1746,9 +2764,19 @@ async function main(): Promise<void> {
       // money half ever worked", and reporting one anonymous tenant's accounts as though
       // they were the world's is the exact way that question got answered wrongly.
       for (const business of await academiesInScope(positional[0])) {
+        /**
+         * **Which month.** `billed` was hard-wired to `date_trunc('month', app.now())`, so
+         * the one thing a month-end run produces — last month's lines, read back and
+         * dunned — was invisible from the command that exists to look at money, and a
+         * business whose rollover had just worked perfectly showed a column of zeros.
+         * `--period all` is the whole ledger, which is what you want after driving several.
+         */
+        const everything = (flag('period') ?? '').toLowerCase() === 'all'
+        const period = everything ? null : await periodFor(business.id)
+        const billedIn = everything ? 'true' : `t.period = '${period}'::date`
         const rows = await q<any>(
           `select ac.display_name,
-                  coalesce(sum(t.amount) filter (where t.period = date_trunc('month', app.now())::date), 0) as billed,
+                  coalesce(sum(t.amount) filter (where ${billedIn}), 0) as billed,
                   coalesce((select sum(p.amount) from payment p where p.account_id = ac.id and p.status = 'confirmed'), 0) as confirmed,
                   coalesce((select sum(p.amount) from payment p where p.account_id = ac.id and p.status = 'requested'), 0) as requested,
                   coalesce((select sum(p.amount) from payment p where p.account_id = ac.id and p.status = 'failed'), 0) as failed
@@ -1756,7 +2784,9 @@ async function main(): Promise<void> {
             group by ac.id, ac.display_name order by billed desc`,
           business.id,
         )
-        console.log(`\n${c.bold(business.name)} ${c.dim(business.id)}`)
+        console.log(
+          `\n${c.bold(business.name)} ${c.dim(`${business.id} · billed for ${everything ? 'every period' : String(period).slice(0, 7)}`)}`,
+        )
         if (!rows.length) console.log(c.dim('  no accounts — nobody can owe anything yet'))
         for (const r of rows) {
           // `requested` and `failed` were one bucket, `status <> 'confirmed'` — so a

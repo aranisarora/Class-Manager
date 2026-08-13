@@ -2353,6 +2353,9 @@ const optOut: OperationDef = {
         message: {
           to_contact_id: contactId,
           fixed: true,
+          // The write above has already landed in this transaction, so without this
+          // the gate suppresses the very sentence that says the gate worked.
+          opt_out_ack: true,
           body: `Done — no more messages from ${a.name} to this number. Message me any time to turn them back on.`,
         },
       },

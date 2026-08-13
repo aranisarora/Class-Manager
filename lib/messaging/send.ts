@@ -377,7 +377,12 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     const now = row.now_at instanceof Date ? row.now_at : new Date(row.now_at)
     const inWindow = isInWindowAt({ last_inbound_at: row.last_inbound_at }, now)
 
-    if (row.opted_out_at || row.contact_state === 'opted_out') {
+    // The acknowledgement of the opt-out is the single exception, and it is not a
+    // weakening of the rule — it is the rule's own receipt. The write lands first in
+    // the same transaction, so without this the person who just asked to be left
+    // alone gets silence where the confirmation should be, and never learns that
+    // messaging back turns it on again. Runtime-set only; see MessageStep.opt_out_ack.
+    if ((row.opted_out_at || row.contact_state === 'opted_out') && !msg.optOutAck) {
       return suppress(tx, row, msg, 'opted_out', inWindow)
     }
 

@@ -57,6 +57,24 @@ export type MessageStep = {
   is_confirmation_request?: boolean
   is_escalation?: boolean
   pre_launch_ok?: boolean
+  /**
+   * RUNTIME-INTERNAL. The acknowledgement of an opt-out, and the one message the
+   * opt-out gate lets past.
+   *
+   * Driven: the person taps `[Yes, stop them]`, the plan writes `opted_out_at` and
+   * then stages *"Done — no more messages from X. Message me any time to turn them
+   * back on."* — and gate 1 suppresses it as `opted_out`, because the write it is
+   * acknowledging landed first in the same transaction. So the last thing somebody
+   * who left ever sees is the question, and they have no way to know it worked or
+   * that coming back is possible.
+   *
+   * Not a hole in the gate. A STOP confirmation is the one message a person who has
+   * just asked to be left alone is unambiguously asking for, it is what the platform
+   * itself expects, and it is the only place the way back is written down. Stripped
+   * from model-authored plans like the other runtime-internal fields, so nothing but
+   * `opt_out` can set it.
+   */
+  opt_out_ack?: boolean
 }
 
 /**
@@ -661,6 +679,8 @@ function buildSummary(
   state: RunState,
   tense: 'preview' | 'done' = 'preview',
   audience: PlanAudience = 'operator',
+  /** What actually happened on the wire. Only a receipt has these. */
+  outcomes?: SendOutcome[],
 ): string {
   const done = tense === 'done'
 
@@ -695,10 +715,41 @@ function buildSummary(
   const note = state.notes.filter(Boolean).join('; ')
   let s = note ? `${head} — ${note}.` : `${head}.`
 
-  if (state.staged.length === 1) s += done ? ' 1 person has been told.' : ' 1 person hears about it.'
-  else if (state.staged.length > 1) {
-    s += done ? ` ${state.staged.length} people have been told.` : ` ${state.staged.length} people hear about it.`
-  }
+  /**
+   * Told, or merely addressed.
+   *
+   * The count was `state.staged` in both tenses. Staged is the right number for a
+   * PREVIEW — it is what will be attempted — and the wrong one for a receipt, because
+   * between the two sits the entire send path: opt-out, the two §18 rules, pre-launch
+   * silence, the repeat gate, the frequency caps, window-or-template. Driven: a waiver
+   * receipt read "…1 person has been told" and the only outbound row to that family was
+   * `SUPPRESSED: pre_launch`; a cancellation said "3 people have been told" over
+   * `sent: [suppressed, suppressed, suppressed, sent]`.
+   *
+   * That is the same class as a past-tense claim with no write behind it, one layer
+   * out: the claim is checked against the write and never against whether the message
+   * left. An admin who reads "3 people have been told" does not tell them again.
+   *
+   * `outcomes` is only available for a receipt — `flushOutbox` has run by then — so the
+   * preview keeps the staged count, which is honest for it.
+   */
+  const reached = outcomes
+    ? outcomes.filter((o) => o.status === 'sent' || o.status === 'queued').length
+    : state.staged.length
+  if (done) {
+    const missed = state.staged.length - reached
+    if (reached === 1) s += ' 1 person has been told.'
+    else if (reached > 1) s += ` ${reached} people have been told.`
+    if (missed > 0) {
+      // Named, not swallowed. A message that did not go is the thing the admin has to
+      // act on, and every suppression is already a row carrying its reason.
+      s +=
+        reached === 0
+          ? ` Nobody was told — ${missed === 1 ? 'that message' : `all ${missed} messages`} did not go out.`
+          : ` ${missed} did not go out.`
+    }
+  } else if (state.staged.length === 1) s += ' 1 person hears about it.'
+  else if (state.staged.length > 1) s += ` ${state.staged.length} people hear about it.`
   if (state.scheduled.length === 1) s += " I'll check back once."
   else if (state.scheduled.length > 1) s += ` ${state.scheduled.length} follow-ups are scheduled.`
   return s
@@ -806,7 +857,7 @@ export async function executePlan(
     assertSomethingChanged(expanded, merged)
     const outcomes = await flushOutbox(ctx, state.staged, auditId)
     await recordAudit(ctx, auditId, intent, steps, merged, state, outcomes)
-    const receipt = buildSummary(merged, state, 'done', audience)
+    const receipt = buildSummary(merged, state, 'done', audience, outcomes)
     return {
       ok: true,
       auditId,
@@ -1030,6 +1081,7 @@ async function flushOutbox(
         isEscalation: m.is_escalation,
         fixed: m.fixed ?? entry?.fixed ?? false,
         preLaunchOk: m.pre_launch_ok,
+        optOutAck: m.opt_out_ack,
         // §16.3 — this path sends as `svc` because it mints actions and touches
         // infrastructure, but the *message* is still a reply to the person whose
         // turn this is. Losing that distinction here made every plan's read-back
