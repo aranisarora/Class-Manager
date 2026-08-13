@@ -445,6 +445,7 @@ export type OperationName =
   | 'opt_out'
   | 'set_timing'
   | 'create_class'
+  | 'close_class'
   | 'add_coach'
   | 'add_family'
   | 'send_invite_draft'
@@ -2561,6 +2562,118 @@ const createClass: OperationDef = {
   },
 }
 
+/**
+ * `close_class` — retire a batch, and give its name back.
+ *
+ * **This exists because a previous fix created the gap.** 0021 made class names
+ * unique among classes that are still OPEN (`active and ends_on is null`), which
+ * is what makes the model's own lookups correct — it reads classes by name, with
+ * `limit 1`, so two open "Evening Fitness" rows silently made every one of those
+ * lookups a coin flip. The migration wrote down what it cost: "the way to reuse a
+ * name is to close the old class, and there is currently no operation that does
+ * so." R9 — an optimisation that removed a capability nobody was measuring, and
+ * the one root you are most likely to create yourself.
+ *
+ * Closing is an END DATE, never a delete. §6.3 keeps ended classes for ever: last
+ * season's roster, its registers and its money all still have to resolve, and a
+ * deleted class takes its sessions' history with it.
+ *
+ * **What it deliberately does, beyond setting the date.** A class with no end date
+ * is a class the rest of the product still plans for — `plan_ahead` materialises
+ * its sessions, the coach ladder chases its registers, and `monthly_lines` bills
+ * its enrolments on the 1st. Setting `ends_on` alone and calling it closed would
+ * leave a retired batch quietly billing families, which is the exact shape of R6:
+ * a record narrower than the change it stands for. So the enrolments end on the
+ * same date and the sessions after it are cancelled, in one plan, previewable as
+ * one thing.
+ *
+ * It does NOT message the families. Ending a batch is a conversation the business
+ * has, and what to say about it differs every time — a merge, a coach leaving, a
+ * season ending. The note says how many people are affected so the admin knows
+ * what they are about to owe an explanation to, and `end_enrollment`'s own
+ * messaging is not duplicated here.
+ */
+const closeClass: OperationDef = {
+  name: 'close_class',
+  description:
+    'Retire a class from a date: stops its sessions and enrolments, keeps all its history, and frees its name for reuse. '
+    + 'Use when a batch is ending, merging, or being replaced by one with the same name.',
+  destructive: true,
+  params: z.object({
+    class_id: uuid,
+    end_date: z.string().nullish(),
+    reason: z.string().nullish(),
+  }),
+  async build(ctx, args) {
+    const a = await academyOf(ctx)
+    const endIso = isoDate(args.end_date ?? (await now()).toISOString(), a.timezone)
+
+    const [cls] = await q<{ id: string; name: string; ends_on: string | null }>(
+      ctx,
+      `select id, name, ends_on::text as ends_on from class
+        where id = ${uid(args.class_id)} and academy_id = ${uid(ctx.academyId)}`,
+    )
+    if (!cls) throw new Error('that is not a class I can see')
+    // R7: doing nothing must not read as success. A class that is already closed
+    // is not a no-op to report as done — it is a question the admin asked whose
+    // answer is "that already happened", and the date is the useful half.
+    if (cls.ends_on) {
+      throw new Error(`${cls.name} already closed on ${zoned(cls.ends_on, a.timezone).toFormat('d LLL yyyy')}`)
+    }
+
+    const live = await liveEnrollments(ctx, `e.class_id = ${uid(args.class_id)}`, endIso, a.timezone)
+    const [ahead] = await q<{ n: string }>(
+      ctx,
+      `select count(*) as n from session
+        where class_id = ${uid(args.class_id)} and status = 'scheduled'
+          and (starts_at at time zone ${lit(a.timezone)})::date > date ${lit(endIso)}`,
+    )
+    const upcoming = num(ahead?.n)
+
+    const steps: PlanStep[] = [
+      {
+        note:
+          `${cls.name} closes on ${zoned(endIso, a.timezone).toFormat('d LLL')}`
+          + (live.length ? `, ending ${live.length} enrolment${live.length === 1 ? '' : 's'}` : '')
+          + (upcoming ? ` and cancelling ${upcoming} scheduled session${upcoming === 1 ? '' : 's'}` : '')
+          + (args.reason ? ` — ${args.reason}` : '')
+          + '. The name is free to use again',
+      },
+      {
+        write: `update class set ends_on = date ${lit(endIso)}
+                 where id = ${uid(args.class_id)} and academy_id = ${uid(ctx.academyId)}
+                   and ends_on is null`,
+        requireRows: 1,
+      },
+    ]
+
+    if (live.length) {
+      steps.push({
+        write: `update enrollment set ended_on = date ${lit(endIso)}
+                 where id in (${live.map((l) => uid(l.enrollment_id)).join(',')})
+                   and academy_id = ${uid(ctx.academyId)} and ended_on is null`,
+        requireRows: live.length,
+      })
+    }
+
+    if (upcoming) {
+      // Only sessions AFTER the end date. A class closing on the 31st still ran on
+      // the 30th, and cancelling that session would rewrite a register that was
+      // already marked and money that was already billed against it.
+      steps.push({
+        write: `update session set status = 'cancelled'
+                 where class_id = ${uid(args.class_id)} and academy_id = ${uid(ctx.academyId)}
+                   and status = 'scheduled'
+                   and (starts_at at time zone ${lit(a.timezone)})::date > date ${lit(endIso)}`,
+        requireRows: upcoming,
+      })
+    }
+
+    steps.push(...deactivateStrandedPlayers(ctx, [...new Set(live.map((l) => l.player_id))], a.timezone))
+    return steps
+  },
+}
+
 const addCoach: OperationDef = {
   name: 'add_coach',
   description: 'Add a coach: contact, classes, pay rate. Three facts, and it messages nobody.',
@@ -3242,6 +3355,7 @@ export const OPERATIONS: Record<OperationName, OperationDef> = {
   opt_out: optOut,
   set_timing: setTiming,
   create_class: createClass,
+  close_class: closeClass,
   add_coach: addCoach,
   add_family: addFamily,
   send_invite_draft: sendInviteDraft,

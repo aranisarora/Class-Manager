@@ -408,6 +408,13 @@ type RunState = {
   /** The same notes in the voice used when the recipient is the subject. */
   personalNotes: string[]
   exec: { table: string; op: 'insert' | 'update' | 'delete'; count: number }[]
+  /**
+   * Raw `write` steps the MODEL authored that matched no row — see `emptyWrites`
+   * in `buildSummary`. Counted separately from `exec` because `exec` drops
+   * zero-count entries when it becomes a diff, which is how a write that did
+   * nothing became indistinguishable from one that was never written.
+   */
+  emptyWrites: number
 }
 
 function tableOf(sql: string): { table: string; op: 'insert' | 'update' | 'delete' } | null {
@@ -453,6 +460,29 @@ async function runSteps(
       const n = rowCount(res)
       const t = tableOf(step.write)
       if (t) state.exec.push({ ...t, count: n })
+      /**
+       * **A write that matched nothing is not the same as a write nobody made.**
+       *
+       * `synthDiffs` drops zero-count entries, so a step that ran and changed no
+       * row contributed nothing to the summary and the receipt read exactly as if
+       * that step had never been in the plan. R7's defining case, at the one place
+       * every plan passes through.
+       *
+       * Driven: an admin was told "I'll move Tara's enrolment to the Adults batch
+       * starting 1 Sep" and tapped [Do it]. The plan closed Juniors — which set
+       * `ended_on = 31 Aug` — and then selected the enrolments to copy across with
+       * `ended_on is null or ended_on > '2026-08-31'`. Its own first step had just
+       * made both halves false. Zero rows, no error, and a receipt that said
+       * "changed 1 enrolment" (the closure) while the child it named was left
+       * enrolled in nothing.
+       *
+       * Only counted for steps with no `requireRows`. A step that declares how many
+       * rows it needs already has a guard that aborts the whole plan, and the
+       * product's own operations use `on conflict do nothing` and
+       * `deactivateStrandedPlayers` deliberately — those match nothing routinely
+       * and saying so every time would train the reader to skip the line.
+       */
+      if (n === 0 && step.requireRows === undefined) state.emptyWrites++
       if (step.requireRows !== undefined && n < step.requireRows) {
         throw new PlanAbort(
           'PRECONDITION_FAILED',
@@ -717,6 +747,20 @@ function buildSummary(
   let s = note ? `${head} — ${note}.` : `${head}.`
 
   /**
+   * Say when a step matched nothing. R7: "doing nothing succeeds" is the only
+   * root whose failures a reader of the transcript scores as a pass, and this is
+   * the sentence that stops it doing so here. It is deliberately blunt and
+   * deliberately not an abort — the rest of the plan committed, the person needs
+   * to know which part of what they were promised did not happen, and rolling
+   * back a correct closure because a follow-on write missed would be worse.
+   */
+  if (state.emptyWrites > 0) {
+    s += ` ${state.emptyWrites} step${state.emptyWrites === 1 ? '' : 's'} matched no rows and ${
+      state.emptyWrites === 1 ? 'changed' : 'change'
+    } nothing — check that part landed.`
+  }
+
+  /**
    * Told, or merely addressed.
    *
    * The count was `state.staged` in both tenses. Staged is the right number for a
@@ -769,7 +813,7 @@ function previewOf(m: MessageStep): string {
  * ------------------------------------------------------------------------- */
 
 function emptyState(): RunState {
-  return { staged: [], scheduled: [], notes: [], personalNotes: [], exec: [] }
+  return { staged: [], scheduled: [], notes: [], personalNotes: [], exec: [], emptyWrites: 0 }
 }
 
 /**
