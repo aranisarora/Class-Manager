@@ -13,12 +13,13 @@
  *   3. A confirmation goes back into the chat through `composeAndSend`. The web
  *      surface never becomes a place where things happen quietly.
  *
- * `form` submits run the named operation in the spec's `submit` — the same
- * operation the model would have chosen in the chat, with the same preview,
- * atomicity and audit guarantees (§14.2.1). `setup` and `register` are the two
- * purpose-built screens (§7.1, §8.2); they write their own rows, under the same
- * RLS, and the attendance trigger raises `client_outcome` for them exactly as it
- * does for a register marked by a sentence in the chat.
+ * `form` and `register` both run a NAMED OPERATION — the same operation the model
+ * would have chosen in the chat, with the same atomicity, diff and audit
+ * guarantees (§14.2.1). `register` did not, for most of this product's life: it
+ * wrote `attendance` with its own SQL, which meant the register screen marked
+ * attendance and produced none of §6.4's money and never completed the session.
+ * A screen is a different way to reach an operation, never a second implementation
+ * of one. `setup` still writes its own rows, under the same RLS.
  */
 
 import { z } from 'zod'
@@ -34,7 +35,7 @@ import { composeAndSend } from '@/lib/messaging/compose'
 import { resolveIdentity } from '@/lib/identity'
 import { OPERATIONS } from '@/lib/agent/operations'
 import type { OperationName } from '@/lib/agent/operations'
-import { executePlan } from '@/lib/agent/plan'
+import { audienceFor, executePlan } from '@/lib/agent/plan'
 
 export const dynamic = 'force-dynamic'
 
@@ -262,6 +263,20 @@ const RegisterSchema = z.object({
     .max(300),
 })
 
+/**
+ * §8.2's register, run through the same operation a register marked in the chat runs.
+ *
+ * This wrote `attendance` with raw SQL, which made it a **second write path for the
+ * one event §6.4 hangs all of its money on** — and the two paths did not agree. What
+ * this one produced: attendance marked, and no session line, no free-first-class
+ * credit, no package consumption, no timely-cancel refund, and a session that never
+ * moved to `completed`. Every one of those is a consequence `mark_attendance`
+ * carries and raw SQL cannot. `handleForm` below has had the right shape the whole
+ * time: build the named operation, run it through `executePlan`.
+ *
+ * It is also the path `drive register` posts to — so the one harness command added
+ * to unblock the money half was, by construction, the one that could never bill.
+ */
 async function handleRegister(ctx: UserCtx, ref: string | undefined, body: unknown): Promise<Response> {
   const parsed = RegisterSchema.safeParse(body)
   if (!parsed.success) return json({ ok: false, message: firstIssue(parsed.error) }, 400)
@@ -271,93 +286,45 @@ async function handleRegister(ctx: UserCtx, ref: string | undefined, body: unkno
     return json({ ok: false, message: 'That register belongs to a different class.' }, 403)
   }
 
-  const written = await withSession(ctx, async (tx) => {
-    const s = await tx<{ id: string; class_name: string }[]>`
-      select s.id, c.name as class_name
-        from session s join class c on c.id = s.class_id
-       where s.id = ${v.sessionId}
-       limit 1`
-    if (!s[0]) return null
-
-    const coach = await tx<{ id: string }[]>`
-      select id from coach
-       where academy_id = ${ctx.academyId} and person_id = ${ctx.personId}
-       limit 1`
-    const coachId = coach[0]?.id ?? null
-
-    // Which of these absences had a timely cancellation already on record —
-    // needed to tell "the coach told me just now" from "we already knew" in the
-    // confirmation (§8.2: the catch-point that stops a wrong bill).
-    const before = await tx<{ player_id: string; status: string }[]>`
-      select player_id, status from attendance where session_id = ${v.sessionId}`
-    const priorTimely = new Set(before.filter((b) => b.status === 'cancelled_timely').map((b) => b.player_id))
-
-    const retroactive: string[] = []
-    let present = 0
-    let late = 0
-    let absent = 0
-    let timely = 0
-
-    for (const mark of v.marks) {
-      const status =
-        mark.status === 'absent' && mark.timely === true ? 'cancelled_timely' : mark.status
-      if (status === 'present') present++
-      else if (status === 'late') late++
-      else if (status === 'cancelled_timely') {
-        timely++
-        if (!priorTimely.has(mark.playerId)) retroactive.push(mark.playerId)
-      } else absent++
-
-      await tx`
-        insert into attendance (academy_id, session_id, player_id, status, note, marked_by_coach_id, marked_at)
-        values (${ctx.academyId}, ${v.sessionId}, ${mark.playerId}, ${status},
-                ${mark.note?.trim() ? mark.note.trim() : null}, ${coachId}, app.now())
-        on conflict (session_id, player_id) do update
-           set status             = excluded.status,
-               note               = excluded.note,
-               marked_by_coach_id = excluded.marked_by_coach_id,
-               marked_at          = excluded.marked_at`
-    }
-
-    let retroNames: string[] = []
-    if (retroactive.length) {
-      const rows = await tx<{ full_name: string }[]>`
-        select per.full_name
-          from player p join person per on per.id = p.person_id
-         where p.id = any (${retroactive}::uuid[])
-         order by per.full_name`
-      retroNames = rows.map((r) => r.full_name)
-    }
-
-    return { className: s[0].class_name, present, late, absent, timely, retroNames }
-  })
-
-  if (!written) {
-    return json({ ok: false, message: "I can't find that class — it may have been cancelled." }, 404)
+  const identity = await resolveIdentity(ctx.contactId)
+  if (!identity) {
+    return json({ ok: false, message: "I can't tell who you are from this link any more." }, 403)
   }
 
-  const parts: string[] = []
-  parts.push(
-    `Register marked for ${written.className}: ${written.present} present` +
-      (written.late ? `, ${written.late} late` : '') +
-      (written.absent ? `, ${written.absent} absent` : '') +
-      (written.timely ? `, ${written.timely} cancelled in time` : '') +
-      '.',
-  )
-  if (written.retroNames.length) {
-    const names =
-      written.retroNames.length === 1
-        ? written.retroNames[0]!
-        : `${written.retroNames.slice(0, -1).join(', ')} and ${written.retroNames[written.retroNames.length - 1]}`
-    parts.push(
-      `I've put ${names} down as cancelled in time, so ${
-        written.retroNames.length === 1 ? "there's" : "there are"
-      } no charge${written.retroNames.length === 1 ? '' : 's'} for today.`,
-    )
+  // The page's "absent, and they told me" tick is `cancelled_timely` — the status
+  // that means no charge. Resolved here so the operation sees one vocabulary.
+  const entries = v.marks.map((mark) => ({
+    player_id: mark.playerId,
+    status: mark.status === 'absent' && mark.timely === true ? ('cancelled_timely' as const) : mark.status,
+    note: mark.note?.trim() ? mark.note.trim() : null,
+  }))
+
+  const operation = OPERATIONS.mark_attendance
+  const checked = operation.params.safeParse({ session_id: v.sessionId, entries })
+  if (!checked.success) return json({ ok: false, message: firstIssue(checked.error) }, 400)
+
+  let result: Awaited<ReturnType<typeof executePlan>>
+  try {
+    const steps = await operation.build(ctx, checked.data, identity)
+    result = await executePlan(ctx, steps, 'Register marked from the register screen', audienceFor(identity))
+  } catch (e) {
+    // `mark_attendance` throws in English ("there is nobody to mark on that
+    // register", "that session is not one I can see"), and this page shows the
+    // message to a coach standing on a court.
+    return json({ ok: false, message: e instanceof Error ? e.message : "That didn't go through." }, 400)
   }
 
-  const messaged = await confirm(ctx, ctx.contactId, { body: parts.join(' ') })
-  return json({ ok: true, message: 'Register saved.', messaged })
+  if (!result.ok) {
+    return json({ ok: false, message: result.error ?? "That didn't go through." }, 400)
+  }
+
+  // The operation owns what reaches the chat, including §8.2's "did anyone tell you
+  // in advance?" catch-point — the thing that stops a wrong bill. Only speak here if
+  // it did not, or the coach gets the same event twice.
+  const summary = result.summary?.trim() || 'Register saved.'
+  const alreadyTold = result.stagedMessages.some((m) => m.toContactId === ctx.contactId)
+  const messaged = alreadyTold ? true : await confirm(ctx, ctx.contactId, { body: summary })
+  return json({ ok: true, message: summary, messaged })
 }
 
 // ---------------------------------------------------------------------------

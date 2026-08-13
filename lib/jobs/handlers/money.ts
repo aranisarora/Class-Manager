@@ -466,10 +466,17 @@ export async function reconcile(job: Job): Promise<void> {
       ),
       buttons: [
         {
+          // §2.2 — minted resolved, replayed verbatim. This was
+          // `{kind:'reply', text:"Yes — …'s ₹X came in, confirm it"}`: a sentence
+          // handed back to the model to re-interpret, which made **a money state
+          // transition a tap-time inference** on the one table where being wrong
+          // costs the business real money. The payment id is right here; the
+          // button carries the row.
           title: buttonTitle('Yes, received'),
           action: {
-            kind: 'reply',
-            text: `Yes — ${pay.holder_name}'s ${formatINR(num(pay.amount))} came in, confirm it`,
+            kind: 'operation',
+            op: 'confirm_payment',
+            args: { payment_id: paymentId },
           },
         },
         { title: buttonTitle('Not yet'), action: { kind: 'noop', ack: "Left as requested — I'll ask again." } },

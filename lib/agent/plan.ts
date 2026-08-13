@@ -1064,7 +1064,15 @@ async function recordAudit(
 const MONEY_TABLES = new Set(['payment', 'tally_line'])
 /** The business's own controls: its settings, its number's credentials, who is an admin. */
 const CONTROL_TABLES = new Set(['academy', 'sender', 'academy_admin'])
-const MONEY_OPS = new Set<OperationName>(['waive', 'record_payment', 'request_payment'])
+const MONEY_OPS = new Set<OperationName>([
+  'waive',
+  'record_payment',
+  'request_payment',
+  // A tap never re-previews (the preview already happened at mint), so this only
+  // binds when the model reaches for it directly — which is exactly when a money
+  // state transition should be read back before it commits.
+  'confirm_payment',
+])
 
 /**
  * A plan big enough that "I created some things" stops being a sentence anyone
