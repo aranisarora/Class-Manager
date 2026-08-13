@@ -2409,12 +2409,18 @@ async function main(): Promise<void> {
        * stop its sessions passing or its windows expiring, and calling that a clock would
        * be worse than not having one.
        */
-      if (has('academy')) {
-        die(
-          c.red('the clock is one global singleton — it cannot be advanced for one business.'),
-          c.dim('  sim_clock has no academy_id and app.now() takes no argument; both need a migration.'),
-          c.dim('  see the comment above `case \'clock\'` in scripts/drive.ts for exactly what changes.'),
-        )
+      // 0024 wrote that migration. `--academy` moves that tenant alone; without
+      // it the world clock moves, which is what every caller did before and
+      // still does. A tenant with no clock of its own follows the world's.
+      let clockAcademyId: string | undefined
+      {
+        const wantedClockAcademy = flag('academy')
+        if (wantedClockAcademy) {
+          const { findAcademy } = await import('@/lib/seed')
+          const found = await findAcademy(wantedClockAcademy)
+          if (!found) die(c.red(`no academy matches "${wantedClockAcademy}" — \`drive world\` lists them.`))
+          clockAcademyId = found.id
+        }
       }
       const spec = positional[0] ?? ''
       let body: Record<string, unknown>
@@ -2429,8 +2435,9 @@ async function main(): Promise<void> {
         const ms = unit.startsWith('m') ? n * 60_000 : unit.startsWith('h') ? n * 3_600_000 : n * 86_400_000
         body = { advanceMs: ms }
       }
+      if (clockAcademyId) body.academyId = clockAcademyId
       const out = await api('/api/emulator/clock', body)
-      console.log(c.green(`clock → ${out.nowIso}`))
+      console.log(c.green(`clock → ${out.nowIso}${clockAcademyId ? c.dim(`  (${flag('academy')} only)`) : ''}`))
       console.log(c.dim(`  planned ${out.planned} · jobs ran ${out.jobs?.ran ?? 0}, skipped ${out.jobs?.skipped ?? 0}, failed ${out.jobs?.failed ?? 0}`))
       for (const line of out.jobs?.log ?? []) console.log(c.dim(`    ${clip(typeof line === 'string' ? line : JSON.stringify(line), 160)}`))
       if (out.nextEventAtIso) console.log(c.dim(`  next event ${out.nextEventAtIso}`))

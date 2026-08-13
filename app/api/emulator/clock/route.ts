@@ -15,6 +15,13 @@ const Body = z
     reset: z.literal(true).optional(),
     toNextEvent: z.literal(true).optional(),
     limit: z.number().int().min(1).max(500).optional(),
+    /**
+     * Whose clock. Omitted means the world clock, which is every caller that
+     * existed before 0024 and stays the default. Named means that tenant alone
+     * moves — which is what makes two agents able to drive at once without
+     * moving each other's world.
+     */
+    academyId: z.string().uuid().optional(),
   })
   .refine(
     (b) =>
@@ -35,23 +42,24 @@ export async function POST(req: Request): Promise<Response> {
     return Response.json({ ok: false, error: 'invalid_body', issues: parsed.error.issues }, { status: 400 })
   }
   const body = parsed.data
+  const scope = body.academyId ?? ''
 
   try {
     let moved: Date
     let jumpedTo: string | null = null
 
     if (body.reset) {
-      moved = await reset()
+      moved = await reset(scope)
     } else if (body.advanceMs !== undefined) {
-      moved = await advance(body.advanceMs)
+      moved = await advance(body.advanceMs, scope)
     } else if (body.setToIso !== undefined) {
-      moved = await setTo(new Date(body.setToIso))
+      moved = await setTo(new Date(body.setToIso), scope)
     } else {
       // Plan first, so "next event" accounts for the jobs today would enqueue.
       await planAhead()
-      const next = await nextEventAt()
+      const next = await nextEventAt(scope)
       if (!next) {
-        const unchanged = await now()
+        const unchanged = await now(scope)
         const offsetMs = await clockOffsetMs()
         return Response.json({
           ok: true,
@@ -71,12 +79,12 @@ export async function POST(req: Request): Promise<Response> {
         })
       }
       jumpedTo = next.toISOString()
-      moved = await setTo(next)
+      moved = await setTo(next, scope)
     }
 
     const planned = await planAhead()
     const jobs = await runDueJobs(body.limit ? { limit: body.limit } : undefined)
-    const next = await nextEventAt()
+    const next = await nextEventAt(scope)
     const nextIso = next ? next.toISOString() : null
     const nowIso = moved.toISOString()
     const offsetMs = await clockOffsetMs()

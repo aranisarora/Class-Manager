@@ -90,6 +90,12 @@ update tally_line t
 -- So the duplicates survive as rows, visibly, and `scripts/check-duplicate-charges.mts`
 -- reports them. What this migration guarantees is that no SEVENTEENTH one can be
 -- written.
+--
+-- The ranking runs over ALL rows, not only the unkeyed ones, and `dedupe_key is
+-- null` is applied at the UPDATE instead. That is what makes re-running this file
+-- a no-op, which every migration here has to be: rank only the unkeyed rows and a
+-- second run promotes the SECOND copy of a duplicate pair to seq = 1, where it
+-- claims the key the first copy already holds and the whole push dies on 23505.
 with keyed as (
   select t.id,
          case t.kind
@@ -102,15 +108,14 @@ with keyed as (
            order by t.created_at, t.id
          ) as seq
     from tally_line t
-   where t.dedupe_key is null
-     and t.kind in ('monthly', 'term')
+   where t.kind in ('monthly', 'term')
      and t.player_id is not null
      and t.class_id is not null
 )
 update tally_line t
    set dedupe_key = keyed.k
   from keyed
- where t.id = keyed.id and keyed.seq = 1;
+ where t.id = keyed.id and keyed.seq = 1 and t.dedupe_key is null;
 
 -- Packs are ordinal, not periodic: the second pack of a busy month shares its
 -- period with the first, so the key counts packs rather than months.
@@ -122,15 +127,14 @@ with keyed as (
                   order by t.created_at, t.id
                 )::text as k
     from tally_line t
-   where t.dedupe_key is null
-     and t.kind = 'package'
+   where t.kind = 'package'
      and t.player_id is not null
      and t.class_id is not null
 )
 update tally_line t
    set dedupe_key = keyed.k
   from keyed
- where t.id = keyed.id;
+ where t.id = keyed.id and t.dedupe_key is null;
 
 -- ---------------------------------------------------------------------------
 -- The constraint. Everything above is preparation; this is the guarantee.

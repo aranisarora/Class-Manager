@@ -17,44 +17,94 @@ import { DateTime } from 'luxon'
 import { unsafeQuery, withSession, type SessionCtx, type Tx } from '@/lib/db'
 import { formatDate, formatTime } from '@/lib/format'
 
-/** sim_clock is global (no academy_id) — one world, one clock. */
 const CLOCK_CTX: SessionCtx = { role: 'service', academyId: '' }
 const MEMO_MS = 250
 
 type ClockRow = { offset_ms: number; frozen_at: Date | null }
 
-let offsetMs = 0
-let frozenAt: Date | null = null
-let loadedAtMs = 0
+/**
+ * One memo per clock, not one for the world.
+ *
+ * 0024 gave `sim_clock` a nullable `academy_id`: null is the world clock and the
+ * fallback for every tenant without one. A single process-wide `offsetMs` cannot
+ * represent that — hold one academy four hours ahead and every other academy in
+ * the same process would read its offset.
+ *
+ * Keyed by academy id, with `''` meaning the world clock. A tenant with no row
+ * of its own resolves to the world offset on read, so the common case is still
+ * one entry.
+ */
+type Memo = { offsetMs: number; frozenAt: Date | null; loadedAtMs: number }
+const memos = new Map<string, Memo>()
 
-function apply(rows: ClockRow[]): void {
-  const row = rows[0]
-  if (row) {
-    offsetMs = Number(row.offset_ms ?? 0)
-    frozenAt = row.frozen_at ? new Date(row.frozen_at) : null
+function memoFor(key: string): Memo {
+  let m = memos.get(key)
+  if (!m) {
+    m = { offsetMs: 0, frozenAt: null, loadedAtMs: 0 }
+    memos.set(key, m)
   }
-  loadedAtMs = Date.now()
+  return m
 }
 
-async function readClock(tx: Tx): Promise<ClockRow[]> {
-  const existing = await unsafeQuery<ClockRow>(tx, 'select offset_ms, frozen_at from sim_clock limit 1')
+function apply(key: string, rows: ClockRow[]): void {
+  const m = memoFor(key)
+  const row = rows[0]
+  // An absent row is a real answer — this tenant has no clock, so it is on the
+  // world's. Resetting to zero here rather than keeping the last value is what
+  // makes `drive clock --reset` on a tenant actually return it to the default.
+  m.offsetMs = row ? Number(row.offset_ms ?? 0) : 0
+  m.frozenAt = row?.frozen_at ? new Date(row.frozen_at) : null
+  m.loadedAtMs = Date.now()
+}
+
+/**
+ * Read the offset that applies to `academyId`: its own row if it has one, else
+ * the world's. The fallback is done here rather than with `coalesce` in SQL so
+ * that `frozen_at` travels with whichever row actually won.
+ */
+async function readClock(tx: Tx, academyId: string): Promise<ClockRow[]> {
+  if (academyId) {
+    const own = await unsafeQuery<ClockRow>(
+      tx,
+      'select offset_ms, frozen_at from sim_clock where academy_id = $1::uuid',
+      [academyId],
+    )
+    if (own.length > 0) return own
+  }
+
+  const existing = await unsafeQuery<ClockRow>(
+    tx, 'select offset_ms, frozen_at from sim_clock where academy_id is null')
   if (existing.length > 0) return existing
 
   const inserted = await unsafeQuery<ClockRow>(
     tx,
-    `insert into sim_clock (singleton, offset_ms) values (true, 0)
-     on conflict (singleton) do nothing
+    `insert into sim_clock (singleton, offset_ms, academy_id) values (true, 0, null)
+     on conflict do nothing
      returning offset_ms, frozen_at`,
   )
   if (inserted.length > 0) return inserted
 
-  return unsafeQuery<ClockRow>(tx, 'select offset_ms, frozen_at from sim_clock limit 1')
+  return unsafeQuery<ClockRow>(
+    tx, 'select offset_ms, frozen_at from sim_clock where academy_id is null')
 }
 
-/** Synchronous read of the last-loaded offset. Refreshed by now() / refresh(). */
-export function nowSync(): Date {
-  if (frozenAt) return new Date(frozenAt.getTime())
-  return new Date(Date.now() + offsetMs)
+/**
+ * Synchronous read of the last-loaded offset. Refreshed by now() / refresh().
+ *
+ * Defaults to the world clock, which is correct for every caller that has no
+ * academy in hand — and there are many, because `now()` has never taken one.
+ * **This is the honest edge of 0024**: SQL resolves the tenant clock from the
+ * session GUC automatically and always correctly, while a TypeScript caller
+ * that does not pass an academy gets the world clock. With no per-tenant rows
+ * set the two agree exactly; they diverge only for a tenant somebody has
+ * deliberately moved, and then only in code paths that compute a timestamp in
+ * TypeScript instead of in SQL.
+ */
+export function nowSync(academyId = ''): Date {
+  const m = memos.get(academyId) ?? memos.get('')
+  if (!m) return new Date()
+  if (m.frozenAt) return new Date(m.frozenAt.getTime())
+  return new Date(Date.now() + m.offsetMs)
 }
 
 /**
@@ -64,28 +114,66 @@ export function nowSync(): Date {
  * read on every proactive path, and a transient database blip should surface
  * where the real work fails, not as a wall of clock errors.
  */
-export async function now(): Promise<Date> {
-  if (Date.now() - loadedAtMs >= MEMO_MS) {
+export async function now(academyId = ''): Promise<Date> {
+  const m = memoFor(academyId)
+  if (Date.now() - m.loadedAtMs >= MEMO_MS) {
     try {
-      return await refresh()
+      return await refresh(academyId)
     } catch {
-      loadedAtMs = Date.now()
+      m.loadedAtMs = Date.now()
     }
   }
-  return nowSync()
+  return nowSync(academyId)
 }
 
-export async function refresh(): Promise<Date> {
-  const rows = await withSession(CLOCK_CTX, (tx) => readClock(tx))
-  apply(rows)
-  return nowSync()
+export async function refresh(academyId = ''): Promise<Date> {
+  const rows = await withSession(CLOCK_CTX, (tx) => readClock(tx, academyId))
+  apply(academyId, rows)
+  return nowSync(academyId)
 }
 
-/** Move the whole world forward (or back). The emulator's main control. */
-export async function advance(ms: number): Promise<Date> {
+/**
+ * Which row a write targets: a tenant's own, or the world's.
+ *
+ * Written as a predicate rather than two near-identical statements because the
+ * three mutators below differ only in what they set, and a rule spelled out
+ * three times is a rule that will be right twice.
+ */
+function clockWhere(academyId: string): { sql: string; params: unknown[] } {
+  return academyId
+    ? { sql: 'academy_id = $2::uuid', params: [academyId] }
+    : { sql: 'academy_id is null', params: [] }
+}
+
+/**
+ * Ensure the tenant has a row of its own before a write targets it.
+ *
+ * Without this, advancing one academy's clock for the first time updates nothing
+ * — `where academy_id = $1` matches no row — and returns silently, which is R7:
+ * the driver would print a new time it had not set. It seeds from the world
+ * offset so "two hours ahead" means two hours ahead of where the tenant already
+ * was, not two hours ahead of real time.
+ */
+async function ensureRow(tx: Tx, academyId: string): Promise<void> {
+  if (!academyId) return
+  await unsafeQuery(
+    tx,
+    `insert into sim_clock (singleton, academy_id, offset_ms, frozen_at)
+     select true, $1::uuid,
+            coalesce((select offset_ms from sim_clock where academy_id is null), 0),
+            (select frozen_at from sim_clock where academy_id is null)
+      where not exists (select 1 from sim_clock where academy_id = $1::uuid)`,
+    [academyId],
+  )
+}
+
+/** Move a world forward (or back). The emulator's main control. */
+export async function advance(ms: number, academyId = ''): Promise<Date> {
   const delta = Math.round(Number(ms) || 0)
+  const w = clockWhere(academyId)
   const rows = await withSession(CLOCK_CTX, async (tx) => {
-    await readClock(tx)
+    await readClock(tx, academyId)
+    await ensureRow(tx, academyId)
     return unsafeQuery<ClockRow>(
       tx,
       `update sim_clock
@@ -93,43 +181,57 @@ export async function advance(ms: number): Promise<Date> {
               frozen_at = case when frozen_at is null
                                then null
                                else frozen_at + make_interval(secs => $1::bigint / 1000.0) end
-        where singleton
+        where ${w.sql}
         returning offset_ms, frozen_at`,
-      [delta],
+      [delta, ...w.params],
     )
   })
-  apply(rows)
-  return nowSync()
+  apply(academyId, rows)
+  return nowSync(academyId)
 }
 
 /** Jump to a wall-clock instant. Time keeps running from there. */
-export async function setTo(when: Date): Promise<Date> {
+export async function setTo(when: Date, academyId = ''): Promise<Date> {
   const target = when instanceof Date ? when : new Date(when)
   const delta = target.getTime() - Date.now()
+  const w = clockWhere(academyId)
   const rows = await withSession(CLOCK_CTX, async (tx) => {
-    await readClock(tx)
+    await readClock(tx, academyId)
+    await ensureRow(tx, academyId)
     return unsafeQuery<ClockRow>(
       tx,
-      'update sim_clock set offset_ms = $1::bigint, frozen_at = null where singleton returning offset_ms, frozen_at',
-      [delta],
+      `update sim_clock set offset_ms = $1::bigint, frozen_at = null
+        where ${w.sql} returning offset_ms, frozen_at`,
+      [delta, ...w.params],
     )
   })
-  apply(rows)
-  return nowSync()
+  apply(academyId, rows)
+  return nowSync(academyId)
 }
 
-/** Back to real time. */
-export async function reset(): Promise<Date> {
+/**
+ * Back to real time.
+ *
+ * For a tenant this DELETES its row rather than zeroing it, so the tenant goes
+ * back to following the world clock instead of being pinned to real time while
+ * the world is somewhere else. "Reset" means "stop having a clock of my own".
+ */
+export async function reset(academyId = ''): Promise<Date> {
   const rows = await withSession(CLOCK_CTX, async (tx) => {
-    await readClock(tx)
+    if (academyId) {
+      await unsafeQuery(tx, 'delete from sim_clock where academy_id = $1::uuid', [academyId])
+      return readClock(tx, academyId)
+    }
+    await readClock(tx, '')
     return unsafeQuery<ClockRow>(
       tx,
-      'update sim_clock set offset_ms = 0, frozen_at = null where singleton returning offset_ms, frozen_at',
+      `update sim_clock set offset_ms = 0, frozen_at = null
+        where academy_id is null returning offset_ms, frozen_at`,
       [],
     )
   })
-  apply(rows)
-  return nowSync()
+  apply(academyId, rows)
+  return nowSync(academyId)
 }
 
 /**
@@ -137,10 +239,14 @@ export async function reset(): Promise<Date> {
  * pending job, or the earliest session's T-60 (the first prompt code raises
  * before a session, §13). Powers the emulator's "jump to next event".
  */
-export async function nextEventAt(): Promise<Date | null> {
-  const after = await now()
+export async function nextEventAt(academyId = ''): Promise<Date | null> {
+  const after = await now(academyId)
   const rows = await withSession(CLOCK_CTX, (tx) =>
-    unsafeQuery<{ next_at: Date | null }>(tx, 'select app.next_event_at($1::timestamptz) as next_at', [after]),
+    unsafeQuery<{ next_at: Date | null }>(
+      tx,
+      'select app.next_event_at($1::timestamptz, $2::uuid) as next_at',
+      [after, academyId || null],
+    ),
   )
   const next = rows[0]?.next_at
   return next ? new Date(next) : null

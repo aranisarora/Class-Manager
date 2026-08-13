@@ -95,10 +95,35 @@ async function claim(limit: number): Promise<Job[]> {
        and locked_at is not null
        and locked_at < app.now() - make_interval(mins => ${LOCK_STALE_MINUTES}::int)
   `)
+  /**
+   * **Due according to WHOSE clock.**
+   *
+   * This was `run_at <= app.now()`, and `app.now()` resolves the clock of the
+   * session asking — which for this claim is an infra session pinned to no
+   * tenant at all, so it always got the world clock. With per-academy clocks
+   * (0024) that is one tenant's time running another tenant's jobs: hold
+   * academy A four hours ahead to reach a session and every pending job in
+   * academy B fires too, four hours early, and declines as stale. The
+   * transcript reads calm, which is the whole reason this had to be fixed
+   * before anything drives in parallel.
+   *
+   * A job carries its tenant in `payload->>'academy_id'` rather than a column,
+   * so that is what the comparison has to read. `app.now_for(null)` is the
+   * world clock, which is the right answer for the handful of jobs that carry
+   * no tenant.
+   *
+   * The cost is real and accepted: this cannot use an index on `run_at` alone
+   * any more, because the bound is now per row. `job` is small, the scan is
+   * bounded by `limit`, and correctness across tenants is worth more than an
+   * index seek on a table this size. If it ever stops being small, the fix is
+   * a generated `academy_id` column on `job` with an index on
+   * `(academy_id, status, run_at)` — not a return to one global clock.
+   */
   const rows = await withInfra((tx) => tx<Job[]>`
     with due as (
       select id from job
-       where status = 'pending' and run_at <= app.now()
+       where status = 'pending'
+         and run_at <= app.now_for((payload->>'academy_id')::uuid)
        order by run_at asc, created_at asc
        limit ${limit}
        for update skip locked
