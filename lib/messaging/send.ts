@@ -604,6 +604,18 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     // Not a substitute for the fix upstream. This is the backstop; the reason
     // reflection fired at all was a false premise, and that is fixed in `loop.ts`.
     // A backstop that has to fire routinely is hiding a bug rather than holding one.
+    //
+    // **It must compare the body that was COMPOSED, not the one that was sent.**
+    // Out of window the body is replaced by a rendered template further down (Gate
+    // 8), and `message.body` stores that rendering — so comparing `msg.body`
+    // against `message.body` could never match a previous out-of-window send, and
+    // this gate was blind to exactly the proactive traffic the note above says it
+    // was built for. Driven: three byte-identical CL-DUNNING messages reached one
+    // parent inside sixty seconds, every one `sent`, not one suppressed.
+    //
+    // The composed body is not lost — Gate 10 already keeps it as
+    // `payload->>'original_body'` precisely so the pre-template message survives.
+    // Nothing new is recorded here; what was recorded is finally read.
     if (msg.body.trim().length > 0) {
       const window = msg.solicited ? '5 minutes' : '6 hours'
       const dupe = await tx<{ id: string }[]>`
@@ -611,7 +623,7 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
          where contact_id = ${row.contact_id}
            and direction = 'outbound'
            and suppressed_reason is null
-           and body = ${msg.body}
+           and (body = ${msg.body} or payload->>'original_body' = ${msg.body})
            and queued_at > app.now() - ${window}::interval
          limit 1`
       if (dupe.length > 0) {
