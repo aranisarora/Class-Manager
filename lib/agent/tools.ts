@@ -1846,17 +1846,33 @@ export async function runTool(
       }
 
       /**
-       * The screen the model asked for, whether or not it remembered to attach it.
+       * The screen the model asked for, whether or not it remembered to attach it —
+       * and, failing that, the one its own sentence says it attached.
        *
-       * Only when this message carries no affordance of its own: a model that DID
-       * offer buttons has made a deliberate choice and the runtime does not overrule
-       * it. And only to the person the screen was minted for.
+       * The guard below refuses a message that points at a control it does not carry,
+       * and refusing costs a round. Where the runtime can simply SATISFY the pointer it
+       * should: an admin told "I've attached the business setup form" wants the setup
+       * form, and the runtime is holding it. Driven — that exact sentence went out with
+       * nothing but the generic `[What can you do?]` under it, and no `view` call in the
+       * turn for `pendingScreen` to have caught.
+       *
+       * Only when this message carries no affordance of its own: a model that DID offer
+       * buttons has made a deliberate choice and the runtime does not overrule it. And
+       * only to the person the screen would be minted for — a form is single-use and
+       * addressed.
        */
+      const bare = !args?.link_screen && !buttons?.length && !args?.list
+      const saysSetupForm =
+        bare
+        && to === ctx.identity.contact.id
+        && ctx.identity.roles.includes('admin')
+        && /\bsetup form\b|\bbusiness setup\b|\bset ?up (?:screen|page|form)\b/i.test(body)
       const pending =
-        ctx.pendingScreen && ctx.pendingScreen.forContactId === to && !args?.link_screen
-        && !buttons?.length && !args?.list
+        ctx.pendingScreen && ctx.pendingScreen.forContactId === to && bare
           ? ctx.pendingScreen
-          : null
+          : saysSetupForm
+            ? ({ screen: 'setup' as const, forContactId: to, ref: undefined })
+            : null
       if (pending) {
         args = {
           ...args,

@@ -56,7 +56,23 @@ export function fitTitle(raw: unknown, limit: number = LIMITS.buttonTitleChars):
  * ------------------------------------------------------------------------- */
 
 /** A line that is nothing but `[Label]` groups. `[Looks right] [Something's wrong]`. */
-const BRACKET_LINE = /^(\[[^\]\n]{1,40}\]\s*)+$/
+/**
+ * A line of offered labels, and nothing else that a person should read.
+ *
+ * The trailing `(action: …)` is the other half of the model's instinct: it types the
+ * label AND the wire shape it thinks belongs with it. Driven on a fresh onboarding, an
+ * owner's second ever message ended
+ *
+ *     [Open Business Setup] (action: )
+ *     [Add Coaches] (action: )
+ *
+ * — shipped verbatim, because the line was not brackets ALONE and so was treated as
+ * prose. That is machinery on a customer's screen, which is the failure this whole file
+ * exists to prevent, arriving in the one shape the pattern did not cover. The
+ * parenthetical is dropped rather than parsed: it was empty every time, and a label the
+ * model wrote is a faithful statement of intent on its own.
+ */
+const BRACKET_LINE = /^(\[[^\]\n]{1,40}\]\s*(?:\(\s*(?:action|payload|kind|on-click)\s*:[^)\n]*\)\s*)?)+$/i
 
 /**
  * `[Looks right]` written as *text* becomes a button.
@@ -87,7 +103,15 @@ export function extractBracketButtons(text: string): {
   }
   if (!found.length) return { text, buttons: [] }
   return {
-    text: kept.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
+    // A heading with nothing left under it goes too. The same message ended on a bare
+    // "*Next step:*" once its three bracket lines were pulled out from beneath it — a
+    // colon promising something, followed by nothing, which reads as a message that was
+    // cut off mid-send.
+    text: kept
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/\n\s*\*?[A-Z][^\n:*]{0,30}:\*?\s*$/, '')
+      .trim(),
     buttons: found.slice(0, LIMITS.buttons).map((title) => ({
       title: fitTitle(title),
       action: { kind: 'reply' as const, text: title },
