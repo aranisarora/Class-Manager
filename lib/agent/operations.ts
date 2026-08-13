@@ -1347,9 +1347,24 @@ const markAttendance: OperationDef = {
     }
 
     // §11.1 — the register is what completes a session.
+    //
+    // `service: true` for the same reason the billing lines above carry it, and it
+    // was missing for the same reason it was easy to miss: `session_cm_user_update`
+    // requires `app.is_admin()` (0003_rls.sql:608), and the person who marks a
+    // register is a coach. So this matched zero rows, changed nothing, raised
+    // nothing — R7 again — and the session stayed `scheduled` forever after being
+    // taken. Everything keyed on `completed` inherited that: `end_coach`'s payables
+    // counted nothing, `register pending` (§11.1) stayed true for a session that had
+    // been marked, and the register-expiry escalation kept telling the admin a
+    // marked register was missing.
+    //
+    // Completing a session is the runtime's consequence of the register being
+    // marked, not the coach's own write — which is exactly the distinction §6.7
+    // draws and this file's header already states for the money tables.
     steps.push({
       write: `update session set status = 'completed'
                where id = ${uid(s.id)} and academy_id = ${uid(ctx.academyId)} and status = 'scheduled'`,
+      service: true,
     })
     steps.push(...cancelJobsForSession(s.id))
 
