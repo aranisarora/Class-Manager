@@ -1,5 +1,34 @@
 # Handoff — how to drive this product, and what to drive next
 
+## 0 · The prompt
+
+Paste this to start. Everything it refers to is in this file.
+
+> You are making a WhatsApp class-management product production ready by **driving it until
+> it breaks, fixing the root, and driving again**.
+>
+> Read `HANDOFF.md` first — it is written for you. Then `DRIVING.md` (method + the ten
+> roots), `FINDINGS.md` (what the last pass found and how), `NEXT.md` (what to build).
+> `product-spec.md` is the authority on behaviour; grep it, never read it whole. Branch
+> `worktree-next-md-implementation`.
+>
+> **The method is stricter than it sounds.** The last pass fixed ten defects; **six sat
+> inside cases whose every check passed**. A green check is not evidence, a clean transcript
+> is not evidence, and your own query is not evidence until you have checked what it
+> actually compares — three apparent findings evaporated on contact with the database. For
+> every turn: read the `message` row, read `drive turn` (every round, tool calls, tokens,
+> seconds, ₹), read the rows, and say whether what the person saw matches what the database
+> holds.
+>
+> **Orchestrate it as a swarm**, but read §3 before you fan out — `sim_clock` is a global
+> singleton and any explorer that advances time silently invalidates every other explorer's
+> run.
+>
+> Work in the order in §4. Start with the money back-half: it has never executed and it is
+> where being wrong is most expensive.
+
+---
+
 You are picking up a WhatsApp-based class-management product built on a general agent over
 general primitives (read SQL, write SQL, send, remember, schedule, show a view), bounded by
 Postgres RLS. Your job is to make it production ready by **driving it until it breaks,
@@ -69,6 +98,9 @@ several personas inside one academy, interacting — babysat by an orchestrator 
 effort) that also drives. An explorer finds an issue, reports it, the orchestrator fixes the
 root and spins up the next explorer aimed at something untested.**
 
+This works today for **message-only** exploration. It does **not** work for anything
+time-driven, and that is the one thing to build before fanning out.
+
 ### Build this first, or the swarm corrupts itself
 
 **`sim_clock` is a global singleton.** Two agents driving at once move each other's world.
@@ -92,31 +124,99 @@ Until that exists, the safe parallel split is:
 Also real: `max: 10` connections per process against a shared `pool_size: 15`. Two busy
 processes exhaust the pooler on arithmetic alone. Cap concurrent explorers accordingly.
 
-### Protocol that works
+### What an explorer is for, and what it must bring back
 
 Give each explorer: **one persona, one academy it built itself, one surface to probe, and a
-budget**. Require it to report in this shape and nothing else:
+budget**.
+
+**An explorer never fixes anything.** It drives, inspects, and reports. If it fixes as it
+goes, everything it finds afterwards came from a different product than everything it found
+before, and the round stops being comparable. Only the orchestrator changes code.
+
+**It must come back with evidence, not a conclusion.** The orchestrator's job is to judge
+whether there is really an issue and what the *root* is, and it cannot do either from
+"the bot said the wrong thing". It needs to see what the explorer saw. So the report carries
+the raw material — the message row, the round-by-round turn log with every tool call and
+result, and the rows before and after — and the explorer's analysis sits *on top of* that
+evidence rather than replacing it.
+
+Require exactly this shape, one block per finding:
 
 ```
-CLASS:      one sentence naming the class of failure, not the instance
-ROOT:       R1–R10, or `new` with an argument for why none fits
-SAW:        shortest reproduction — command, what came back, what the DB said
-LAYERS:     what the message row said / what the rounds did / what the rows say
-BLAST:      who is hurt and how they would find out ("nobody would" is the worst answer)
+## FINDING <n> — <one sentence naming the CLASS of failure, not the instance>
+
+ROOT:       R1–R10, or `new` with an argument for why none of them fits
 CONFIDENCE: certain / likely / suspected — never round up
-CLEAN:      what you drove and found no defect in
+
+### Layer 1 · What the person saw
+Verbatim from the `message` row — NOT the driver's chips, which are its own.
+    select body, payload, status, suppressed_reason, catalog_id
+      from message where ... order by created_at
+Paste the body in full. Say what buttons it carried, and whether anything was
+suppressed and why.
+
+### Layer 2 · What happened inside
+Paste the `drive turn` output for that turn. It must show, per round:
+  - what the model wrote before it called anything
+  - every tool call, its arguments, and its result — failed reads and refused
+    plans matter most; that is where the rounds and the seconds go
+  - tokens in/out, cache ratio, seconds, ₹
+Say how many rounds it took and where they went.
+
+### Layer 3 · What the database says
+The exact SQL you ran and the rows that came back — before and after where it
+matters. Include the ones that came back EMPTY; a write that matched nothing is
+the commonest way a bad run looks like a good one.
+Check the tables the claim implies, not just the obvious one: `audit_entry` for
+what the turn wrote, `job` for what it scheduled, `message` for what actually
+reached the wire.
+
+### Layer 4 · Whether 1 matches 3
+The judgement. Name the specific sentence and the specific row that disagree.
+
+### Reproduction
+Exact commands in order, from a named starting state (`drive seed --stage …` or
+"built from empty like this"). The orchestrator will re-run these.
+
+### Blast radius
+Who is hurt and how they would find out. "Nobody would" is the worst answer and
+the most important one to write down.
+
+### What I ruled out
+The explanations you considered and killed, and how. If you checked whether a
+guard upstream already handles it, say so.
+
+### CLEAN
+What you drove on this surface and found NO defect in.
 ```
 
-**Require the CLEAN line.** "Drove the whole coach ladder with families on it, no defect
-found" is the only thing that turns "assume broken" into "known good".
+**Require the CLEAN block even when there are no findings.** "Drove the whole coach ladder
+with families on it, no defect found" is the only thing that turns "assume broken" into
+"known good", and it is the line agents skip.
 
-Orchestrator rules:
-- **Verify before fixing.** Re-run the explorer's reproduction yourself and check the rows.
-  Explorers report confidently and are sometimes wrong.
-- **Fix the root, not the instance.** Four tests in `DRIVING.md`; test 4 is not optional —
-  say what each fix takes away, or you have not finished it.
-- **One fix batch, then one probe.** Do not fix while a verification probe runs.
-- Aim the next explorer at what has *never run*, not at what just broke.
+**Require Layer 3 even when the explorer is sure.** Three times last pass a finding
+evaporated at exactly this step: eight failing checks were one defect re-reported; a
+family-privacy leak was the query tool reading as the service role; a "slow query" returns
+in ~200ms in isolation.
+
+### Orchestrator rules
+
+- **Re-run the reproduction before fixing.** Explorers report confidently and are sometimes
+  wrong. Two of last pass's sub-agent findings were real and `certain`; several others
+  refuted on inspection. The reproduction block exists so this costs one command.
+- **Judge the root from the evidence, not the summary.** Layer 2 is usually where the root
+  is visible — a plan refused twice for a shape error, a read that failed on a guessed
+  column, a claim that no tool call backs. The class of failure is rarely what the explorer
+  named it.
+- **Fix the root, not the instance.** The four tests are in `DRIVING.md`. Test 4 is not
+  optional: say what each fix takes away, or you have not finished it. Last pass, one fix
+  created a new gap (class names are now unique among open classes, and nothing can close a
+  class) — that is fine, but it has to be written down.
+- **One fix batch, then one probe.** Never edit product code while a verification probe is
+  running; the dev server hot-reloads and your run becomes a moving target.
+- **Aim the next explorer at what has never run** (§5), not at what just broke.
+- Keep a note of which build each finding came from, so a later finding is not silently
+  attributed to the pre-fix product.
 
 ---
 
