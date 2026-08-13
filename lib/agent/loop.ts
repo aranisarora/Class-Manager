@@ -1000,14 +1000,20 @@ async function modelTurn(
      * performing surgery on the model's tense. It is entitled to: when a plan is
      * pending it holds the true read-back already, computed from the diff, and that
      * is strictly better evidence than the prose it replaces.
+     *
+     * **Only when a plan is pending**, and this path needs that guard more than the
+     * `reply` one does because it has no round of grace at all — there is nothing left
+     * to ask. `committed` is turn-scoped and a past-tense sentence is not, so a turn
+     * that reads rows and truthfully reports earlier work is indistinguishable from one
+     * that invents a receipt. Scheduled `agent_task` check-backs are exactly that shape
+     * by construction — read-only, and about work done in some previous turn — and
+     * substituting there tells somebody the rows do not exist when they do. A pending
+     * plan is the runtime's evidence that the sentence is about THIS turn.
      */
     const claim = unbackedClaim(text.trim())
     const backed = claim === 'claimed' ? toolCtx.committed : toolCtx.worked
-    if (claim && !backed) {
-      text = pending
-        ? `${pending.summary}\n\nNothing is done yet — tap to confirm and I'll run it.`
-        : "I haven't done that yet — I got as far as working it out and no further. "
-          + 'Say the word and I\'ll pick it up again.'
+    if (claim && !backed && pending) {
+      text = `${pending.summary}\n\nNothing is done yet — tap to confirm and I'll run it.`
     }
 
     const trailingBody = lint(text.trim(), identity)

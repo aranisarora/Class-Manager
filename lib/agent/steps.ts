@@ -37,9 +37,9 @@ export const ActionPayloadSchema: z.ZodTypeAny = z.lazy(() =>
         // Checked against the registry, not merely typed as a string. An action is
         // replayed with no model call, so a name that does not exist is a dead
         // button and there is nobody there to recover from it.
-        op: z.string().refine((n) => n in OPERATIONS, {
-          message: 'unknown operation — a button cannot carry a tool name (plan/commit/act/read are tools)',
-        }),
+        // Same explanation the plan path gives: a button carrying a tool name is the
+        // same confusion arriving one layer down, and it is worth the same sentence.
+        op: z.string().refine((n) => n in OPERATIONS, (n) => ({ message: notAnOperation(n) })),
         args: z.record(z.unknown()).default({}),
       })
       // And its ARGUMENTS, by the operation's own schema — which this branch did not
@@ -174,7 +174,7 @@ export const PlanStepSchema: z.ZodTypeAny = z.lazy(() =>
     z
       .object({
         operation: z.object({
-          name: z.string().refine((n) => n in OPERATIONS, { message: 'unknown operation' }),
+          name: z.string().refine((n) => n in OPERATIONS, (n) => ({ message: notAnOperation(n) })),
           args: z.record(z.unknown()).default({}),
         }),
       })
@@ -260,6 +260,41 @@ export function checkSteps(raw: unknown): { ok: true; steps: unknown[] } | { ok:
   const parsed = StepsField().safeParse(raw)
   if (parsed.success) return { ok: true, steps: parsed.data as unknown[] }
   return { ok: false, error: describe(parsed.error) }
+}
+
+/**
+ * Why that name is not an operation, and what to write instead.
+ *
+ * "unknown operation" is true and unactionable, and a clean drive of the whole
+ * lifecycle showed exactly what it costs. Asked to go live, the model composed
+ * `{"operation":{"name":"schedule", …}}` — reaching for the follow-up it correctly
+ * wanted — got "unknown operation" back, rewrote the same plan, got it again, and gave
+ * up. The business never went live, and everything downstream of that failed with it:
+ * no UPI handle recorded, no payment confirmable, and the admin told twice in identical
+ * words that it had not worked. One unhelpful sentence, most of a lifecycle.
+ *
+ * The confusion is honest, and the runtime is the thing that knows the answer: several
+ * of these names ARE real capabilities, just reached a different way inside a plan.
+ * A plan schedules with a step of its own and sends with a step of its own; it does not
+ * call the tools that do those things at the top level.
+ */
+const NOT_OPERATIONS: Record<string, string> = {
+  schedule:
+    'a plan schedules its own follow-up with a step of its own: {"schedule": {"kind", "run_at", "dedupe_key", "payload"}}',
+  reply: 'a plan sends with a step of its own: {"message": {"to_contact_id"|"to_person_id", "body", "buttons"?}}',
+  view: 'a plan cannot open a screen — send the message first, and offer the screen on it',
+  read: 'a plan does not read; do the lookup before you compose it, and put the answer in the steps',
+  recall: 'a plan does not read; do the lookup before you compose it',
+  handoff: 'reaching a person is a button on a message step, not an operation',
+  plan: 'you are already inside a plan',
+  commit: 'you are already inside a plan — there is nothing here to commit',
+  act: 'inside a plan an operation is the step itself: {"operation": {"name", "args"}}',
+}
+
+function notAnOperation(name: string): string {
+  const instead = NOT_OPERATIONS[name]
+  if (instead) return `"${name}" is a tool, not an operation — ${instead}`
+  return `there is no operation called "${name}"`
 }
 
 /* ------------------------------------------------------------------------- *

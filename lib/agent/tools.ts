@@ -1817,10 +1817,31 @@ export async function runTool(
             }
           }
 
+          /**
+           * ONLY when a plan is sitting here unconfirmed.
+           *
+           * The predicate answers "is this sentence a receipt?"; the gate asks "did THIS
+           * turn commit?" Those are the same question only when the receipt is about
+           * this turn, and English does not carry that distinction. A read-only turn
+           * that truthfully reports earlier work — *"Requested ₹1,200 on 13 Aug, still
+           * unpaid"* — is a receipt about the past, and substituting it tells an admin
+           * the payment row does not exist when it does.
+           *
+           * That is not hypothetical: scheduled `agent_task` check-backs are read-only
+           * by construction and about prior work by construction ("check if the invite
+           * was forwarded"), and two such turns are already in this world, saved only by
+           * having phrased themselves passively.
+           *
+           * A pending plan is the evidence that makes the two questions line up: the
+           * model previewed something a moment ago and then described it as done, which
+           * is exactly what was watched twice on money. With no plan pending the runtime
+           * has no reason to believe the sentence is about this turn, so it keeps its
+           * hands off and the one refusal round above remains the whole intervention.
+           */
           const waiting = pendingConfirmation(ctx)
-          body = waiting
-            ? `${waiting.summary}\n\nNothing has run yet — tap to confirm and I'll do it.`
-            : "I haven't done that yet. Tell me to go ahead and I will."
+          if (waiting) {
+            body = `${waiting.summary}\n\nNothing has run yet — tap to confirm and I'll do it.`
+          }
         }
       }
 
