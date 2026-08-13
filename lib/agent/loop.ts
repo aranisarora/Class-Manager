@@ -21,7 +21,7 @@ import type { Identity, Job, Role } from '@/lib/types'
 import { generate, TURN_THINKING, type GenContent } from './gemini'
 import { lint, stablePrefix, synthesisDoctrine, variableTail } from './context'
 import { hotSet } from './memory'
-import { executePlan, type PlanStep } from './plan'
+import { audienceFor, executePlan, type PlanStep } from './plan'
 import { jsonLit, lit, uid, type OperationName } from './operations'
 import {
   closingQuestionButtons,
@@ -140,7 +140,20 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       promptTokens = m.promptTokens
       outputTokens = m.outputTokens
       cachedTokens = m.cachedTokens
-      replyText = m.text
+      /**
+       * What the person was told, not what the model happened to say last.
+       *
+       * This was `m.text` — the trailing prose — which is empty on every turn that
+       * answers through `reply` or `message`, meaning every turn carrying buttons.
+       * Two things read it and both were wrong in the same way: the `turn` row
+       * recorded a blank reply, and reflection was told the turn said nothing and
+       * scheduled a follow-up to fix the silence it had been told about.
+       *
+       * `m.said` is the real thing, joined because a turn may legitimately send more
+       * than once (a read-back, then the answer) and a reader of either surface wants
+       * both. Falls back to `m.text` so nothing regresses on the prose-only path.
+       */
+      replyText = m.said.length ? m.said.join('\n\n') : m.text
       trace = [...trace, ...m.trace]
       rounds = m.rounds
       committedPlans = m.committedPlans
@@ -307,7 +320,9 @@ async function executeAction(
       ? [{ operation: { name: payload.op as OperationName, args: payload.args } }]
       : payload.steps
   const intent = payload.kind === 'operation' ? `button: ${payload.op}` : payload.summary
-  const res = await executePlan(session, steps, intent)
+  // The tap path is where F8 landed: this receipt goes straight to whoever tapped,
+  // with no model between the commit and their phone.
+  const res = await executePlan(session, steps, intent, audienceFor(identity))
   outcomes.push(...res.outcomes)
 
   if (!res.ok) {
@@ -473,6 +488,13 @@ async function modelTurn(
   outcomes: SendOutcome[]
   toolCalls: number
   text: string
+  /**
+   * Everything this turn actually put in front of the person, in order.
+   *
+   * Distinct from `text`, which is only the model's trailing prose. A turn that
+   * answers through `reply` has plenty of `said` and no `text` at all.
+   */
+  said: string[]
   model?: string
   promptTokens: number
   outputTokens: number
@@ -493,6 +515,7 @@ async function modelTurn(
     fromParsedInput: Boolean(input.media?.length),
     executed: [],
     repliedTo: new Set<string>(),
+    saidToUser: [],
     committedPlans: [],
   }
 
@@ -857,19 +880,26 @@ async function modelTurn(
     // Whichever path the message leaves by, §4.3 holds.
     buttons = withFollowUps(buttons, toolCtx) as { title: string; action: ActionPayload }[] | undefined
 
-    outcomes.push(
-      await composeAndSend(session, {
-        toContactId: identity.contact.id,
-        body: lint(text.trim(), identity),
-        buttons,
-      }),
-    )
+    const trailingBody = lint(text.trim(), identity)
+    const trailing = await composeAndSend(session, {
+      toContactId: identity.contact.id,
+      body: trailingBody,
+      buttons,
+    })
+    outcomes.push(trailing)
+    // Recorded on the same condition as every other send: it counts as having been
+    // said when it landed. A suppressed trailing message is a turn that said nothing,
+    // and reflection should see that rather than a reply nobody received.
+    if (trailing.status === 'sent' || trailing.status === 'queued') {
+      toolCtx.saidToUser?.push(trailingBody)
+    }
   }
 
   return {
     outcomes,
     toolCalls,
     text,
+    said: [...(toolCtx.saidToUser ?? [])],
     model,
     promptTokens,
     outputTokens,

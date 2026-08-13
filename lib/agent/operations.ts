@@ -165,6 +165,64 @@ function isoDate(d: string | Date, tz: string): string {
   return zoned(d, tz).toFormat('yyyy-MM-dd')
 }
 
+/**
+ * Weekday helpers, in the schema's convention.
+ *
+ * `class_slot.weekday` is Postgres `dow`: 0 = Sunday … 6 = Saturday. Luxon counts
+ * 1 = Monday … 7 = Sunday, so the `% 7` is the whole conversion and getting it
+ * backwards is silent — every day still maps to *a* day, just the wrong one.
+ */
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const
+
+function dowOf(isoDay: string): number {
+  return DateTime.fromISO(isoDay, { zone: 'utc' }).weekday % 7
+}
+
+/**
+ * Is the player the person already behind this contact, or somebody new?
+ *
+ * The one place any write path answers that question. Names are compared
+ * case- and punctuation-insensitively because "Rohan Das" and "rohan das" are one
+ * human and an exact `=` on a name is R5 — a constraint that exists and can never
+ * fire. Deliberately conservative: it reuses only on a whole-name match against a
+ * name we already hold for this contact, so "Aarav" booked from his mother's phone
+ * stays a new person, which is the common case and the one that must not break.
+ *
+ * Returns the existing `person.id` to reuse, or null to mint a new one.
+ */
+function resolvePlayerPerson(
+  playerName: string,
+  contact: { personId: string | null; fullName: string | null; profileName: string | null },
+): string | null {
+  if (!contact.personId) return null
+  const want = normalName(playerName)
+  if (!want) return null
+  for (const held of [contact.fullName, contact.profileName]) {
+    if (held && normalName(held) === want) return contact.personId
+  }
+  return null
+}
+
+function normalName(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** `isoDay` itself when it already matches, else the next day that does. */
+function firstMatchingWeekday(isoDay: string, weekdays: Set<number>): string {
+  const start = DateTime.fromISO(isoDay, { zone: 'utc' })
+  if (!weekdays.size || !start.isValid || weekdays.has(start.weekday % 7)) return isoDay
+  for (let i = 1; i <= 7; i++) {
+    const d = start.plus({ days: i })
+    if (weekdays.has(d.weekday % 7)) return d.toFormat('yyyy-MM-dd')
+  }
+  return isoDay
+}
+
 /* ------------------------------------------------------------------------- *
  * Shared reads
  * ------------------------------------------------------------------------- */
@@ -903,9 +961,19 @@ const bookTrial: OperationDef = {
     const contactId = args.contact_id ?? (ctx.role === 'service' ? null : ctx.contactId)
     if (!contactId) throw new Error('book_trial needs the contact this trial is for')
 
-    const [contact] = await q<{ id: string; person_id: string; profile_name: string | null }>(
+    // `full_name` joins in for `resolvePlayerPerson` below: deciding whether the player
+    // IS this contact needs the name the person is stored under, not only the WhatsApp
+    // profile name, which is self-set and is often the parent's when the player is not.
+    const [contact] = await q<{
+      id: string
+      person_id: string
+      profile_name: string | null
+      full_name: string | null
+    }>(
       svc(ctx),
-      `select id, person_id, profile_name from contact where id = ${uid(contactId)} and academy_id = ${uid(ctx.academyId)}`,
+      `select c.id, c.person_id, c.profile_name, p.full_name
+         from contact c left join person p on p.id = c.person_id
+        where c.id = ${uid(contactId)} and c.academy_id = ${uid(ctx.academyId)}`,
     )
     if (!contact) throw new Error('I cannot see that contact')
 
@@ -929,7 +997,31 @@ const bookTrial: OperationDef = {
             order by starts_at limit 1`,
         )
 
-    const playerPersonId = newId()
+    /**
+     * One human is one `person`, whoever is asking.
+     *
+     * This minted a fresh `person` for the player unconditionally, while
+     * `contact.person_id` — the same human, already in scope, already used two steps
+     * down as `account.holder_person_id` — sat right here. For a parent booking for a
+     * child that is correct: holder and player are genuinely two people. For an adult
+     * booking for themselves it produced **two `person` rows with the same name behind
+     * one phone number**, one holding the money and one holding the attendance.
+     *
+     * §6.2 names the self-payer as the n=1 case that must not become a second code
+     * path. `add_family` gets it right; this got it wrong, which is R4 exactly — one
+     * human, two write paths, two identity models. `resolvePlayerPerson` is now the
+     * one place either path answers "is this person already here?", so the next
+     * operation that needs a human cannot invent a third answer.
+     *
+     * Nothing that would expose the damage has ever run — zero tally lines, zero
+     * attendance — so this is being fixed before it can show rather than after.
+     */
+    const existingPersonId = resolvePlayerPerson(args.player_name, {
+      personId: contact.person_id,
+      fullName: contact.full_name,
+      profileName: contact.profile_name,
+    })
+    const playerPersonId = existingPersonId ?? newId()
     const accountId = newId()
     const playerId = newId()
     const startsOn = firstSession ? isoDate(firstSession.starts_at, a.timezone) : today.toFormat('yyyy-MM-dd')
@@ -939,11 +1031,17 @@ const bookTrial: OperationDef = {
     // is what the admin gets instead.
     const steps: PlanStep[] = [
       { note: `a trial for ${args.player_name} in ${cls.name}` },
-      {
-        write: `insert into person (id, academy_id, full_name)
+      // Only when the player is somebody new. Reusing the contact's own person is
+      // what makes a self-paying adult one human instead of two.
+      ...(existingPersonId
+        ? []
+        : [
+            {
+              write: `insert into person (id, academy_id, full_name)
                 values (${uid(playerPersonId)}, ${uid(ctx.academyId)}, ${lit(args.player_name)})`,
-        service: true,
-      },
+              service: true,
+            } as PlanStep,
+          ]),
       {
         write: `insert into account (id, academy_id, holder_person_id, display_name)
                 select ${uid(accountId)}, ${uid(ctx.academyId)}, ${uid(contact.person_id)},
@@ -1877,9 +1975,43 @@ const createClass: OperationDef = {
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
     const classId = newId()
-    const startsOn = isoDate(args.starts_on, a.timezone)
+    /**
+     * A class begins on one of its own weekdays, or it does not begin.
+     *
+     * Asked on a Thursday for "saturday open play 9-11am", the model wrote
+     * `starts_on: 2026-08-16` — a **Sunday** — for a class whose only slot is
+     * `weekday = 6`. `materialize_sessions` walks forward from `starts_on` looking
+     * for matching weekdays, so it correctly produced a first session on Sat 22 Aug
+     * and silently skipped Sat 15 Aug. A whole week of a batch did not exist, the
+     * admin's calendar looked right (the class was there, the slot was right, the
+     * price was right), and the only evidence was the absence of a session on a
+     * date nobody thought to check.
+     *
+     * Model weekday arithmetic is unreliable — the same round set a "remind me on
+     * friday" task three weeks out — and nothing downstream compared the date it
+     * produced against the weekdays it produced in the same breath. Both values are
+     * in scope here, ten lines apart, so the comparison is free.
+     *
+     * It moves the date forward rather than refusing. Refusing would be honest and
+     * would cost a round: the model would have to be told, re-derive the date, and
+     * call again, and it has already demonstrated it is bad at exactly that sum.
+     * The intent ("start it Saturday") is unambiguous — only the arithmetic was
+     * wrong — so the smallest correct start date consistent with both is the one
+     * the person meant. A note goes on the plan so the preview says what happened,
+     * because a silent correction is how the next wrong date gets missed.
+     */
+    const requested = isoDate(args.starts_on, a.timezone)
+    const weekdays = new Set<number>(
+      (args.slots as { weekday: number }[]).map((s) => Number(s.weekday)),
+    )
+    const startsOn = firstMatchingWeekday(requested, weekdays)
+    const moved = startsOn !== requested
     const steps: PlanStep[] = [
-      { note: `${args.name}, ${args.slots.length} slot${args.slots.length === 1 ? '' : 's'} a week` },
+      {
+        note:
+          `${args.name}, ${args.slots.length} slot${args.slots.length === 1 ? '' : 's'} a week` +
+          (moved ? `, starting ${startsOn} — the first ${WEEKDAY_NAMES[dowOf(startsOn)]} on or after ${requested}` : ''),
+      },
       {
         write: `insert into class (id, academy_id, name, venue_id, rate_amount, rate_unit, rate_count, starts_on, ends_on)
                 values (${uid(classId)}, ${uid(ctx.academyId)}, ${lit(args.name)},
@@ -2011,7 +2143,13 @@ const addFamily: OperationDef = {
     for (const p of args.players) {
       // The self-paying adult is holder_person_id = player.person_id. Not a
       // second case — the same objects at n=1.
-      const samePerson = p.name.trim().toLowerCase() === args.holder_name.trim().toLowerCase()
+      //
+      // Through `normalName` so this path and `book_trial`'s answer the question the
+      // same way. It was `trim().toLowerCase()` here, which is a comparison on
+      // unnormalised values (R5): "Deepa  Nair" against "Deepa Nair" is two humans by
+      // that test and one by any other. The two operations disagreeing about what a
+      // person is, in either direction, is the defect — not which rule wins.
+      const samePerson = normalName(p.name) === normalName(args.holder_name)
       const playerPersonId = samePerson ? holderPersonId : newId()
       const playerId = newId()
       if (!samePerson) {

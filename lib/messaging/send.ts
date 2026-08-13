@@ -388,17 +388,36 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     // its own preview. Every one of those is a different bug; all of them arrive here,
     // so the guard belongs here rather than in each of them.
     //
-    // Byte-identical only, and only within a few minutes: a reminder that legitimately
-    // recurs weekly is not a repeat, and near-identical wording is the model's business,
-    // not this gate's.
+    // Byte-identical only: near-identical wording is the model's business, not this
+    // gate's.
+    //
+    // **The window depends on who asked for the message.** Five minutes is right for
+    // a reply — somebody who asks the same question twice deserves an answer twice,
+    // and silence is a worse failure than mild repetition. It is far too short for
+    // proactive traffic, which is where repetition actually happened: reflection
+    // scheduled a follow-up for a greeting it had been told was unanswered, the job
+    // fired an hour later, and a coach who had already tapped `[Looks right]`
+    // received the identical onboarding message a second and a third time. Every
+    // send was outside five minutes, so this gate watched it happen.
+    //
+    // Six hours for unsolicited traffic. Chosen against what legitimately recurs:
+    // the morning brief and evening digest sit ~12h apart, reminders are per-session,
+    // and a weekly reminder is seven days — none of them are touched. What it does
+    // catch is one generator saying the same sentence twice in a working day, which
+    // is a defect in every case anybody has produced.
+    //
+    // Not a substitute for the fix upstream. This is the backstop; the reason
+    // reflection fired at all was a false premise, and that is fixed in `loop.ts`.
+    // A backstop that has to fire routinely is hiding a bug rather than holding one.
     if (msg.body.trim().length > 0) {
+      const window = msg.solicited ? '5 minutes' : '6 hours'
       const dupe = await tx<{ id: string }[]>`
         select id from message
          where contact_id = ${row.contact_id}
            and direction = 'outbound'
            and suppressed_reason is null
            and body = ${msg.body}
-           and queued_at > app.now() - interval '5 minutes'
+           and queued_at > app.now() - ${window}::interval
          limit 1`
       if (dupe.length > 0) {
         return suppress(tx, row, msg, 'repeat', inWindow)

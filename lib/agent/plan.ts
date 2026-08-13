@@ -572,8 +572,51 @@ function plural(table: string, n: number): string {
  * left people unable to tell whether the thing they had just approved had actually
  * happened, which is the one question a receipt exists to answer.
  */
-function buildSummary(diffs: TableDiff[], state: RunState, tense: 'preview' | 'done' = 'preview'): string {
+/**
+ * Who is going to read this sentence.
+ *
+ * `operator` counts rows, because an admin running a business needs the blast
+ * radius and that is who the wording was designed for. `personal` is anybody being
+ * told about *their own* thing — and for them a row count is not a smaller version
+ * of the same information, it is a different and worse message.
+ *
+ * A coach tapped `[Looks right]` on his own onboarding and was told **"Changed 1
+ * coach — they are set up and will get their day from now on."** Third person,
+ * about himself, counting rows, at the exact moment the product is asking him to
+ * believe tapping things works. The same string served both audiences because the
+ * summary is minted once at commit time and replayed by the tap path, where there
+ * is no model in the loop to notice the audience changed (R1).
+ *
+ * The receipt is the only thing this affects. Previews stay operator-shaped:
+ * a preview is always shown to whoever is authorising the change.
+ */
+export type PlanAudience = 'operator' | 'personal'
+
+/** An operator gets the blast radius; everybody else gets a sentence about themselves. */
+export function audienceFor(identity: Identity): PlanAudience {
+  return identity.roles.includes('admin') ? 'operator' : 'personal'
+}
+
+function buildSummary(
+  diffs: TableDiff[],
+  state: RunState,
+  tense: 'preview' | 'done' = 'preview',
+  audience: PlanAudience = 'operator',
+): string {
   const done = tense === 'done'
+
+  // The note is the only part of a plan written in the business's own words —
+  // `add_coach` sets "Deepak Sharma, 3 classes" — so for a personal receipt it is
+  // the whole sentence, and the row arithmetic is dropped rather than translated.
+  // "N people have been told" goes with it: who else heard is an operator's
+  // question, and to the person being told about themselves it reads as surveillance.
+  if (done && audience === 'personal') {
+    const note = state.notes.filter(Boolean).join('; ')
+    const changed = diffs.some((d) => d.count > 0)
+    if (!changed) return 'Nothing changed.'
+    return note ? `Done — ${note}.` : 'Done.'
+  }
+
   const parts = [...diffs]
     .filter((d) => d.count > 0)
     .sort((a, b) => b.count - a.count)
@@ -685,6 +728,8 @@ export async function executePlan(
   ctx: SessionCtx,
   steps: PlanStep[],
   intent: string,
+  /** Who the receipt is for. Defaults to the operator wording this has always used. */
+  audience: PlanAudience = 'operator',
 ): Promise<PlanResult & { auditId: string; outcomes: SendOutcome[] }> {
   const state = emptyState()
   let auditId = newId()
@@ -700,7 +745,7 @@ export async function executePlan(
     assertSomethingChanged(expanded, merged)
     const outcomes = await flushOutbox(ctx, state.staged, auditId)
     await recordAudit(ctx, auditId, intent, steps, merged, state, outcomes)
-    const receipt = buildSummary(merged, state, 'done')
+    const receipt = buildSummary(merged, state, 'done', audience)
     return {
       ok: true,
       auditId,
