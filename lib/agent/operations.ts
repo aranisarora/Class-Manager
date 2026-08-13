@@ -759,10 +759,27 @@ async function liveEnrollments(
        join person pe on pe.id = pl.person_id
        join class c on c.id = e.class_id
       where e.academy_id = ${uid(ctx.academyId)}
-        and e.ended_on is null
+        and ${stillRunning('e', tz)}
         and ${where}
       order by pe.full_name, c.name`,
   )
+}
+
+/**
+ * An enrolment that has not finished YET.
+ *
+ * `ended_on is null` is not that predicate, and the difference is a notice period. "She
+ * is stopping at the end of the month" writes `ended_on = 31 Aug` on the 14th, and for
+ * the seventeen days in between the child is still enrolled, still on the register, and
+ * still being billed. Treating a future end date as already-ended made both churn
+ * operations blind to her: `end_enrollment` refused with "there is nothing to end", and
+ * `end_client` wrote nothing while telling the admin the family had left.
+ *
+ * Leaving is an end date, never a delete — and an end date in the future has not
+ * arrived.
+ */
+function stillRunning(alias: string, tz: string): string {
+  return `(${alias}.ended_on is null or ${alias}.ended_on >= (app.now() at time zone ${lit(tz)})::date)`
 }
 
 /**
@@ -773,16 +790,20 @@ async function liveEnrollments(
  * to a read taken before it — the `not exists` has to run after the UPDATE above
  * it, inside the same transaction, or it deactivates nobody.
  */
-function deactivateStrandedPlayers(ctx: SessionCtx, playerIds: string[]): PlanStep[] {
+function deactivateStrandedPlayers(ctx: SessionCtx, playerIds: string[], tz: string): PlanStep[] {
   if (!playerIds.length) return []
   return [
     {
+      // `stillRunning`, not `ended_on is null` — otherwise "she stops at the end of the
+      // month" deactivates the child TODAY, taking her off every register, reminder and
+      // billing query for a notice period she is still enrolled and still billed for.
+      // Driven: an enrolment ended 31 Aug on the 14th left `player.active = false`.
       write: `update player set active = false
                where academy_id = ${uid(ctx.academyId)}
                  and id in (${playerIds.map(uid).join(',')})
                  and active
                  and not exists (select 1 from enrollment e
-                                  where e.player_id = player.id and e.ended_on is null)`,
+                                  where e.player_id = player.id and ${stillRunning('e', tz)})`,
     },
   ]
 }
@@ -840,7 +861,7 @@ const endEnrollment: OperationDef = {
         requireRows: live.length,
       },
     ]
-    steps.push(...deactivateStrandedPlayers(ctx, [args.player_id]))
+    steps.push(...deactivateStrandedPlayers(ctx, [args.player_id], a.timezone))
     return steps
   },
 }
@@ -898,7 +919,7 @@ const endClient: OperationDef = {
                    and academy_id = ${uid(ctx.academyId)} and ended_on is null`,
         requireRows: live.length,
       })
-      steps.push(...deactivateStrandedPlayers(ctx, [...new Set(live.map((l) => l.player_id))]))
+      steps.push(...deactivateStrandedPlayers(ctx, [...new Set(live.map((l) => l.player_id))], a.timezone))
     }
 
     // The account row itself is kept, deliberately. It carries the tally lines and

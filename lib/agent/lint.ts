@@ -44,7 +44,31 @@ export type LintScope = {
   academy?: { name?: string | null; timezone?: string | null; memory?: string | null } | null
 }
 
-export function lint(text: string, id: LintScope, evidence?: DeliveryEvidence): string {
+/**
+ * `deliveryClaims: false` turns off the two passes that weaken a claim about whether a
+ * message was delivered or read.
+ *
+ * Those passes are aimed at a MODEL asserting something about ONE message it cannot
+ * know — *"she's read it"* — and they are right for that. At the send chokepoint they
+ * are wrong twice over. Nothing has been delivered yet, so `evidence` is always absent
+ * and they always fire; and the traffic that only reaches `send` is runtime-composed,
+ * where "delivered" and "read" are counts computed from `message.status`. The admin's
+ * evening digest came out saying *"9 were sent and 4 have been sent"* over numbers that
+ * meant delivered and read — the delivery-health line, with its own health rewritten
+ * out of it.
+ *
+ * The model path is unaffected: the `reply` tool lints with its own evidence before the
+ * message ever reaches `send`, so a model claim is still checked exactly once, by the
+ * caller that has the evidence to check it against.
+ */
+export type LintOptions = { deliveryClaims?: boolean }
+
+export function lint(
+  text: string,
+  id: LintScope,
+  evidence?: DeliveryEvidence,
+  opts?: LintOptions,
+): string {
   if (!text) return text
   const tz = id.academy?.timezone || 'Asia/Kolkata'
 
@@ -61,7 +85,7 @@ export function lint(text: string, id: LintScope, evidence?: DeliveryEvidence): 
   out = stripDoctrineRefs(out)
   out = stripIdentifiers(out, id)
   out = rewriteTimestamps(out, tz)
-  out = downgradeClaims(out, evidence)
+  if (opts?.deliveryClaims !== false) out = downgradeClaims(out, evidence)
   out = applyVocabulary(out, id.academy?.memory ?? null)
 
   out = out.replace(/\[\[LINK(\d+)\]\]/g, (_m, i: string) => parked[Number(i)] ?? '')
@@ -213,7 +237,17 @@ function stripIdentifiers(text: string, id: LintScope): string {
 
   // Anything else still shaped like an identifier: rate_amount, last_inbound_at,
   // per_session. Humanising keeps the meaning and loses the machinery.
-  out = out.replace(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g, (m) => humanise(m))
+  //
+  // The lookarounds are what stop it eating a UPI handle. `coach_ace@okhdfc` became
+  // "coach ace@okhdfc" — an address nobody can pay to, in the message whose entire
+  // purpose is to be paid — because an underscore inside a handle looks exactly like an
+  // underscore inside a column name. A UPI handle is the one identifier in this product
+  // that a person is supposed to read verbatim, so anything adjacent to `@`, `.` or `/`
+  // is left alone: that is an address, not machinery.
+  out = out.replace(
+    /(^|[^\w@./])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?![\w@./])/g,
+    (_m, before: string, token: string) => `${before}${humanise(token)}`,
+  )
 
   return out
 }
@@ -290,8 +324,19 @@ function localiseEnglishDates(text: string): string {
       )
       .replace(/\b(\d{1,2})\s+([APap])\.?[Mm]\.?/g, (_m, h, ap) => `${Number(h)}${ap.toLowerCase()}m`)
       // "August 17th" / "August 17, 2026" -> "17 Aug"
+      //
+      // `(?!\d)` after the day, because without it "August 2026" parsed as day 20 with
+      // "26" left over and became **"20 Aug26"** — a date that does not exist, in the
+      // one message where being wrong is most expensive. A billing period is written
+      // "<Month> <YYYY>" by `monthLabel`, so every dunning line, every month-end tally
+      // and every recurring charge description carries that shape. It only started
+      // reaching this pass when lint moved to the send path and job-handler bodies came
+      // with it; the bug is older than the move.
+      //
+      // A bare "August 2026" now matches nothing and is left exactly as written, which
+      // is right: it is a month, not a date, and there is nothing to localise.
       .replace(
-        /\b([A-Z][a-z]{2,8})\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*\d{4})?/g,
+        /\b([A-Z][a-z]{2,8})\s+(\d{1,2})(?!\d)(?:st|nd|rd|th)?(?:,\s*\d{4})?/g,
         (whole, month: string, day: string) => {
           const short = MONTHS_LONG[month.toLowerCase()]
           return short ? `${Number(day)} ${short}` : whole

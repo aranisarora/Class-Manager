@@ -1533,10 +1533,18 @@ function report(all: TurnRecord[]): void {
 if (has('child')) {
   await runChild(flag('model'))
 } else {
+  const chosen = CASES.filter(selected)
+  // `--persona coach --case lookup` is an empty intersection, and running it built
+  // two academies, probed nothing and printed a clean report. A harness that reports
+  // nothing wrong because it asked nothing is the trap DRIVING.md opens with.
+  if (!chosen.length) {
+    console.error(c.red('no case matches those filters — nothing would be probed.'))
+    process.exit(2)
+  }
   console.log(
     c.dim(
-      `${MODELS.length} model(s) × ${CASES.filter(selected).length} case(s) across ` +
-        `${new Set(CASES.filter(selected).map((k) => k.stage)).size} stage(s), one fresh academy each`,
+      `${MODELS.length} model(s) × ${chosen.length} case(s) across ` +
+        `${new Set(chosen.map((k) => k.stage)).size} stage(s), one fresh academy each`,
     ),
   )
   for (const model of MODELS) {

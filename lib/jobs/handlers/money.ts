@@ -420,10 +420,17 @@ export async function dunningRun(job: Job): Promise<void> {
   const tz = academy.timezone
 
   // Naming the month is only honest when the whole balance IS that month's.
+  //
+  // The `including` branch is guarded on `periodBilled < outstanding`, not merely on
+  // `periodBilled > 0`, because a partly-paid month makes the month's charge LARGER than
+  // what is left owing — ₹1,200 billed for August, ₹700 paid, ₹500 outstanding — and the
+  // sentence would have read "₹500 is still open, including ₹1,200 for August". A part
+  // cannot exceed its whole; a family reading that has been told something impossible
+  // about their own money, which is worse than being told a vaguer true thing.
   const owedLine =
     Math.abs(outstanding - periodBilled) < 0.005
       ? `${formatINR(outstanding)} for ${monthLabel(period, tz)} is still open.`
-      : periodBilled > 0
+      : periodBilled > 0 && periodBilled < outstanding
         ? `${formatINR(outstanding)} is still open on your account, including ${formatINR(periodBilled)} for ${monthLabel(period, tz)}.`
         : `${formatINR(outstanding)} is still open on your account.`
 

@@ -199,6 +199,11 @@ function asTemplateMessage(
     header: undefined,
     footer: undefined,
     list: undefined,
+    // A template's action is fixed at approval, so a Flow cannot ride one out of window
+    // any more than a `cta_url` can. Left set, the stored row still advertised a form
+    // the wire was not carrying, and the minted `flow_token` reached nobody — a live
+    // action row for a control that was never printed.
+    flow: undefined,
     // A template's buttons are fixed at approval, so a `cta_url` cannot ride one out of
     // window. The link is not lost — the template is a window-opener (§14.7), and the
     // rich interaction happens in-window, for free, after one tap.
@@ -418,11 +423,12 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
         memory: row.academy_memory,
       },
     }
+    const at = (s: string) => lint(s, scope, undefined, { deliveryClaims: false })
     msg = {
       ...msg,
-      body: lint(msg.body ?? '', scope),
-      ...(msg.header ? { header: lint(msg.header, scope) } : null),
-      ...(msg.footer ? { footer: lint(msg.footer, scope) } : null),
+      body: at(msg.body ?? ''),
+      ...(msg.header ? { header: at(msg.header) } : null),
+      ...(msg.footer ? { footer: at(msg.footer) } : null),
     }
 
     const subjects = msg.subjectPersonIds ?? []
