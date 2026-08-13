@@ -13,10 +13,12 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Identity } from '@/lib/types'
+import { modelQuery, type SessionCtx } from '@/lib/db'
 import { repoRoot } from '@/lib/env'
 import { now, inZone } from '@/lib/clock'
 import { catalogDigest } from '@/lib/messaging/catalog'
 import { operationSignatures } from '@/lib/agent/operations'
+import { OPERATION_TOOLS } from '@/lib/agent/tools'
 import { SCHEMA_DOC } from '@/lib/agent/schema-doc'
 import { hotSet } from '@/lib/agent/memory'
 import { vocabularyPreferences } from '@/lib/agent/lint'
@@ -25,6 +27,17 @@ export { lint } from '@/lib/agent/lint'
 
 /** §4.2, in this order, always all loaded. Order is fixed: it is part of the cache key. */
 const BEHAVIOR_MODULES = [
+  // The nine §4.2 modules covered nine situations, and not the one every
+  // business is in on its first day. Onboarding was left to the model to
+  // improvise, and what it improvised was a narration of `onboarding_state`.
+  'onboarding',
+  // The nine modules describe *situations*. Nothing described a *capability*, and
+  // the two most discretionary tools in the product — `schedule` and `remember` —
+  // were named nowhere in 30k characters of behavior. §4.2's whole design is that
+  // a module's trigger condition is how the model knows to reach for something;
+  // there was no trigger for "this is worth coming back to", so it never did:
+  // zero `schedule` calls and three facts across 93 driven turns.
+  'watching',
   'coach-churn',
   'money-dispute',
   'first-contact',
@@ -96,14 +109,31 @@ export function stablePrefix(): string {
   parts.push(
     `# Behavior modules
 
-Nine of them, all of them always in front of you. Each opens with the condition
-under which it applies — that condition is how you know the module is live, not a
-menu you choose from. Two of them applying at once is normal.`,
+All of them, always in front of you. Each opens with the condition under which it
+applies — that condition is how you know the module is live, not a menu you
+choose from. Two of them applying at once is normal.`,
   )
   for (const name of BEHAVIOR_MODULES) {
     parts.push(readDoc(`lib/behaviors/${name}.md`))
   }
 
+  /**
+   * The operations, and where their *arguments* now live.
+   *
+   * This block used to carry all ~20 signatures as prose — 5,789 characters,
+   * 9.4% of the prefix — because `act` declared `args: {type:'object'}` and there
+   * was nowhere else to put them. That was the wrong place twice over: it cost
+   * tokens on every single turn, and it put the argument names tens of thousands
+   * of characters upstream of the decode point, in the one form Gemini's
+   * function-call decoder cannot apply. It applies a declared schema as a hard
+   * constraint while generating; it can do nothing with a paragraph.
+   *
+   * With `OPERATION_TOOLS` on, each operation is its own declaration and its zod
+   * schema is projected into that constraint (`schema-json.ts`). The prose would
+   * then be the same information a second time, in the weaker form, so only the
+   * framing stays — *when* to reach for an operation is a judgement the prefix
+   * should still shape; *what to call the arguments* is the schema's job.
+   */
   parts.push(
     `# Operations
 
@@ -112,8 +142,16 @@ consistent than composing from scratch, and their arguments are already resolved
 for you. They are not gates: a consequence chain nobody anticipated is composed
 as a transaction of steps, with the same atomicity, the same diff and the same
 staged messages.
-
-${operationSignatures().trim()}`,
+${
+  OPERATION_TOOLS
+    ? `
+Each one is a tool you can call directly, and its arguments are on the tool. An
+operation carries consequences raw SQL does not — create_class is the only thing
+that schedules the sessions — so reach for the operation over an INSERT whenever
+one fits.`
+    : `
+${operationSignatures().trim()}`
+}`,
   )
 
   parts.push(
@@ -132,6 +170,22 @@ ${catalogDigest().trim()}`,
 
   cachedPrefix = parts.join('\n\n')
   return cachedPrefix
+}
+
+/**
+ * What the brief and the digest need, and nothing else (§10.2).
+ *
+ * They author no SQL, call no operation and choose no catalog row — they turn a
+ * payload they are handed into prose. So they get the doctrine that governs how the
+ * product sounds, and none of the ~13k tokens of machinery that governs what it does.
+ * Kept here rather than in `loop.ts` so there is one place that knows what a layer is.
+ */
+export function synthesisDoctrine(): string {
+  return [
+    `You are Class Manager, the manager for a coaching business, writing to the person who runs it.`,
+    readDoc('lib/doctrine.md'),
+    `You are not composing a message to send on a schedule. You are deciding what this person should know.`,
+  ].join('\n\n')
 }
 
 // -----------------------------------------------------------------------------
@@ -189,6 +243,124 @@ function formatQueryResults(v: unknown): string {
   }
 }
 
+/* ------------------------------------------------------------------------- *
+ * What actually exists
+ * ------------------------------------------------------------------------- */
+
+/**
+ * A census of the business, from the point of view of whoever is talking.
+ *
+ * The tail already carried who this is, what the business is called, what is
+ * remembered about them and what time it is. It did not carry **what exists** —
+ * so "are there any classes yet?" cost a query the model mostly did not think to
+ * run, and the answer to "what should I do next?" was improvised from nothing.
+ * Driving a brand-new business made that concrete: asked what to do, the bot
+ * narrated its own state machine ("we're in the setup phase, we're building your
+ * roster") because that was the only fact about the business it had.
+ *
+ * Two properties keep this from being a script:
+ *
+ *  - It is **counts, not instructions.** Nothing here says what to do about an
+ *    empty roster. `lib/behaviors/onboarding.md` decides that, and a behavior
+ *    module is a file rather than a branch.
+ *  - It runs **under this person's own RLS**, so a coach's census is their
+ *    classes and a parent's is their children. Nothing needs to remember to
+ *    filter it; the same query returns a different world per person, which is
+ *    the property the whole product is built on.
+ *
+ * Never a precondition: if the census fails, the turn continues without it.
+ */
+async function census(id: Identity): Promise<string | null> {
+  const ctx: SessionCtx = {
+    role: 'user',
+    academyId: id.academyId,
+    personId: id.person.id,
+    contactId: id.contact.id,
+  }
+
+  const q = async (sql: string): Promise<Record<string, unknown> | null> => {
+    const res = await modelQuery(ctx, sql)
+    return res.error ? null : ((res.rows[0] as Record<string, unknown>) ?? null)
+  }
+  const n = (row: Record<string, unknown> | null, key: string): number => Number(row?.[key] ?? 0)
+
+  try {
+    if (id.roles.includes('admin')) {
+      const row = await q(`select
+          (select count(*) from venue) as venues,
+          (select count(*) from class where active) as classes,
+          (select count(*) from class_slot) as slots,
+          (select count(*) from coach where status = 'active') as coaches_active,
+          (select count(*) from coach where status in ('added','invited')) as coaches_waiting,
+          (select count(*) from account) as families,
+          (select count(*) from player where active) as players,
+          (select count(*) from enrollment where ended_on is null) as enrolled,
+          (select count(*) from session where status = 'scheduled' and starts_at > app.now()) as upcoming,
+          (select count(*) from session where status = 'scheduled'
+             and starts_at between app.now() and app.now() + interval '7 days') as this_week,
+          (select count(*) from message where direction = 'outbound'
+             and coalesce(suppressed_reason, '') = ''
+             and contact_id <> '${id.contact.id}'::uuid) as sent_to_others`)
+      if (!row) return null
+      // Each line carries what the count MEANS, because a bare zero is the same
+      // mistake doctrine rule 11 names: true, and not the answer. "0 active
+      // coaches" reads as nothing-to-see; "two added, neither invited, so
+      // neither can see a thing" is the sentence somebody can act on — and it is
+      // still a fact, derived here, not a plan invented by anybody.
+      const waiting = n(row, 'coaches_waiting')
+      const bits = [
+        `${n(row, 'venues')} venue(s)`,
+        `${n(row, 'classes')} class(es) with ${n(row, 'slots')} weekly slot(s)` +
+          (n(row, 'classes') === 0 ? ' — so there is nothing to remind anyone about yet' : ''),
+        `${n(row, 'coaches_active')} active coach(es)` +
+          (waiting
+            ? `, and ${waiting} added or invited who have never onboarded — they cannot see their sessions, will not be reminded, and will not know they are expected anywhere until they are invited and confirm`
+            : ''),
+        `${n(row, 'families')} family account(s), ${n(row, 'players')} player(s), ${n(row, 'enrolled')} live enrolment(s)`,
+        `${n(row, 'upcoming')} session(s) scheduled ahead (${n(row, 'this_week')} in the next 7 days)`,
+        `${n(row, 'sent_to_others')} message(s) ever sent to anyone other than this admin` +
+          (n(row, 'sent_to_others') === 0 ? ' — nobody outside this conversation has heard from this business at all' : ''),
+        id.academy.upi_handle ? `UPI handle set` : `no UPI handle yet, so nobody can pay`,
+      ]
+      return bits.map((b) => `- ${b}`).join('\n')
+    }
+
+    if (id.coachId) {
+      const row = await q(`select
+          (select status from coach where id = '${id.coachId}'::uuid) as status,
+          (select count(*) from class_coach where coach_id = '${id.coachId}'::uuid) as classes,
+          (select count(*) from session_coach sc join session s on s.id = sc.session_id
+            where sc.coach_id = '${id.coachId}'::uuid and s.status = 'scheduled' and s.starts_at > app.now()) as upcoming,
+          (select min(s.starts_at) from session_coach sc join session s on s.id = sc.session_id
+            where sc.coach_id = '${id.coachId}'::uuid and s.status = 'scheduled' and s.starts_at > app.now()) as next_at`)
+      if (!row) return null
+      return [
+        `- their coach record is "${String(row.status ?? 'unknown')}"`,
+        `- assigned to ${n(row, 'classes')} class(es)`,
+        `- ${n(row, 'upcoming')} session(s) ahead of them${row.next_at ? `, the first at ${String(row.next_at)}` : ''}`,
+      ].join('\n')
+    }
+
+    if (id.accountIds.length || id.playerIds.length) {
+      const row = await q(`select
+          (select count(*) from player where active) as players,
+          (select count(*) from enrollment where ended_on is null) as enrolled,
+          (select min(s.starts_at) from session s join enrollment e on e.class_id = s.class_id
+            where s.status = 'scheduled' and s.starts_at > app.now() and e.ended_on is null) as next_at`)
+      if (!row) return null
+      const bits = [
+        `- ${n(row, 'players')} of their children/players on the roster, ${n(row, 'enrolled')} live enrolment(s)`,
+        row.next_at ? `- their next session is at ${String(row.next_at)}` : `- nothing scheduled ahead for them`,
+      ]
+      return bits.join('\n')
+    }
+
+    return `- nothing on file for them yet: no player, no enrolment, no class.`
+  } catch {
+    return null
+  }
+}
+
 /**
  * Layer 4 + the situation. Never cached, and everything time-shaped or
  * tenant-shaped lives here rather than in the prefix.
@@ -205,9 +377,10 @@ export async function variableTail(
   const tz = id.academy.timezone || 'Asia/Kolkata'
   const at = await now()
   const local = inZone(at, tz)
-  const [academyMemory, personMemory] = await Promise.all([
+  const [academyMemory, personMemory, whatExists] = await Promise.all([
     hotSet('academy', id.academyId, id.academyId),
     hotSet('person', id.person.id, id.academyId),
+    census(id),
   ])
 
   const out: string[] = []
@@ -249,7 +422,7 @@ export async function variableTail(
   if (id.playerIds.length) ids.push(`player_id in (${id.playerIds.join(', ')})`)
   ids.push(
     ``,
-    `RLS already scopes every query to what this person may see, so you never add a tenant filter by hand, and zero rows means zero rows — not a permissions problem.`,
+    `RLS already scopes every query to what this person may see, so you never add a tenant filter by hand when READING, and zero rows means zero rows — not a permissions problem. Writing is the other way round: every row you INSERT must set academy_id = app.academy_id() itself.`,
   )
   out.push(ids.join('\n'))
 
@@ -265,7 +438,11 @@ export async function variableTail(
   ]
   if (a.onboarding_state !== 'live') {
     ac.push(
-      `Not live yet: nothing goes out to parents or coaches until the admin says go. Build the roster, message nobody.`,
+      `Not live yet. That is a rule about what you START, not about what you ANSWER: build the roster, send nobody ` +
+        `anything they did not ask for, and no reminders, digests or announcements go out. Someone who messages you ` +
+        `first is a conversation, and you serve it completely — a coach who has just tapped their invite gets their ` +
+        `classes read back and confirms them; a parent who writes in gets a real answer. Going quiet on someone who ` +
+        `spoke to you is not being quiet, it is being broken, and they cannot tell the difference.`,
     )
   }
   ac.push(
@@ -273,6 +450,15 @@ export async function variableTail(
     `Never use the word "academy" in anything you send. Use their own name for the business, or nothing at all.`,
   )
   out.push(ac.join('\n'))
+
+  // --- what exists, from where they stand -------------------------------------
+  if (whatExists) {
+    out.push(
+      `## What exists right now (as this person can see it)\n\n${whatExists}\n\n` +
+        `These are counts, not a plan. They are here so you never have to guess whether something is set up, ` +
+        `and so an empty count is something you can act on rather than something you discover mid-sentence.`,
+    )
+  }
 
   // --- memory hot sets (§5) --------------------------------------------------
   const mem: string[] = [`# Memory`, ``]

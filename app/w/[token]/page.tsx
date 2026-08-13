@@ -8,6 +8,7 @@
  * One route, four purposes:
  *   setup     §7.1 step 1 — the form-shaped part of onboarding, one screen, once
  *   register  §8.2 step 5 — the roster, one screen, one submit
+ *   calendar  §15         — the schedule, the one genuinely spatial answer
  *   view/form §15         — a stored `view_spec`, resolved under this person's RLS
  *
  * An expired or forged token renders a plain page, never an exception.
@@ -19,8 +20,10 @@ import { inZone } from '@/lib/clock'
 import { verifyLink } from '@/lib/web/jwt'
 import type { LinkClaims } from '@/lib/web/jwt'
 import { resolveView, loadViewSpec } from '@/lib/web/views'
+import type { ResolvedComponent } from '@/lib/web/views'
 import { Card, Expired, MUTED, Shell } from '@/components/view/chrome'
 import { RenderComponent } from '@/components/view/render'
+import { CalendarView } from '@/components/view/calendar'
 import { RegisterForm } from '@/components/view/register-form'
 import type { RegisterPlayer } from '@/components/view/register-form'
 import { SetupForm } from '@/components/view/setup-form'
@@ -74,9 +77,97 @@ export default async function LinkPage({
       return <SetupScreen ctx={ctx} academy={academy} token={token} />
     case 'register':
       return <RegisterScreen ctx={ctx} academy={academy} claims={claims} token={token} />
+    case 'calendar':
+      return <CalendarScreen ctx={ctx} academy={academy} token={token} />
     default:
       return <ViewScreen ctx={ctx} academy={academy} claims={claims} token={token} page={page} />
   }
+}
+
+/**
+ * The schedule, as a screen rather than as something the model has to invent (§15).
+ *
+ * **Why this is built in.** A calendar was reachable only inside a model-authored
+ * `view_spec`, and across 93 driven turns the model minted **one** view of any kind —
+ * so the most obviously spatial thing in the product, the one thing a phone genuinely
+ * cannot show well in a chat bubble, was in practice unreachable. §15 says the admin's
+ * ceiling should be highest and that dense or spatial answers belong here; a week is
+ * the canonical example, and it should not depend on the model choosing to compose one.
+ *
+ * The query is **not** authored here in the sense that matters: RLS decides what it
+ * returns. The same statement gives an admin the whole business's week, a coach only
+ * the sessions they are assigned to, and a parent only their own children's — which is
+ * §6.7 doing the work instead of three branches doing it badly.
+ */
+async function CalendarScreen({
+  ctx,
+  academy,
+  token,
+}: {
+  ctx: SessionCtx
+  academy: AcademyRow
+  token: string
+}) {
+  const rows = await withSession(ctx, async (tx) => {
+    return await tx<Record<string, unknown>[]>`
+      select s.id,
+             s.starts_at,
+             s.ends_at,
+             c.name as class_name,
+             coalesce(v.name, '') as venue_name,
+             case
+               when s.status <> 'scheduled' then s.status
+               when exists (select 1 from session_coach sc
+                             where sc.session_id = s.id and sc.declined_at is null
+                               and (sc.confirmed_at is not null or sc.arrived_at is not null))
+                 then 'covered'
+               else 'uncovered'
+             end as status
+        from session s
+        join class c on c.id = s.class_id
+        left join venue v on v.id = coalesce(s.venue_id, c.venue_id)
+       where s.starts_at >= app.now() - interval '1 day'
+         and s.starts_at <  app.now() + interval '21 days'
+       order by s.starts_at
+       limit 200`
+  }).catch(() => null)
+
+  if (!rows) {
+    return (
+      <Unavailable
+        business={academy.name}
+        title="I couldn't load the schedule"
+        body="Ask me in the chat and I'll tell you what's on — that always works."
+      />
+    )
+  }
+
+  const resolved: ResolvedComponent = {
+    spec: { type: 'calendar', query: '', title: 'The next three weeks' },
+    rows,
+    columns: rows.length ? Object.keys(rows[0]) : ['starts_at', 'class_name', 'venue_name', 'status'],
+    page: 1,
+    pageSize: rows.length || 1,
+    hasMore: false,
+    ms: 0,
+  }
+
+  return (
+    <Shell
+      business={academy.name}
+      title="The schedule"
+      subtitle={rows.length ? 'Everything on, for the next three weeks.' : null}
+      offer="Ask me anything about this in the chat — “what's on Saturday”, “move Tuesday to 7”, and I'll do it there."
+    >
+      {rows.length ? (
+        <CalendarView c={resolved} tz={academy.timezone} token={token} />
+      ) : (
+        <Card>
+          <p className={`text-sm ${MUTED}`}>Nothing scheduled in the next three weeks.</p>
+        </Card>
+      )}
+    </Shell>
+  )
 }
 
 async function loadAcademy(ctx: SessionCtx): Promise<AcademyRow | null> {

@@ -1,9 +1,11 @@
 /**
  * lib/agent/lint.ts — Layer 5 (§4.5). Deterministic repair on generated output.
  *
- * Exactly four string operations, because "is it a string operation?" is the
- * whole test for belonging in this layer:
+ * Every pass here is a string operation, because "is it a string operation?" is
+ * the whole test for belonging in this layer:
  *
+ *   0. rewrite Markdown into WhatsApp's markup — the surface has one asterisk
+ *      for bold, no headings, and no link syntax at all
  *   1. strip internal identifiers — uuids and table/column names
  *   2. rewrite machine timestamps into the academy's timezone and idiom
  *   3. downgrade claims the system cannot back — "delivered" where only
@@ -40,6 +42,7 @@ export function lint(text: string, id: Identity, evidence?: DeliveryEvidence): s
     return `[[LINK${parked.length - 1}]]`
   })
 
+  out = toWhatsAppMarkup(out)
   out = stripDoctrineRefs(out)
   out = stripIdentifiers(out, id)
   out = rewriteTimestamps(out, tz)
@@ -48,6 +51,51 @@ export function lint(text: string, id: Identity, evidence?: DeliveryEvidence): s
 
   out = out.replace(/\[\[LINK(\d+)\]\]/g, (_m, i: string) => parked[Number(i)] ?? '')
   return tidy(out)
+}
+
+// -----------------------------------------------------------------------------
+// 0a. markdown that is not this surface's markup
+// -----------------------------------------------------------------------------
+
+/**
+ * The model writes Markdown, because everything it has ever read was Markdown.
+ * WhatsApp is not Markdown: bold is `*one*` asterisk, there are no headings, and
+ * `[label](url)` renders as the literal characters `[label](url)`.
+ *
+ * Left alone, the very first thing a new admin was shown read:
+ *
+ *   `* **Beginners:** Monday, Wednesday, Friday, 6:30pm - 7:30pm`
+ *
+ * — which is correct information wearing four wrong characters, on the screen
+ * where the product makes its first impression. It is the same class as an ISO
+ * timestamp or a table name: right, and not the language of the surface it
+ * landed on. Which is exactly what makes it a lint rule rather than a prompt
+ * one — it is a string operation, and a model under pressure will always
+ * eventually reach for `**`.
+ *
+ * Runs first, so a heading rewritten to bold is still bold after the passes
+ * below have taken their punctuation out.
+ */
+function toWhatsAppMarkup(text: string): string {
+  return (
+    text
+      // Fenced code and inline code survive as-is: WhatsApp has both.
+      // `## Heading` → bold on its own line. Headings do not exist here.
+      .replace(/^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*$/gm, (_m, body: string) => `*${String(body).trim()}*`)
+      // `**bold**` / `__bold__` → the one-character forms.
+      // Bounded to one line on purpose: an unbalanced `**` must not swallow the
+      // rest of the message looking for its partner.
+      .replace(/\*\*\*([^\n*]+?)\*\*\*/g, '_*$1*_')
+      .replace(/\*\*([^\n*]+?)\*\*/g, '*$1*')
+      .replace(/__([^\n_]+?)__/g, '_$1_')
+      // `* item` / `- item` at the start of a line → a real bullet. An asterisk
+      // there is indistinguishable from an unclosed bold marker.
+      .replace(/^[ \t]*[*+-][ \t]+/gm, '• ')
+      // `[label](https://…)` — parked as [[LINKn]] by now — renders literally.
+      .replace(/\[([^\]\n]+)\]\(\s*(\[\[LINK\d+\]\])\s*\)/g, '$1: $2')
+      // A horizontal rule is a Markdown idea.
+      .replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm, '')
+  )
 }
 
 // -----------------------------------------------------------------------------
@@ -103,8 +151,18 @@ const TABLE_WORDS: Record<string, string> = {
   sim_fault: 'fault',
 }
 
+/**
+ * Column values the schema spells in quotes. The model quotes them back —
+ * *"we can set Shuttle Point to 'live'"* — and a quoted lowercase token on
+ * WhatsApp reads as a setting in a system rather than as English. Unquoting is
+ * the whole repair: "set Shuttle Point to live" is what a person would have
+ * said, and the word survives.
+ */
+const STATE_WORDS =
+  /'(setup|roster|ready|live|added|invited|active|ended|prospect|registered|engaged|opted_out|scheduled|cancelled|completed|present|late|absent|cancelled_timely|queued|sent|delivered|read|failed|requested|confirmed)'/g
+
 function stripIdentifiers(text: string, id: Identity): string {
-  let out = text
+  let out = text.replace(STATE_WORDS, '$1')
 
   // "(id: 7f3…)", "[session_id=7f3…]" — the whole parenthetical is machinery.
   out = out.replace(

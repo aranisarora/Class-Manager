@@ -17,47 +17,44 @@
  * Read-then-write would let both win and put two coaches at one court.
  */
 
-import { z } from 'zod'
 import { withSession } from '@/lib/db'
 import type { SessionCtx } from '@/lib/db'
 import { msgError } from '@/lib/messaging/types'
 import type { OperationName } from '@/lib/agent/operations'
 import type { PlanStep } from '@/lib/agent/plan'
+import { checkActionPayload } from '@/lib/agent/steps'
 
 export type ActionPayload =
   | { kind: 'operation'; op: OperationName; args: Record<string, unknown> }
   | { kind: 'steps'; steps: PlanStep[]; summary: string }
   | { kind: 'reply'; text: string } // replays as if the user typed it — goes back through the agent
   | { kind: 'view'; viewSpecId: string }
+  | { kind: 'view'; screen: 'setup' | 'register'; ref?: string }
   | { kind: 'menu'; menu: 'root' | string }
   | { kind: 'noop'; ack: string }
-
-/** §6.5: "fully resolved. no ids to look up." Shape-checked at mint AND at tap. */
-const PayloadSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('operation'),
-    op: z.string().min(1),
-    args: z.record(z.unknown()),
-  }),
-  z.object({
-    kind: z.literal('steps'),
-    steps: z.array(z.unknown()).min(1),
-    summary: z.string(),
-  }),
-  z.object({ kind: z.literal('reply'), text: z.string().min(1) }),
-  z.object({ kind: z.literal('view'), viewSpecId: z.string().min(1) }),
-  z.object({ kind: z.literal('menu'), menu: z.string().min(1) }),
-  z.object({ kind: z.literal('noop'), ack: z.string() }),
-])
+  | { kind: 'handoff'; reason: string; summary: string }
 
 export const DEFAULT_ACTION_TTL_MINUTES = 1440
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/**
+ * §6.5: "fully resolved. no ids to look up." Checked at mint AND at tap, by the
+ * one schema in `lib/agent/steps.ts` that also decides what a plan is — so a
+ * button carrying steps is held to exactly the standard `plan` is held to. A
+ * payload that only *looks* right is the worst kind here: it survives minting,
+ * survives storage, is shown to a person, and dies on the tap, which is the one
+ * moment with no model in the loop to recover.
+ */
 function parsePayload(raw: unknown): ActionPayload | null {
-  const parsed = PayloadSchema.safeParse(raw)
-  if (!parsed.success) return null
-  return parsed.data as unknown as ActionPayload
+  const checked = checkActionPayload(raw)
+  return checked.ok ? (checked.payload as ActionPayload) : null
+}
+
+/** Why a payload was refused, for a caller that can do something about it. */
+export function actionPayloadError(raw: unknown): string | null {
+  const checked = checkActionPayload(raw)
+  return checked.ok ? null : checked.error
 }
 
 /**
@@ -77,7 +74,8 @@ export async function mintAction(
   if (!payload) {
     throw msgError(
       'invalid_action_payload',
-      `an action payload must be fully resolved at mint time (§6.5): ${JSON.stringify(a.payload)?.slice(0, 300)}`,
+      `an action payload must be fully resolved at mint time (§6.5) — ${actionPayloadError(a.payload)}: ` +
+        `${JSON.stringify(a.payload)?.slice(0, 300)}`,
     )
   }
   if (!a.forContactId) {

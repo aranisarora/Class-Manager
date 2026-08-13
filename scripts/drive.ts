@@ -18,12 +18,22 @@
  *   npm run drive -- tick                        # run what is due, without moving time
  *   npm run drive -- thread <contactId> [--turns] [--full]
  *   npm run drive -- cost [contactId]            # tokens, latency, cache, per turn
+ *   npm run drive -- score [contactId]           # the seven axes, as numbers
+ *
+ * The web surface (§15) is half the product and was undrivable, which is most of why
+ * it went untested. These reach it without needing the bot to offer a link first:
+ *
+ *   npm run drive -- link <contactId> --screen setup|register|calendar [--open]
+ *   npm run drive -- open <contactId> [--purpose register] [--n 2]
+ *   npm run drive -- register <coachContactId> [--absent "Aarav,Meera"]
+ *   npm run drive -- submit <contactId> --json '{"kind":"setup", …}'
  *
  * `say` and `tap` print the reply, the buttons, and the flight recorder for that
  * turn — every query the model ran and what came back. That is the whole point:
  * a wrong answer is diagnosable in one command.
  */
 import { c, loadEnvFiles } from './_env'
+import type { LinkPurpose } from '@/lib/web/jwt'
 
 loadEnvFiles()
 
@@ -88,6 +98,46 @@ async function q<T = any>(sql: string, academyId?: string): Promise<T[]> {
   return withSession(svc(id), async (tx) => (await tx.unsafe(sql)) as unknown as T[])
 }
 
+/**
+ * Which business a contact belongs to — by looking, in each of them.
+ *
+ * Every read here runs under a service session pinned to exactly one academy, because
+ * that is how RLS works in this product. The lookup that resolves a contact's tenant was
+ * itself running under `anyAcademyId()`, which is the *first* academy in the world — so
+ * for a contact in any other business it returned zero rows, `academyId` came back
+ * undefined, and every read after it defaulted to the wrong tenant again and found
+ * nothing. `drive thread` printed nothing and exited 0. `drive tap` said "the last
+ * message to that contact has no buttons."
+ *
+ * The failure is the product's own most dangerous shape wearing a driver's clothes: a
+ * tenant-scoped read against the wrong tenant returns empty rather than raising, so the
+ * caller reports "there is nothing there" instead of "I looked in the wrong place". In a
+ * one-academy world it is invisible, which is why it survived — and it made every
+ * finding about a second business unreliable, including "the bot went quiet".
+ *
+ * Memoised, because a driven turn resolves this several times.
+ */
+const academyOfContactCache = new Map<string, string>()
+
+async function academyOfContact(contactId: string): Promise<string> {
+  const cached = academyOfContactCache.get(contactId)
+  if (cached) return cached
+  const { worldAcademyIds } = await import('@/lib/seed')
+  for (const id of await worldAcademyIds({ refresh: true })) {
+    const rows = await withSession(svc(id), async (tx) =>
+      (await tx.unsafe(`select 1 from contact where id = '${contactId}'::uuid limit 1`)) as unknown as unknown[],
+    ).catch(() => [])
+    if (rows.length) {
+      academyOfContactCache.set(contactId, id)
+      return id
+    }
+  }
+  die(
+    c.red(`no contact ${contactId} in any business — \`drive world\` lists who exists.`),
+    c.dim('(a contact id from a business that has been dropped will land here too)'),
+  )
+}
+
 function clip(s: unknown, n: number): string {
   const one = String(s ?? '').replace(/\s+/g, ' ').trim()
   return one.length > n ? `${one.slice(0, n - 1)}…` : one
@@ -102,9 +152,7 @@ const money = (n: unknown) => `₹${Number(n ?? 0).toLocaleString('en-IN')}`
 type Trace = { round: number; name: string; ms: number; args?: any; result?: any; error?: string }
 
 async function showTurn(contactId: string, sinceIso: string, o: { full?: boolean } = {}): Promise<void> {
-  const academyId = (await q<{ academy_id: string }>(
-    `select academy_id from contact where id = '${contactId}'::uuid limit 1`,
-  ).catch(() => []))[0]?.academy_id
+  const academyId = await academyOfContact(contactId)
 
   const msgs = await q<any>(
     `select direction, body, payload, status, suppressed_reason, solicited, catalog_id, created_at
@@ -140,6 +188,12 @@ async function showTurn(contactId: string, sinceIso: string, o: { full?: boolean
       const rows = list.sections.flatMap((s: any) => s.rows ?? [])
       console.log(`     ${c.green(`LIST "${list.buttonText}": ${rows.map((r: any) => r.title).join(' / ')}`)}`)
     }
+    // §14.6 — a link is a button now, so it is no longer in the body where `open` used
+    // to find it. A driver that cannot see the product's own affordances is a driver
+    // that reports them as missing.
+    if (m.payload?.link?.url) {
+      console.log(`     ${c.green(`↗ [ ${m.payload.link.title} ]`)} ${c.dim(clip(m.payload.link.url, 60))}`)
+    }
   }
 
   for (const t of turns) {
@@ -164,6 +218,72 @@ async function showTurn(contactId: string, sinceIso: string, o: { full?: boolean
       if (call.error) console.log(`                  ${c.red(`! ${clip(call.error, 300)}`)}`)
     }
   }
+}
+
+/**
+ * A rendered page as a person would read it: the text, the fields, the buttons.
+ * Not a browser — enough to tell whether the screen says the right things, which
+ * is the question a driver needs answered.
+ */
+/**
+ * Which screen a signed link opens, read off the JWT's own payload.
+ *
+ * No verification here on purpose: this is a driver deciding which of several links
+ * you meant, not a boundary. The real check happens in `verifyLink` when the page
+ * loads, which is where it belongs.
+ */
+function purposeOf(url: string): string | null {
+  const token = url.split('/w/')[1]?.split(/[?#]/)[0]
+  const body = token?.split('.')[1]
+  if (!body) return null
+  try {
+    const json = JSON.parse(Buffer.from(body.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'))
+    return typeof json?.purpose === 'string' ? json.purpose : null
+  } catch {
+    return null
+  }
+}
+
+function renderPage(html: string): string {
+  const body = html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '')
+  const out: string[] = []
+  const inputs = [...body.matchAll(/<(input|select|textarea)\b[^>]*>/gi)].map((m) => {
+    const tag = m[0]
+    const attr = (name: string) => new RegExp(`${name}="([^"]*)"`, 'i').exec(tag)?.[1] ?? ''
+    return `    [${attr('type') || m[1]}] ${attr('name') || attr('placeholder') || attr('aria-label') || '?'}${
+      attr('value') ? ` = ${attr('value')}` : ''
+    }`
+  })
+  const text = body
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|h1|h2|h3|li|tr|label|section)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&#x27;|&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/[ \t]{2,}/g, ' ')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+  out.push(text.map((l) => `    ${l}`).join('\n'))
+  if (inputs.length) out.push(c.dim(`  fields:\n${inputs.join('\n')}`))
+  return out.join('\n')
+}
+
+const MIME: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
+  pdf: 'application/pdf', csv: 'text/csv', txt: 'text/plain',
+  ogg: 'audio/ogg', mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav',
+}
+
+/** A file off the disk, as the composer's 📎 would hand it over: a data URI. */
+async function attach(path: string): Promise<{ dataUri: string; mimeType: string; bytes: number }> {
+  const { readFile } = await import('node:fs/promises')
+  const buf = await readFile(path).catch((e) => die(c.red(`cannot read ${path}: ${e.message}`)))
+  const ext = (path.split('.').pop() ?? '').toLowerCase()
+  const mimeType = flag('mime') || MIME[ext] || 'application/octet-stream'
+  return { dataUri: `data:${mimeType};base64,${buf.toString('base64')}`, mimeType, bytes: buf.length }
 }
 
 async function nowIso(): Promise<string> {
@@ -211,6 +331,33 @@ async function main(): Promise<void> {
       break
     }
 
+    /**
+     * Signup is the operator's, by design: the owner of Class Manager creates a
+     * business, and a stranger messaging the number never can. So making and
+     * unmaking one has to be one command here — before this, the world had two
+     * states, everything or nothing, and trying a second business meant wiping
+     * the first.
+     */
+    case 'drop': {
+      const which = positional[0]
+      if (!which) die(c.red('drive drop <academyId|"name">   — delete a business and everything in it'))
+      const { dropAcademy } = await import('@/lib/seed')
+      const gone = await dropAcademy(which)
+      if (!gone) die(c.red(`no academy matches "${which}" — \`drive world\` lists them.`))
+      console.log(c.green(`dropped ${gone.name}`), c.dim(gone.id))
+      break
+    }
+
+    case 'remove': {
+      const contactId = positional[0]
+      if (!contactId) die(c.red('drive remove <contactId>   — delete a person, their numbers and their rows'))
+      const { dropPerson } = await import('@/lib/seed')
+      const gone = await dropPerson(contactId)
+      if (!gone) die(c.red('no contact with that id — `drive world` lists them.'))
+      console.log(c.green(`removed ${gone.name}`), c.dim(gone.personId))
+      break
+    }
+
     case 'new': {
       const academyId = positional[0] ?? (await anyAcademyId())
       const name = flag('name')
@@ -231,10 +378,20 @@ async function main(): Promise<void> {
     case 'say': {
       const contactId = positional[0]
       const text = positional.slice(1).join(' ')
-      if (!contactId || !text) die(c.red('drive say <contactId> "<what they type>"'))
+      const media = flag('media')
+      if (!contactId || (!text && !media)) die(c.red('drive say <contactId> "<what they type>" [--media <file>]'))
       const at = await nowIso()
-      console.log(`${c.dim('  →')} ${text}`)
-      await api('/api/emulator/inbound', { contactId, text })
+      // §7.1 step 2 is "bring the timetable however it already exists" — a photo,
+      // a forwarded sheet, a voice note — and it is called the single biggest
+      // friction reducer in the product. There was no way to send one of those
+      // from here, so it had never been driven.
+      const attached = media ? await attach(media) : null
+      console.log(`${c.dim('  →')} ${text}${attached ? c.dim(`  [${attached.mimeType}, ${attached.bytes} bytes]`) : ''}`)
+      await api('/api/emulator/inbound', {
+        contactId,
+        ...(text ? { text } : {}),
+        ...(attached ? { mediaUrl: attached.dataUri, mediaMimeType: attached.mimeType } : {}),
+      })
       await showTurn(contactId, at, { full: has('full') })
       break
     }
@@ -274,6 +431,7 @@ async function main(): Promise<void> {
           where contact_id = '${contactId}'::uuid and direction = 'outbound'
             and suppressed_reason is null and payload->'buttons' <> 'null'::jsonb
           order by created_at desc limit 1`,
+        await academyOfContact(contactId),
       )
       const buttons = rows[0]?.payload?.buttons
       if (!Array.isArray(buttons) || !buttons.length) die(c.red('the last message to that contact has no buttons.'))
@@ -283,6 +441,266 @@ async function main(): Promise<void> {
       console.log(`${c.dim('  →')} ${c.green(`[tap] ${button.title}`)}`)
       await api('/api/emulator/inbound', { contactId, actionId: button.actionId })
       await showTurn(contactId, at, { full: has('full') })
+      break
+    }
+
+    /**
+     * The web surface is half the product's UI and could not be driven at all.
+     *
+     * §15's screens are reached by a signed link inside a message, so the only
+     * way to test one was to copy a token out of the database by hand. That is
+     * why the setup form and the register — the two screens onboarding depends
+     * on — had never once been opened by anybody testing this. `open` follows
+     * the link the bot actually sent, exactly as a person tapping it would.
+     */
+    case 'open': {
+      const contactId = positional[0]
+      const which = Number(positional[1] ?? flag('n') ?? '1')
+      const purpose = flag('purpose')
+      if (!contactId) {
+        die(
+          c.red('drive open <contactId> [n]  — follow a link the bot sent'),
+          c.dim('  --purpose setup|register|calendar|view   only links of that kind'),
+          c.dim('  --n 2                                    the 2nd most recent'),
+        )
+      }
+      /**
+       * Every link the bot has sent this person, newest first — not just the newest.
+       *
+       * This used to read exactly one row: `order by created_at desc limit 1`. So a
+       * setup link offered five messages ago was unreachable the moment anything else
+       * with a link arrived, and there was no way to say *which* screen you meant. Half
+       * the reason §15's screens went undriven is that the driver could only ever
+       * follow whichever door the bot had most recently opened.
+       */
+      const rows = await q<any>(
+        `select body, payload, created_at from message
+          where contact_id = '${contactId}'::uuid and direction = 'outbound'
+            and suppressed_reason is null
+            and (payload->'link'->>'url' is not null or body ~ 'https?://')
+          order by created_at desc limit 25`,
+        await academyOfContact(contactId),
+      )
+      // The link button first, the body second: a URL still in a body is a bug now, and
+      // reading it here would hide the bug behind a driver that works anyway.
+      const urls: string[] = []
+      for (const r of rows) {
+        const linked = r?.payload?.link?.url
+        if (linked) urls.push(String(linked))
+        else for (const u of String(r?.body ?? '').match(/https?:\/\/\S+/g) ?? []) urls.push(u)
+      }
+      const matching = purpose ? urls.filter((u) => purposeOf(u) === purpose) : urls
+      const url = matching[which - 1]
+      if (!url) {
+        die(
+          c.red(
+            purpose
+              ? `no ${purpose} link in the last 25 messages to that contact (found: ${
+                  urls.map(purposeOf).filter(Boolean).join(', ') || 'none'
+                })`
+              : `that contact has ${urls.length} link(s) in recent messages — asked for #${which}.`,
+          ),
+          c.dim('  `drive link <contactId> --screen register --session <id>` mints one directly.'),
+        )
+      }
+      console.log(c.dim(`  GET ${url}  [${purposeOf(url) ?? 'unknown'}]`))
+      const res = await fetch(url)
+      const html = await res.text()
+      console.log(c.dim(`  ${res.status} · ${html.length} bytes`))
+      console.log(renderPage(html))
+      break
+    }
+
+    /**
+     * **Mint a screen link directly, as the runtime would.**
+     *
+     * The reason §15's register had never been opened by anybody is not that it was
+     * broken — it is that it was unreachable from here. `open` can only follow a link
+     * the bot has already sent, `CO-REGISTER` goes out as a paid template to an
+     * out-of-window coach, and so the highest-traffic screen after the chat sat behind
+     * a door only the model could open, on a path nobody could drive. `attendance` has
+     * zero rows in every world ever driven, and that is the whole explanation.
+     *
+     * This signs the same JWT `linkFor()` does, for the same person, with the same TTL.
+     * It is the operator reaching past the conversation, which is exactly what a driver
+     * is for — and it deliberately does NOT send a message, so it cannot be mistaken
+     * for testing whether the bot would have offered it.
+     */
+    case 'link': {
+      const contactId = positional[0]
+      const screen = (flag('screen') ?? positional[1] ?? '') as LinkPurpose
+      if (!contactId || !['setup', 'register', 'calendar', 'view'].includes(screen)) {
+        die(
+          c.red('drive link <contactId> --screen setup|register|calendar|view [--session <id>] [--ref <viewSpecId>]'),
+          c.dim('  mints the signed link directly — no message sent, no model call'),
+        )
+      }
+      const academyId = await academyOfContact(contactId)
+      const person = await q<any>(
+        `select person_id from contact where id = '${contactId}'::uuid`,
+        academyId,
+      )
+      if (!person[0]) die(c.red('no such contact'))
+
+      let ref = flag('session') ?? flag('ref') ?? ''
+      if (screen === 'register' && !ref) {
+        // The commonest thing you want is "the register for the class that just ended",
+        // and making somebody paste a uuid to get it is the friction this command exists
+        // to remove.
+        const s = await q<any>(
+          `select s.id, s.starts_at, c.name from session s join class c on c.id = s.class_id
+            where s.status = 'scheduled' and s.ends_at < app.now()
+            order by s.ends_at desc limit 1`,
+          academyId,
+        )
+        if (!s[0]) die(c.red('no finished session to take a register for — pass --session <id>'))
+        ref = String(s[0].id)
+        console.log(c.dim(`  register for ${s[0].name} @ ${s[0].starts_at} (${ref})`))
+      }
+
+      const { signLink, linkUrl, TTL } = await import('@/lib/web/jwt')
+      const token = await signLink(
+        {
+          academy_id: academyId,
+          person_id: String(person[0].person_id),
+          contact_id: contactId,
+          purpose: screen,
+          ...(ref ? { ref } : {}),
+        },
+        TTL[screen],
+      )
+      const url = linkUrl(token)
+      console.log(`${c.dim('  url')} ${url}`)
+      if (has('open')) {
+        const res = await fetch(url)
+        const html = await res.text()
+        console.log(c.dim(`  ${res.status} · ${html.length} bytes`))
+        console.log(renderPage(html))
+      } else {
+        console.log(c.dim('  --open to follow it now, or `drive submit <contactId>` against it'))
+      }
+      break
+    }
+
+    /** Post to the screen's own submit route, the way its form does. */
+    /**
+     * **Take a register without hand-authoring its JSON.**
+     *
+     * `submit --json` needs the session id, every player id and a status each, which
+     * means reading three tables by hand before you can mark one class present. So
+     * nobody ever did: `attendance` has zero rows in every world driven so far, and
+     * everything downstream of it — `client_outcome`, per-session tally lines, the
+     * month-end tally, dunning — has therefore never run either. Eight of twenty job
+     * kinds have never been enqueued once, and most of them are behind this command.
+     *
+     * The roster comes from the session, so the only thing you have to know is who was
+     * missing. Defaults to everyone present, which is §8.2's majority case and the
+     * reason `[All present]` is a chat button rather than a page.
+     */
+    case 'register': {
+      const contactId = positional[0]
+      if (!contactId) {
+        die(
+          c.red('drive register <coachContactId> [--session <id>] [--absent "Aarav,Meera"] [--late "Kiran"]'),
+          c.dim('  everyone not named is marked present'),
+        )
+      }
+      const academyId = await academyOfContact(contactId)
+
+      let sessionId = flag('session') ?? ''
+      if (!sessionId) {
+        const s = await q<any>(
+          `select s.id, s.starts_at, c.name from session s join class c on c.id = s.class_id
+            where s.status = 'scheduled' and s.ends_at < app.now()
+              and not exists (select 1 from attendance a where a.session_id = s.id)
+            order by s.ends_at desc limit 1`,
+          academyId,
+        )
+        if (!s[0]) die(c.red('no finished session with an unmarked register — pass --session <id>'))
+        sessionId = String(s[0].id)
+        console.log(c.dim(`  ${s[0].name} @ ${s[0].starts_at}`))
+      }
+
+      const roster = await q<any>(
+        `select pl.id as player_id, p.full_name
+           from enrollment e
+           join player pl on pl.id = e.player_id
+           join person p on p.id = pl.person_id
+           join session s on s.class_id = e.class_id
+          where s.id = '${sessionId}'::uuid and e.ended_on is null and pl.active`,
+        academyId,
+      )
+      if (!roster.length) die(c.red('nobody is enrolled in that class — the register would be empty.'))
+
+      const names = (f: string) =>
+        (flag(f) ?? '')
+          .split(',')
+          .map((n) => n.trim().toLowerCase())
+          .filter(Boolean)
+      const absent = names('absent')
+      const late = names('late')
+      const hit = (full: string, list: string[]) =>
+        list.some((n) => full.toLowerCase().includes(n))
+
+      const marks = roster.map((r: any) => ({
+        playerId: String(r.player_id),
+        status: hit(String(r.full_name), absent)
+          ? 'absent'
+          : hit(String(r.full_name), late)
+            ? 'late'
+            : 'present',
+        ...(has('timely') && hit(String(r.full_name), absent) ? { timely: true } : {}),
+      }))
+      for (const [i, m] of marks.entries()) {
+        console.log(c.dim(`  ${String(roster[i].full_name).padEnd(24)} ${m.status}`))
+      }
+
+      const person = await q<any>(`select person_id from contact where id = '${contactId}'::uuid`, academyId)
+      const { signLink, linkUrl, TTL } = await import('@/lib/web/jwt')
+      const token = await signLink(
+        {
+          academy_id: academyId,
+          person_id: String(person[0].person_id),
+          contact_id: contactId,
+          purpose: 'register',
+          ref: sessionId,
+        },
+        TTL.register,
+      )
+      const at = await nowIso()
+      const res = await fetch(`${linkUrl(token).replace(/\/$/, '')}/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'register', sessionId, marks }),
+      })
+      console.log(c.dim(`  POST ${res.status}`), await res.text())
+      await showTurn(contactId, at, {})
+      break
+    }
+
+    case 'submit': {
+      const contactId = positional[0]
+      const payload = flag('json')
+      if (!contactId || !payload) die(c.red(`drive submit <contactId> --json '{"kind":"setup",...}'`))
+      const rows = await q<any>(
+        `select body, payload from message
+          where contact_id = '${contactId}'::uuid and direction = 'outbound'
+            and suppressed_reason is null
+            and (payload->'link'->>'url' is not null or body ~ 'https?://')
+          order by created_at desc limit 1`,
+        await academyOfContact(contactId),
+      )
+      const url =
+        rows[0]?.payload?.link?.url ?? (String(rows[0]?.body ?? '').match(/https?:\/\/\S+/g) ?? [])[0]
+      if (!url) die(c.red('no link in the last message to that contact.'))
+      const at = await nowIso()
+      const res = await fetch(`${url.replace(/\/$/, '')}/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      })
+      console.log(c.dim(`  POST ${res.status}`), await res.text())
+      await showTurn(contactId, at, {})
       break
     }
 
@@ -370,12 +788,19 @@ async function main(): Promise<void> {
     case 'cost': {
       const contactId = positional[0]
       const where = contactId ? `where contact_id = '${contactId}'::uuid` : ''
+      // Every read here runs under a service session pinned to ONE academy, and without
+      // this it was whichever academy happened to be first in the world — so `cost
+      // <contactId>` reported "no turns recorded yet" for any contact outside it, which
+      // reads as a product that records nothing rather than a driver looking in the
+      // wrong tenant. Same trap as `showTurn`, which already resolves the tenant.
+      const costAcademy = contactId ? await academyOfContact(contactId) : undefined
       const rows = await q<any>(
         `select to_char(created_at, 'HH24:MI:SS') as t, role_acted, rounds, latency_ms,
                 prompt_tokens, cached_tokens, output_tokens,
                 jsonb_array_length(coalesce(tool_calls,'[]'::jsonb)) as calls,
                 (error is not null) as failed
            from turn ${where} order by created_at desc limit 40`,
+        costAcademy,
       )
       if (!rows.length) {
         console.log(c.yellow('no turns recorded yet.'))
@@ -399,6 +824,159 @@ async function main(): Promise<void> {
           `\n${rows.length} turns · ${tin.toLocaleString()} in / ${tout.toLocaleString()} out · ` +
             `${(tms / 1000).toFixed(0)}s total · ${(tms / rows.length / 1000).toFixed(1)}s avg`,
         ),
+      )
+      console.log()
+      break
+    }
+
+    /**
+     * **The seven axes, as numbers rather than impressions.**
+     *
+     * FINDINGS names this as one of two cheap things nobody has taken, and the argument
+     * for it is that the axes it covers are one SQL statement each over `message`,
+     * `action` and `turn` — so "the bot feels wordy this week" becomes a figure, and a
+     * regression in affordance or plainness shows up without anybody noticing it by eye.
+     * Two of the entries in that ledger were found only because somebody happened to
+     * count by hand.
+     *
+     * Axis 1 (Truth) is the one that matters most and was not queryable at all until
+     * `audit_entry.turn_id` existed (0015). It is queryable now, and it is the first
+     * thing printed: **a reply that claimed a completed action, with no write from that
+     * turn behind it.** Past-tense detection is a heuristic and is labelled as one —
+     * the point is not a perfect count, it is that an unbacked claim stops being
+     * invisible.
+     *
+     * Deliberately not a pass/fail. Nothing here knows what good looks like for a
+     * particular business; a person reading two runs side by side does.
+     */
+    case 'score': {
+      const contactId = positional[0]
+      const n = Number(flag('turns') ?? '200')
+      const academyId = contactId ? await academyOfContact(contactId) : undefined
+      const forContact = contactId ? `and t.contact_id = '${contactId}'::uuid` : ''
+      const msgFilter = contactId ? `and m.contact_id = '${contactId}'::uuid` : ''
+
+      const one = async <T = any>(sql: string): Promise<T> => (await q<T>(sql, academyId))[0] as T
+
+      // --- 1 · Truth -------------------------------------------------------------
+      const truth = await one(`
+        with recent as (
+          select t.id, t.output->>'reply' as reply
+            from turn t
+           where t.created_at > app.now() - interval '30 days' ${forContact}
+           order by t.created_at desc limit ${n}
+        ),
+        claimed as (
+          select id, reply from recent
+           where reply ~* '\\y(i(''| ha)ve |i just )?(added|created|cancelled|canceled|moved|updated|removed|sent|booked|marked|set up|saved|waived|recorded|enrolled|scheduled)\\y'
+        )
+        select (select count(*) from recent) as turns,
+               (select count(*) from claimed) as claims,
+               (select count(*) from claimed cl
+                 where not exists (select 1 from audit_entry a
+                                    where a.turn_id = cl.id and a.diff is not null)) as unbacked`)
+
+      // --- 3 · Friction ----------------------------------------------------------
+      const friction = await one(`
+        select round(avg(rounds), 2) as rounds,
+               round(avg(latency_ms)/1000.0, 1) as secs,
+               count(*) filter (where error is not null) as errored,
+               count(*) as turns
+          from turn t where t.created_at > app.now() - interval '30 days' ${forContact}`)
+
+      // --- 4 · Affordance --------------------------------------------------------
+      const afford = await one(`
+        select count(*) as outbound,
+               count(*) filter (where m.payload ? 'buttons' or m.payload ? 'list') as with_affordance,
+               count(*) filter (where m.payload ? 'list') as with_list,
+               count(*) filter (where m.payload->'link' is not null) as with_link
+          from message m
+         where m.direction = 'outbound' and m.suppressed_reason is null
+           and m.queued_at > app.now() - interval '30 days' ${msgFilter}`)
+      const byKind = await q<any>(
+        `select payload->>'kind' as kind, count(*) as minted, count(consumed_at) as tapped
+           from action where minted_at > app.now() - interval '30 days'
+          group by 1 order by 2 desc`,
+        academyId,
+      )
+      const taps = await one(`
+        select count(*) filter (where input->>'actionId' is not null) as taps,
+               count(*) filter (where input->>'actionId' is null and input->>'source' = 'inbound') as typed
+          from turn t where t.created_at > app.now() - interval '30 days' ${forContact}`)
+
+      // --- 5 · Capability --------------------------------------------------------
+      const tools = await q<any>(
+        `select call->>'name' as tool, count(*) as n
+           from turn t, jsonb_array_elements(coalesce(t.tool_calls,'[]'::jsonb)) call
+          where t.created_at > app.now() - interval '30 days' ${forContact}
+          group by 1 order by 2 desc`,
+        academyId,
+      )
+
+      // --- 6 · Plainness ---------------------------------------------------------
+      const plain = await one(`
+        select round(avg(array_length(regexp_split_to_array(trim(m.body), '\\s+'), 1)), 1) as avg_words,
+               count(*) filter (where array_length(regexp_split_to_array(trim(m.body), '\\s+'), 1) > 60) as over_60,
+               count(*) filter (where m.body ~ '[0-9a-f]{8}-[0-9a-f]{4}-') as with_uuid,
+               count(*) filter (where m.body ~* '\\y(academy|roster|onboarding|setup phase|the system)\\y') as jargon
+          from message m
+         where m.direction = 'outbound' and m.body is not null and m.suppressed_reason is null
+           and m.queued_at > app.now() - interval '30 days' ${msgFilter}`)
+
+      const pct = (a: any, b: any) => (Number(b) ? `${Math.round((100 * Number(a)) / Number(b))}%` : '—')
+      const h = (s: string) => console.log(`\n${c.bold(s)}`)
+
+      h(`1 · truth      ${c.dim('— did it actually do what it said?')}`)
+      console.log(
+        `  ${String(truth.claims)} of ${truth.turns} replies claimed something was done · ` +
+          (Number(truth.unbacked) > 0
+            ? c.red(`${truth.unbacked} with NO write from that turn behind it`)
+            : c.dim('all backed by a write from that turn')),
+      )
+      console.log(c.dim('  (past-tense detection is a heuristic — read the flagged turns, do not trust the count)'))
+
+      h(`3 · friction   ${c.dim('— how much work did the person do?')}`)
+      console.log(
+        `  ${friction.turns} turns · ${friction.rounds ?? '—'} rounds avg · ${friction.secs ?? '—'}s avg · ` +
+          `${friction.errored} errored`,
+      )
+
+      h(`4 · affordance ${c.dim('— could they act without typing?')}`)
+      console.log(
+        `  ${afford.with_affordance}/${afford.outbound} outbound carry a button or list (${pct(afford.with_affordance, afford.outbound)}) · ` +
+          `${afford.with_list} lists · ${afford.with_link} links`,
+      )
+      console.log(`  ${taps.taps} taps vs ${taps.typed} typed inbound (${pct(taps.taps, Number(taps.taps) + Number(taps.typed))} tapped)`)
+      for (const k of byKind) {
+        const rate = pct(k.tapped, k.minted)
+        console.log(
+          `    ${String(k.kind ?? '?').padEnd(10)} ${String(k.minted).padStart(4)} minted  ${String(k.tapped).padStart(4)} tapped  ${rate.padStart(5)}`,
+        )
+      }
+      console.log(
+        c.dim(
+          '  a 100% affordance rate is not a win on its own — the runtime bolts a menu button onto anything bare,\n' +
+            '  so read the per-kind tap rates: they say whether the affordance was worth offering.',
+        ),
+      )
+
+      h(`5 · capability ${c.dim('— what did it actually reach for?')}`)
+      const shown = tools.filter((t: any) => !String(t.tool).startsWith('('))
+      console.log(`  ${shown.map((t: any) => `${t.tool} ${t.n}`).join(' · ') || c.dim('nothing')}`)
+      for (const want of ['schedule', 'view', 'remember', 'recall', 'handoff']) {
+        if (!shown.some((t: any) => t.tool === want)) {
+          console.log(c.yellow(`  never once: ${want}`))
+        }
+      }
+      const silent = tools.find((t: any) => String(t.tool).includes('returned nothing'))
+      if (silent) console.log(c.yellow(`  ${silent.n} rounds produced neither a call nor a word`))
+
+      h(`6 · plainness  ${c.dim('— would this read as English to someone who has never used software?')}`)
+      console.log(
+        `  ${plain.avg_words ?? '—'} words avg · ${plain.over_60} over 60 words · ` +
+          (Number(plain.with_uuid) ? c.red(`${plain.with_uuid} with a uuid`) : c.dim('no uuids')) +
+          ' · ' +
+          (Number(plain.jargon) ? c.red(`${plain.jargon} with invented vocabulary`) : c.dim('no invented vocabulary')),
       )
       console.log()
       break
@@ -433,10 +1011,14 @@ async function main(): Promise<void> {
           '  reset                                   wipe everything (no seed)',
           '  seed [--scenario ace|solo|both]         the deterministic fixture',
           '  academy "<name>" --admin "<person>"     create an academy + its admin',
+          '  drop <academyId|"name">                 delete a business and everything in it',
+          '  remove <contactId>                      delete one person and their rows',
           '  new [academyId] --name X --role client|coach|admin|prospect',
-          '  say <contactId> "<text>" [--full]       type as that person',
+          '  say <contactId> "<text>" [--media f] [--full]   type as that person, with an attachment',
           '  stranger <+91...> "<text>"              an unknown number, cold',
           '  tap <contactId> [n] [--full]            tap the nth button of the last message',
+          '  open <contactId> [n]                    follow the nth link the bot sent, and read the page',
+          "  submit <contactId> --json '{...}'       post that page's form, as they would",
           '  clock +2h | --to <iso> | --next | --reset',
           '  tick                                    run due jobs without moving time',
           '  thread <contactId> [--full]             the whole conversation + flight recorder',

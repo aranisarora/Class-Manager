@@ -158,6 +158,10 @@ function asTemplateMessage(msg: OutboundMessage, template: TemplateName, row: Ro
     header: undefined,
     footer: undefined,
     list: undefined,
+    // A template's buttons are fixed at approval, so a `cta_url` cannot ride one out of
+    // window. The link is not lost — the template is a window-opener (§14.7), and the
+    // rich interaction happens in-window, for free, after one tap.
+    link: undefined,
     buttons: first ? [{ actionId: first.actionId, title: def.quickReply }] : undefined,
     templateName: template,
     templateParams: params,
@@ -170,6 +174,7 @@ function messagePayload(msg: OutboundMessage, extra: Record<string, unknown>): s
     footer: msg.footer ?? null,
     buttons: msg.buttons ?? null,
     list: msg.list ?? null,
+    link: msg.link ?? null,
     media: msg.media ?? null,
     subject_person_ids: msg.subjectPersonIds ?? [],
     is_confirmation_request: Boolean(msg.isConfirmationRequest),
@@ -357,7 +362,21 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     // every reply in the setup conversation was dropped as pre-launch traffic, so the one
     // conversation that has to work before launch was the only one that could not. The
     // roster is still silent — a client or coach is not an admin.
-    if (row.onboarding_state !== 'live' && !msg.preLaunchOk && !row.is_admin) {
+    //
+    // The second exception is anyone who spoke first. §2.6 is a rule about the bot
+    // reaching out, not a rule about the bot answering: "building the roster messages
+    // nobody" is about traffic we initiate. A reply inside someone's own turn is
+    // solicited by construction — `solicited` is set only when the acting session
+    // belongs to the very contact being written to, so no broadcast, digest or job can
+    // acquire it.
+    //
+    // Without this, §8.1's invite could not work at all. The admin forwards the deep
+    // link, the coach taps it and sends the prefilled message — which is the moment the
+    // whole design turns on, because the window opens from their side — and the answer
+    // was dropped as pre-launch traffic. Watched happening: the coach's first contact
+    // with the product was silence, and the schedule read back to them existed, was
+    // correct, and never left the building.
+    if (row.onboarding_state !== 'live' && !msg.preLaunchOk && !row.is_admin && !msg.solicited) {
       return suppress(tx, row, msg, 'pre_launch', inWindow)
     }
 

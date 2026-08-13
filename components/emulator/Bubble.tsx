@@ -267,6 +267,21 @@ export function Bubble({
           </div>
         ) : null}
 
+        {/* §14.6 — the Cloud API's `cta_url`. A real anchor, because the whole claim being
+            tested here is that a person taps a button rather than reading a signed JWT. */}
+        {m.link ? (
+          <a
+            href={m.link.url}
+            target="_blank"
+            rel="noreferrer"
+            title={m.link.url}
+            className="mt-1 flex w-full items-center justify-center gap-1.5 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1.5 text-[12px] text-sky-300 hover:border-sky-600/60 hover:bg-zinc-700/80"
+          >
+            <span className="font-mono text-[10px]">↗</span>
+            <span className="truncate">{m.link.title}</span>
+          </a>
+        ) : null}
+
         {m.list ? (
           <button
             type="button"

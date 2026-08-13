@@ -1,395 +1,356 @@
 # Findings
 
-## The goal this file serves
+## What this file is for
 
-The product is a WhatsApp-native manager for Indian coaching businesses. The chat
-is the whole interface: admin, coach, parent, player and stranger all do everything
-by talking, and there is no app to learn.
+The product is a WhatsApp-native manager for Indian coaching businesses: the chat is
+the whole interface, and the bet under it is a **general agent on general primitives**
+— read with SQL, write with SQL, send, remember, schedule, show a view — bounded by
+the permissions of whoever is talking.
 
-The architectural bet under that is a **general agent on general primitives** — read
-with SQL, write with SQL, send, remember, schedule, show a view — bounded by the
-permissions of whoever is talking. Not a growing list of hardcoded verbs. The spec's
-own reason: hardcoded verbs "cap the product's discoverable surface at its tool
-authors' imagination."
+**The unit of work is a class of failure, never an instance of one.** "The bot cannot
+remember what it looked up" is an entry here. "The cancellation template says the
+academy name twice" is not — it is evidence, and fixing it alone teaches the system
+nothing.
 
-**So the unit of work here is a class of failure, never an instance of one.** "The
-bot cannot remember what it looked up" is an entry. "The cancellation template says
-the academy name twice" is not — it is evidence, and fixing it alone teaches the
-system nothing. Every entry below is a class, with the instances that revealed it.
-
----
-
-## How these were found — the method to continue with
-
-None of this came from reading the code and reasoning about it. Every entry below
-came from **using the product and watching what happened.** Reading the code produces
-plausible theories; three of mine were wrong, and the driving is what corrected them.
-If you are picking this up, work the same loop.
-
-### 1. Make the turn visible before doing anything else
-
-This is the prerequisite, not a nicety. Before it, a wrong answer and a crashed turn
-looked identical from the database — a sentence, and nothing else.
-
-`turn.tool_calls` now records, per turn: every call in order, the SQL verbatim, what
-came back, how long each took, how many rounds, and the real error. `npm run drive`
-prints it under every reply. **Within three turns of the first test it caught a bug
-that had been invisible for the life of the project** (C6). Nothing else in this
-document would have been findable without it.
-
-The corollary: when you find a failure whose cause is not in the recorder, your first
-fix is to put it there. That is how `finishReason` (C2) and the swallowed recovery
-error got surfaced — and `finishReason` is what named the malformed write path.
-
-### 2. Start from an empty world
-
-`npm run drive -- reset` and build the business by talking to it. Do not seed.
-
-The fixture is a 45-day-old academy with a full roster — the state the product spends
-most of its life in, and never the state it starts in. Onboarding had **never been
-run**, and the very first message of the very first test was silently dropped (C3).
-A fixture would have hidden that permanently, because a fixture is already live.
-
-### 3. Be all four audiences, and be difficult
-
-Admin, coach, client, and an unknown number arriving cold. They have different
-permissions, different vocabulary and different tolerance, and the bugs are not the
-same. Type like a person: lowercase, typos, "yeah", half a sentence. "yes please set
-that batch up" found things that a well-formed instruction would not have.
-
-### 4. Judge every turn on six axes
-
-Not just "did it answer". A turn can be correct and still be a defect:
-
-1. **Did it offer a useful next step** — a real button, a list, a view?
-2. **Was the text right for *that* person?** A parent is not an admin.
-3. **Was it bloated, repetitive, or hedging?**
-4. **Was it accurate — the right task, done correctly?**
-5. **How long did it take?**
-6. **What did it cost, and should it be cheaper?**
-
-C10 is a turn that scored full marks on accuracy and was still wrong: "you don't have
-any sessions this week" was true, and read as *there is nothing*.
-
-### 5. Check every claim against the database
-
-The bot's account of what it did is not evidence, and neither is a green tool result.
-Six payment operations reported success and changed nothing; the ids they were given
-did not exist. One `select` against `account` settled it.
-
-The habit: when the bot says it did something, go and look. `npm run drive -- world`,
-`-- money`, or plain SQL.
-
-### 6. When a failure is intermittent, bisect it with a probe
-
-C6 looked like a stalling model. A throwaway script called the real model with the
-real prompt and one variable changed at a time — each tool alone, then all tools, then
-`plan` alone — and the pattern fell out in one run: **`plan` alone with the full
-prompt malformed 2 times in 3, and with all tools available the model silently
-substituted `read` instead.** That is why writes were unreliable and reads were not.
-
-Write the probe, run it three times per condition, delete it.
-
-### 7. Fix at the chokepoint, and only fix classes
-
-Every fix here is at the one place all traffic passes through — the send gate, the
-lint, the tool loop, the doctrine file. If a fix has to be repeated at each call site
-it is the wrong fix: the lint had been bypassed by the main reply path for the life of
-the project precisely because it was applied per-caller (C9).
-
-The test for whether something belongs in this file: **if fixing it teaches the system
-nothing, it is evidence, not an entry.** "The template says the academy name twice" is
-evidence. "User-facing text does not go through the one gate that cleans it" is the
-entry, and it fixed the doubled name, the leaked `(§2.6)`, the database nouns and the
-American date format at once.
-
-### 8. Re-drive after every fix
-
-Each change was re-run through the same conversation immediately. Two of my fixes were
-wrong on the first attempt and the re-run caught both — a menu button one character
-over the wire limit that suppressed the whole message, and a receipt that still read
-in the future tense.
+**This file says what to do and what not to redo. The *why* of each fix lives in a
+comment at the fix site**, which is where somebody changing that code will actually
+be. Do not restate those here.
 
 ---
 
-## C1 · The bot had no memory of what it looked up — FIXED
-
-Every turn rebuilt its context from **message text only** (`recentHistory`,
-`loop.ts`). Tool results — the rows a query returned — never survived the turn that
-fetched them. And §4.5 deliberately strips ids out of message text, so ids could
-*never* survive by construction. Meanwhile the tools demanded ids.
-
-That gap is where invented uuids came from. Asked to chase seven families' fees, the
-model produced six account ids — `1c7b7b7b-7b7b-…`, `2d8c8c8c-8c8c-…`, and four
-more. **None existed.** It had listed those families by name four minutes earlier and
-had nothing left but its own sentence.
-
-**Fixed** — `turn.tool_calls` now records every call with its SQL and results
-(`0010_visibility.sql`), and `recentLookups` feeds the recent reads back into the
-variable tail, newest first, capped, in the uncached part of the prompt. The
-instruction with them is explicit: these are the only ids you may use; if what you
-need is not here, run the query again.
-
-**Still open:** ids are back, but nothing *forces* the point. See C7.
-
----
-
-## C2 · Failure was silent — FIXED (mostly)
-
-Four independent silences, one class: **the system could fail and nobody — not the
-user, not the admin, not the log — would know.**
-
-- A write against a non-existent id returned *"nothing is outstanding on that
-  account"*. Six of those ran, sent zero messages, and reported success.
-- `loop.ts` swallowed the recovery call's exception in a bare `catch {}`, so a dead
-  turn arrived as *"ask me again and I'll have another go."* It could never work.
-- `turn.error` was empty on every one of those turns.
-- An empty model response recorded nothing about *why* — `finishReason` was
-  discarded by `gemini.ts` before anyone could see it.
-
-**Fixed** — `finishReason` is captured and surfaced; the swallowed error is recorded;
-a round that returns neither text nor a call writes a trace line naming the reason;
-and the dead-turn message now distinguishes *"I went round in circles"* from
-*"something broke, repeating won't help"* instead of inviting a doomed retry.
-
-**Still open:** operations still accept ids that do not exist. The fix is to resolve
-every id with a `select` in the same statement and abort when it matches nothing —
-see C7.
-
----
-
-## C3 · Answers to the operator were treated as marketing — FIXED
-
-`DEFAULT_RECIPIENT_CAP_24H = 6` exists so a parent does not get eight messages
-because eight things happened. It was also applied to the admin — the operator, who
-passes six messages before breakfast. Their own confirmation cards were dropped:
-one plan executed against six phantom accounts while the card confirming it was
-suppressed, and the "did it work" reply was suppressed too.
-
-A second instance of the same class: a brand-new academy's owner **could not be
-messaged at all**. The `pre_launch` gate silences a roster that has not launched, and
-the owner was in it — so the one conversation that must work before launch was the
-only one that could not. The very first message of the very first test was dropped.
-
-**Fixed** — `send.ts` now knows whether the recipient is an admin. Admins are exempt
-from the recipient cap and from the pre-launch gate (the roster is still silent — a
-client is not an admin). `flushOutbox` carries `solicited` so a plan's read-back is
-no longer classed as an interruption, and `message.solicited` is persisted so a
-suppression can be diagnosed at all.
-
----
-
-## C4 · Structure was requested, not enforced — PARTLY FIXED
-
-The spec calls the list-picker *"the primary affordance; prose is the fallback"* and
-follow-up buttons *"a first-class pattern, not a nicety."* Measured over every
-message the product had ever sent: **0 lists, 0 menus, 20 of 92 messages with
-buttons** (11 of those hardcoded), and of 34 minted actions, **28 were the weakest
-kind** — a button that types text back so the model re-derives everything.
-`kind:'operation'` had never been minted once.
-
-The mechanism was the whole story: `sendMenu` is fully built, role-aware, reordered
-by memory — and reachable only by tapping a button carrying `{kind:'menu'}`, which
-**nothing ever minted.** The nav bar existed with no door.
-
-**Fixed** — a reply that would otherwise ship bare now carries the door. A
-confirmation that offers only a yes now gets a Cancel (the model reliably writes the
-yes and forgets the no). Both are runtime guarantees, not prompt requests.
-
-**Still open:** lists and views remain unused, `kind:'operation'` buttons remain
-unminted, and `recipe` is still empty — so every UI is improvised rather than
-consistent. This is the largest remaining gap against the vision.
-
----
-
-## C5 · The bot could not see itself — FIXED, and it paid immediately
-
-`turn` recorded the final sentence and nothing else. No tool calls, no SQL, no
-results, no round count.
-
-The first thing visibility caught, on the third turn of the first test: the model
-called a tool named **`PlanSteps`** — which does not exist — **eight times in a row**,
-burning 93 seconds and 165,254 tokens, and the person got *"I'm going round in
-circles."* Under the old logging that turn was an apology with no explanation.
-
-**Fixed** — `turn.tool_calls` and `turn.rounds`; `npm run drive` prints the flight
-recorder under every reply.
-
----
-
-## C6 · The write path was structurally unreliable — FIXED (the big one)
-
-`plan` — the only way the model can write anything it has no named operation for —
-returned **`MALFORMED_FUNCTION_CALL`** two times in three. Measured directly against
-the live prompt: zero output tokens, no candidate, no error anyone could read.
-
-The cause: a plan step is a five-way union nesting three and four deep (a message
-carrying buttons carrying action payloads; a schedule carrying a free-form payload),
-and Vertex's function-call decoder does not survive it.
-
-**The symptom was disguised.** With every tool available, the model quietly fell back
-to `read` instead of retrying `plan` — so *reads always worked and writes
-intermittently did nothing*, which is exactly what looked like a stalling model, an
-invented tool name, or an empty apology. It explains the venue that could not be
-created, and probably most of the "it described what it would do and nothing
-happened" reports.
-
-**Fixed** — steps cross the wire as a JSON string. A string has no shape to malform.
-Validation did not move: `PlanStepSchema` was always the thing that decided what a
-step is. After the change, `plan` is called reliably where it previously malformed.
-
-Two supporting fixes, both generic:
-
-- **An unknown tool name now carries the way out** — the list of real names and the
-  nearest match. `there is no tool called PlanSteps` is true and contains nothing to
-  act on, which is why it was retried eight times.
-- **The loop breaks repetition.** An identical call that already failed this turn is
-  refused with an escalating instruction, and two of them end the loop. No failure
-  can burn eight rounds again.
-
----
-
-## C7 · Trust is keyed to authorship, not consequence — OPEN
-
-The preview rule has five rows. Four measure the *write* — more than one person,
-money, destructive. The fifth measures **who wrote it**: raw SQL always previews,
-a named operation may not.
-
-That row is redundant. The runtime already computes the real answer: the plan runs
-in a transaction, the audit triggers capture the rows touched, and the diff is read
-back before commit. It *knows* the blast radius; it does not need to guess from
-authorship. And the rule taxes exactly the direction the product is going — the
-25-operation registry should shrink to the handful that touch messages, jobs,
-infrastructure tables or undo, with everything else as model-authored SQL.
-
-**Recommended:**
-
-1. Judge a raw write by its measured diff, like everything else. Add a small
-   table-sensitivity list that always previews regardless of row count — `MONEY_TABLES`
-   is already half of it; `academy` settings and `sender` credentials belong in it.
-2. **Expose `write.requireRows` to the model.** It is stripped today alongside
-   `write.service`, but the two are not alike: `service` is privilege (it runs as
-   `cm_service`, a full RLS bypass — keep it stripped), while `requireRows` is an
-   *assertion*, and allowing it is strictly safer than forbidding it. Every one of
-   C1's six phantom writes would have aborted under `requireRows: 1`.
-3. **Ids come from subqueries, not from memory.** `where account_id = (select id
-   from account where …)` instead of a literal uuid, enforced by a lint that rejects
-   a bare uuid literal in a `where` clause. This makes the whole invented-id class
-   structurally impossible rather than caught-if-we-remember.
-
----
-
-## C8 · The system narrates its own plumbing as news — FIXED
-
-The evening digest reported *"14 failed and another 14 were suppressed… a failure
-rate this high is unusual and could point to an issue with some contact numbers or
-the account itself."* Those were **the same fourteen rows** — a suppressed message
-carries status `failed` too — and every one of them was the frequency cap firing.
-The digest reported the call coming from inside the house as an outage. Then it was
-frequency-capped itself.
-
-Driving a brand-new academy reproduced the class in a worse form: the morning brief
-announced *"the first welcome messages went out to families yesterday… 4 of those
-have failed"* — **no welcome messages were ever sent.** It was reading the admin's
-own test conversation and narrating it as a business event.
-
-**Fixed** — delivery health now excludes the admin's own thread (the operator using
-the tool is not traffic to families), counts gated and failed as disjoint, and names
-gates by reason with an explicit note that a gate is a decision and never a delivery
-failure. The regenerated digest is accurate and hedges honestly.
-
----
-
-## C9 · User-facing text was not going through the one gate that cleans it — FIXED
-
-The §4.5 lint ran on exactly one path: the loop's own trailing message. The path the
-model actually uses — the `reply` tool — **skipped it entirely**, so most outbound
-text in the product was never linted. Uuids, table names, ISO timestamps and doctrine
-references were one call away from a customer's phone.
-
-Three leaks found while driving, all now closed at that gate:
-
-- **`(§2.6)` in a message to a person.** An internal citation, on WhatsApp, cited at
-  someone who has never seen the document. Same class as a uuid: correct, not English.
-- **Table nouns in receipts** — *"add 2 persons, add 1 contact and add 1 account"*.
-  The summary is quoted verbatim to whoever confirms, so schema names arrive on a
-  phone. Now people / phone numbers / family accounts.
-- **Foreign date idiom** — *"Monday, August 17th at 6:00 PM"*. Not an ISO timestamp,
-  so the old pass ignored it; not how anyone in Bangalore writes a time to a parent.
-  Now "Mon 17 Aug, 6pm".
-
-Also fixed here: **the receipt reused the preview's future tense.** After committing,
-people were told *"that'll change 1 session"* — leaving them unable to tell whether
-the thing they just approved had happened, which is the one question a receipt
-answers. Previews say "that'll"; receipts say "changed".
-
----
-
-## C10 · Zero rows was treated as the whole answer — FIXED
-
-A coach asked for the week's schedule and was told *"you don't have any sessions
-scheduled for this week."* True — and it reads as *there is nothing*, which is a
-different and wrong sentence. His first session was four days away.
-
-Same class, one instance earlier and worse: a parent asking about Saturday was told
-*"there are no other Saturday batches currently available"* when her daughter's
-Saturday batch ran the following week. And an admin asking for the schedule was told
-*"no upcoming batches"* against fourteen scheduled sessions.
-
-**Fixed** — doctrine rule 11: report the empty set, then the nearest thing to it.
-Re-tested: *"You have 8 sessions scheduled, starting next week. Your first is
-Mon 17 Aug, 6pm – 7pm."*
-
----
-
-## C11 · Cost and latency — OPEN
-
-Measured over 20 driven turns: **27.5s average, 699k prompt tokens in, 33k out.**
-
-- **Latency is the product risk.** Half a minute is a long time to leave a parent
-  looking at a chat. The worst turn before the fixes was 93s.
-- **Round count is the cost driver.** The stable prefix is ~13k tokens and is paid in
-  full on every uncached round, so an 8-round turn costs 8× the prefix — the 165k
-  turn was one mis-typed tool name. C6's repeat-breaker caps the worst case; a
-  no-progress detector would cap it harder.
-- **Cache ratio is bimodal**: 86–93% on turns with conversation history, **0% on the
-  first turn of a conversation and on every synthesis turn.** Worth understanding
-  before optimising anything else — a cold first turn is the one a stranger sees.
-
----
-
-## What is still open, in order
-
-Each of these is a class, stated so it can be picked up cold. Work them in this
-order — 1 removes a whole failure mode, 2 is the largest gap against the vision, and
-3 is the one a customer feels. Re-drive after each, per method step 8.
-
-1. **C7** — preview by consequence, expose `requireRows`, ban bare uuid literals in
-   `where` clauses. This closes the invented-id class structurally.
-2. **C4** — lists, views, `kind:'operation'` buttons, and recipes as instruction
-   packs. `recipe` is designed, empty, and is the mechanism for consistent UI and
-   for staged flows like onboarding.
-3. **C11** — latency and the cold-start cache.
-4. **Shrink the operation registry** to the ones that earn it: messages, jobs,
-   infrastructure tables, undo. Roughly 8 of 25.
-
----
-
-## Appendix · how to reproduce any of this
-
-```bash
-npm run dev                                     # the emulator API this drives
-npm run drive -- reset                          # empty world, no fixture
-npm run drive -- academy "X" --admin "Y"        # a business at `setup`, nothing in it
-npm run drive -- say <contactId> "..."          # be that person; prints the flight recorder
-npm run drive -- stranger +91... "..."          # an unknown number, cold
-npm run drive -- tap <contactId> [n]            # tap the nth button
-npm run drive -- clock --next | +2h | --to <iso>
-npm run drive -- thread <contactId> [--full]    # the whole conversation, annotated
-npm run drive -- cost                           # tokens, cache ratio, latency per turn
+## If you are an agent about to drive this
+
+Read §"The roots" and §"What has never been driven" before you start, and §"How to
+record a finding" before you write anything. Several agents write into this file. A
+finding nobody can compare against another finding is worth about half of one.
+
+**Three rules that save the most time:**
+
+1. **Check the roots table first.** Most new defects are another instance of a root
+   already listed. The cheap win is nearly always an already-known root somebody has
+   not finished applying, not a new one.
+2. **Do not report an instance.** "The reply said 6:30pm when the row says 06:30" is
+   evidence. The finding is "read-backs are composed from intent rather than from what
+   was written." If you cannot state the class, you have not finished looking.
+3. **A green tool result is not evidence.** Check the database. `drive score`,
+   `drive world`, `drive money`. Twice in earlier rounds the bot said "I've added those
+   families" and the database disagreed — once because nothing ran, once because it ran
+   twice, and the transcript reads identically in both cases.
+
+### How to record a finding
+
+Append to §"The log" at the bottom. One block per finding, this exact shape:
+
+```
+### F<n> · <one sentence naming the CLASS, not the instance>
+
+**Root:** R1–R9, or `new` with an argument for why none of them fits.
+**Saw:** the shortest reproduction. Command, what came back, what the database said.
+**Blast radius:** who is hurt and how they would find out. "Nobody would" is the
+worst answer and the most important one to write down.
+**Confidence:** certain / likely / suspected. Say which, and never round up.
+**Where you think it lives:** file, or "unknown — here is what I ruled out".
 ```
 
-The four audiences all run against one academy built entirely through conversation:
-admin onboards → adds a coach → adds a family → goes live → parent asks about their
-child → coach asks about their week → a stranger enquires from an unknown number →
-the clock advances and the brief and digest fire.
+Number sequentially from the last `F<n>` in the file. If two agents collide on a
+number that is fine — the later reader will merge them; a lost finding is worse than a
+duplicated one.
+
+**Do not edit anybody else's block, and do not fix anything you find.** A separate
+pass reads this file and fixes roots. If you fix as you go, the next agent drives a
+different product from the one the rest of the file describes, and the round's findings
+stop being comparable.
+
+**Write the null results too.** "Drove the whole coach ladder with families on it, no
+defect found" is one of the most valuable lines you can add, because it is the only
+thing that turns "assume broken" into "known good", and nobody else has to redo it.
+
+---
+
+## Finding the root, and knowing when you have
+
+A bug you can see is almost never the thing to fix. The product is a model on top of
+primitives, so **the same root produces a different-looking failure every time it
+fires** — which is why fixing what you saw makes the bot reliable at that one thing
+and no more reliable overall.
+
+Four tests, applied in order.
+
+**1. What would have had to be true for this to be impossible?**
+If the answer is *"the model would have to remember"*, you have not found the root.
+If it is *"the schema would have refused it"*, *"the gate would have dropped it"*,
+*"the mint would have rejected it"*, you have. Behaviour belongs at the lowest layer
+that can hold it: pushed down, it becomes free and unforgettable.
+
+**2. Would this fix have to be repeated somewhere else?**
+If yes, you are at a call site, not a chokepoint. Walk up until there is exactly one
+place all the traffic passes. The lint had been bypassed by the product's main reply
+path for its entire life precisely because it was applied per-caller.
+
+**3. Does the fix make a *category* of thing work, or one thing?**
+"Validate this view's query" is an instance. "Run every view's queries at mint" is a
+root. The second one also fixed views nobody has written yet.
+
+**4. What does this fix take away?** New, and added because three of the last round's
+fixes were correct and each removed a capability nobody was measuring (R9). Every
+guarantee costs something. If you cannot say what, you have not looked.
+
+---
+
+## The roots
+
+Every entry in the ledger is an instance of one of these nine. **When you find a new
+defect, check these first.**
+
+| Root | Instances | Where else to look |
+|---|---|---|
+| **R1 · Validation happens after the last moment it could be repaired.** Something invalid is accepted at compose time and dies at the tap, in a job, or on a person's screen — where there is no model in the loop and nobody to recover. | C12, C16, C24, C13 | Anything minted, staged or scheduled now and executed later: `schedule`'s payloads, catalog moments, staged plan messages, recipes. |
+| **R2 · A capability exists with no way to reach it.** From outside, indistinguishable from a model that never wants it. | C14, C13, C4, C45 (recipe capture had no call site), C46 (the register had no drivable door) | `form` and the rest of §15's component registry. Anything whose only caller is the model. |
+| **R3 · The runtime knows something and does not tell the model.** It then guesses, and the guess is confident. | C15, C16, C20, C41 | Anywhere the model asks a question the runtime could have answered: coverage, balances, what a gate would do before it tries. |
+| **R4 · A guarantee is enforced on one path when several exist.** Which path a turn takes is the model's choice, so a guarantee that depends on it is not a guarantee. | C21, C22, C12, C9, C26 | Every place with both a "model does it" and a "runtime does it" branch: preview→commit, menus, escalation, digests. |
+| **R5 · A comparison is made on unnormalised values.** The constraint exists and can never fire. | C19, C34 | Names used as keys, class and venue matching by name, dedupe keys, idempotency keys. |
+| **R6 · What the product records is narrower than what it changes.** Invisible to previews, to undo, and to anybody debugging. | C18, C5, C47 (`audit_entry` had no `turn_id`) | `sender` credentials, `memory_fact`, `job` payload changes. |
+| **R7 · Doing nothing succeeds.** A write that matches no row, a lookup that finds nothing, an id that names nothing: Postgres does not consider any of these an error, so `ok: true` comes back and the reply says it is done. **This is the only root whose failures a reader of the transcript scores as a pass.** | C37, C36, C39, C33 | Every `update … where` in the registry; every operation that falls back to a placeholder when a lookup misses; RLS-refused writes, which are the silent case by construction. **And test harnesses**: `rls-check.mjs` prints "13 passed, 0 failed" while skipping its cross-role and family-privacy sections entirely when the fixture world is absent. |
+| **R8 · A capability is reachable and never chosen, because nothing names the situation that calls for it.** R2 is a door with no corridor; this is a door with no sign. The behavior modules described nine *situations* and not one *capability*, so `schedule` and `remember` were named nowhere in 30k characters of behavior and were called 0 and 3 times in 93 turns. | C48 (`watching.md`), C4's menu | Any tool whose use requires a judgement *in addition to* answering. Ask of each: which module's trigger condition would make me reach for this? |
+| **R9 · An optimisation removed a capability nobody was measuring.** The fix was correct, the measurement that justified it was sound, and the thing it cost was not in the measurement. All three instances were introduced by the previous round and found by the one after. | C29 (thinking→0 bought decisive tool calls, cost every discretionary one), C30 (saving a round closed the only slot `remember` could run in), C44 (a mint-time floor took views from over-minted to never) | Every constant introduced "because measured". Re-read what the measurement actually covered. **Apply test 4 to your own fixes.** |
+
+---
+
+## What to measure
+
+`npm run drive -- score [contactId]` prints axes 1 and 3–6 straight off the tables.
+Run it at the start and end of a session and put both numbers in your findings.
+
+"Did it answer?" is not a bar. A turn can answer correctly and still be a defect —
+and the defects that matter most are the ones a reader of the transcript scores as a
+pass. Seven axes, in the order a failure hurts.
+
+**1 · Truth — did it actually do what it said?** The most important, because the
+failure is silent and reads as success. `audit_entry.turn_id` exists now (migration
+0015), so this is a query rather than an eyeball: for every reply claiming a completed
+action, an audit entry with a non-empty diff from that turn. `drive score` prints it
+first. **The past-tense detection is a heuristic — read the flagged turns.** Target:
+zero unbacked claims. Not "few".
+
+**2 · Correctness — was it the right thing, done right?** Distinct from Truth: it can
+honestly do something, and the something is wrong. Not derivable; read the diff in
+`audit_entry` against what was asked. `turn.tool_calls` holds the SQL.
+
+**3 · Friction — how much work did the *person* do?** Inbound messages before it was
+done, questions the bot asked back, taps versus typed characters. Watch for a bot that
+asks one question per fact.
+
+**4 · Affordance — could they act without typing?** **Do not read the headline
+percentage.** It sits at 100% because the runtime bolts a menu button onto any message
+that would otherwise be bare. Read the per-kind tap rates, which `drive score` breaks
+out. The historical shape: `menu` 31 minted / 1 tapped, `reply` 78 / 6, `steps` 18 / 9.
+The only kind that earns taps is the one the *runtime* mints.
+
+**5 · Capability — do they know what it can do?** `drive score` lists which tools were
+reached for and names the ones never called at all. Read it as three audiences: an
+admin needs breadth, a coach needs their three verbs obvious, a parent needs one useful
+thing on first contact.
+
+**6 · Plainness — would this read as English to someone who has never used software?**
+Words per message, anything over 60, uuids, invented vocabulary. Anything deterministic
+you find here is a lint rule, not a note.
+
+**7 · Cost — seconds and tokens.** `drive cost`. **Rounds are the driver**: the stable
+prefix is paid on every uncached round, so a turn that goes round twice costs twice.
+
+---
+
+## Where the product actually stands
+
+Measured over 93 turns across 5 driven businesses, before this round's changes. Treat
+every number as a baseline to beat, not as a fact about the current build.
+
+| | Then | Why it matters |
+|---|---|---|
+| `schedule` / `agent_task` calls | **0, ever** | §13.1 is what makes the proactive surface open-ended; without it §3's claim is false |
+| `memory_fact` rows | **3** | §5 drives vocabulary, per-person timings and menu ordering; all inert at 3 |
+| `recipe` rows | **0**, and no code path could write one | §14.3 |
+| `view_spec` rows | **1** | 9 components, ~2,300 lines of React |
+| `attendance` / `tally_line` / `payment` | **0 / 0 / 0** | the entire money half of the spec |
+| `session_coach` confirmed / arrived | **0 / 0** of 55 rows | coverage — §6.3's "most important derived value" — has never been true from a real confirmation |
+| coaches reaching `active` | **1 of 7** | §11.3 |
+| job kinds never enqueued | **8 of 20** | `client_outcome`, `monthly_lines`, `month_end_tally`, `dunning`, `reconcile`, `memory_curate`, `coach_not_onboarded`, `agent_task` |
+| stable prefix | **58,309 chars ≈ 16k tokens** | §4.4 budgets ~8k |
+| turn cost | 45k prompt / 2k output, 2.2–3.7 rounds, 14–29s, cache 63–79% | a warm turn measured 96% cached; the average is dragged down by cold first turns |
+
+**The shape of it: the floor is strong and the ceiling is unused.** RLS holds, plans
+cannot half-commit, buttons cannot be minted un-tappable, silence gets caught. Every
+capability that requires the model to *choose* it was at or near zero. That is R8 and
+R9, and it is the thing this round attacked.
+
+---
+
+## Changed this round — verify these first
+
+Each is a class. The reasoning is in a comment at the file named. **Nothing below has
+been driven properly. Assume each is wrong until you have seen it work.**
+
+| # | Class | Where |
+|---|---|---|
+| **C45** | **§14.3's recipes could never exist.** `captureRecipe` and `applyRecipe` had zero call sites anywhere, so `recipe` was a table nothing could write to and `matchRecipe` ran a guaranteed-null query on every text turn. Capture now fires on a committed plan that cost ≥3 rounds. **The value is rounds, not tokens** — a match riding in the tail costs ~1.2k characters and saves a whole prefix pass. | `lib/agent/recipes.ts` (`captureIfExpensive`), `lib/agent/loop.ts` |
+| **C46** | **Half the product could not be driven, so it was never tested.** `drive open` could only follow the newest link the bot happened to have sent, and `CO-REGISTER` goes to an out-of-window coach as a template — so §15's highest-traffic screen sat behind a door only the model could open. `attendance` = 0 in every world ever driven is that, and nothing else. | `scripts/drive.ts` (`link`, `open --purpose`, `register`, `score`) |
+| **C47** | **A write could not be traced to the turn that caused it**, so axis 1 was not queryable. Carried as a GUC set in `applySession`, not as an argument, so all four write paths get it without any of them remembering to. | `supabase/migrations/0015_audit_turn.sql`, `lib/db.ts` |
+| **C48** | **The behavior layer described situations and never capabilities**, so nothing ever told the model when to watch something or keep a fact. R8's first instance. | `lib/behaviors/watching.md` (new), `lib/agent/context.ts` |
+| **C49** | **The prompt asked for something the loop made impossible.** The tail says "write new facts after replying, never instead of replying"; the loop ends the turn the moment a reply lands. §5 already said where this belongs — asynchronously, after the turn — and it now runs there, with a ~300-token prompt instead of the 16k prefix, and only offering the tools the turn did not already use. | `lib/agent/loop.ts` (`reflect`) |
+| **C50** | **Zero thinking was applied to every turn shape, including the ones that are pure judgement.** C29's measurement was sound and covered composition only. The budget is now a tier chosen per turn. | `lib/agent/gemini.ts` (`TURN_THINKING`), `lib/agent/loop.ts` |
+| **C51** | **The digest paid 16k tokens of schema, operations and catalog it cannot use** — on the most expensive model in the product, twice a day, and uncached, because `cachedContentFor` needs tools and synthesis declares none. | `lib/agent/context.ts` (`synthesisDoctrine`), `lib/agent/loop.ts` |
+| **C52** | **The web surface was a one-way door.** The setup form's button said "Save and go back to the chat" and its success state said "Back to the chat"; neither was a link, and the page opens in a new tab. A promise the runtime cannot keep, in the one place with no model in the loop. Also: `calendar` is now a built-in screen rather than something the model must compose, and the mintable component list is narrowed to `table` / `prose` / `calendar`. | `components/view/back-to-chat.tsx` (new), `app/w/[token]/page.tsx` (`CalendarScreen`), `lib/web/registry.ts` (`MINTABLE`) |
+| **C53** | **The emulator's own instrument was broken, and every symptom made the product look broken rather than the tool.** The SSE route awaited the database before emitting its first frame — and a promise returned from `start()` gates the response headers — so `EventSource` sat in `CONNECTING` for tens of seconds and degraded to polling, which then saturated the pool and kept it there. Separately, **latency here is round-trip *count*, never distance**: one trip to the pooler measures ~37 ms, `withSession` + one query is ~151 ms (exactly four trips), and the old preamble spent three or four on its own. `worldState()` then paid that per tenant, in series, ten times. `GET /api/emulator/state`: **6.0s → 1.2s**. Every individual statement was fast the whole time, which is why nothing pointed at SQL would have found it. | `app/api/emulator/stream/route.ts`, `lib/db.ts` (`applySession`), `lib/seed.ts` (`worldState`) |
+| **C54** | **The clock's "set" button always submitted the time it already was.** `onBlur` fires before `onClick`, an effect keyed on `editing` overwrote the typed value from the live clock, and the handler then read the reverted value. Indistinguishable from a dead button. | `components/emulator/ClockBar.tsx` |
+| **C55** | **The emulator could not make a business, and its world picker named three that did not exist.** `POST /api/emulator/academy` had been built and nothing called it; the "world" dropdown listed seed fixtures under academy names, so trying a second tenant meant wiping the first. | `components/emulator/ContactTray.tsx`, `lib/emulator/state.ts`, `components/emulator/ClockBar.tsx` |
+
+**One defect was introduced and caught within the same turn, and it is the most
+instructive thing here.** C49's reflection pass, on its first live run, scheduled a
+second watch for a request the main loop had already scheduled — one sentence from the
+admin, two watches, and they get chased twice. The instructional fix ("do not repeat
+what you already did") is the one that fails intermittently. The structural fix is that
+reflection is not *given* a tool the turn already used. **A fix for R9 produced an R4,
+inside ten minutes.** Every new slot is a new path, and a guarantee that lives on one
+path is not a guarantee.
+
+---
+
+## What has never been driven
+
+**Assume every line here is broken.** In rough order of what a round would learn most
+from.
+
+1. **A business with families in it, walked through the whole clock.** The coach ladder
+   fires — `CO-DAY`, `CO-COMING`, `CO-NUDGE`, `AD-ESCALATE-UNCONFIRMED`,
+   `post_class_register` — and has never once been *answered*: 0 confirmations, 0
+   arrivals, 0 declines across 55 `session_coach` rows. Coverage has never been true.
+   Everything downstream of a tapped `[Yes, I'm coming]` is untested by construction:
+   escalation clearing, `CL-SESSION-TROUBLE` suppression, the arrival claim ladder,
+   `CO-COVER-OFFER`.
+
+2. **The register, and everything behind it.** `drive register` exists now and takes a
+   roster without hand-authored JSON. One marked register opens `client_outcome`,
+   per-session tally lines, the month-end tally and dunning — 8 dead job kinds.
+
+3. **Money, end to end.** Zero tally lines and zero payments have ever existed. Rail 1
+   is: bot sends the UPI handle, parent pays out of band, admin attests. **The emulator
+   has no payment surface at all** — no UPI intent, no "the parent paid" simulation, no
+   attestation loop — so this may not be drivable without building one. That is the
+   first thing to establish, and it is a finding either way. The GPay-screenshot half
+   (§14.5) may already work, since it is media → parse → propose.
+
+4. **Everything C45–C55 changed.** Especially: does `schedule` get reached for on turns
+   where it should be, and *not* on turns where it should not? A watch nobody asked for
+   is worse than no watch.
+
+5. **Media end to end.** 5 turns of 93 ever carried a file. §7.1 step 2 and §14.5 call
+   this "the single biggest friction reducer in the product" and it is close to
+   untested. A photographed timetable, a Hinglish voice note, a forwarded spreadsheet.
+
+6. **The solo case (§18)**, the undo window, opt-out, and the prospect funnel (§10.1).
+
+7. **A second business, throughout.** C42 showed that a tenant-scoped read against the
+   wrong tenant returns empty rather than raising, which makes every single-tenant
+   finding weaker than it looks.
+
+### Seed observations, unverified
+
+From two smoke turns after this round's changes. Each is an *instance*; find the class
+before you write it up.
+
+- Asked on a Thursday to "remind me on friday", the model set `run_at` to **three weeks
+  out**. Seen twice out of two. Check the clock offset first — the emulator clock may
+  not have been where it looked — then check whether relative weekday arithmetic is
+  wrong in general.
+- One reply measured **62 words** against axis 6's 60-word line, and it read as
+  explaining itself rather than answering.
+- Given the identical sentence twice, one turn created the class and one asked before
+  creating it. Neither is wrong; the variance is the finding, and it is what §14.3's
+  recipes are supposed to remove.
+
+---
+
+## Standing decisions, so nobody relitigates them
+
+- **No WhatsApp Flows.** §14.6 rejected them for concrete costs — RSA keypair, an
+  encrypted data-exchange endpoint, published versioned artifacts, a Meta review cycle
+  per change — and named the one condition for revisiting: *if the register's tap-out
+  is measurably costing completions*. **The register has never been opened**, so that
+  condition has not been evaluated. Drive it, measure it, then argue.
+- **The web surface is three screens**: `setup`, `register`, `calendar`. The other six
+  components still render but the model may no longer author them (`MINTABLE`). Put one
+  back when a real question is badly served by a table, which is the bar §15 set.
+- **Signup is the operator's, not a product flow.** `resolveInbound` returning
+  `unresolved` for an unknown number is that decision working, not a gap.
+- **Do not trim the operation registry.** Measured against the bodies rather than the
+  list, 21 of 25 earn their place, and C17 removed the tax that made anyone want to.
+- **The tool surface has a hard ceiling of 10 declarations** on `gemini-2.5-flash`. An
+  eleventh makes *every* turn return `MALFORMED_FUNCTION_CALL`. New capability folds
+  into an existing tool or the operation registry. **This is worth re-testing on
+  Gemini 3** — if the ceiling is a 2.5 artifact, the constraint dissolves.
+
+## Open questions, ranked
+
+1. **Is `gemini-2.5-flash` still the right model?** `scripts/probe-model.ts` measured
+   `gemini-3-flash-preview` at zero thinking as equally decisive with **zero** malformed
+   calls in 20 runs, at twice the latency and 1.6× output tokens. The question to put to
+   it now is not "does it call a tool" but **"does it call the discretionary one"** —
+   give it *"keep an eye on Saturday Advanced"* and see whether `schedule` fires, across
+   `2.5-flash@0`, `3-flash@0`, `3-flash@2048`, `3-pro@2048`. Re-probe the 10-tool ceiling
+   in the same run.
+
+2. **Model tiering (§21 decision 4).** The spec argues *against* a strong model for
+   admins: parents and coaches are ~95% of the humans and are where "it feels like a bot"
+   gets decided. The better axis is turn *shape* — composition and media parsing need
+   judgement; answering a question does not — which is what `TURN_THINKING` now splits
+   on without changing models at all. Settle the budget question before the model one.
+
+3. **The prefix is 2× its budget** (16k against §4.4's 8k), mostly behavior modules
+   (30.8k chars) and the catalog digest (7.3k, which §4.4 does not budget at all). The
+   argument for cutting it is **behavioural, not financial** — at ~₹1/turn cost is not
+   the constraint, but a 58k-character instruction read at low thinking is where a good
+   module gets skimmed. Note that this round *added* a module. Every round has.
+
+4. **Latency is 14–29s.** Half a minute is a long time to leave a parent looking at a
+   chat, and it is a product risk before it is a bill.
+
+5. **What does an out-of-window recipient actually get?** Everything a coach or parent
+   receives outside 24h collapses to one template button. Correct per §14.7, and nobody
+   has measured what share of the catalog ever reaches anyone in-window, or whether the
+   eight `quickReply` titles are worth a tap. For a parent, out-of-window is the normal
+   state.
+
+---
+
+## Running it
+
+```bash
+npm run dev                       # the emulator API the driver posts to
+npm run db:push                   # 0015 is new
+npm run drive -- reset            # empty world, no fixture
+npm run drive -- academy "X" --admin "Y"
+npm run drive -- say <contact> "hi"
+npm run drive -- score            # before and after, both in your findings
+```
+
+The web surface is drivable now and was not before:
+
+```bash
+npm run drive -- link <contact> --screen setup|register|calendar --open
+npm run drive -- open <contact> --purpose register
+npm run drive -- register <coachContact> --absent "Aarav,Meera"
+```
+
+`npx tsc --noEmit` and `node scripts/rls-check.mjs` before you finish. **Note that
+rls-check silently skips its cross-role and family-privacy sections when the fixture
+world is absent and still reports "0 failed"** — see R7. Seed a fixture before trusting
+it.
+
+---
+
+# The log
+
+Findings go here. Newest at the bottom. Use the block shape from §"How to record a
+finding". Nothing has been written yet this round.
+
+<!-- ### F1 · … -->

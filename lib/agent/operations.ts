@@ -51,9 +51,42 @@ export function lit(v: string | number | boolean | null | undefined): string {
   return `'${v.replace(/'/g, "''")}'`
 }
 
+/**
+ * A row this plan created a step ago, named by the only thing that can name it.
+ *
+ * An id argument is normally a uuid the model has read. Inside a `transaction(steps[])`
+ * there is a case where no such uuid can exist: step 1 inserts the venue, step 2 creates
+ * the class in it, and the id is assigned by the database between them. `STEPS_PARAM`
+ * already says "select it back" — but it says so about `write` steps, and the model
+ * reached for the same idea in an *operation* argument, which refused it.
+ *
+ * What that refusal cost is not obvious and is severe. `create_class` is the only thing
+ * in the product that enqueues `materialize_sessions`, so a model pushed off the
+ * operation and onto raw `insert into class` produces a business with classes, weekly
+ * slots, and **no sessions that will ever happen** — no reminders, no registers, nothing
+ * for a coach or a parent to be told about. Driven end to end, that is exactly what
+ * happened: 3 classes, 6 slots, 0 sessions, and an admin told "I've set up your three
+ * classes with their weekly timings".
+ *
+ * So the instinct is right and the encoding is now legal. Bounded hard: one parenthesised
+ * SELECT, no semicolon, no statement chaining, nothing that writes. It runs inside the
+ * plan's own transaction, under the plan author's RLS, so it can reach exactly what a
+ * `write` step in the same plan could reach and no further.
+ */
+const ID_SUBQUERY = /^\(\s*select\s[\s\S]+\)$/i
+
+export function isIdSubquery(v: unknown): v is string {
+  const s = String(v ?? '').trim()
+  if (!ID_SUBQUERY.test(s)) return false
+  if (s.includes(';')) return false
+  return !/\b(insert|update|delete|drop|alter|truncate|grant|revoke|create|copy|do|call)\b/i.test(s)
+}
+
 export function uid(v: string): string {
-  if (!UUID_RE.test(v)) throw new Error(`sql: "${v}" is not an id`)
-  return `'${v}'::uuid`
+  const s = String(v ?? '').trim()
+  if (isIdSubquery(s)) return `(${s.replace(/^\(|\)$/g, '')})::uuid`
+  if (!UUID_RE.test(s)) throw new Error(`sql: "${v}" is not an id`)
+  return `'${s}'::uuid`
 }
 
 export function moneyLit(n: number): string {
@@ -262,6 +295,7 @@ export type OperationName =
   | 'book_trial'
   | 'mark_attendance'
   | 'confirm_coach'
+  | 'onboard_coach'
   | 'decline_coach'
   | 'claim_cover'
   | 'client_cancel'
@@ -296,7 +330,23 @@ export type OperationDef = {
   ownScope?: boolean
 }
 
-const uuid = z.string().regex(UUID_RE, 'expected an id')
+/**
+ * An id argument, and what to do when it is not one.
+ *
+ * The message matters more than the check. Watched live: asked to create a class at a
+ * venue that did not exist yet, the model passed
+ * `venue_id: "(SELECT id FROM venue WHERE name = 'Green Park' …)"` — a subquery in a
+ * uuid field. It is the *right instinct*: the id genuinely is not knowable at compose
+ * time, and `STEPS_PARAM` already says so. What it needed was the sentence saying which
+ * of the two shapes carries that instinct, at the moment it reached for the wrong one.
+ */
+const uuid = z
+  .string()
+  .refine((v) => UUID_RE.test(v) || isIdSubquery(v), (v) => ({
+    message: /select\b/i.test(v)
+      ? 'a subquery here has to be one parenthesised SELECT and nothing else — `(select id from venue where name = \'Green Park\' and academy_id = app.academy_id())` — with no semicolon and nothing that writes'
+      : 'expected an id: a uuid you have actually read, or `(select id from … )` for a row an earlier step in this same plan created',
+  }))
 
 /* =========================================================================== *
  * end_coach — §8.3. Leaving is an end date, never a delete.
@@ -1989,6 +2039,62 @@ const addFamily: OperationDef = {
 }
 
 /* =========================================================================== *
+ * onboard_coach — §8.1 step 3 / §11.3. `invited ──([Looks right])──> active`.
+ *
+ * The transition existed in the state machine, in the spec and in the behavior
+ * module — "`Looks right` has to actually make them active; a button that only
+ * writes down that they agreed changes nothing: they stay un-onboarded, the admin
+ * is still told nobody has confirmed, and the coach thinks they are done" — and
+ * there was no operation that performed it. Nothing in the registry moved a coach
+ * out of `invited`.
+ *
+ * So the model minted the nearest-sounding name it could find. Watched, on a
+ * coach's first ever message: `[Looks right]` carried `confirm_coach`, which is
+ * about a *session* and requires a `session_id`, and it died at the tap. The
+ * coach was told "that didn't go through" and stayed invited forever.
+ *
+ * A capability with no way to reach it is indistinguishable, from outside, from a
+ * model that never wants it — and the model wanted it badly enough to reach for
+ * the wrong verb rather than none.
+ * =========================================================================== */
+
+const onboardCoach: OperationDef = {
+  name: 'onboard_coach',
+  ownScope: true,
+  description:
+    "A coach confirms their classes are right, on their first run: `invited` → `active`, and they start getting their day. This is what [Looks right] does — the point of that message, not a note that they agreed.",
+  params: z.object({
+    coach_id: uuid.nullish(),
+  }),
+  async build(ctx, args, id) {
+    const coachId = args.coach_id ?? id.coachId
+    if (!coachId) throw new Error('I do not know which coach that is')
+    return [
+      {
+        // Idempotent by the same rule as everything else here: confirming twice is
+        // one confirmation, because `coalesce` says so and not because anyone
+        // remembered. `status` moves from anywhere before active; an ended coach
+        // stays ended, which is a decision only the admin makes.
+        //
+        // `service: true` because §6.7 gives a coach READ of their own row and no
+        // write — correctly: a coach who could set their own status could set their
+        // own pay. So this is the runtime keeping the promise §8.1 makes on the
+        // product's behalf, exactly like the job-cancellation step in `confirm_coach`
+        // next door. Under the coach's own session the update matched zero rows and
+        // said nothing, and the coach was told they were set up.
+        service: true,
+        write: `update coach
+                   set status = 'active',
+                       onboarded_at = coalesce(onboarded_at, app.now()),
+                       invited_at = coalesce(invited_at, app.now())
+                 where id = ${uid(coachId)} and academy_id = ${uid(ctx.academyId)} and ended_on is null`,
+      },
+      { note: 'they are set up and will get their day from now on' },
+    ]
+  },
+}
+
+/* =========================================================================== *
  * send_invite_draft — §8.1 step 2 / §9.1 step 2. Self-initiated invites.
  * =========================================================================== */
 
@@ -2040,10 +2146,16 @@ const sendInviteDraft: OperationDef = {
           to_contact_id: ctx.role === 'service' ? undefined : ctx.contactId,
           to_person_id: ctx.role === 'service' ? id.person?.id : undefined,
           pre_launch_ok: true,
-          body:
-            `Here's the invite for ${name} — send it from your own number so it lands warm:\n\n` +
-            `${draft}\n\n` +
-            `Once they tap it, I take it from there.`,
+          // `[Sent it]` re-ran this operation and re-sent the identical draft, which the
+          // repeat gate then ate — so the admin tapped a button and their chat showed
+          // nothing at all. A tap that changes something has to say something new, and
+          // what changed here is the only thing worth saying.
+          body: args.mark_sent
+            ? `Noted — ${name}'s invite is out. Nothing more from me until they tap it; ` +
+              `if they have a session in the next couple of days and still haven't, I'll tell you.`
+            : `Here's the invite for ${name} — send it from your own number so it lands warm:\n\n` +
+              `${draft}\n\n` +
+              `Once they tap it, I take it from there.`,
           buttons: args.mark_sent
             ? undefined
             : [
@@ -2326,6 +2438,7 @@ export const OPERATIONS: Record<OperationName, OperationDef> = {
   book_trial: bookTrial,
   mark_attendance: markAttendance,
   confirm_coach: confirmCoach,
+  onboard_coach: onboardCoach,
   decline_coach: declineCoach,
   claim_cover: claimCover,
   client_cancel: clientCancel,
@@ -2398,6 +2511,21 @@ function optionalMark(v: any): string {
 let SIGNATURES: string | null = null
 
 /** ~1k tokens, part of the stable prefix. Byte-identical across turns. */
+/**
+ * One operation's signature, for an error that has to say what would have worked.
+ *
+ * A step rejected for its *arguments* was being answered with a hint about the *shape*
+ * of a step — "steps is a JSON array, each element has exactly one of write, operation,
+ * adjust…" — which is true, was not the problem, and sent the model round the loop
+ * re-encoding a plan whose encoding was already right. The registry holds the answer;
+ * this is how it reaches the model at the moment it is wrong.
+ */
+export function operationSignature(name: string): string | null {
+  const op = OPERATIONS[name as OperationName]
+  if (!op) return null
+  return `${name}${describe(op.params)} — ${op.description}`
+}
+
 export function operationSignatures(): string {
   if (SIGNATURES) return SIGNATURES
   const lines = (Object.keys(OPERATIONS) as OperationName[]).sort().map((name) => {

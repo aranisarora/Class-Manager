@@ -21,7 +21,8 @@ import { idem, newId } from '@/lib/ids'
 import { CATALOG, isCatalogId } from './catalog'
 import type { CatalogId } from './catalog'
 import { send } from './send'
-import type { Button, ListRow, ListSection, OutboundMessage, SendOutcome } from './types'
+import { repairOutbound } from './repair'
+import type { Button, LinkButton, ListRow, ListSection, OutboundMessage, SendOutcome } from './types'
 import { validateOutbound } from './types'
 
 export type ComposeSpec = {
@@ -34,6 +35,11 @@ export type ComposeSpec = {
     buttonText: string
     sections: { title: string; rows: { title: string; description?: string; action: ActionPayload }[] }[]
   }
+  /**
+   * §14.6 — a link, as a button. The one shape a URL may leave this product in.
+   * Exclusive with `buttons` and `list`, because the wire's `cta_url` is.
+   */
+  link?: LinkButton
   catalogId?: CatalogId | null
   fixed?: boolean
   subjectPersonIds?: string[]
@@ -56,7 +62,26 @@ export type ComposeSpec = {
 }
 
 /** Mints an action per button, then hands a well-formed OutboundMessage to `send`. */
-export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promise<SendOutcome> {
+export async function composeAndSend(ctx: SessionCtx, rawSpec: ComposeSpec): Promise<SendOutcome> {
+  // The one place all outbound traffic passes, which is the only place a guarantee about
+  // outbound traffic can live. Every previous attempt at these three repairs was made in
+  // a caller — `reply` had one, the loop's trailing message had another — so which of them
+  // a given turn got depended on which path the model happened to take, and a guarantee
+  // that depends on the model's choice is not a guarantee. Jobs, digests, escalations and
+  // tap acknowledgements went through neither.
+  const { message: repaired, repairs, bracketButtons } = repairOutbound(rawSpec)
+  // This path can still mint, so labels the model typed into the prose become the buttons
+  // it plainly meant — unless the message already carries an affordance, in which case the
+  // brackets are simply gone, which is the better of the two remaining outcomes.
+  const spec: ComposeSpec =
+    bracketButtons.length && !repaired.buttons?.length && !repaired.list && !repaired.link
+      ? { ...repaired, buttons: bracketButtons as ComposeSpec['buttons'] }
+      : repaired
+  if (repairs.length) {
+    // Loud, never silent: a repair firing every time is a compose bug upstream, and the
+    // whole reason "reject, never truncate" was the rule is that a silent fix hides one.
+    console.warn(`[compose] repaired an outbound message to ${spec.toContactId}: ${repairs.join('; ')}`)
+  }
   const entry = spec.catalogId && isCatalogId(spec.catalogId) ? CATALOG[spec.catalogId] : null
 
   const idempotencyKey =
@@ -77,6 +102,7 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
     body: spec.body,
     header: spec.header,
     footer: spec.footer,
+    link: spec.link,
     media: spec.media,
     catalogId: spec.catalogId ?? null,
     templateName: spec.templateName ?? null,

@@ -76,18 +76,23 @@ Open a pane per contact from the tray, then:
 10. **Add your own people.** `+ new` in the tray creates a contact in the live world without a
     reseed, wired for real — a client gets an account, a player and an enrollment in the first
     class, so reminders and tallies work on them immediately. The next reseed clears them.
-11. **Run a simulation** at `/emulator/sim`, or headless:
-    `npx tsx scripts/sim.ts --contact <uuid> --persona busy-parent --seed s1`
+11. **Drive it from the command line** — `npm run drive` is the harness, and it posts
+    to this same API. `drive score` prints the seven axes as numbers; `drive link`
+    reaches the web screens without waiting for the bot to offer one. See
+    [`FINDINGS.md`](./FINDINGS.md).
 
 ## Checks
 
 ```bash
 npx tsc --noEmit              # typecheck
-node scripts/rls-check.mjs    # the security boundary — 26 assertions
+node scripts/rls-check.mjs    # the security boundary
+npm run drive -- score        # the seven axes, as numbers
 ```
 
 `rls-check` is the spec's phase-0 acceptance criterion: cross-tenant and cross-role reads return
-zero rows, and the build fails if any table has RLS disabled.
+zero rows, and the build fails if any table has RLS disabled. **Seed a fixture before you trust
+it** — with an empty world it skips its cross-role and family-privacy sections and still reports
+"0 failed".
 
 ---
 
@@ -135,7 +140,6 @@ lib/behaviors/*.md        the nine §4.2 modules, always in context
 lib/messaging/            the catalog, templates, window, transports, the one send path
 lib/jobs/                 20 job kinds, each re-checking its own precondition
 lib/web/                  signed links, the component registry, view specs
-lib/sim/                  12 personas, goals, the judge, run diffing
 app/emulator/             the world, tray, panes, clock, event log, faults
 app/w/[token]/            setup, the register, rendered views — no login
 supabase/migrations/      29 tables, RLS on every one
@@ -155,5 +159,10 @@ supabase/migrations/      29 tables, RLS on every one
   per-tenant rows would buy N copies of the same thing. It is created only when a second call
   arrives within five minutes, because cache storage costs more per hour than a quiet academy
   saves. The event log's `cached` chip is the check — amber at 0%.
+- **There is no agent-simulation harness**, and the README used to claim one. Personas, a judge
+  agent and diffable runs (§17, phase 12) were built and removed as over-engineered; `npm run
+  drive` is the harness now, and a person driving it is the eval. `drive score` is what turns
+  that from an impression into numbers.
 - Model quality varies turn to turn, as it will: the structural guarantees hold every time, but
-  which tool the model reaches for first does not. The simulation harness exists to measure that.
+  which tool the model reaches for first does not. Given the same sentence twice, one turn
+  created the class and one asked first — that variance is what §14.3's recipes exist to remove.

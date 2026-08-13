@@ -28,13 +28,15 @@ export function describeTransportRequest(req: TransportRequest): string {
   const m = req.message
   const shape = req.asTemplate
     ? `template:${req.asTemplate}`
-    : m.list
-      ? 'interactive:list'
-      : m.buttons?.length
-        ? `interactive:buttons(${m.buttons.length})`
-        : m.media
-          ? `media:${m.media.kind}`
-          : 'text'
+    : m.link
+      ? 'interactive:cta_url'
+      : m.list
+        ? 'interactive:list'
+        : m.buttons?.length
+          ? `interactive:buttons(${m.buttons.length})`
+          : m.media
+            ? `media:${m.media.kind}`
+            : 'text'
   const to = req.toWaId ?? req.toPhoneE164
   const first = (m.body ?? '').split('\n')[0]
   return `[emulator] ${req.senderPhoneE164} → ${to} · ${shape} · ${JSON.stringify(first.slice(0, 80))}`

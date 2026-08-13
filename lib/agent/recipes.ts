@@ -158,6 +158,67 @@ function generalize(steps: PlanStep[]): { generalized: PlanStep[]; params: strin
   return { generalized, params: [...byValue.values()] }
 }
 
+/**
+ * The profiler §14.3 asks for: *"whatever the model keeps re-deriving becomes the
+ * next recipe."*
+ *
+ * The signal is already on the `turn` row and needed no new instrumentation. A turn
+ * that **committed a plan** and **took three rounds or more to get there** is one the
+ * model had to work out — the cheap ones land in two. Freezing the plan it arrived at
+ * means the next request of that shape starts from a known-good composition instead
+ * of being re-derived at a full prefix per round.
+ *
+ * What this is worth is **rounds, not prompt size**, and that distinction matters
+ * because it is easy to reach for the wrong lever. A matched recipe rides in the
+ * uncached variable tail at ~1.2k characters; if it removes one round it saves a
+ * whole prefix pass, which measured is ~17k prompt tokens. Recipes are a latency and
+ * round-count optimisation that happens to save tokens, and the number to watch is
+ * `avg(turn.rounds)`.
+ *
+ * **Never in the stable prefix.** Recipes are per-academy, and anything per-tenant
+ * above §4.4's cache boundary breaks byte-identity for *every* tenant. The tail is
+ * not where this ended up by accident.
+ *
+ * Capture never throws into the turn: a recipe that failed to freeze costs a future
+ * optimisation, and a turn that failed costs a person their answer.
+ */
+export const CAPTURE_ROUNDS_THRESHOLD = 3
+
+export async function captureIfExpensive(o: {
+  academyId: string
+  rounds: number
+  committed: { auditId: string; intent: string }[]
+}): Promise<string | null> {
+  if (o.rounds < CAPTURE_ROUNDS_THRESHOLD || !o.committed.length) return null
+  // The last plan of the turn is the one the turn was about; earlier ones are usually
+  // the setup it needed to get there.
+  const { auditId, intent } = o.committed[o.committed.length - 1]
+  const name = recipeName(intent)
+  if (!name) return null
+
+  try {
+    const captured = await captureRecipe(auditId, name, {
+      academyId: o.academyId,
+      triggerDescription: intent,
+    })
+    return captured.name
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A stable, human-readable key for an intent. `on conflict (academy_id, name)` in
+ * `captureRecipe` means a second capture of the same shape *replaces* the first,
+ * which is what keeps a recipe the thing the model would compose today rather than
+ * the thing it composed once — the divergence §14.3 exists to prevent.
+ */
+function recipeName(intent: string): string | null {
+  const words = tokens(intent).slice(0, 5)
+  if (words.length < 2) return null
+  return words.join('-').slice(0, 60)
+}
+
 /* ------------------------------------------------------------------------- *
  * Match
  * ------------------------------------------------------------------------- */
@@ -277,7 +338,9 @@ export async function applyRecipe(
 
   const steps = parseSteps(JSON.parse(json))
   const preview = await previewPlan(ctx, steps)
-  const gate = needsPreview(preview, steps)
+  const gate = needsPreview(preview, steps, {
+    actorContactId: ctx.role === 'user' ? ctx.contactId : undefined,
+  })
 
   if (!preview.ok || !o.execute || gate) {
     return { steps, result: preview, needsPreview: gate, executed: false }

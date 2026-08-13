@@ -16,15 +16,25 @@ import { resolveIdentity } from '@/lib/identity'
 import { consumeAction, type ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { LIMITS, type SendOutcome } from '@/lib/messaging/types'
-import { signLink, linkUrl } from '@/lib/web/jwt'
+import { signLink, linkUrl, TTL } from '@/lib/web/jwt'
 import type { Identity, Job, Role } from '@/lib/types'
-import { generate, type GenContent } from './gemini'
-import { lint, stablePrefix, variableTail } from './context'
+import { generate, TURN_THINKING, type GenContent } from './gemini'
+import { lint, stablePrefix, synthesisDoctrine, variableTail } from './context'
 import { hotSet } from './memory'
 import { executePlan, type PlanStep } from './plan'
 import { jsonLit, lit, uid, type OperationName } from './operations'
-import { runTool, TOOL_DECLS, MENU_BUTTON_TITLE, type ToolCtx } from './tools'
-import { matchRecipe } from './recipes'
+import {
+  closingQuestionButtons,
+  extractBracketButtons,
+  FOLLOW_UPS,
+  pendingConfirmation,
+  runTool,
+  toolDecls,
+  withFollowUps,
+  MENU_BUTTON_TITLE,
+  type ToolCtx,
+} from './tools'
+import { captureIfExpensive, matchRecipe } from './recipes'
 
 export type TurnInput = {
   contactId: string
@@ -43,36 +53,15 @@ const HISTORY = 16
 /** How many past turns to mine for reads. Small: the newest lookups are the live ones. */
 const LOOKUP_TURNS = 4
 
-/* ------------------------------------------------------------------------- *
- * §4.3 — after every action, the natural next step as a button. On a button
- * tap there is no model call to compose one, so these are fixed. They cost
- * nothing, are always relevant, and teach capability by demonstration.
- * ------------------------------------------------------------------------- */
-
-const FOLLOW_UPS: Partial<Record<OperationName, (args: any) => { title: string; action: ActionPayload }[]>> = {
-  cancel_session: (a) => [
-    { title: "See who's affected", action: { kind: 'reply', text: `Who was in the session I just cancelled?` } },
-  ],
-  end_coach: () => [{ title: 'Assign classes', action: { kind: 'reply', text: 'Who should take those sessions?' } }],
-  mark_attendance: () => [
-    { title: 'Rebook someone', action: { kind: 'reply', text: 'Find a makeup slot for someone who missed' } },
-  ],
-  client_cancel: () => [
-    { title: 'Find a makeup', action: { kind: 'reply', text: 'Find a makeup slot for that class' } },
-  ],
-  add_coach: (a) => [
-    { title: 'Send the invite', action: { kind: 'reply', text: `Draft the invite for ${a?.full_name ?? 'them'}` } },
-  ],
-  record_payment: () => [{ title: 'See the tally', action: { kind: 'reply', text: 'Show me that account tally' } }],
-  book_trial: () => [{ title: 'See the schedule', action: { kind: 'reply', text: 'Show me the schedule' } }],
-}
-
-function sessionOf(identity: Identity): SessionCtx {
+function sessionOf(identity: Identity, turnId?: string): SessionCtx {
   return {
     role: 'user',
     academyId: identity.academyId,
     personId: identity.person.id,
     contactId: identity.contact.id,
+    // Carried into the session so `app.begin_audit` can stamp it on every row this
+    // turn writes (0015). Attribution by construction rather than by remembering.
+    ...(turnId ? { turnId } : {}),
   }
 }
 
@@ -93,6 +82,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
   let replyText = ''
   let trace: ToolTrace[] = []
   let rounds = 0
+  let committedPlans: { auditId: string; intent: string }[] = []
 
   const identity = await resolveIdentity(input.contactId)
   if (!identity) {
@@ -100,7 +90,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     // (§10.1) is what answers this case; here it is simply not our turn.
     return { turnId, sent: [], toolCalls: 0, error: 'unresolved_contact' }
   }
-  const session = sessionOf(identity)
+  const session = sessionOf(identity, turnId)
 
   try {
     let text = input.text
@@ -153,10 +143,34 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       replyText = m.text
       trace = [...trace, ...m.trace]
       rounds = m.rounds
+      committedPlans = m.committedPlans
       if (m.error) error = m.error
     }
   } catch (e) {
     error = e instanceof Error ? e.message : String(e)
+  }
+
+  // §14.3 — the profiler. A committed plan that took the model three rounds to reach
+  // is the definition of "something it keeps re-deriving", and freezing it is a review
+  // step rather than a deploy. Never allowed to affect the turn.
+  if (!error && committedPlans.length) {
+    const captured = await captureIfExpensive({
+      academyId: identity.academyId,
+      rounds,
+      committed: committedPlans,
+    }).catch(() => null)
+    if (captured) trace.push({ round: 0, name: 'recipe:captured', ms: 0, result: captured })
+  }
+
+  // §5 — "the bot writes facts asynchronously after a turn, never blocking a reply."
+  // This runs after everything has been sent, so nobody is waiting on it.
+  if (!error) {
+    const reflected = await reflect(session, identity, turnId, {
+      said: input.text ?? (input.actionId ? '(tapped a button)' : ''),
+      replied: replyText,
+      trace,
+    }).catch(() => null)
+    if (reflected?.length) trace.push(...reflected)
   }
 
   await writeTurn({
@@ -182,6 +196,30 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
   return { turnId, sent: outcomes, toolCalls, error }
 }
 
+/**
+ * What a person is told when their tap could not be carried out.
+ *
+ * A tap is the one path with no model in it, so whatever the runtime produces
+ * here goes to a phone exactly as written. It was written as
+ * `I couldn't do that: ${res.error}` — and an admin who tapped `[Add families]`
+ * received a pretty-printed zod error, braces and all, ending in
+ * `"message": "Required"`. Correct, and not English: the same class as a uuid or
+ * a table name in a sentence, at the worst possible moment.
+ *
+ * Machine detail belongs in the trace, which already has it. What belongs here
+ * is the two things the person needs: it did not happen, and nothing changed.
+ */
+function humanError(raw: string | undefined): string {
+  const first = String(raw ?? '')
+    .replace(/^[A-Z_]+: /, '')
+    .split('\n')[0]
+    .trim()
+  const machine = /[{}[\]"]|^\s*$|invalid_type|ZodError|violates|syntax error|undefined/i.test(first)
+  return machine || first.length > 140
+    ? "That didn't go through — something about it doesn't line up on my side. Nothing was changed. Tell me what you wanted and I'll sort it out."
+    : `I couldn't do that: ${first}. Nothing was changed.`
+}
+
 /* ------------------------------------------------------------------------- *
  * Button taps — no model call, no re-resolution, no string parsing (§6.5)
  * ------------------------------------------------------------------------- */
@@ -199,29 +237,62 @@ async function executeAction(
     return { outcomes, summary: payload.ack }
   }
 
+  if (payload.kind === 'handoff') {
+    const out = await runTool(
+      'handoff',
+      { reason: payload.reason, summary: payload.summary },
+      { session, identity, turnId, pendingPlans: new Map(), outcomes },
+    )
+    const say = (out.result as { say?: string })?.say
+    if (say) outcomes.push(await composeAndSend(session, { toContactId: identity.contact.id, body: say }))
+    return { outcomes, summary: `handoff: ${payload.reason}` }
+  }
+
   if (payload.kind === 'menu') {
     outcomes.push(...(await sendMenu(session, identity, payload.menu)))
     return { outcomes, summary: `menu:${payload.menu}` }
   }
 
   if (payload.kind === 'view') {
+    // Two shapes, one door: a spec authored for this answer, or one of the
+    // screens §15 ships. The link is signed at TAP time, not at mint time, so a
+    // button tapped tomorrow still opens rather than expiring in someone's chat.
+    const builtIn = 'screen' in payload ? payload.screen : null
+    const purpose = builtIn ?? 'view'
+    const ref = 'screen' in payload ? payload.ref : payload.viewSpecId
     const token = await signLink(
       {
         academy_id: identity.academyId,
         person_id: identity.person.id,
         contact_id: identity.contact.id,
-        purpose: 'view',
-        ref: payload.viewSpecId,
+        purpose,
+        ...(ref ? { ref } : {}),
       },
-      120,
+      TTL[purpose],
     )
+    const hours = Math.round(TTL[purpose] / 60)
+    // §14.6 — "every link is a button; nothing URL-shaped is pasted into message text",
+    // and this was the single worst offender against it in the product: the runtime itself
+    // composed a sentence and then a 300-character signed JWT, and sent that to a phone.
+    // The rule had nothing to be obeyed with until `link` existed.
     outcomes.push(
       await composeAndSend(session, {
         toContactId: identity.contact.id,
-        body: `Here it is — this link is yours and works for the next couple of hours:\n${linkUrl(token)}`,
+        body:
+          (builtIn === 'setup'
+            ? 'Everything about the business on one screen — name, places you play, your weekly times, how much notice you want for cancellations, and where people pay you.'
+            : builtIn === 'register'
+              ? 'The whole roster on one screen — tick who came, add a note, send it back.'
+              : 'Here it is.') +
+          `\n\nYours only, good for the next ${hours <= 1 ? 'hour' : `${hours} hours`}.` +
+          (builtIn === 'setup' ? '\nOr just tell me any of it here and I’ll set it up the same way.' : ''),
+        link: {
+          title: builtIn === 'setup' ? 'Open setup' : builtIn === 'register' ? 'Open register' : 'Open',
+          url: linkUrl(token),
+        },
       }),
     )
-    return { outcomes, summary: 'view link' }
+    return { outcomes, summary: `${purpose} link` }
   }
 
   if (payload.kind === 'reply') {
@@ -250,7 +321,7 @@ async function executeAction(
         subjectPersonIds: [identity.person.id],
         body: lost
           ? 'Someone else got that session first — nothing needed from you.'
-          : `I couldn't do that: ${(res.error ?? 'something moved under me').replace(/^[A-Z_]+: /, '')}. Nothing was changed.`,
+          : humanError(res.error),
       }),
     )
     return { outcomes, summary: res.error ?? 'failed' }
@@ -260,7 +331,12 @@ async function executeAction(
   const alreadyTold = res.stagedMessages.some((m) => m.toContactId === identity.contact.id)
   if (!alreadyTold) {
     const follow =
-      payload.kind === 'operation' ? (FOLLOW_UPS[payload.op as OperationName]?.(payload.args) ?? []) : []
+      payload.kind === 'operation'
+        ? (FOLLOW_UPS[payload.op as OperationName]?.(
+            payload.args,
+            res.diffs.map((d) => ({ table: d.table, op: d.op, after: d.after })),
+          ) ?? [])
+        : []
     outcomes.push(
       await composeAndSend(session, {
         toContactId: identity.contact.id,
@@ -360,6 +436,20 @@ export type ToolTrace = {
   error?: string
 }
 
+/**
+ * The stable part of a failure: the message with every id, quoted literal and
+ * number taken out, so "refused for table class_slot" matches itself across
+ * three attempts that differed only in what they inserted.
+ */
+function reasonKey(err: unknown): string {
+  return String(err ?? '')
+    .split('\n')[0]
+    .replace(/'[^']*'/g, "'…'")
+    .replace(/[0-9a-f]{8}-[0-9a-f-]{27}/gi, '…')
+    .replace(/\d+/g, '#')
+    .slice(0, 200)
+}
+
 /** Long strings are evidence, not payload — keep the shape, cap the size. */
 function traceValue(v: unknown, limit: number): unknown {
   if (v === null || v === undefined) return v ?? null
@@ -389,6 +479,7 @@ async function modelTurn(
   cachedTokens: number
   trace: ToolTrace[]
   rounds: number
+  committedPlans: { auditId: string; intent: string }[]
   error?: string
 }> {
   const outcomes: SendOutcome[] = []
@@ -399,6 +490,10 @@ async function modelTurn(
     pendingPlans: new Map<string, PlanStep[]>(),
     pendingMeta: new Map<string, { intent: string; summary: string; totalRows: number; needsConfirm: boolean }>(),
     outcomes,
+    fromParsedInput: Boolean(input.media?.length),
+    executed: [],
+    repliedTo: new Set<string>(),
+    committedPlans: [],
   }
 
   const [clock, lookups] = await Promise.all([
@@ -460,22 +555,59 @@ async function modelTurn(
   // rounds below, because it is the *ratio* over the whole turn that says whether the
   // stable prefix is still earning its keep.
   let cachedTokens = 0
-  let repliedInTool = false
+  /**
+   * Whether anything actually reached this person's phone.
+   *
+   * This used to be "did the model call `reply`", set before the call was even
+   * run — so a `reply` the runtime *refused* still counted as having spoken, and
+   * every guard below stood down. Watched live: one bad button took the message
+   * with it, and the turn ended having sent nothing at all. Going quiet is the
+   * one failure a person cannot tell apart from being ignored, and it was being
+   * caused by the check that exists to prevent it.
+   *
+   * The honest question is not what the model tried. It is what arrived.
+   */
+  const spoke = (): boolean => outcomes.some((o) => o.status === 'sent' || o.status === 'queued')
   const trace: ToolTrace[] = []
   let rounds = 0
   let forcedError: string | undefined
   /** Calls that failed once already this turn, by name+args. */
   const failedCalls = new Map<string, number>()
+  /**
+   * The same *refusal*, however the call was spelled. Byte-identical repeats are
+   * the easy case; the expensive one is a model editing something irrelevant
+   * between attempts — `active`, then `rate_unit` — while the database refuses
+   * for the same reason every time. Three of those cost 81 seconds and 119k
+   * tokens and ended in an apology that invented a cause. A refusal repeating is
+   * the signal, not the arguments repeating.
+   */
+  const failedReasons = new Map<string, number>()
   let stalled = false
+
+  /**
+   * §4.4's prefix is 58k characters and `onboarding.md` is one of ten modules inside
+   * it. At `thinkingBudget: 0` the model does not consult that; it pattern-matches the
+   * sentence in front of it — which is why a business at `setup` gets a competent
+   * answer to the question asked and no sense of the sequence it is in. Three of five
+   * driven academies stalled at `setup` with a good instruction sitting unread.
+   *
+   * A turn that is *guiding* someone is a sequencing judgement, not a plan to compose,
+   * so it gets a budget. Everything else keeps C29's zero.
+   */
+  const thinkingBudget =
+    identity.academy.onboarding_state !== 'live' || !identity.roles.length
+      ? TURN_THINKING.guide
+      : TURN_THINKING.compose
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     rounds = round + 1
     const res = await generate({
       system,
       contents,
-      tools: TOOL_DECLS,
+      tools: toolDecls(),
       model: env.MODEL_MAIN,
       temperature: 0.4,
+      thinkingBudget,
     })
     model = res.model
     promptTokens += res.usage.promptTokens
@@ -510,7 +642,6 @@ async function modelTurn(
     const responses: any[] = []
     for (const call of res.functionCalls) {
       toolCalls++
-      if (call.name === 'reply') repliedInTool = true
       let out: { result: unknown; note?: string }
       const calledAt = Date.now()
       let threw: string | undefined
@@ -558,7 +689,24 @@ async function modelTurn(
       const failed =
         Boolean(threw) ||
         (out.result !== null && typeof out.result === 'object' && 'error' in (out.result as object))
-      if (failed) failedCalls.set(signature, 1)
+      if (failed) {
+        failedCalls.set(signature, 1)
+
+        // Same tool, same reason, second time round: the world is not moving, and
+        // the next attempt will not move it either. Say so in the result the model
+        // reads, so it spends its remaining rounds on a different approach or on
+        // telling the person plainly — the two outcomes that are still available.
+        const reason = `${call.name}:${reasonKey(threw ?? (out.result as any)?.error)}`
+        const seen = (failedReasons.get(reason) ?? 0) + 1
+        failedReasons.set(reason, seen)
+        if (seen >= 2 && out.result && typeof out.result === 'object') {
+          ;(out.result as any).repeatedFailure =
+            `${call.name} has now been refused ${seen} times this turn for the same reason. Editing the arguments is not ` +
+            `what is wrong. Either take a different route — a named operation instead of raw SQL, or reading first to find ` +
+            `what is missing — or stop and tell them in one sentence what you could not do and what you need.`
+          if (seen >= 3) stalled = true
+        }
+      }
       trace.push({
         round: round + 1,
         name: call.name,
@@ -575,6 +723,25 @@ async function modelTurn(
     // put what was learned into words, which beats an apology that explains nothing.
     if (stalled) break
 
+    /**
+     * The turn is over when the person has been answered and nothing is left half-done.
+     *
+     * Every round pays the whole stable prefix again — that is what §4.4 means by
+     * "rounds are the driver" — and measured on a live turn, the round *after* a
+     * successful reply produced `finishReason: STOP · 0 output tokens` and cost 16k
+     * prompt tokens to produce nothing. It is not an occasional waste; it was every
+     * turn, because nothing told the loop the work was finished. The model has no
+     * reason to say so and the `reply` tool already refuses a second message to the
+     * same person, so the round exists only to discover that there is nothing to do.
+     *
+     * The runtime knows. `repliedTo` is set only when a message actually reached this
+     * person, and `pendingPlans` is empty only when nothing is waiting to be committed —
+     * that second condition is the one that matters: plan → reply → commit is a real
+     * shape, and cutting it after the reply would be the "describes it and does not do
+     * it" failure introduced by the fix meant to save money.
+     */
+    if (toolCtx.repliedTo?.has(identity.contact.id) && toolCtx.pendingPlans.size === 0) break
+
     if (round === MAX_TOOL_ROUNDS - 1) {
       // Out of rounds. Say so plainly rather than going quiet.
       text = text || "I'm going round in circles on this one — can you tell me the short version of what you need?"
@@ -582,17 +749,25 @@ async function modelTurn(
   }
 
   // Going quiet is the one failure a person cannot tell apart from being ignored.
-  // A model that spends its whole turn on tool calls and then returns an empty
-  // candidate — out of output budget, or simply done thinking — leaves someone
-  // staring at a chat that never answered. So if nothing was said and nothing was
-  // sent, ask once more with the tool surface removed: every query result is
-  // already sitting in `contents`, so this round only has to put it into words.
-  if (!text.trim() && !repliedInTool && outcomes.length === 0 && toolCalls > 0) {
+  // A model that returns an empty candidate — out of output budget, done
+  // thinking, or simply having emitted nothing — leaves someone staring at a chat
+  // that never answered. So if nothing was said and nothing was sent, ask once
+  // more with the tool surface removed: everything the turn learned is already
+  // sitting in `contents`, so this round only has to put it into words.
+  //
+  // This used to require `toolCalls > 0`, on the theory that there was nothing to
+  // recover otherwise. There is: watched live, an admin sent their timetable as a
+  // file and the very first round came back with 1,653 tokens spent and an empty
+  // text part — no tools, nothing to salvage by that rule, so the turn skipped
+  // straight to "something broke on my side" without ever asking again. One more
+  // round is cheaper than an apology, and it is the difference between a product
+  // that stumbles and one that ignores you.
+  if (!text.trim() && !spoke()) {
     try {
       const forced = await generate({
         system,
         contents: [
-          ...contents,
+          ...flattenToolTurns(contents),
           {
             role: 'user',
             parts: [
@@ -632,7 +807,7 @@ async function modelTurn(
     })
   }
 
-  if (!text.trim() && !repliedInTool && outcomes.length === 0) {
+  if (!text.trim() && !spoke()) {
     // Two different failures wearing one sentence. "Try again" is only honest when
     // trying again could work; a turn that burned every round needs to say so, and
     // one that broke needs to not pretend it is waiting on the person.
@@ -642,30 +817,45 @@ async function modelTurn(
         : "Something broke on my side working that out — it isn't you, and repeating it won't help. I've flagged it."
   }
 
-  if (text.trim() && !repliedInTool) {
+  if (text.trim() && !spoke()) {
     // §4.3 — "after every action the bot takes, it offers the natural next step as
     // a button". A plan that was previewed and not committed has exactly one natural
     // next step, and the runtime knows it: the steps are already validated and
     // diff-computed, so the button carries them verbatim (§2.2). Leaving this to the
     // model means a confirmation sometimes arrives as prose with nothing to tap,
     // which is how the preview→commit path quietly stops being button-driven.
-    const pending = [...toolCtx.pendingPlans.entries()].at(-1)
-    const meta = pending ? toolCtx.pendingMeta?.get(pending[0]) : undefined
+    // Buttons typed into the prose — the recovery round has no tools, so this is
+    // where they land most — become real ones.
+    const pulled = extractBracketButtons(text.trim())
+    if (pulled.buttons.length && pulled.text) text = pulled.text
+
+    // Every plan still waiting on a yes, not just the newest — a read-back that
+    // names two changes has to commit two changes.
+    const pending = pendingConfirmation(toolCtx)
+    const totalRows = [...(toolCtx.pendingMeta?.values() ?? [])]
+      .filter((m) => m.needsConfirm)
+      .reduce((n, m) => n + m.totalRows, 0)
     let buttons: { title: string; action: ActionPayload }[] | undefined
 
     if (pending) {
-      const [, steps] = pending
-      const summary = meta?.summary || meta?.intent || 'the change we just went through'
-      buttons = [{ title: 'Do it', action: { kind: 'steps', steps, summary } }]
-      if ((meta?.totalRows ?? 0) > 3) {
-        buttons.push({ title: `Show me all ${meta!.totalRows}`, action: { kind: 'reply', text: 'show me everyone that affects' } })
+      buttons = [{ title: 'Do it', action: { kind: 'steps', steps: pending.steps, summary: pending.summary } }]
+      if (totalRows > 3) {
+        buttons.push({ title: `Show me all ${totalRows}`, action: { kind: 'reply', text: 'show me everyone that affects' } })
       }
       buttons.push({ title: 'Cancel', action: { kind: 'noop', ack: 'Left as it was — nothing changed.' } })
     } else {
       // Same door as the `reply` tool mints (§5): no plan to confirm still means
       // something to offer, and a bare paragraph is where discovery goes to die.
-      buttons = [{ title: MENU_BUTTON_TITLE, action: { kind: 'menu', menu: 'root' } }]
+      // A closing yes-or-no question gets an answer to tap instead of the menu,
+      // which after a question is a non-sequitur.
+      buttons =
+        (pulled.buttons.length ? (pulled.buttons as { title: string; action: ActionPayload }[]) : null) ??
+        (closingQuestionButtons(text.trim()) as { title: string; action: ActionPayload }[] | null) ?? [
+          { title: MENU_BUTTON_TITLE, action: { kind: 'menu', menu: 'root' } },
+        ]
     }
+    // Whichever path the message leaves by, §4.3 holds.
+    buttons = withFollowUps(buttons, toolCtx) as { title: string; action: ActionPayload }[] | undefined
 
     outcomes.push(
       await composeAndSend(session, {
@@ -686,8 +876,47 @@ async function modelTurn(
     cachedTokens,
     trace,
     rounds,
+    committedPlans: toolCtx.committedPlans ?? [],
     ...(forcedError ? { error: forcedError } : {}),
   }
+}
+
+/**
+ * The turn's history, with every tool call and result turned into plain text.
+ *
+ * The recovery round declares no tools on purpose — its whole job is to put what the
+ * turn already learned into words. But a history containing `functionCall` and
+ * `functionResponse` parts is only legal alongside a tool declaration: Vertex answers
+ * a request that carries one without the other with `UNEXPECTED_TOOL_CALL` and an
+ * empty candidate.
+ *
+ * So the round designed to guarantee the person hears *something* was the one round
+ * that could never run. Watched live: seven rounds, sixty seconds, 153k tokens, a
+ * MALFORMED_FUNCTION_CALL, and then the recovery — the last line of defence against
+ * silence — failed with `UNEXPECTED_TOOL_CALL` and the admin was told "something broke
+ * on my side". The venue had been created; nothing said so.
+ *
+ * Flattening keeps every fact and loses only the encoding. "Everything the turn learned
+ * is already sitting in `contents`" is the comment above; this is what makes it true.
+ */
+function flattenToolTurns(contents: GenContent[]): GenContent[] {
+  return contents.map((c) => {
+    if (!Array.isArray(c.parts)) return c
+    if (!c.parts.some((p: any) => p?.functionCall || p?.functionResponse)) return c
+    const parts = c.parts.map((p: any) => {
+      if (p?.functionCall) {
+        return { text: `[you called ${p.functionCall.name} with ${traceValue(JSON.stringify(p.functionCall.args ?? {}), 1500)}]` }
+      }
+      if (p?.functionResponse) {
+        const r = (p.functionResponse.response as any)?.result ?? p.functionResponse.response
+        return { text: `[${p.functionResponse.name} came back: ${traceValue(typeof r === 'string' ? r : JSON.stringify(r ?? null), 3000)}]` }
+      }
+      // A thought signature belongs to the call it was emitted with, and the call is
+      // gone — carrying it into a round with no tools is the same error again.
+      return p?.thoughtSignature ? { text: String(p.text ?? '') } : p
+    })
+    return { role: c.role, parts: parts.filter((p: any) => typeof p?.text !== 'string' || p.text.length > 0) }
+  })
 }
 
 /** `data:<mime>;base64,<payload>` → the two halves Gemini's inlineData wants. */
@@ -767,6 +996,152 @@ async function recentLookups(identity: Identity): Promise<string | undefined> {
     // Continuity is an improvement on the turn, never a precondition for it.
     return undefined
   }
+}
+
+/* ------------------------------------------------------------------------- *
+ * §5 — the pass that writes down what the turn learned
+ * ------------------------------------------------------------------------- */
+
+/**
+ * **The two most discretionary tools in the product had nowhere to be called from.**
+ *
+ * The main loop ends the turn the moment a reply lands (C30, and it was right to —
+ * the extra round produced `STOP · 0 output tokens` and cost a full prefix). But the
+ * variable tail tells the model, in as many words, *"write new facts after replying,
+ * never instead of replying"* — a sequence the break makes structurally impossible.
+ * The only surviving path was a parallel `remember` emitted in the same breath as
+ * `reply`, decided with `thinkingBudget: 0`. Measured over 93 driven turns: **3
+ * memory facts and zero `schedule` calls, ever.**
+ *
+ * That is not a model that dislikes remembering. It is a slot that does not exist.
+ *
+ * §5 already says where it belongs — *"the bot writes facts asynchronously after a
+ * turn, never blocking a reply"* — so this runs once the message is out and nobody
+ * is waiting. Three properties make it cheap enough to always run:
+ *
+ *  - **It does not carry the stable prefix.** Deciding "is there a fact here?" needs
+ *    the conversation, not the schema, the catalog or ten behavior modules. ~300
+ *    tokens instead of ~16k, which is why this costs less than the round C30 removed.
+ *  - **Two tools, so there is no tool to get wrong.** The declarations are the same
+ *    objects the main loop uses, filtered, so they cannot drift.
+ *  - **Silence is the expected answer** and is stated as such. Most turns contain
+ *    nothing worth keeping, and a reflection pass that always finds something is a
+ *    diary (§5), which is the failure this is meant to avoid.
+ *
+ * Failures are swallowed by the caller: nothing here may cost a person their reply.
+ */
+async function reflect(
+  session: SessionCtx,
+  identity: Identity,
+  turnId: string,
+  turn: { said: string; replied: string; trace: ToolTrace[] },
+): Promise<ToolTrace[] | null> {
+  if (!turn.said.trim() && !turn.replied.trim()) return null
+
+  /**
+   * **Only offer what the turn did not already do.**
+   *
+   * Caught on the first live turn after this pass was added: the admin said "remind me
+   * on Friday to chase the fees", the main loop scheduled `admin-fees-chase-friday`,
+   * and reflection then scheduled `chase-fees-badminton-beginners` for the same thing.
+   * One request, two watches, and the person gets chased twice — a new defect created
+   * by the fix for an old one.
+   *
+   * The instructional version of this fix ("don't duplicate what you already did") is
+   * the version that fails intermittently, because it depends on the model reading its
+   * own trace correctly. The structural version cannot: if `schedule` already ran this
+   * turn, reflection is not given `schedule`. The slot exists for the tools that had
+   * nowhere to be called from, so once one has been called there is nothing left for it
+   * to fix. `dedupe_key` stops two *identical* watches; nothing stopped two differently
+   * named watches for one intent, and nothing at the schema layer could.
+   */
+  const already = new Set(turn.trace.map((t) => t.name))
+  const decls = toolDecls().filter(
+    (t) => (t.name === 'remember' || t.name === 'schedule') && !already.has(t.name),
+  )
+  if (!decls.length) return null
+
+  const did = turn.trace
+    .filter((t) => !t.name.startsWith('(') && t.name !== 'read')
+    .map((t) => t.name)
+  const at = await now()
+
+  const system = `You have just finished a turn as Class Manager, the manager for ${identity.academy.name}. It is already sent; you are not talking to anybody now.
+
+Below are the only questions left open — anything not listed here was already handled during the turn and must not be repeated.
+
+"Neither" is the common and correct answer:
+
+1. **Is there a fact worth carrying?** Vocabulary they use, a policy that came up, a habit, a preference, something about how this person works. Facts, not transcripts — "prefers voice notes" is a fact, "asked about fees" is a log line. A fact that changes no future behaviour was not worth storing. Correct an existing fact by superseding it, never by writing a contradiction.
+2. **Did they ask you to look at something later, or is there something you said you would come back to?** "Check if she's paid by Friday", "keep an eye on Saturday", "remind me Thursday", or a promise you made in the reply. That is a \`schedule\` — it runs later as an ordinary turn under this person's own permissions, and deciding to do nothing then is fine. \`expires_at\` is required.
+
+Do not invent work. Do not schedule a watch nobody asked for and you did not promise. If neither applies, call nothing at all and say nothing — that is the system working.
+
+Their id, for \`subject_id\`: person = ${identity.person.id}, business = ${identity.academyId}. It is ${at.toISOString()} now.`
+
+  const res = await generate({
+    system,
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text:
+              `They said: ${turn.said || '(nothing — a tap)'}\n\n` +
+              `You replied: ${turn.replied || '(nothing)'}\n\n` +
+              `What you ran this turn: ${did.length ? did.join(', ') : 'nothing'}`,
+          },
+        ],
+      },
+    ],
+    tools: decls,
+    model: env.MODEL_MAIN,
+    temperature: 0.2,
+    // Unlike the tool path, this call is not composing a deeply-nested plan — it is
+    // making a judgement, which is the shape a thinking budget is actually for, and
+    // there is no MALFORMED_FUNCTION_CALL risk to trade against on two flat schemas.
+    thinkingBudget: TURN_THINKING.judge,
+    maxOutputTokens: 2048,
+  })
+
+  if (!res.functionCalls.length) return null
+
+  const ctx: ToolCtx = {
+    session,
+    identity,
+    turnId,
+    pendingPlans: new Map(),
+    outcomes: [],
+    // A reflection may not talk to anybody. `repliedTo` is pre-loaded with this
+    // contact so that anything which tries is refused by the same guard the main
+    // loop uses, rather than by a rule written twice.
+    repliedTo: new Set<string>([identity.contact.id]),
+  }
+
+  const out: ToolTrace[] = []
+  for (const call of res.functionCalls.slice(0, 4)) {
+    if (call.name !== 'remember' && call.name !== 'schedule') continue
+    const startedAt = Date.now()
+    try {
+      const r = await runTool(call.name, call.args, ctx)
+      out.push({
+        round: 0,
+        name: `reflect:${call.name}`,
+        ms: Date.now() - startedAt,
+        args: traceValue(call.args, 1000),
+        result: traceValue(r.result, 800),
+      })
+    } catch (e) {
+      out.push({
+        round: 0,
+        name: `reflect:${call.name}`,
+        ms: Date.now() - startedAt,
+        args: traceValue(call.args, 1000),
+        error: e instanceof Error ? e.message : String(e),
+      })
+    }
+  }
+  return out.length ? out : null
 }
 
 /* ------------------------------------------------------------------------- *
@@ -950,8 +1325,23 @@ will never think to ask whether the reminders went out. Then who is unpaid.`
         ? 'This academy is new here. Lean on proof — what was actually done, what actually went out — over synthesis.'
         : 'This academy has been here a while. They trust the mechanics; lean on the thinking, not the receipts.'
 
+    // **The digest does not get the stable prefix, and should never have had it.**
+    //
+    // This sent `stablePrefix()` — the schema it authors no SQL against, 26 operation
+    // signatures it cannot call, the message catalog it is not choosing from, and ten
+    // behavior modules about situations it is not in — to `MODEL_SYNTH`, which is the
+    // most expensive model in the product, twice a day per academy. Measured, that
+    // prefix is ~16k tokens.
+    //
+    // Worse, it was **uncached every time**: `cachedContentFor` requires tools to
+    // create a handle, and synthesis declares none, so the one call that paid the most
+    // for the prefix was the one call that never amortised it.
+    //
+    // What the digest actually needs is doctrine (how to sound), the grounding rules
+    // (how to stay honest), and the payload — which it is handed in full below. The
+    // model choice is unchanged; only the bill is.
     const res = await generate({
-      system: `${stablePrefix()}\n\n${GROUNDING}\n\n${mix}`,
+      system: `${synthesisDoctrine()}\n\n${GROUNDING}\n\n${mix}`,
       contents: [
         {
           role: 'user',

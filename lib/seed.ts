@@ -109,17 +109,33 @@ const svc = (academyId: string): SessionCtx => ({ role: 'service', academyId })
  * migration 0007 opened for exactly this. No RLS policy is widened, and a user
  * session cannot execute it, so the agent still sees one tenant at most.
  *
- * Memoised because the SSE poll runs every ~600 ms; `worldState()` and
- * `resetWorld()` refresh it, which covers every way the list can change here.
+ * Memoised because the SSE poll runs every ~600 ms.
+ *
+ * **The memo is process-local and the table is not.** `drive academy "…"`
+ * creates a business from its own node process; this server went on serving the
+ * list it had cached before that, and the visible result was `contact_not_found`
+ * for a contact that plainly existed — every message from a newly created
+ * business bounced until the server refreshed for some unrelated reason, or was
+ * restarted. There is no invalidation to add, because the other writer is not
+ * here to send one, and in production the other writer is another instance.
+ *
+ * A cache may make an answer slower to change. It may never be the thing that
+ * makes an answer *wrong*. So the memo is bounded by time rather than by
+ * events: it still collapses a burst of polls into one query, and it cannot be
+ * stale for longer than it takes to notice.
  */
+const ACADEMY_LIST_TTL_MS = 1_000
 let academyIdCache: string[] | null = null
+let academyIdCachedAt = 0
 
 export async function worldAcademyIds(o: { refresh?: boolean } = {}): Promise<string[]> {
-  if (!o.refresh && academyIdCache !== null) return academyIdCache
+  const fresh = academyIdCache !== null && Date.now() - academyIdCachedAt < ACADEMY_LIST_TTL_MS
+  if (!o.refresh && fresh) return academyIdCache as string[]
   const rows = await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
     return await tx`select id from app.list_academies()`
   })
   academyIdCache = rows.map((r) => String(r.id))
+  academyIdCachedAt = Date.now()
   return academyIdCache
 }
 
@@ -195,6 +211,124 @@ export async function resetWorld(): Promise<void> {
   })
   academyIdCache = null
   await resetClock() // re-sync lib/clock's cached offset
+}
+
+/* ------------------------------------------------------------------------- *
+ * Managing the world
+ *
+ * Signing a business up is the operator's job — the owner of Class Manager
+ * creates a tenant, and a stranger messaging the number must never be able to.
+ * That is a product decision, and `resolveInbound` returning `unresolved` for a
+ * number matching no academy is it working, not a gap.
+ *
+ * It does mean the only people who can make or unmake a tenant are the ones
+ * running this repo, so they need it to be one command. Before these, the world
+ * had exactly two states — everything, or nothing (`resetWorld`) — so testing a
+ * second business meant wiping the first, and a mistyped roster row could only
+ * be cleared by starting the whole afternoon again.
+ * ------------------------------------------------------------------------- */
+
+/** Every auto-assigned test number in use, across all tenants. */
+async function takenTestNumbers(): Promise<string[]> {
+  const out: string[] = []
+  for (const id of await worldAcademyIds({ refresh: true })) {
+    const rows = await withSession(svc(id), async (tx) => {
+      return await tx<{ phone_e164: string }[]>`select phone_e164 from contact where phone_e164 like '+9199%'`
+    }).catch(() => [] as { phone_e164: string }[])
+    for (const r of rows) out.push(String(r.phone_e164))
+  }
+  return out
+}
+
+/** An academy by id, or by a case-insensitive name match. */
+export async function findAcademy(idOrName: string): Promise<{ id: string; name: string } | null> {
+  const wanted = String(idOrName ?? '').trim()
+  if (!wanted) return null
+  for (const id of await worldAcademyIds({ refresh: true })) {
+    const rows = await withSession(svc(id), async (tx) => {
+      return await tx`select id, name from academy where id = ${id}::uuid`
+    })
+    const row = rows[0]
+    if (!row) continue
+    if (String(row.id) === wanted) return { id: String(row.id), name: String(row.name) }
+    if (String(row.name).toLowerCase() === wanted.toLowerCase()) {
+      return { id: String(row.id), name: String(row.name) }
+    }
+  }
+  return null
+}
+
+/**
+ * One business and everything in it. `academy_id ... on delete cascade` is on
+ * every tenant table, so this is one statement and RI does the rest — the same
+ * mechanism `resetWorld` uses, pointed at a single row.
+ */
+export async function dropAcademy(idOrName: string): Promise<{ id: string; name: string } | null> {
+  const found = await findAcademy(idOrName)
+  if (!found) return null
+  await withSession(svc(found.id), async (tx) => {
+    await tx`delete from academy where id = ${found.id}::uuid`
+  })
+  academyIdCache = null
+  return found
+}
+
+/**
+ * One person, their numbers, and everything hanging off them.
+ *
+ * `person_id` references are deliberately NOT `on delete cascade` — history
+ * stays attributed (§8.3), and that is right for the product and inconvenient
+ * for a test world. So the order is explicit and the whole thing is one
+ * transaction: it either removes them completely or leaves them untouched and
+ * says which constraint stopped it. A half-deleted person is worse than none.
+ */
+export async function dropPerson(
+  contactId: string,
+): Promise<{ personId: string; name: string; academyId: string } | null> {
+  for (const academyId of await worldAcademyIds({ refresh: true })) {
+    const head = await withSession(svc(academyId), async (tx) => {
+      const rows = await tx`
+        select c.person_id, p.full_name
+          from contact c join person p on p.id = c.person_id
+         where c.id = ${contactId}::uuid`
+      return rows[0] ?? null
+    })
+    if (!head) continue
+
+    const personId = String(head.person_id)
+    await withSession(svc(academyId), async (tx) => {
+      const P = `'${personId}'::uuid`
+      // Leaves first. Accounts they hold take their players with them: a family
+      // account without its children is not a state the product has a name for.
+      const players = `select id from player where person_id = ${P} or account_id in (select id from account where holder_person_id = ${P})`
+      const accounts = `select id from account where holder_person_id = ${P}`
+      const coaches = `select id from coach where person_id = ${P}`
+      const contacts = `select id from contact where person_id = ${P}`
+
+      await tx.unsafe(`delete from attendance where player_id in (${players})`)
+      await tx.unsafe(`update attendance set marked_by_coach_id = null where marked_by_coach_id in (${coaches})`)
+      await tx.unsafe(`delete from tally_line where player_id in (${players}) or account_id in (${accounts})`)
+      await tx.unsafe(`delete from payment where account_id in (${accounts})`)
+      await tx.unsafe(`delete from enrollment where player_id in (${players})`)
+      await tx.unsafe(`delete from player where id in (${players})`)
+      await tx.unsafe(`delete from account where id in (${accounts})`)
+      await tx.unsafe(`delete from session_coach where coach_id in (${coaches})`)
+      await tx.unsafe(`delete from class_coach where coach_id in (${coaches})`)
+      await tx.unsafe(`delete from coach where id in (${coaches})`)
+      await tx.unsafe(`delete from academy_admin where person_id = ${P}`)
+      await tx.unsafe(`delete from memory_fact where subject_kind = 'person' and subject_id = ${P}`)
+      await tx.unsafe(`delete from view_spec where for_person_id = ${P}`)
+      await tx.unsafe(`delete from action where minted_for_contact_id in (${contacts})`)
+      await tx.unsafe(`update action set consumed_by_contact_id = null where consumed_by_contact_id in (${contacts})`)
+      await tx.unsafe(`delete from message where contact_id in (${contacts})`)
+      await tx.unsafe(`delete from turn where contact_id in (${contacts}) or person_id = ${P}`)
+      await tx.unsafe(`update audit_entry set actor_person_id = null where actor_person_id = ${P}`)
+      await tx.unsafe(`delete from contact where id in (${contacts})`)
+      await tx.unsafe(`delete from person where id = ${P}`)
+    })
+    return { personId, name: String(head.full_name), academyId }
+  }
+  return null
 }
 
 // -----------------------------------------------------------------------------
@@ -1049,13 +1183,34 @@ const isoOrNull = (v: unknown): string | null =>
   v === null || v === undefined ? null : new Date(v as string).toISOString()
 
 /** academies, contacts, clock, faults — `GET /api/emulator/state`. */
+/**
+ * Everything the emulator shell renders.
+ *
+ * **Fanned out on purpose.** This was a sequential `for` over every academy, each body
+ * its own transaction, and the tenant loop is the reason the shell felt broken: a
+ * transaction costs BEGIN + preamble + its queries + COMMIT in round trips, and a
+ * round trip to the pooler measures ~37 ms. That is a perfectly good number and it
+ * did not matter — **ten tenants in series is ~200 ms of latency spent sixty times
+ * over**, and `GET /api/emulator/state` took six seconds, on every poll, while the
+ * panes waited on it.
+ *
+ * A per-academy read cannot share a transaction with another academy's — each needs
+ * its own `app.academy_id`, which is the whole point of the boundary — but nothing
+ * says they must run one after another. The pool carries 10, so they go together and
+ * the wall clock becomes the slowest tenant rather than the sum of all of them.
+ */
 export async function worldState(): Promise<WorldState> {
-  const nowD = await now()
-  const nextEvent = await nextEventAt()
+  // Independent of each other and of the tenants below; there is no reason for
+  // three sequential awaits here either.
+  const [nowD, nextEvent, academyIds] = await Promise.all([
+    now(),
+    nextEventAt(),
+    worldAcademyIds({ refresh: true }),
+  ])
 
-  const academies: WorldAcademy[] = []
-  for (const academyId of await worldAcademyIds({ refresh: true })) {
-    const a = await withSession(svc(academyId), async (tx) => {
+  const perAcademy = await Promise.all(
+    academyIds.map(async (academyId): Promise<WorldAcademy | null> => {
+      const a = await withSession(svc(academyId), async (tx) => {
       const head = await tx`
         select a.id, a.name, a.category, a.timezone, a.onboarding_state, a.upi_handle, a.rail,
                a.cancellation_window_hours, a.client_reminder_lead_hours,
@@ -1133,11 +1288,11 @@ export async function worldState(): Promise<WorldState> {
         limit 6`
 
       return { head: head[0], contacts, upcoming }
-    })
-    if (!a) continue
+      })
+      if (!a) return null
 
-    const h = a.head
-    academies.push({
+      const h = a.head
+      return {
       id: String(h.id),
       name: String(h.name),
       category: (h.category as string) ?? null,
@@ -1202,8 +1357,10 @@ export async function worldState(): Promise<WorldState> {
         status: String(s.status),
         covered: Boolean(s.covered),
       })),
-    })
-  }
+      }
+    }),
+  )
+  const academies: WorldAcademy[] = perAcademy.filter((a): a is WorldAcademy => a !== null)
 
   const infra = await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
     const clock = await tx`select offset_ms from sim_clock where singleton limit 1`
@@ -1640,9 +1797,14 @@ export async function createAcademy(input: {
 
   await withSession(svc(academyId), async (tx) => {
     if (!phone) {
-      const taken = await tx<{ phone_e164: string }[]>`
-        select phone_e164 from contact where phone_e164 like '+9199%'`
-      const used = new Set(taken.map((t) => t.phone_e164))
+      // Across every academy, not this one. The session is pinned to the tenant
+      // being created, so an RLS-scoped lookup sees an empty world and hands the
+      // second business the same admin number as the first — and a number known
+      // to two academies is exactly §10.1's ambiguous case, so from then on that
+      // admin's messages resolve to nobody. The operator creating their second
+      // test business would have found the product broken for no reason they
+      // could see.
+      const used = new Set<string>(await takenTestNumbers())
       for (let i = 1; i < 1000 && !phone; i++) {
         const candidate = `+9199${String(i).padStart(8, '0')}`
         if (!used.has(candidate)) phone = candidate

@@ -16,9 +16,17 @@ Postgres. You author SQL against these tables directly.
 - Every table except academy, sender, job, sim_* also has academy_id uuid not null.
   recipe is the one exception: its academy_id is nullable, and null means global.
 - RLS is on for every table and it is the security boundary, not a filter you add.
-  Your queries run as the person you are serving; a query reaching past what they
-  may see returns zero rows rather than an error. Never add "where academy_id = ..."
-  as a safety measure and never treat a zero-row result as a permissions bug.
+  **Reading and writing are not symmetrical here, and assuming they are is the
+  single most common way a write fails.**
+  - READ: never add "where academy_id = ..." as a safety measure. Your queries run
+    as the person you are serving and a query reaching past what they may see
+    returns zero rows rather than an error. A zero-row result is never a
+    permissions bug.
+  - WRITE: **every INSERT must set academy_id = app.academy_id() explicitly, on
+    every row, including rows in a multi-row VALUES list.** Nothing fills it in
+    for you: the column is not defaulted, and the policy checks it, so an insert
+    that leaves it out is refused with "new row violates row-level security
+    policy" — which looks like a permissions problem and is a missing column.
 - **Never call now(), current_date or current_timestamp. Use app.now().** The clock
   is drivable; sql now() ignores it and produces answers that are wrong in test and
   subtly wrong in production.

@@ -455,16 +455,39 @@ export const REGISTRY: Record<ComponentType, RegistryEntry> = {
   },
 }
 
+/**
+ * What the model may **author**, which is deliberately narrower than what the product
+ * can **render**.
+ *
+ * All nine components stay in `REGISTRY` and all nine still render — a captured view,
+ * a recipe or a future built-in screen can use any of them. What changed is the menu
+ * the model chooses from, and the reason is measured: across 93 driven turns it minted
+ * **one** view of any type. §15's failure table already says the answer to "component
+ * doesn't exist" is "fall back to `table` — it renders any tabular result", so a
+ * nine-way choice was buying nothing and costing a decision.
+ *
+ * These three are the ones that are *categorically* different from each other rather
+ * than presentationally: rows, words, and time. `stat-cards`, `people-list`, `detail`
+ * and `timeline` are all tables with nicer chrome, and `chart` is the one worth
+ * restoring first — put it back the moment a real question is badly served here, which
+ * is the same bar §15 set for shipping the others in the first place.
+ *
+ * The genuinely spatial case is no longer this surface's problem: `calendar` is a
+ * built-in screen (`link_screen:"calendar"`), so it no longer depends on the model
+ * deciding to compose one.
+ */
+export const MINTABLE: readonly ComponentType[] = ['table', 'prose', 'calendar']
+
 /** What the model reads to discover the surface. Not baked into its prompt —
  *  derived from the registry, so adding a component really is one file. */
 export function registryDigest(): string {
-  const lines = (Object.keys(REGISTRY) as ComponentType[]).map(
-    (t) => `- ${t}: ${REGISTRY[t].dataContract}`,
-  )
+  const lines = MINTABLE.map((t) => `- ${t}: ${REGISTRY[t].dataContract}`)
   return [
     'View components (§15). A view spec is {title, components:[...]}; every component is {type, ...}.',
     'Every query runs under the link holder\'s own RLS, so it can only return what that person could see by hand.',
     ...lines,
+    'Anything that does not fit one of these is a table, and a table is never the wrong answer — §15\'s floor is that ' +
+      'anything which cannot be rendered gets answered in the chat instead.',
   ].join('\n')
 }
 

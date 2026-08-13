@@ -99,6 +99,8 @@ export type EmuMessage = {
   footer: string | null
   buttons: EmuButton[]
   list: { buttonText: string; sections: EmuListSection[] } | null
+  /** §14.6 — the Cloud API's `cta_url`: a body plus one button that opens a URL. */
+  link: { title: string; url: string } | null
   media: EmuMedia | null
   catalogId: string | null
   templateName: string | null
@@ -405,6 +407,13 @@ function normalizeList(raw: Raw | null | undefined, index: ActionIndex): EmuMess
   }
 }
 
+function normalizeLink(raw: Raw | null | undefined): EmuMessage['link'] {
+  if (!raw) return null
+  const url = str(pick(raw, 'url', 'href'))
+  if (!url) return null
+  return { title: str(pick(raw, 'title', 'display_text', 'displayText')) ?? 'Open', url }
+}
+
 function deriveStatus(raw: Raw, ts: { sentAt: string | null; deliveredAt: string | null; readAt: string | null }): MessageStatus {
   const explicit = (str(pick(raw, 'status')) ?? '').toLowerCase()
   if (explicit === 'failed') return 'failed'
@@ -464,6 +473,7 @@ export function normalizeMessage(raw: Raw, index: ActionIndex, fallbackContactId
     footer: str(pick(raw, 'footer')) ?? str(pick(payload, 'footer')),
     buttons,
     list: normalizeList((pick(raw, 'list') as Raw) ?? (pick(payload, 'list') as Raw), localIndex),
+    link: normalizeLink((pick(raw, 'link') as Raw) ?? (pick(payload, 'link') as Raw)),
     media,
     catalogId: str(pick(raw, 'catalog_id', 'catalogId')),
     templateName: str(pick(raw, 'template_name', 'templateName')),
@@ -788,9 +798,20 @@ export function windowState(contact: EmuContact | null | undefined, nowIso: stri
 /** Structural honesty (§17): the emulator enforces the real Cloud API's limits. */
 export function limitViolations(m: EmuMessage): string[] {
   const out: string[] = []
-  const interactive = m.buttons.length > 0 || !!m.list
+  const interactive = m.buttons.length > 0 || !!m.list || !!m.link
   const cap = interactive ? LIMITS.bodyChars : LIMITS.textChars
   if (m.body.length > cap) out.push(`body ${m.body.length}/${cap}`)
+  // §14.6 — a link is a button. A url sitting in the text is the failure this whole
+  // shape exists to make impossible, so the emulator shows it as one.
+  if (/https?:\/\//i.test(m.body) && !/https?:\/\/(?:wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com)\b/i.test(m.body)) {
+    out.push('a url in the body — links are buttons, never text')
+  }
+  if (m.link) {
+    if (m.buttons.length) out.push('a link and reply buttons cannot share a message')
+    if (m.list) out.push('a link and a list cannot share a message')
+    if (m.link.title.length > LIMITS.buttonTitleChars)
+      out.push(`link title ${m.link.title.length}/${LIMITS.buttonTitleChars}`)
+  }
   if (m.buttons.length > LIMITS.buttons) out.push(`${m.buttons.length} buttons / max ${LIMITS.buttons}`)
   for (const b of m.buttons) {
     if (b.title.length > LIMITS.buttonTitleChars) out.push(`button "${b.title.slice(0, 12)}…" ${b.title.length}/${LIMITS.buttonTitleChars}`)
@@ -906,6 +927,7 @@ function echo(contactId: string, body: string, nowIso: string): EmuMessage {
     footer: null,
     buttons: [],
     list: null,
+    link: null,
     media: null,
     catalogId: null,
     templateName: null,
@@ -1171,6 +1193,20 @@ export type EmulatorActions = {
     role: 'client' | 'coach' | 'admin' | 'prospect'
     phone?: string
   }) => Promise<void>
+  /**
+   * §17's world is "a world, not four panes", and the emulator could not make one.
+   * `POST /api/emulator/academy` existed and nothing in the UI called it, so trying a
+   * second business meant reseeding a fixture and losing the first — which is exactly
+   * the all-or-nothing state the driver already grew `academy` / `drop` to escape.
+   */
+  createAcademy: (input: {
+    name: string
+    adminName: string
+    adminPhone?: string
+    category?: string
+    timezone?: string
+  }) => Promise<void>
+  dropAcademy: (academyId: string, name: string) => Promise<void>
   setFault: (kind: FaultKind, active: boolean, rate: number) => Promise<void>
   setFilters: (patch: Partial<EventFilters>) => void
   toggle: (key: 'showTray' | 'showLog') => void
@@ -1549,6 +1585,40 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
             `${str(pick(contact, 'name')) ?? 'contact'} added on ${str(pick(contact, 'phone')) ?? 'a test number'}` +
               (where ? ` · enrolled in ${where}` : ''),
           )
+        }),
+
+      createAcademy: (input) =>
+        withBusy('academy/new', async () => {
+          const res = (await post('/api/emulator/academy', input)) as Raw
+          const academy = (pick(res, 'academy') as Raw) ?? null
+          await refreshState()
+          const admin = (pick(academy, 'admin') as Raw) ?? null
+          notify(
+            'ok',
+            `${str(pick(academy, 'name')) ?? input.name} created` +
+              (str(pick(admin, 'phone')) ? ` · admin on ${str(pick(admin, 'phone'))}` : '') +
+              ' · at setup, nobody messaged',
+          )
+        }),
+
+      dropAcademy: (academyId, name) =>
+        withBusy(`academy/drop:${academyId}`, async () => {
+          const res = await fetch(`/api/emulator/academy?academy=${encodeURIComponent(academyId)}`, {
+            method: 'DELETE',
+          })
+          const body = (await res.json().catch(() => ({}))) as Raw
+          if (!res.ok || pick(body, 'ok') === false) {
+            notify('error', `could not drop ${name}: ${str(pick(body, 'error')) ?? res.status}`)
+            return
+          }
+          // Panes for contacts that no longer exist render the "not in this world" card,
+          // so they are closed here rather than left as debris. `stateRef`, not `state`:
+          // this closure outlives the render it was built in.
+          for (const c of stateRef.current.contacts) {
+            if (c.academyId === academyId) dispatch({ type: 'pane/close', contactId: c.id })
+          }
+          await refreshState()
+          notify('ok', `${name} and everything in it is gone`)
         }),
 
       setFault: (kind, active, rate) =>

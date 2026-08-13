@@ -137,6 +137,26 @@ export function buildPayload(req: TransportRequest): Record<string, unknown> {
       ? { type: 'image', image: { link: m.media.url } }
       : null
 
+  // §14.6 — a link is a button. `cta_url` is a body plus exactly one URL button, which is
+  // why `link` is exclusive with reply buttons and lists in the message shape: the wire has
+  // room for one action and this is it. Checked first for the same reason.
+  if (m.link) {
+    return {
+      ...base,
+      type: 'interactive',
+      interactive: {
+        type: 'cta_url',
+        ...(header && header.type === 'text' ? { header } : {}),
+        body: { text: m.body },
+        ...(m.footer ? { footer: { text: m.footer } } : {}),
+        action: {
+          name: 'cta_url',
+          parameters: { display_text: m.link.title, url: m.link.url },
+        },
+      },
+    }
+  }
+
   if (m.buttons?.length) {
     return {
       ...base,

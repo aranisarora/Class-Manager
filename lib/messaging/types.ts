@@ -41,6 +41,45 @@ export type Button = { actionId: string; title: string }
 export type ListRow = { actionId: string; title: string; description?: string }
 export type ListSection = { title: string; rows: ListRow[] }
 
+/**
+ * §14.6 — "Every link is a button. Nothing URL-shaped is pasted into message text."
+ *
+ * That rule had no way to be obeyed: the wire shape carried reply buttons and lists
+ * and nothing else, so every link this product has ever sent went out as a 300-character
+ * signed JWT sitting in the body of a WhatsApp message. On a phone that is a wall of
+ * base64 where a sentence should be, and it is the runtime that put it there — the
+ * `view` tap composed `"Here it is — this link is yours…" + linkUrl(token)`.
+ *
+ * A capability with no way to reach it is indistinguishable from a model that never
+ * wants it, so this is the way to reach it: the Cloud API's `cta_url` interactive,
+ * which is a body plus exactly one button that opens a URL.
+ *
+ * **Exclusive with buttons and with a list**, because the wire is: `cta_url` has room
+ * for one action and it is the link. That exclusivity is the reason this is a field of
+ * its own rather than a variant of `Button` — a shape that cannot mix should not be
+ * expressible as if it could.
+ */
+export type LinkButton = { title: string; url: string }
+
+/**
+ * A link the recipient should **forward** rather than tap.
+ *
+ * §8.1's coach invite and §9.1's parent invite are drafts the admin copies out of this
+ * chat and sends from their own number, and their whole payload is a `wa.me` deep link
+ * with prefilled text. That link belongs in the text, because the text is the artifact.
+ * It is also short, readable, and says what it is — the opposite of a signed JWT.
+ *
+ * So the rule is not "no URLs in bodies", it is: **a link the recipient taps is a
+ * button; a link the recipient forwards is text.** It lives here, next to the check that
+ * enforces it, because the last time this predicate had two homes the two drifted apart
+ * and took every invite in the product with them.
+ */
+const FORWARDABLE_LINK = /^https?:\/\/(?:wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com)/i
+
+export function isForwardableLink(url: string): boolean {
+  return FORWARDABLE_LINK.test(url)
+}
+
 export type OutboundMessage = {
   toContactId: string
   body: string
@@ -48,6 +87,8 @@ export type OutboundMessage = {
   footer?: string
   buttons?: Button[]
   list?: { buttonText: string; sections: ListSection[] }
+  /** §14.6 — a link, as a button. Never in the body. Exclusive with buttons and list. */
+  link?: LinkButton
   media?: { url: string; kind: 'image' | 'audio' | 'document'; filename?: string }
   catalogId?: CatalogId | null // §12 — null for a composed message (§14.4)
   templateName?: TemplateName | null
@@ -154,7 +195,7 @@ export function validateOutbound(msg: OutboundMessage): string[] {
   if (!msg.toContactId) bad.push('toContactId is required')
   if (!msg.idempotencyKey) bad.push('idempotencyKey is required on every outbound (§6.5)')
 
-  const interactive = Boolean(msg.buttons?.length || msg.list)
+  const interactive = Boolean(msg.buttons?.length || msg.list || msg.link)
   const bodyLimit = interactive ? LIMITS.bodyChars : LIMITS.textChars
   const bodyLen = printable(msg.body ?? '')
 
@@ -174,6 +215,39 @@ export function validateOutbound(msg: OutboundMessage): string[] {
 
   if (msg.buttons?.length && msg.list) {
     bad.push('a message carries buttons or a list, never both')
+  }
+
+  if (msg.link) {
+    // `cta_url` has room for one action and it is the link, so this is a wire fact
+    // rather than a house rule. Caught here so it cannot be discovered on a phone.
+    if (msg.buttons?.length) bad.push('a message carries a link or reply buttons, never both')
+    if (msg.list) bad.push('a message carries a link or a list, never both')
+    const t = printable(msg.link.title ?? '')
+    if (t === 0) bad.push('the link has no title')
+    if (t > LIMITS.buttonTitleChars) {
+      bad.push(`link title is ${t} chars, limit ${LIMITS.buttonTitleChars}`)
+    }
+    if (!/^https?:\/\/\S+$/i.test(msg.link.url ?? '')) {
+      bad.push(`link url is not a url: ${String(msg.link.url ?? '').slice(0, 40)}`)
+    }
+  }
+
+  // §14.6 — the whole point of `link`. A url in the body is not a smaller version of a
+  // link button, it is the failure this shape exists to make impossible, and `compose`
+  // repairs it before this ever fires. If it fires, something bypassed compose.
+  //
+  // It must ask the SAME question `repair` asks, from the same predicate. It did not:
+  // repair exempted a forwardable `wa.me` deep link ("a link the recipient taps is a
+  // button; a link the recipient forwards is text") and this checked for any url at all.
+  // Two rules about one thing, and the one that runs last has no model in the loop — so
+  // §8.1's coach invite and §9.1's parent invite, the only mechanism by which anybody
+  // but the admin ever joins, were suppressed as `limit_violation` one hundred percent
+  // of the time. The admin was told the invite had been drafted. Nothing had been sent,
+  // and tapping `[Sent it]` produced no message at all.
+  for (const url of (msg.body ?? '').match(/https?:\/\/\S+/gi) ?? []) {
+    if (isForwardableLink(url)) continue
+    bad.push('the body contains a url — links are buttons, never text (§14.6)')
+    break
   }
 
   if (msg.buttons?.length) {

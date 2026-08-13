@@ -15,6 +15,7 @@
  */
 
 import { useState, type FormEvent, type ReactNode } from 'react'
+import { BackToChat } from './back-to-chat'
 
 export type SetupVenue = { id: string | null; name: string; address: string }
 
@@ -131,8 +132,13 @@ export function SetupForm({ token, initial }: { token: string; initial: SetupVal
       <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950/40">
         <h2 className="text-sm font-semibold text-emerald-900 dark:text-emerald-200">{message}</h2>
         <p className="mt-1 text-sm text-emerald-800/80 dark:text-emerald-300/80">
-          Back to the chat — the next thing is your timetable, and a photo of the whiteboard is enough.
+          The next thing is your timetable, and a photo of the whiteboard is enough.
         </p>
+        {/* The sentence used to end "Back to the chat —" and there was nothing to tap.
+            Now the words and the button are the same promise. */}
+        <div className="mt-3">
+          <BackToChat />
+        </div>
       </section>
     )
   }
@@ -354,7 +360,7 @@ export function SetupForm({ token, initial }: { token: string; initial: SetupVal
         disabled={state === 'sending'}
         className="w-full rounded-xl bg-neutral-900 px-4 py-3 text-base font-medium text-white disabled:opacity-60 dark:bg-white dark:text-neutral-900"
       >
-        {state === 'sending' ? 'Saving…' : 'Save and go back to the chat'}
+        {state === 'sending' ? 'Saving…' : 'Save'}
       </button>
       <p className={`text-center ${HELP}`}>Nobody gets messaged by any of this.</p>
     </form>

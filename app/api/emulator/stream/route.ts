@@ -99,11 +99,22 @@ export async function GET(req: Request): Promise<Response> {
         }
       }
 
-      try {
-        if (!cursor) cursor = await latestCursor()
-      } catch {
-        cursor = null
-      }
+      // **Say hello before touching the database.**
+      //
+      // `start()` used to `await latestCursor()` first, and a promise returned from
+      // `start()` gates the stream: nothing reaches the wire — not even the response
+      // headers — until it resolves. That query ran while the pool was saturated by
+      // the polling fallback this very bug had caused, so it took tens of seconds,
+      // and `EventSource` has no connect timeout — the browser sat in `CONNECTING`
+      // the entire time. Measured: 12 s produced not one byte; 40 s produced the
+      // whole stream at once. The connection chip read "connecting" forever and the
+      // client degraded to polling, which is why the dev log showed `state` and
+      // `events` on a loop and no `stream` at all. The fallback fed the failure.
+      //
+      // The fix is ordering, not speed: flush a frame first so the browser's
+      // connection opens immediately, then go and find the cursor. A stream that says
+      // hello in 5 ms and back-fills in 5 s is a working instrument; one that is
+      // perfectly correct in 40 s is indistinguishable from broken.
       emit('hello', { type: 'hello', cursor, pollMs: POLL_MS })
 
       if (req.signal.aborted) {
@@ -111,12 +122,24 @@ export async function GET(req: Request): Promise<Response> {
         return
       }
 
-      pollTimer = setInterval(() => {
-        void poll()
-      }, POLL_MS)
-      kaTimer = setInterval(() => write(': keep-alive\n\n'), KEEPALIVE_MS)
+      // Everything below is deliberately NOT awaited inside `start()`, for the same
+      // reason: the stream is already live and must stay that way.
+      void (async () => {
+        try {
+          if (!cursor) cursor = await latestCursor()
+        } catch {
+          cursor = null
+        }
+        if (closed) return
+        emit('ready', { type: 'ready', cursor })
 
-      void poll()
+        pollTimer = setInterval(() => {
+          void poll()
+        }, POLL_MS)
+        void poll()
+      })()
+
+      kaTimer = setInterval(() => write(': keep-alive\n\n'), KEEPALIVE_MS)
     },
   })
 

@@ -44,11 +44,21 @@ function ConnectionDot() {
   )
 }
 
-/** Used only until `GET /api/emulator/state` reports the worlds `seedWorld` can build. */
+/**
+ * Only until `GET /api/emulator/state` answers — and that route takes seconds, so this
+ * is what the operator stares at on every cold load.
+ *
+ * It used to name "both academies", "ace · multi-coach" and "solo · one person", which
+ * read as a list of the businesses in the world and is not one: these are **fixtures**
+ * `seedWorld` can build, and picking one wipes whatever is there. Two things followed
+ * from the mislabelling — the picker looked hardcoded because it is, and there was no
+ * way to see or make a real business anywhere in the instrument. The tray owns that now
+ * (`+ business`), and this control says what it actually does.
+ */
 const FALLBACK_SCENARIOS: ScenarioMeta[] = [
-  { id: 'both', name: 'both academies', description: 'Two tenants at once — the isolation case' },
-  { id: 'ace', name: 'ace · multi-coach', description: 'Multi-coach table tennis academy' },
-  { id: 'solo', name: 'solo · one person', description: '§18 — one person, admin and coach' },
+  { id: 'both', name: 'both fixtures', description: 'Two tenants at once — the isolation case' },
+  { id: 'ace', name: 'multi-coach fixture', description: 'Multi-coach table tennis academy' },
+  { id: 'solo', name: 'solo fixture', description: '§18 — one person, admin and coach' },
 ]
 
 function WorldPicker() {
@@ -62,12 +72,17 @@ function WorldPicker() {
 
   return (
     <div className="flex items-center gap-1.5">
-      <span className="font-mono text-[10px] tracking-widest text-zinc-600 uppercase">world</span>
+      <span
+        className="font-mono text-[10px] tracking-widest text-zinc-600 uppercase"
+        title="canned worlds. Real businesses live in the tray — “+ business”."
+      >
+        fixture
+      </span>
       <select
         value={value}
         onChange={(e) => setChoice(e.target.value)}
         title={description ?? undefined}
-        className="max-w-[190px] rounded border border-zinc-700 bg-zinc-900 px-1.5 py-1 text-[11px] text-zinc-200 focus:border-emerald-700 focus:outline-none"
+        className="max-w-[170px] rounded border border-zinc-700 bg-zinc-900 px-1.5 py-1 text-[11px] text-zinc-200 focus:border-emerald-700 focus:outline-none"
       >
         {scenarios.map((s) => (
           <option key={s.id} value={s.id}>
@@ -78,9 +93,12 @@ function WorldPicker() {
       <Btn
         tone="primary"
         disabled={busy || !value}
-        title={description ?? 'reset the world and seed this scenario'}
+        title={description ?? 'wipe the world and seed this fixture'}
         onClick={() => {
-          if (state.contacts.length && !window.confirm(`Reseed "${value}"? Everything in the current world goes.`))
+          if (
+            (state.contacts.length || state.academies.length) &&
+            !window.confirm(`Seed "${value}"? Every business currently in the world goes.`)
+          )
             return
           void actions.seed(value)
         }}
@@ -88,7 +106,7 @@ function WorldPicker() {
         {busy ? <Spinner /> : 'seed'}
       </Btn>
       {state.scenario ? (
-        <Chip tone="quiet" title="currently seeded world">
+        <Chip tone="quiet" title="fixture this world was last seeded from">
           {state.scenario}
         </Chip>
       ) : null}
@@ -100,7 +118,23 @@ export function ClockBar() {
   const { state, actions } = useEmulator()
   const tz = usePrimaryTimezone()
   const [when, setWhen] = useState('')
-  const [editing, setEditing] = useState(false)
+  /**
+   * Whether the field holds a value the *person* typed, rather than a mirror of the
+   * clock. `dirty`, not `editing`, and the difference is the whole bug.
+   *
+   * This used to be `editing`, flipped by focus and blur, with an effect that
+   * overwrote `when` from the live clock whenever `editing` was false — and
+   * `editing` was in that effect's dependency array. **`onBlur` fires before
+   * `onClick`.** So clicking `set` ran: blur → `editing = false` → effect → `when`
+   * reverted to the clock's current value → *then* the click handler read `when`.
+   * Every "set" submitted the time it already was, which is exactly
+   * indistinguishable from the button doing nothing.
+   *
+   * Tracking dirtiness instead means the field stops mirroring the moment it is
+   * typed into and stays that way until it is submitted or reset — a state that
+   * blur cannot clear, because blur is not a decision.
+   */
+  const [dirty, setDirty] = useState(false)
 
   const nowMs = new Date(state.clock.nowIso).getTime()
   const drift = useMemo(() => nowMs - Date.now(), [nowMs])
@@ -108,8 +142,8 @@ export function ClockBar() {
   const busy = !!state.busy.clock || !!state.busy.tick
 
   useEffect(() => {
-    if (!editing) setWhen(isoToZonedInput(state.clock.nowIso, tz))
-  }, [state.clock.nowIso, tz, editing])
+    if (!dirty) setWhen(isoToZonedInput(state.clock.nowIso, tz))
+  }, [state.clock.nowIso, tz, dirty])
 
   return (
     <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-zinc-800 bg-zinc-900/90 px-3 py-1.5">
@@ -179,23 +213,40 @@ export function ClockBar() {
         <input
           type="datetime-local"
           value={when}
-          onFocus={() => setEditing(true)}
-          onBlur={() => setEditing(false)}
-          onChange={(e) => setWhen(e.target.value)}
-          className="rounded border border-zinc-700 bg-zinc-900 px-1.5 py-1 font-mono text-[11px] text-zinc-200 focus:border-emerald-700 focus:outline-none"
+          onChange={(e) => {
+            setDirty(true)
+            setWhen(e.target.value)
+          }}
+          className={`rounded border bg-zinc-900 px-1.5 py-1 font-mono text-[11px] text-zinc-200 focus:outline-none ${
+            dirty ? 'border-emerald-700 text-emerald-200' : 'border-zinc-700 focus:border-emerald-700'
+          }`}
           title={`wall-clock time in ${tz}`}
         />
         <Btn
+          // `onMouseDown` rather than `onClick`: the field may still hold focus, and
+          // mousedown lands before any blur the click would cause. Belt and braces
+          // alongside `dirty` — losing a typed time to an event-ordering quirk is the
+          // sort of thing that reads as "the clock is broken".
           disabled={busy || !when}
-          onClick={() => {
+          tone={dirty ? 'primary' : undefined}
+          onMouseDown={() => {
             const iso = zonedInputToIso(when, tz)
             if (!iso) return actions.notify('error', 'could not read that date')
+            setDirty(false)
             void actions.setClockTo(iso)
           }}
         >
           set
         </Btn>
-        <Btn disabled={busy} tone="danger" onClick={() => void actions.resetClock()} title="back to real time, offset 0">
+        <Btn
+          disabled={busy}
+          tone="danger"
+          onClick={() => {
+            setDirty(false)
+            void actions.resetClock()
+          }}
+          title="back to real time, offset 0"
+        >
           reset
         </Btn>
       </div>

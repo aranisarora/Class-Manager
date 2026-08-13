@@ -13,9 +13,12 @@
  *   connections — so every call is wrapped in sql.begin() and nothing ever
  *   SET ROLEs outside one.
  *
- *   GUC values are passed as parameters to set_config(), never interpolated.
- *   The role is the one thing that cannot be a parameter, so it comes from a
- *   hardcoded allowlist of three literals and never from input.
+ *   GUC values are uuids and are checked against a uuid pattern before they are
+ *   interpolated — `guc()` throws on anything else, which refuses strictly more
+ *   than quoting would accept. The role cannot be a parameter at all, so it
+ *   comes from a hardcoded allowlist of three literals and never from input.
+ *   (These were bound parameters until the preamble was collapsed into one
+ *   round trip; see `applySession` for why that mattered.)
  */
 
 import postgres from 'postgres'
@@ -26,9 +29,9 @@ import { AppError, errorMessage } from '@/lib/errors'
 export type Tx = postgres.TransactionSql<{}>
 
 export type SessionCtx =
-  | { role: 'service'; academyId: string }
-  | { role: 'user'; academyId: string; personId: string; contactId: string }
-  | { role: 'readonly'; academyId: string; personId: string; contactId: string }
+  | { role: 'service'; academyId: string; turnId?: string }
+  | { role: 'user'; academyId: string; personId: string; contactId: string; turnId?: string }
+  | { role: 'readonly'; academyId: string; personId: string; contactId: string; turnId?: string }
 
 export type QueryResult = {
   rows: Record<string, unknown>[]
@@ -121,6 +124,51 @@ export async function unsafeQuery<T = Record<string, unknown>>(
   return rows as T[]
 }
 
+/**
+ * The session preamble, in ONE round trip.
+ *
+ * This was four sequential statements — `set transaction read only`, `set local
+ * role`, `set local statement_timeout`, then the GUCs — and each `await` is a
+ * network round trip before the caller's query has even been sent.
+ *
+ * **The cost is the count, not the distance.** Measured against the Supabase
+ * pooler: one round trip is ~37 ms, which is unremarkable, and `withSession` plus
+ * a single query now totals ~151 ms — exactly four trips (BEGIN, this preamble,
+ * the query, COMMIT). Before, the preamble alone was three or four of them, so
+ * the cheapest possible session cost seven to nine. Nothing about that is visible
+ * in a profiler pointed at SQL: every individual statement is fast.
+ *
+ * A latency that small still ruins a route that pays it enough times. `GET
+ * /api/emulator/state` took **6.0 s** because it ran one transaction per tenant,
+ * sequentially, over ten tenants — nine trips each, then again, then again. It
+ * now takes **1.2 s**: three trips saved here, and the tenant loop fanned out in
+ * `worldState()`. The emulator felt broken because it was, and neither half of
+ * the fix would have been enough alone.
+ *
+ * `SET ROLE x` and `SET LOCAL statement_timeout` both have `set_config()` forms,
+ * so the whole preamble collapses into one `select`. The only statement that
+ * cannot join it is `SET TRANSACTION READ ONLY`, which Postgres requires before
+ * the first query of the transaction — and a `select` is a query. So readonly
+ * pays two trips and everything else pays one.
+ *
+ * The GUC values are interpolated rather than parameterised because a
+ * multi-value `set_config` target list with five placeholders is no cheaper, and
+ * because these are uuids: `guc()` refuses anything that is not one, which is a
+ * stricter guarantee than quoting would give.
+ */
+const UUID_OR_EMPTY = /^$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function guc(name: string, value: string | undefined): string {
+  const v = value ?? ''
+  if (!UUID_OR_EMPTY.test(v)) {
+    throw new AppError({
+      code: 'bad_session_guc',
+      message: `${name} must be a uuid or empty — got ${JSON.stringify(v).slice(0, 80)}`,
+    })
+  }
+  return `set_config('${name}', '${v}', true)`
+}
+
 async function applySession(tx: Tx, ctx: SessionCtx): Promise<void> {
   const role = ROLE_SQL[ctx.role]
   if (!role) {
@@ -129,20 +177,25 @@ async function applySession(tx: Tx, ctx: SessionCtx): Promise<void> {
 
   // Must precede every other statement in the transaction, and the role's own
   // default_transaction_read_only does not apply to a mid-transaction SET ROLE.
+  // This is the one thing that cannot ride along below.
   if (ctx.role === 'readonly') await unsafeQuery(tx, 'set transaction read only')
-
-  await unsafeQuery(tx, `set local role ${role}`)
-  await unsafeQuery(tx, `set local statement_timeout = ${ctx.role === 'readonly' ? MODEL_TIMEOUT_MS : USER_TIMEOUT_MS}`)
 
   const personId = 'personId' in ctx ? ctx.personId : ''
   const contactId = 'contactId' in ctx ? ctx.contactId : ''
+  const timeout = ctx.role === 'readonly' ? MODEL_TIMEOUT_MS : USER_TIMEOUT_MS
 
+  // Order within the target list matters only in that the role must be adopted
+  // before anything that depends on it; `app.*` are custom GUCs any role may set.
   await unsafeQuery(
     tx,
-    `select set_config('app.academy_id', $1, true),
-            set_config('app.person_id',  $2, true),
-            set_config('app.contact_id', $3, true)`,
-    [ctx.academyId ?? '', personId ?? '', contactId ?? ''],
+    `select set_config('role', '${role}', true),
+            set_config('statement_timeout', '${timeout}', true),
+            ${guc('app.academy_id', ctx.academyId)},
+            ${guc('app.person_id', personId)},
+            ${guc('app.contact_id', contactId)},
+            -- Read by app.begin_audit, so every write in this transaction is
+            -- attributable to the turn that caused it (0015). Empty outside a turn.
+            ${guc('app.turn_id', ctx.turnId)}`,
   )
 }
 

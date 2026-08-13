@@ -21,6 +21,7 @@
  */
 
 import { useMemo, useState, type FormEvent } from 'react'
+import { BackToChat } from './back-to-chat'
 
 export type RegisterPlayer = {
   playerId: string
@@ -153,8 +154,11 @@ export function RegisterForm({
       <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950/40">
         <h2 className="text-sm font-semibold text-emerald-900 dark:text-emerald-200">{message}</h2>
         <p className="mt-1 text-sm text-emerald-800/80 dark:text-emerald-300/80">
-          You can close this — it&rsquo;s confirmed in your chat.
+          It&rsquo;s confirmed in your chat.
         </p>
+        <div className="mt-3">
+          <BackToChat />
+        </div>
       </section>
     )
   }

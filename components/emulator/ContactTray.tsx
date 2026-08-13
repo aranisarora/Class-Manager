@@ -174,10 +174,74 @@ function NewContactForm({ onDone }: { onDone: () => void }) {
   )
 }
 
+/**
+ * Make a business. §17 wants a world you can build up, and the emulator had only the
+ * two states a fixture gives you — all of it or none of it — so a second tenant cost
+ * you the first. `createAcademy` writes the four rows §7.1 starts from (academy at
+ * `setup`, person, contact, academy_admin) and **messages nobody**, which is the whole
+ * point: from here the business is built by talking to it.
+ */
+function NewAcademyForm({ onDone }: { onDone: () => void }) {
+  const { state, actions } = useEmulator()
+  const [name, setName] = useState('')
+  const [adminName, setAdminName] = useState('')
+  const [category, setCategory] = useState('')
+  const [phone, setPhone] = useState('')
+  const busy = !!state.busy['academy/new']
+
+  const submit = async () => {
+    if (!name.trim() || !adminName.trim() || busy) return
+    await actions.createAcademy({
+      name: name.trim(),
+      adminName: adminName.trim(),
+      ...(category.trim() ? { category: category.trim() } : {}),
+      ...(phone.trim() ? { adminPhone: phone.trim() } : {}),
+    })
+    setName('')
+    setAdminName('')
+    setCategory('')
+    setPhone('')
+    onDone()
+  }
+
+  const keys = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') void submit()
+    if (e.key === 'Escape') onDone()
+  }
+  const field =
+    'w-full rounded border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-emerald-700 focus:outline-none'
+
+  return (
+    <div className="space-y-1 border-b border-zinc-800 bg-zinc-950/60 px-2 py-1.5">
+      <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={keys}
+        placeholder="business — e.g. Green Park Badminton" className={field} />
+      <input value={adminName} onChange={(e) => setAdminName(e.target.value)} onKeyDown={keys}
+        placeholder="who runs it — e.g. Sharwin Rao" className={field} />
+      <div className="flex gap-1">
+        <input value={category} onChange={(e) => setCategory(e.target.value)} onKeyDown={keys}
+          placeholder="badminton, carnatic vocal…" className={`min-w-0 flex-1 ${field}`} />
+        <input value={phone} onChange={(e) => setPhone(e.target.value)} onKeyDown={keys}
+          placeholder="number (optional)"
+          className="w-[110px] rounded border border-zinc-800 bg-zinc-950 px-1.5 py-1 font-mono text-[10px] text-zinc-300 placeholder:text-zinc-600 focus:border-emerald-700 focus:outline-none" />
+      </div>
+      <div className="flex items-center gap-1">
+        <Btn size="xs" tone="primary" disabled={busy || !name.trim() || !adminName.trim()} onClick={() => void submit()}>
+          {busy ? <Spinner /> : 'create'}
+        </Btn>
+        <Btn size="xs" tone="ghost" onClick={onDone}>
+          cancel
+        </Btn>
+        <span className="ml-auto font-mono text-[9px] text-zinc-600">starts at setup · messages nobody</span>
+      </div>
+    </div>
+  )
+}
+
 export function ContactTray() {
   const { state, actions } = useEmulator()
   const [q, setQ] = useState('')
   const [adding, setAdding] = useState(false)
+  const [addingAcademy, setAddingAcademy] = useState(false)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
 
   const groups = useMemo(() => {
@@ -219,9 +283,10 @@ export function ContactTray() {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="shrink-0 border-b border-zinc-800 bg-zinc-900/60 px-2 py-1.5">
         <div className="flex items-center justify-between">
-          <span className="font-mono text-[10px] tracking-widest text-zinc-500 uppercase">contacts</span>
+          <span className="font-mono text-[10px] tracking-widest text-zinc-500 uppercase">world</span>
           <span className="font-mono text-[10px] text-zinc-600">
-            {state.panes.length} open · {state.contacts.length} total
+            {state.academies.length} business{state.academies.length === 1 ? '' : 'es'} · {state.contacts.length} contacts ·{' '}
+            {state.panes.length} open
           </span>
         </div>
         <div className="mt-1.5 flex items-center gap-1">
@@ -233,20 +298,44 @@ export function ContactTray() {
           />
           <Btn
             size="xs"
-            active={adding}
-            title="add a test contact to this world — no reseed needed"
-            onClick={() => setAdding((s) => !s)}
+            active={addingAcademy}
+            title="create a business — starts at setup, messages nobody"
+            onClick={() => {
+              setAddingAcademy((s) => !s)
+              setAdding(false)
+            }}
           >
-            + new
+            + business
+          </Btn>
+          <Btn
+            size="xs"
+            active={adding}
+            disabled={!state.academies.length}
+            title={
+              state.academies.length
+                ? 'add a test contact to this world — no reseed needed'
+                : 'create a business first'
+            }
+            onClick={() => {
+              setAdding((s) => !s)
+              setAddingAcademy(false)
+            }}
+          >
+            + person
           </Btn>
         </div>
       </div>
 
+      {addingAcademy ? <NewAcademyForm onDone={() => setAddingAcademy(false)} /> : null}
       {adding ? <NewContactForm onDone={() => setAdding(false)} /> : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {!state.contacts.length ? (
-          <Empty>{state.loading ? 'loading the world…' : 'No contacts. Seed a world above.'}</Empty>
+        {!state.contacts.length && !state.academies.length ? (
+          <Empty>
+            {state.loading
+              ? 'loading the world…'
+              : 'Empty world. Seed a fixture from the clock bar, or “+ business” to build one by talking to it.'}
+          </Empty>
         ) : null}
 
         {groups.map(({ academy, contacts }) => {
@@ -275,7 +364,19 @@ export function ContactTray() {
                     <span title="sender number this academy routes through (§16.3)">
                       {academy.senderPhone ?? 'no sender'}
                     </span>
-                    <span className="ml-auto">{academy.timezone}</span>
+                    <span>{academy.timezone}</span>
+                    <button
+                      type="button"
+                      disabled={!!state.busy[`academy/drop:${academy.id}`] || academy.name === 'unknown academy'}
+                      title="delete this business and everything in it"
+                      onClick={() => {
+                        if (!window.confirm(`Drop "${academy.name}" and everything in it? This cannot be undone.`)) return
+                        void actions.dropAcademy(academy.id, academy.name)
+                      }}
+                      className="ml-auto text-[9px] text-zinc-600 hover:text-rose-400 disabled:opacity-40"
+                    >
+                      drop business
+                    </button>
                   </div>
                   {contacts.length ? (
                     contacts.map((c) => (

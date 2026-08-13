@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-import { createTestContact } from '@/lib/seed'
+import { createTestContact, dropPerson } from '@/lib/seed'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -32,5 +32,28 @@ export async function POST(req: Request): Promise<Response> {
     // A duplicate number or a missing academy is the caller's mistake, not a server fault.
     const status = /already belongs|no such academy|needs a name|range is full/i.test(message) ? 400 : 500
     return Response.json({ ok: false, error: message }, { status })
+  }
+}
+
+/**
+ * Remove one person from the live world — the other half of `+ new`.
+ *
+ * A tray you can only add to fills up with half-built test people who then turn
+ * up in rosters, counts and reminders. The delete goes through the same
+ * `lib/seed` function the driver calls, so there is no second idea of what
+ * removing somebody means.
+ */
+export async function DELETE(req: Request): Promise<Response> {
+  const url = new URL(req.url)
+  const contactId = url.searchParams.get('contactId') ?? ''
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(contactId)) {
+    return Response.json({ ok: false, error: 'contactId is required' }, { status: 400 })
+  }
+  try {
+    const gone = await dropPerson(contactId)
+    if (!gone) return Response.json({ ok: false, error: 'contact_not_found' }, { status: 404 })
+    return Response.json({ ok: true, removed: gone })
+  } catch (e) {
+    return Response.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, { status: 500 })
   }
 }

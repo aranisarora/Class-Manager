@@ -22,7 +22,7 @@ import { now } from '@/lib/clock'
 import { withSession } from '@/lib/db'
 import { newId } from '@/lib/ids'
 
-export type LinkPurpose = 'setup' | 'register' | 'view' | 'form'
+export type LinkPurpose = 'setup' | 'register' | 'calendar' | 'view' | 'form'
 
 export type LinkClaims = {
   academy_id: string
@@ -34,7 +34,7 @@ export type LinkClaims = {
 
 const ISSUER = 'class-manager'
 const AUDIENCE = 'w'
-const PURPOSES: readonly LinkPurpose[] = ['setup', 'register', 'view', 'form']
+const PURPOSES: readonly LinkPurpose[] = ['setup', 'register', 'calendar', 'view', 'form']
 
 /**
  * Default TTLs, in minutes. Short, because the link is the session.
@@ -45,6 +45,9 @@ const PURPOSES: readonly LinkPurpose[] = ['setup', 'register', 'view', 'form']
 export const TTL: Record<LinkPurpose, number> = {
   setup: 24 * 60,
   register: 180,
+  // The schedule is a thing somebody comes back to during a day, not an answer to a
+  // question just asked — so it outlives a view without outliving the day.
+  calendar: 12 * 60,
   view: 60,
   form: 60,
 }

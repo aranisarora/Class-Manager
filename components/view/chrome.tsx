@@ -13,6 +13,9 @@
 import type { ReactNode } from 'react'
 import { formatINR } from '@/lib/format'
 import { MONEY_COLUMN } from '@/lib/web/registry'
+import { BackToChat } from './back-to-chat'
+
+export { BackToChat }
 
 export const CARD =
   'rounded-2xl border border-neutral-200 bg-white shadow-sm dark:border-neutral-800 dark:bg-neutral-900'
@@ -55,7 +58,8 @@ export function Shell({
 export function ChatOffer({ text }: { text?: string }) {
   return (
     <footer className="mt-8 border-t border-neutral-200 pt-4 dark:border-neutral-800">
-      <p className={`text-sm ${MUTED}`}>
+      <BackToChat />
+      <p className={`mt-4 text-sm ${MUTED}`}>
         {text ?? 'You can do all of this in the chat instead — just reply to the message that brought you here.'}
       </p>
       <p className={`mt-1 text-xs ${MUTED}`}>This link is private to you and stops working after a while.</p>
