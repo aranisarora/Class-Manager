@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anatomy of a Turn</title>
+
+<style>
+  :root {
+    --paper:  #f4f6f8;
+    --card:   #ffffff;
+    --ink:    #141b26;
+    --slate:  #5b6779;
+    --faint:  #8b96a6;
+    --rule:   #dce1e8;
+    --wash:   #eaeef3;
+    --amber:  #9c5a04;
+    --amber-wash: #f6ecdd;
+    --teal:   #0d6660;
+
+    --display: Georgia, "Iowan Old Style", "Times New Roman", serif;
+    --body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:  #0d1117;
+      --card:   #141a22;
+      --ink:    #e3e9f1;
+      --slate:  #97a3b4;
+      --faint:  #6f7d8f;
+      --rule:   #242d3a;
+      --wash:   #1a212b;
+      --amber:  #dc9c42;
+      --amber-wash: #2a2116;
+      --teal:   #4cb8ab;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:  #0d1117;
+    --card:   #141a22;
+    --ink:    #e3e9f1;
+    --slate:  #97a3b4;
+    --faint:  #6f7d8f;
+    --rule:   #242d3a;
+    --wash:   #1a212b;
+    --amber:  #dc9c42;
+    --amber-wash: #2a2116;
+    --teal:   #4cb8ab;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 56px 28px 96px;
+    display: flex;
+    flex-direction: column;
+    gap: 44px;
+  }
+
+  /* ---- header ---- */
+
+  header { display: flex; flex-direction: column; gap: 14px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+
+  h1 {
+    font-family: var(--display);
+    font-weight: 400;
+    font-size: clamp(34px, 5.4vw, 52px);
+    line-height: 1.08;
+    letter-spacing: -0.015em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    font-size: 18px;
+    line-height: 1.55;
+    color: var(--slate);
+    max-width: 62ch;
+    margin: 0;
+  }
+
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  /* ---- figure ---- */
+
+  figure {
+    margin: 0;
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 24px 20px 18px;
+    overflow-x: auto;
+  }
+
+  figure svg { display: block; width: 100%; min-width: 720px; height: auto; }
+
+  figcaption {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule);
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: var(--slate);
+    max-width: 74ch;
+  }
+
+  figcaption strong { color: var(--ink); font-weight: 600; }
+
+  /* ---- svg theming ---- */
+
+  .dg text { font-family: var(--body); fill: var(--ink); }
+  .dg .mono { font-family: var(--mono); }
+  .dg .box { fill: var(--card); stroke: var(--rule); stroke-width: 1.2; }
+  .dg .box-wash { fill: var(--wash); stroke: var(--rule); stroke-width: 1.2; }
+  .dg .box-key { fill: var(--card); stroke: var(--ink); stroke-width: 2; }
+  .dg .frame { fill: none; stroke: var(--rule); stroke-width: 1.2; stroke-dasharray: 3 4; }
+  .dg .edge { stroke: var(--ink); stroke-width: 1.6; fill: none; }
+  .dg .edge-soft { stroke: var(--slate); stroke-width: 1.3; fill: none; stroke-dasharray: 5 4; }
+  .dg .edge-amber { stroke: var(--amber); stroke-width: 1.4; fill: none; stroke-dasharray: 4 3; }
+  .dg .t-title { font-size: 13px; font-weight: 650; }
+  .dg .t-body { font-size: 11.5px; fill: var(--slate); }
+  .dg .t-ink { font-size: 11.5px; }
+  .dg .t-lab {
+    font-size: 9.5px; letter-spacing: 0.12em; fill: var(--faint);
+    font-family: var(--mono); text-transform: uppercase;
+  }
+  .dg .t-edge { font-size: 10.5px; fill: var(--slate); font-family: var(--mono); }
+  .dg .t-teal { fill: var(--teal); font-weight: 650; }
+  .dg .amber-dot { fill: var(--amber-wash); stroke: var(--amber); stroke-width: 1.4; }
+  .dg .amber-num { font-size: 11px; font-weight: 700; fill: var(--amber); font-family: var(--mono); }
+
+  /* ---- sections ---- */
+
+  section { display: flex; flex-direction: column; gap: 18px; }
+
+  h2 {
+    font-family: var(--display);
+    font-weight: 400;
+    font-size: 27px;
+    line-height: 1.2;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+
+  .lede { margin: 0; color: var(--slate); max-width: 66ch; font-size: 15.5px; }
+
+  /* ---- fault list ---- */
+
+  .faults { display: flex; flex-direction: column; gap: 0; border-top: 1px solid var(--rule); }
+
+  .fault {
+    display: grid;
+    grid-template-columns: 40px 1fr;
+    gap: 0 18px;
+    padding: 20px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .fault-num {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--amber);
+    border: 1.4px solid var(--amber);
+    background: var(--amber-wash);
+    border-radius: 50%;
+    width: 28px; height: 28px;
+    display: grid; place-items: center;
+    margin-top: 2px;
+  }
+
+  .fault-body { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+
+  .fault h3 { margin: 0; font-size: 16.5px; font-weight: 640; line-height: 1.35; }
+  .fault p { margin: 0; font-size: 14.5px; color: var(--slate); max-width: 68ch; }
+  .fault p strong { color: var(--ink); font-weight: 600; }
+
+  .site {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--faint);
+    letter-spacing: -0.01em;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.875em;
+    background: var(--wash);
+    padding: 1px 5px;
+    border-radius: 2px;
+    color: var(--ink);
+  }
+
+  /* ---- metrics ---- */
+
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+
+  .metric {
+    background: var(--card);
+    padding: 18px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .metric .v {
+    font-family: var(--mono);
+    font-size: 25px;
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+
+  .metric .k {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+
+  .metric .n { font-size: 12.5px; color: var(--slate); line-height: 1.4; }
+
+  .teal { color: var(--teal); }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 20px;
+    font-size: 13px;
+    color: var(--faint);
+    max-width: 70ch;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">Class Manager · turn lifecycle</div>
+    <h1>Anatomy of a Turn</h1>
+    <p class="standfirst">
+      What happens between a parent typing <em>“what time is his class?”</em> and a reply landing on
+      their phone. Every guarantee in the product sits on this path — and so does
+      <strong>every defect in FINDINGS.md</strong>, all of them in the same stretch.
+    </p>
+  </header>
+
+  <figure>
+    <svg class="dg" viewBox="0 0 1000 1292" role="img"
+         aria-label="Flowchart of one turn. An inbound message resolves to a business, person and role. A button tap bypasses the model entirely and replays a stored payload. Anything else builds a prompt from a cached stable prefix plus a variable tail, calls the model, loops through tool rounds, and produces a reply. Everything converges on composeAndSend, which repairs the message form and checks action claims, then on send, which applies ten gates before the wire. After the send, a reflection step may remember a fact or schedule a task that fires later as a new turn.">
+
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path>
+        </marker>
+      </defs>
+
+      <!-- ================= INBOUND ================= -->
+      <rect class="box-key" x="350" y="24" width="240" height="46" rx="3"></rect>
+      <text class="t-title" x="470" y="44" text-anchor="middle">A message arrives</text>
+      <text class="t-body" x="470" y="60" text-anchor="middle">typed text, a voice note, a photo, or a button tap</text>
+
+      <line class="edge" x1="470" y1="70" x2="470" y2="100" marker-end="url(#ah)"></line>
+
+      <!-- ================= RESOLVE ================= -->
+      <rect class="box" x="320" y="106" width="300" height="52" rx="3"></rect>
+      <text class="t-title" x="470" y="126" text-anchor="middle">Who is this?</text>
+      <text class="t-body" x="470" y="143" text-anchor="middle">which business · which person · which role</text>
+      <text class="t-edge" x="632" y="130">unknown number →</text>
+      <text class="t-edge" x="632" y="145">nothing happens</text>
+
+      <line class="edge" x1="470" y1="158" x2="470" y2="178" marker-end="url(#ah)"></line>
+
+      <!-- ================= DECISION ================= -->
+      <polygon class="box" points="470,182 546,212 470,242 394,212"></polygon>
+      <text class="t-ink" x="470" y="216" text-anchor="middle" font-weight="650">a tap?</text>
+
+      <!-- ---- tap branch ---- -->
+      <path class="edge" d="M 394 212 L 156 212 L 156 250" marker-end="url(#ah)"></path>
+      <text class="t-edge" x="264" y="204" text-anchor="middle">yes</text>
+
+      <rect class="box-wash" x="40" y="254" width="232" height="138" rx="3"></rect>
+      <text class="t-lab" x="56" y="274">the tap path</text>
+      <text class="t-ink" x="56" y="296">Load the action minted</text>
+      <text class="t-ink" x="56" y="312">when the button was made</text>
+      <text class="t-body" x="56" y="333">expired? · already used?</text>
+      <text class="t-body" x="56" y="348">the right person tapping?</text>
+      <text class="t-ink" x="56" y="370" font-weight="650">Replay it, exactly</text>
+      <text class="t-teal" x="56" y="386" font-size="11.5">NO MODEL CALL · 0 tokens</text>
+
+      <path class="edge" d="M 156 392 L 156 945 L 314 945" marker-end="url(#ah)"></path>
+      <text class="t-edge" x="166" y="700">skips the brain entirely</text>
+
+      <!-- ---- model branch ---- -->
+      <line class="edge" x1="470" y1="242" x2="470" y2="270" marker-end="url(#ah)"></line>
+      <text class="t-edge" x="484" y="262">no</text>
+
+      <!-- ================= BRAIN ================= -->
+      <rect class="frame" x="300" y="274" width="430" height="578" rx="4"></rect>
+      <text class="t-lab" x="316" y="296">the brain — one model, several rounds</text>
+
+      <!-- prompt: prefix -->
+      <rect class="box" x="316" y="310" width="186" height="134" rx="3"></rect>
+      <text class="t-title" x="330" y="330">The stable prefix</text>
+      <text class="t-body" x="330" y="347">~13k tokens · identical every</text>
+      <text class="t-body" x="330" y="361">turn · 85–95% from cache</text>
+      <text class="t-ink" x="330" y="382" font-size="11">11 doctrine rules</text>
+      <text class="t-ink" x="330" y="397" font-size="11">the database schema</text>
+      <text class="t-ink" x="330" y="412" font-size="11">11 behaviour modules</text>
+      <text class="t-ink" x="330" y="427" font-size="11">operations · message catalog</text>
+
+      <!-- prompt: tail -->
+      <rect class="box" x="514" y="310" width="200" height="134" rx="3"></rect>
+      <text class="t-title" x="528" y="330">The variable tail</text>
+      <text class="t-body" x="528" y="347">this conversation only ·</text>
+      <text class="t-body" x="528" y="361">never cached</text>
+      <text class="t-ink" x="528" y="382" font-size="11">what it remembers about them</text>
+      <text class="t-ink" x="528" y="397" font-size="11">their role and permissions</text>
+      <text class="t-ink" x="528" y="412" font-size="11">the clock · what exists yet</text>
+      <text class="t-ink" x="528" y="427" font-size="11">the recent conversation</text>
+
+      <line class="edge" x1="470" y1="444" x2="470" y2="466" marker-end="url(#ah)"></line>
+
+      <!-- generate -->
+      <rect class="box" x="344" y="470" width="252" height="46" rx="3"></rect>
+      <text class="t-title" x="470" y="490" text-anchor="middle">The model thinks</text>
+      <text class="t-body" x="470" y="506" text-anchor="middle">thinking budget set by the shape of the turn</text>
+
+      <line class="edge" x1="470" y1="516" x2="470" y2="546" marker-end="url(#ah)"></line>
+
+      <!-- tools -->
+      <rect class="box" x="330" y="550" width="280" height="152" rx="3"></rect>
+      <text class="t-title" x="344" y="570">…and reaches for a tool</text>
+      <text class="t-ink" x="344" y="592" font-size="11"><tspan class="mono" font-weight="650">read</tspan>  writes its own SQL, read-only,</text>
+      <text class="t-body" x="344" y="606" font-size="11">5s limit, capped at 10k rows</text>
+      <text class="t-ink" x="344" y="626" font-size="11"><tspan class="mono" font-weight="650">plan</tspan>  runs it, shows the damage, undoes it</text>
+      <text class="t-ink" x="344" y="646" font-size="11"><tspan class="mono" font-weight="650">act</tspan>  a known-good operation</text>
+      <text class="t-ink" x="344" y="666" font-size="11"><tspan class="mono" font-weight="650">reply · message</tspan>  say something</text>
+      <text class="t-ink" x="344" y="686" font-size="11"><tspan class="mono" font-weight="650">schedule · remember · view</tspan></text>
+
+      <circle class="amber-dot" cx="592" cy="641" r="11"></circle>
+      <text class="amber-num" x="592" y="645" text-anchor="middle">5</text>
+
+      <!-- round loop -->
+      <path class="edge" d="M 610 640 L 688 640 L 688 493 L 600 493" marker-end="url(#ah)"></path>
+      <text class="t-edge" x="700" y="560">results go</text>
+      <text class="t-edge" x="700" y="575">back in →</text>
+      <text class="t-edge" x="700" y="590">round 2, 3…</text>
+      <text class="t-edge" x="700" y="605">avg 2.6</text>
+
+      <line class="edge" x1="470" y1="702" x2="470" y2="730" marker-end="url(#ah)"></line>
+
+      <rect class="box" x="344" y="734" width="252" height="52" rx="3"></rect>
+      <text class="t-title" x="470" y="754" text-anchor="middle">The reply, as words</text>
+      <text class="t-body" x="470" y="771" text-anchor="middle">plus any buttons it wants offered</text>
+
+      <line class="edge" x1="470" y1="852" x2="470" y2="880" marker-end="url(#ah)"></line>
+
+      <!-- ================= COMPOSE ================= -->
+      <rect class="box-key" x="314" y="886" width="306" height="138" rx="3"></rect>
+      <text class="t-lab" x="330" y="906">the one chokepoint · everything passes here</text>
+      <text class="t-title" x="330" y="926">Compose</text>
+      <text class="t-ink" x="330" y="948" font-size="11">Fix the <tspan font-weight="650">form</tspan> — bracket labels become real</text>
+      <text class="t-body" x="330" y="962" font-size="11">buttons, a pasted URL becomes a link</text>
+      <text class="t-ink" x="330" y="982" font-size="11">Check the <tspan font-weight="650">verbs</tspan> — “I've added them” with</text>
+      <text class="t-body" x="330" y="996" font-size="11">no write this turn? refused, try again</text>
+      <text class="t-ink" x="330" y="1016" font-size="11">Mint an action row behind every button</text>
+
+      <circle class="amber-dot" cx="602" cy="984" r="11"></circle>
+      <text class="amber-num" x="602" y="988" text-anchor="middle">1</text>
+      <circle class="amber-dot" cx="602" cy="1012" r="11"></circle>
+      <text class="amber-num" x="602" y="1016" text-anchor="middle">2</text>
+
+      <line class="edge" x1="470" y1="1024" x2="470" y2="1052" marker-end="url(#ah)"></line>
+
+      <!-- ================= SEND ================= -->
+      <rect class="box" x="314" y="1058" width="306" height="112" rx="3"></rect>
+      <text class="t-title" x="330" y="1078">Ten gates, in order</text>
+      <text class="t-body" x="330" y="1098" font-size="11">opted out? · never confirm to yourself ·</text>
+      <text class="t-body" x="330" y="1112" font-size="11">never escalate about someone to them ·</text>
+      <text class="t-body" x="330" y="1126" font-size="11">pre-launch silence · said this in the last</text>
+      <text class="t-body" x="330" y="1140" font-size="11">5 min? · API limits · too many messages ·</text>
+      <text class="t-body" x="330" y="1154" font-size="11">tenant cap · in-window or template · duplicate</text>
+
+      <circle class="amber-dot" cx="602" cy="1152" r="11"></circle>
+      <text class="amber-num" x="602" y="1156" text-anchor="middle">3</text>
+
+      <line class="edge" x1="470" y1="1170" x2="470" y2="1198" marker-end="url(#ah)"></line>
+
+      <rect class="box-key" x="370" y="1204" width="200" height="44" rx="3"></rect>
+      <text class="t-title" x="470" y="1223" text-anchor="middle">Their phone</text>
+      <text class="t-body" x="470" y="1239" text-anchor="middle">suppressed messages are recorded, not dropped</text>
+
+      <!-- ================= AFTER ================= -->
+      <path class="edge-soft" d="M 620 920 L 650 920" marker-end="url(#ah)"></path>
+
+      <rect class="frame" x="646" y="886" width="268" height="284" rx="4"></rect>
+      <text class="t-lab" x="660" y="906">after the send — nobody is waiting</text>
+
+      <rect class="box" x="660" y="918" width="240" height="44" rx="3"></rect>
+      <text class="t-ink" x="672" y="936" font-weight="650" font-size="11.5">Freeze a good plan</text>
+      <text class="t-body" x="672" y="952" font-size="11">if it took real work to reach</text>
+
+      <rect class="box" x="660" y="974" width="240" height="94" rx="3"></rect>
+      <text class="t-ink" x="672" y="994" font-weight="650" font-size="11.5">Reflect</text>
+      <text class="t-body" x="672" y="1010" font-size="11">a second, smaller model call</text>
+      <text class="t-body" x="672" y="1024" font-size="11">“anything worth remembering?</text>
+      <text class="t-body" x="672" y="1038" font-size="11">anything to come back to?”</text>
+      <text class="t-body" x="672" y="1058" font-size="11">may only remember or schedule</text>
+
+      <circle class="amber-dot" cx="878" cy="994" r="11"></circle>
+      <text class="amber-num" x="878" y="998" text-anchor="middle">4</text>
+
+      <rect class="box" x="660" y="1080" width="240" height="44" rx="3"></rect>
+      <text class="t-ink" x="672" y="1098" font-weight="650" font-size="11.5">Record the turn</text>
+      <text class="t-body" x="672" y="1114" font-size="11">tokens, seconds, rounds, every call</text>
+
+      <!-- return loop -->
+      <path class="edge-soft" d="M 900 1021 L 950 1021 L 950 47 L 594 47" marker-end="url(#ah)"></path>
+      <text class="t-edge" x="938" y="640" text-anchor="end">a scheduled task fires later</text>
+      <text class="t-edge" x="938" y="655" text-anchor="end">as an ordinary turn ↑</text>
+
+    </svg>
+
+    <figcaption>
+      One turn, top to bottom. <strong>The left branch is the product's best idea:</strong> a button carries
+      an action authored when the button was made, so tapping it replays a stored decision with no model in
+      the loop — five of the last thirty-seven turns cost zero tokens and ran in five seconds. The right
+      branch is the brain. <strong>Everything converges on Compose</strong>, which is the only place a
+      guarantee about outbound text can live. The amber marks are where nothing is guarding.
+    </figcaption>
+  </figure>
+
+  <section>
+    <h2>Where it breaks</h2>
+    <p class="lede">
+      Five marks on the diagram. Note where they cluster: everything upstream of Compose is guarded
+      structurally and holds. The defects are in the last six inches.
+    </p>
+
+    <div class="faults">
+
+      <div class="fault">
+        <div class="fault-num">1</div>
+        <div class="fault-body">
+          <h3>The honesty check only listens to one person</h3>
+          <p>
+            The gate that catches “I've added those families” when nothing was written runs
+            <strong>only on the message going back to whoever is currently typing</strong>, and
+            <strong>only once per turn</strong>. Messages the bot composes to a parent, to a coach, or to
+            the admin about somebody else pass unchecked — which is exactly the traffic that makes this a
+            manager rather than a notifier.
+          </p>
+          <div class="site">lib/agent/tools.ts:1571 — <code>if (to === ctx.identity.contact.id &amp;&amp; !ctx.promiseChecked)</code></div>
+        </div>
+      </div>
+
+      <div class="fault">
+        <div class="fault-num">2</div>
+        <div class="fault-body">
+          <h3>Verbs are checked. Nouns are not.</h3>
+          <p>
+            Nothing asks whether a stated <strong>time, date, price or roster</strong> came out of a row
+            this turn. A parent asked what time her son's class was; the query returned <code>06:00:00</code>
+            three times and the reply said “6pm to 7pm”, then invented a Friday session that did not exist.
+            No error, no audit row, nothing suppressed — <strong>it surfaces as a person standing outside a
+            locked door.</strong> This is the only structural gap left, and the only fix on the list that is
+            real engineering rather than a correction.
+          </p>
+          <div class="site">the same chokepoint — it covers verbs and stops there</div>
+        </div>
+      </div>
+
+      <div class="fault">
+        <div class="fault-num">3</div>
+        <div class="fault-body">
+          <h3>The duplicate gate can never fire</h3>
+          <p>
+            Gate ten looks for a message already sent under the same key. The key's default is built with a
+            <strong>fresh random UUID</strong>, so every composed message is unique by construction and the
+            gate always finds nothing. The helper's own docstring says <em>“the same inputs must always
+            produce the same key.”</em> One call site feeds it a random input.
+          </p>
+          <div class="site">lib/messaging/compose.ts:87 — <code>idem(catalogId, contactId, newId())</code></div>
+        </div>
+      </div>
+
+      <div class="fault">
+        <div class="fault-num">4</div>
+        <div class="fault-body">
+          <h3>Reflection is told the reply never happened</h3>
+          <p>
+            Reflection receives the model's <em>trailing prose</em> as “what you replied”. When the reply went
+            out through a tool — which is what happens whenever there are buttons — that prose is empty, so
+            reflection is handed the literal string <code>You replied: (nothing)</code>. It then reasons
+            correctly from a false premise, schedules a follow-up for the unanswered greeting, and the job
+            re-sends an onboarding message to a coach who had already tapped
+            <strong>[Looks right]</strong>. Three times.
+          </p>
+          <div class="site">lib/agent/loop.ts:170 — <code>replied: replyText</code>, where <code>replyText</code> is trailing prose</div>
+        </div>
+      </div>
+
+      <div class="fault">
+        <div class="fault-num">5</div>
+        <div class="fault-body">
+          <h3>Operations don't enforce their own invariants</h3>
+          <p>
+            <code>create_class</code> computes a start date and iterates the weekly slots ten lines apart, and
+            never compares them — so a Saturday class was created starting on a Sunday and quietly skipped its
+            first week. <code>book_trial</code> mints a new person for the player while the contact's own
+            person sits in scope two lines above, so <strong>a self-paying adult became two people</strong>.
+            In both cases the correct value was already there. Nothing had to be remembered.
+          </p>
+          <div class="site">lib/agent/operations.ts:1880 and :938 — both fixable in three lines</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <h2>What a turn costs</h2>
+    <p class="lede">
+      Measured over the last 37 turns on the live database, not estimated.
+    </p>
+
+    <div class="metrics">
+      <div class="metric">
+        <div class="k">Latency</div>
+        <div class="v">17.3s</div>
+        <div class="n">average; the worst was 51.6s at six rounds</div>
+      </div>
+      <div class="metric">
+        <div class="k">Rounds</div>
+        <div class="v">2.6</div>
+        <div class="n">each one re-sends the whole prompt</div>
+      </div>
+      <div class="metric">
+        <div class="k">Cache</div>
+        <div class="v">85–95%</div>
+        <div class="n">on any warm turn; 0% on the first of a thread</div>
+      </div>
+      <div class="metric">
+        <div class="k">Tokens</div>
+        <div class="v">1.6M</div>
+        <div class="n">in, against 25.7k out — reading, not writing</div>
+      </div>
+      <div class="metric">
+        <div class="k">Taps</div>
+        <div class="v teal">0</div>
+        <div class="n">tokens, 5 of 37 turns — the left branch working</div>
+      </div>
+      <div class="metric">
+        <div class="k">Digests</div>
+        <div class="v">1.3k</div>
+        <div class="n">tokens in, but ~1.5k out and never cached</div>
+      </div>
+    </div>
+
+    <p class="lede">
+      Two things fall out of this that are hard to see any other way. <strong>Rounds are the cost driver</strong>
+      — a six-round turn costs 128k tokens against a one-round turn's 19k, because the 13k prefix is paid again
+      on every hop. And <strong>the digest is a different animal entirely</strong>: a tiny prompt, no cache, and
+      more output than any conversational turn produces. It is the most expensive thing per word the product
+      writes, and it is the message the findings say is wrong four times out of four.
+    </p>
+  </section>
+
+  <footer>
+    Drawn from the working tree at <code>6aedcea</code>. Numbers from <code>npm run drive -- cost</code>
+    over the 37-turn world described in FINDINGS.md. The five marks correspond to F1, F4, F5, F6 and F7
+    in that file, plus two corrections argued separately.
+  </footer>
+
+</div>
+</body>
+</html>
