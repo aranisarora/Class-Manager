@@ -31,7 +31,7 @@ import { send } from '@/lib/messaging/send'
 import { repairOutbound } from '@/lib/messaging/repair'
 import { LIMITS, type Button, type OutboundMessage, type SendOutcome } from '@/lib/messaging/types'
 import { CATALOG, type CatalogId } from '@/lib/messaging/catalog'
-import type { JobKind } from '@/lib/jobs'
+import { isJobKind, JOB_KINDS, type JobKind } from '@/lib/jobs'
 import type { Academy, Contact, Identity, Person, Role } from '@/lib/types'
 import { z } from 'zod'
 import { beginAudit, readDiffIn } from '@/lib/audit'
@@ -451,14 +451,33 @@ async function runSteps(
       const s = step.schedule
       const when = new Date(s.run_at)
       if (Number.isNaN(when.getTime())) throw new Error(`plan: schedule.run_at is not a date: ${s.run_at}`)
+      // A plan could insert a job of any kind string at all, and `runDueJobs` looks the
+      // handler up by kind — so an unknown kind became a row that can never run and never
+      // reports, which is R7 wearing a queue's clothes. `enqueue()` has always checked
+      // this; this path is the second door into the same table and did not.
+      if (!isJobKind(s.kind)) {
+        throw new Error(
+          `plan: '${s.kind}' is not a job kind. Known kinds: ${JOB_KINDS.join(', ')}`,
+        )
+      }
       // §13.1 — a watch with no expiry is a leak. The runtime rejects it here
       // as well as in the `schedule` tool, because a plan can carry one too.
       if (s.kind === 'agent_task' && !s.payload?.expires_at) {
         throw new Error('plan: an agent_task must carry expires_at (§13.1)')
       }
+      // Every handler resolves its tenant from `payload.academy_id` and most open with
+      // `need(p, 'academy_id')`, which throws — so a payload without it is a job that
+      // burns its retries and dies. `enqueue()` injects it (enqueue.ts `toRow`); this
+      // path did not, and the two operations that schedule through a plan —
+      // `mark_attendance`'s client_outcome and `request_payment`'s reconcile — were both
+      // born malformed because of it. The tenant is never in doubt here: a plan runs
+      // inside exactly one academy's session. Injecting it at the step, rather than
+      // fixing the two call sites, is what stops the third one being written wrong.
+      const payload: Record<string, unknown> = { ...(s.payload ?? {}) }
+      if (payload.academy_id === undefined) payload.academy_id = ctx.academyId
       const sql =
         `insert into job (kind, run_at, dedupe_key, payload) values (` +
-        `${lit(s.kind)}, timestamptz ${lit(when.toISOString())}, ${lit(s.dedupe_key)}, ${jsonLit(s.payload ?? {})}) ` +
+        `${lit(s.kind)}, timestamptz ${lit(when.toISOString())}, ${lit(s.dedupe_key)}, ${jsonLit(payload)}) ` +
         `on conflict (dedupe_key) do nothing`
       await asService(tx, ctx, () => tx.unsafe(sql) as unknown as Promise<unknown>)
       state.scheduled.push({ kind: s.kind, run_at: when.toISOString() })

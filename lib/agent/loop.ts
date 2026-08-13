@@ -153,6 +153,41 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     }
   } catch (e) {
     error = e instanceof Error ? e.message : String(e)
+
+    /**
+     * Say something. Anything thrown above lands here, and every fallback that
+     * guarantees the person hears back — the tool-less recovery round, the two
+     * hard-coded sentences, the trailing send — lives INSIDE `modelTurn`, so a throw
+     * skipped all of them. `generate` throws on a non-transient Vertex failure and
+     * after two attempts on a transient one; `stablePrefix()` throws if a behavior
+     * file is missing; `variableTail` awaits the clock and the memory hot set. On
+     * any of those the person got NOTHING — no message, no error, no acknowledgement
+     * — and the only recovery, `handoffOnRepeatedFailure`, requires the PREVIOUS turn
+     * to have failed too. So the first turn of an outage is indistinguishable from
+     * being ignored, on a channel where being ignored is what people already fear.
+     *
+     * Guarded on `outcomes` because a turn can fail AFTER speaking — a tap that
+     * committed and then threw on the follow-up should not be answered twice.
+     *
+     * The send is itself wrapped: if the database or the transport is what broke,
+     * this throws too, and a failure to apologise must not replace the error that
+     * caused it. Then there is genuinely nothing left to do, and the turn row below
+     * is the only record — which is why it is written outside this block.
+     */
+    if (!outcomes.length) {
+      try {
+        outcomes.push(
+          await composeAndSend(session, {
+            toContactId: identity.contact.id,
+            body:
+              "Something broke on my side just then — it isn't you, and nothing was changed. "
+              + "I've flagged it. Try me again in a moment.",
+          }),
+        )
+      } catch {
+        // Nothing further is reachable. `error` above is preserved deliberately.
+      }
+    }
   }
 
   // §5 — "the bot writes facts asynchronously after a turn, never blocking a reply."
@@ -1407,7 +1442,15 @@ will never think to ask whether the reminders went out. Then who is unpaid.`
         await composeAndSend(svc, {
           toContactId: admin.contact_id,
           catalogId: kind === 'brief' ? 'AD-MORNING-BRIEF' : 'AD-EVENING-DIGEST',
-          body: lintForAdmin(body, academyId),
+          // Unlinted here on purpose: `send` runs the full pass for every message,
+          // including this one. `lintForAdmin` used to sit here — a three-regex
+          // hand-rolled subset written because "the lint pass wants an Identity and
+          // synthesis runs without one" — and being a subset was the whole problem:
+          // it did no markdown rewriting, no §-reference stripping, no timestamp
+          // localisation and no vocabulary rewriting, so the two proactive messages
+          // an admin gets every day reached them with `**bold**` and ISO timestamps
+          // intact. One implementation, at the chokepoint.
+          body,
           buttons: [
             kind === 'brief'
               ? { title: 'What needs me?', action: { kind: 'reply', text: 'What needs me today?' } }
@@ -1431,18 +1474,6 @@ will never think to ask whether the reminders went out. Then who is unpaid.`
   }
 
   return { turnId, sent: outcomes, toolCalls: 0, error }
-}
-
-/** The lint pass wants an Identity; synthesis runs without one, so this is the
- *  subset that still applies: no uuids, no table names in the admin's brief. */
-function lintForAdmin(text: string, academyId: string): string {
-  return text
-    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '')
-    .replace(/\b(tally_line|session_coach|class_slot|academy_admin|memory_fact|audit_entry)\b/g, (m) =>
-      m.replace(/_/g, ' '),
-    )
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim()
 }
 
 async function synthesisPayload(svc: SessionCtx, academyId: string): Promise<Record<string, any>> {

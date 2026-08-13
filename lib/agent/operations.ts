@@ -422,6 +422,8 @@ function num(v: string | number | null | undefined): number {
 
 export type OperationName =
   | 'end_coach'
+  | 'end_enrollment'
+  | 'end_client'
   | 'cancel_session'
   | 'move_class'
   | 'reschedule_session'
@@ -689,6 +691,225 @@ const endCoach: OperationDef = {
 }
 
 /* =========================================================================== *
+ * end_enrollment / end_client — §11.4. The other half of leaving.
+ *
+ * A coach leaving had `end_coach`: an end date, reassignment, a final statement,
+ * history kept, one transaction. A FAMILY leaving had nothing at all — no
+ * operation set `enrollment.ended_on`, none deactivated a player, none closed an
+ * account. So the commonest ending in a coaching business was raw model-authored
+ * SQL: no blast radius, no preview, no closing balance, and no encoding anywhere
+ * of what else has to happen when somebody stops.
+ *
+ * That asymmetry is the defect. `bulk-change.md` already classes "ending
+ * enrollments" as destructive-and-must-preview, and §11.4 already names
+ * `active → ended` as a state machine; the two just had no operation behind them.
+ *
+ * Both keep history the same way `end_coach` does: an end date, never a delete, so
+ * attendance and tally lines stay attributed to a real person.
+ *
+ * Neither cancels any job. `client_reminder` already re-checks enrolment at run
+ * time and stands down with "player is no longer enrolled in this class" (§13
+ * rule 2), so ending the row is enough — and the reminder dedupe key puts the
+ * player LAST (`cl_rem:<session>:<player>`), so there is no prefix to sweep by
+ * anyway. Adding a sweep here would be a second, weaker copy of a rule the
+ * handler already enforces correctly.
+ * =========================================================================== */
+
+/** What a family still owes, as a lifetime account balance. Same figure the tally
+ *  and the dunning ladder use, and named the same way: not a period's number. */
+async function accountBalance(ctx: SessionCtx, accountId: string): Promise<number> {
+  const [row] = await q<{ billed: string; paid: string }>(
+    ctx,
+    `select
+       coalesce((select sum(amount) from tally_line
+                  where academy_id = ${uid(ctx.academyId)} and account_id = ${uid(accountId)}), 0) as billed,
+       coalesce((select sum(amount) from payment
+                  where academy_id = ${uid(ctx.academyId)} and account_id = ${uid(accountId)}
+                    and status = 'confirmed'), 0) as paid`,
+  )
+  return num(row?.billed) - num(row?.paid)
+}
+
+type LiveEnrollment = {
+  enrollment_id: string
+  player_id: string
+  player_name: string
+  account_id: string
+  class_id: string
+  class_name: string
+  upcoming: string
+}
+
+/** Every enrolment still running on a date, with what it would still have cost them. */
+async function liveEnrollments(
+  ctx: SessionCtx,
+  where: string,
+  endIso: string,
+  tz: string,
+): Promise<LiveEnrollment[]> {
+  return q<LiveEnrollment>(
+    ctx,
+    `select e.id as enrollment_id, e.player_id, pe.full_name as player_name,
+            pl.account_id, e.class_id, c.name as class_name,
+            (select count(*) from session s
+              where s.class_id = e.class_id and s.status = 'scheduled'
+                and (s.starts_at at time zone ${lit(tz)})::date > date ${lit(endIso)}) as upcoming
+       from enrollment e
+       join player pl on pl.id = e.player_id
+       join person pe on pe.id = pl.person_id
+       join class c on c.id = e.class_id
+      where e.academy_id = ${uid(ctx.academyId)}
+        and e.ended_on is null
+        and ${where}
+      order by pe.full_name, c.name`,
+  )
+}
+
+/**
+ * Deactivate any player left with no live enrolment.
+ *
+ * Written as one statement over the affected players rather than decided in
+ * TypeScript, because the enrolments being ended in this same plan are not visible
+ * to a read taken before it — the `not exists` has to run after the UPDATE above
+ * it, inside the same transaction, or it deactivates nobody.
+ */
+function deactivateStrandedPlayers(ctx: SessionCtx, playerIds: string[]): PlanStep[] {
+  if (!playerIds.length) return []
+  return [
+    {
+      write: `update player set active = false
+               where academy_id = ${uid(ctx.academyId)}
+                 and id in (${playerIds.map(uid).join(',')})
+                 and active
+                 and not exists (select 1 from enrollment e
+                                  where e.player_id = player.id and e.ended_on is null)`,
+    },
+  ]
+}
+
+const endEnrollment: OperationDef = {
+  name: 'end_enrollment',
+  description:
+    'Stop a player in one class (or in every class) from a date. Keeps their history, stops the billing and the reminders, '
+    + 'and reads back what is still owed. Use this when a family says a child is stopping.',
+  destructive: true,
+  params: z.object({
+    player_id: uuid,
+    class_id: uuid.nullish(),
+    end_date: z.string().nullish(),
+    reason: z.string().nullish(),
+  }),
+  async build(ctx, args) {
+    const a = await academyOf(ctx)
+    const endIso = isoDate(args.end_date ?? (await now()).toISOString(), a.timezone)
+
+    const live = await liveEnrollments(
+      ctx,
+      `e.player_id = ${uid(args.player_id)}` +
+        (args.class_id ? ` and e.class_id = ${uid(args.class_id)}` : ''),
+      endIso,
+      a.timezone,
+    )
+    if (!live.length) {
+      // Not an error: R7 says doing nothing must not read as success, and the honest
+      // answer is that there was nothing to end.
+      throw new Error(
+        args.class_id
+          ? 'that player is not currently enrolled in that class, so there is nothing to end'
+          : 'that player has no live enrolments, so there is nothing to end',
+      )
+    }
+
+    const name = live[0].player_name
+    const classes = [...new Set(live.map((l) => l.class_name))]
+    const missed = live.reduce((n, l) => n + num(l.upcoming), 0)
+    const owed = await accountBalance(ctx, live[0].account_id)
+
+    const steps: PlanStep[] = [
+      {
+        note:
+          `${name} stops ${classes.length === 1 ? `${classes[0]}` : `all ${classes.length} classes`} on ` +
+          `${zoned(endIso, a.timezone).toFormat('d LLL')}` +
+          (missed ? `, coming off ${missed} scheduled session${missed === 1 ? '' : 's'}` : '') +
+          (owed > 0 ? `, with ${formatINR(owed)} still open on the account` : ''),
+      },
+      {
+        write: `update enrollment set ended_on = date ${lit(endIso)}
+                 where id in (${live.map((l) => uid(l.enrollment_id)).join(',')})
+                   and academy_id = ${uid(ctx.academyId)} and ended_on is null`,
+        requireRows: live.length,
+      },
+    ]
+    steps.push(...deactivateStrandedPlayers(ctx, [args.player_id]))
+    return steps
+  },
+}
+
+const endClient: OperationDef = {
+  name: 'end_client',
+  description:
+    'Close a whole family: ends every enrolment for every child on the account from a date, keeps their history, '
+    + 'and reads back the closing balance. Use this when a family is leaving altogether.',
+  destructive: true,
+  params: z.object({
+    account_id: uuid,
+    end_date: z.string().nullish(),
+    reason: z.string().nullish(),
+  }),
+  async build(ctx, args) {
+    const a = await academyOf(ctx)
+    const endIso = isoDate(args.end_date ?? (await now()).toISOString(), a.timezone)
+
+    const [account] = await q<{ id: string; display_name: string | null; holder_name: string }>(
+      ctx,
+      `select ac.id, ac.display_name, pe.full_name as holder_name
+         from account ac join person pe on pe.id = ac.holder_person_id
+        where ac.id = ${uid(args.account_id)} and ac.academy_id = ${uid(ctx.academyId)}`,
+    )
+    if (!account) throw new Error('I cannot see that family')
+
+    const live = await liveEnrollments(
+      ctx,
+      `pl.account_id = ${uid(args.account_id)}`,
+      endIso,
+      a.timezone,
+    )
+    const owed = await accountBalance(ctx, args.account_id)
+    const who = account.display_name || account.holder_name
+    const players = [...new Set(live.map((l) => l.player_name))]
+
+    const steps: PlanStep[] = [
+      {
+        note:
+          `${who} leaves on ${zoned(endIso, a.timezone).toFormat('d LLL')}` +
+          (players.length
+            ? `, ending ${live.length} enrolment${live.length === 1 ? '' : 's'} for ${players.join(' and ')}`
+            : ', with no live enrolments to end') +
+          (owed > 0
+            ? `. ${formatINR(owed)} is still open and this does not write it off — waive it separately if that is what you meant.`
+            : '.'),
+      },
+    ]
+
+    if (live.length) {
+      steps.push({
+        write: `update enrollment set ended_on = date ${lit(endIso)}
+                 where id in (${live.map((l) => uid(l.enrollment_id)).join(',')})
+                   and academy_id = ${uid(ctx.academyId)} and ended_on is null`,
+        requireRows: live.length,
+      })
+      steps.push(...deactivateStrandedPlayers(ctx, [...new Set(live.map((l) => l.player_id))]))
+    }
+
+    // The account row itself is kept, deliberately. It carries the tally lines and
+    // the payments, so deleting or hiding it would take the money history with it —
+    // and a family that comes back is the same account, the way a returning coach is
+    // the same coach row with a new status.
+    return steps
+  },
+}
+
+/* =========================================================================== *
  * cancel_session
  * =========================================================================== */
 
@@ -792,8 +1013,11 @@ const cancelSession: OperationDef = {
  * In-transaction on purpose: `lib/jobs` would cancel in its own transaction,
  * and a plan that rolls back must not have cancelled anything.
  */
-function cancelJobsForSession(sessionId: string): PlanStep[] {
-  const prefixes = sessionJobPrefixes(sessionId)
+function cancelJobsForSession(
+  sessionId: string,
+  scope: 'all' | 'pre-session' = 'all',
+): PlanStep[] {
+  const prefixes = sessionJobPrefixes(sessionId, scope)
   return [
     {
       write: `update job set status = 'cancelled'
@@ -1418,7 +1642,10 @@ const markAttendance: OperationDef = {
                where id = ${uid(s.id)} and academy_id = ${uid(ctx.academyId)} and status = 'scheduled'`,
       service: true,
     })
-    steps.push(...cancelJobsForSession(s.id))
+    // 'pre-session', not 'all' — the outcome jobs pushed above are the whole point
+    // of marking a register, and an 'all' sweep here cancelled them in the same
+    // transaction that created them. See sessionJobPrefixes.
+    steps.push(...cancelJobsForSession(s.id, 'pre-session'))
 
     // §8.2's highest-value catch-point. Out-of-band cancellations land with the
     // coach — a parent tells them at the court — so a stale picture becomes a
@@ -2761,21 +2988,88 @@ const undo: OperationDef = {
  * Onboarding state, memory, watches
  * =========================================================================== */
 
+/**
+ * What has to exist before going live means anything.
+ *
+ * `onboarding_state = 'live'` is the single most consequential value in the
+ * product: every job handler gates on it (`if (academy.onboarding_state !== 'live')
+ * skip('not live yet')`) and `send` suppresses every unsolicited non-admin message
+ * as `pre_launch` until it flips. So it is both the switch that starts the whole
+ * business and — until now — an unconditional one-line UPDATE with no read behind
+ * it, reachable only if the model happened to choose it.
+ *
+ * Going live with no classes is not a business that has launched; it is a business
+ * that has turned on a set of jobs with nothing to say. `onboarding.md` gives the
+ * order — shape, timetable, coaches, families, money, live — and nothing enforced
+ * any of it.
+ *
+ * Only the timetable is a hard block. The rest are named in the preview instead of
+ * refused, because they are all legitimately absent for a real business: a solo
+ * academy has no coaches (§18 — the owner IS the coach), a business joining
+ * mid-cycle may add families over the following week, and a cash-only business may
+ * never want a UPI handle. Refusing those would be inventing policy nobody chose.
+ */
+async function goLiveReadiness(
+  ctx: SessionCtx,
+): Promise<{ classes: number; coaches: number; families: number; upi: boolean }> {
+  const [row] = await q<{ classes: number; coaches: number; families: number; upi: boolean }>(
+    ctx,
+    `select
+       (select count(*)::int from class where academy_id = ${uid(ctx.academyId)} and active) as classes,
+       (select count(*)::int from coach where academy_id = ${uid(ctx.academyId)} and ended_on is null) as coaches,
+       (select count(*)::int from account where academy_id = ${uid(ctx.academyId)}) as families,
+       (select coalesce(nullif(trim(coalesce(upi_handle, '')), ''), '') <> ''
+          from academy where id = ${uid(ctx.academyId)}) as upi`,
+  )
+  return {
+    classes: Number(row?.classes ?? 0),
+    coaches: Number(row?.coaches ?? 0),
+    families: Number(row?.families ?? 0),
+    upi: Boolean(row?.upi),
+  }
+}
+
 const setOnboardingState: OperationDef = {
   name: 'set_onboarding_state',
   description:
-    "Move the academy through setup → roster → ready → live. Nothing is sent to anyone until it is 'live' (§2.6).",
+    "Move the academy through setup → roster → ready → live. Nothing is sent to anyone until it is 'live' (§2.6). "
+    + 'Going live needs at least one active class, and reads back what is still missing before it runs.',
   params: z.object({ state: z.enum(['setup', 'roster', 'ready', 'live']) }),
   async build(ctx, args) {
+    if (args.state !== 'live') {
+      return [
+        { note: `onboarding moves to ${args.state} — still messaging nobody` },
+        {
+          write: `update academy set onboarding_state = ${lit(args.state)} where id = ${uid(ctx.academyId)}`,
+          requireRows: 1,
+        },
+      ]
+    }
+
+    const ready = await goLiveReadiness(ctx)
+    if (ready.classes === 0) {
+      // Thrown rather than returned as a step, so the plan never previews: there is
+      // nothing to read back and nothing to confirm. The sentence is what the admin
+      // reads, so it says the missing thing rather than the state machine.
+      throw new Error(
+        'there are no classes yet, so going live would start reminders about nothing — add the timetable first',
+      )
+    }
+
+    const missing = [
+      ready.coaches === 0 ? 'no coaches' : null,
+      ready.families === 0 ? 'no families' : null,
+      !ready.upi ? 'no UPI handle, so nobody can pay' : null,
+    ].filter(Boolean) as string[]
+
     return [
       {
-        note:
-          args.state === 'live'
-            ? 'messages start flowing from now on'
-            : `onboarding moves to ${args.state} — still messaging nobody`,
+        note: missing.length
+          ? `messages start flowing from now on — note there is still ${missing.join(', ')}`
+          : 'messages start flowing from now on',
       },
       {
-        write: `update academy set onboarding_state = ${lit(args.state)} where id = ${uid(ctx.academyId)}`,
+        write: `update academy set onboarding_state = 'live' where id = ${uid(ctx.academyId)}`,
         requireRows: 1,
       },
     ]
@@ -2903,6 +3197,8 @@ const dropWatch: OperationDef = {
 
 export const OPERATIONS: Record<OperationName, OperationDef> = {
   end_coach: endCoach,
+  end_enrollment: endEnrollment,
+  end_client: endClient,
   cancel_session: cancelSession,
   move_class: moveClass,
   reschedule_session: rescheduleSession,

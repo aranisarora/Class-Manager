@@ -23,6 +23,7 @@
 
 import { withSession } from '@/lib/db'
 import type { SessionCtx, Tx } from '@/lib/db'
+import { lint } from '@/lib/agent/lint'
 import { CATALOG, isCatalogId } from './catalog'
 import { TEMPLATES, sanitizeParam, renderTemplate, isTemplateName } from './templates'
 import type { TemplateName } from './templates'
@@ -56,6 +57,8 @@ type Row = {
   last_inbound_at: Date | null
   academy_id: string
   academy_name: string
+  academy_timezone: string
+  academy_memory: string | null
   onboarding_state: string
   settings: Record<string, unknown> | null
   sender_id: string
@@ -303,6 +306,8 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
              c.last_inbound_at as last_inbound_at,
              a.id              as academy_id,
              a.name            as academy_name,
+             a.timezone        as academy_timezone,
+             a.memory          as academy_memory,
              a.onboarding_state as onboarding_state,
              a.settings        as settings,
              s.id              as sender_id,
@@ -332,6 +337,45 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
 
     if (row.opted_out_at || row.contact_state === 'opted_out') {
       return suppress(tx, row, msg, 'opted_out', inWindow)
+    }
+
+    /**
+     * ── Gate 1b · say it in the business's own words ──────────────────────────
+     *
+     * `lint` used to be applied by CALLERS — three of them: the `reply` tool, the
+     * tap receipt, and the loop's trailing message. Everything else went out raw:
+     * every one of the five job-handler modules, the morning brief, the evening
+     * digest, every tap ack and menu, the handoff escalation, the web form's
+     * confirmation, and every message an operation's plan staged. So "speak the
+     * academy's language, never say academy, no uuids, no ISO timestamps, no
+     * `**bold**`" held only on the paths a caller had remembered — which is the
+     * definition of not being a guarantee.
+     *
+     * It is here rather than in `composeAndSend` — which is where you would first
+     * look, and where NEXT.md proposed it — because `composeAndSend` is not the
+     * chokepoint. `plan.ts` imports `send` directly for its staged outbox, so every
+     * operation-authored message would still have missed it. `send` is the one door
+     * all traffic goes through, so the guarantee lives here.
+     *
+     * Before the repeat gate on purpose: that gate compares bodies byte for byte,
+     * and two messages identical after linting must dedupe as the repeats they are.
+     *
+     * Delivery evidence is deliberately NOT passed. `downgradeClaims` weakens "they
+     * have seen it" to something honest, and at this point the message has not been
+     * sent at all — so the only truthful evidence here is none.
+     */
+    const scope = {
+      academy: {
+        name: row.academy_name,
+        timezone: row.academy_timezone,
+        memory: row.academy_memory,
+      },
+    }
+    msg = {
+      ...msg,
+      body: lint(msg.body ?? '', scope),
+      ...(msg.header ? { header: lint(msg.header, scope) } : null),
+      ...(msg.footer ? { footer: lint(msg.footer, scope) } : null),
     }
 
     const subjects = msg.subjectPersonIds ?? []

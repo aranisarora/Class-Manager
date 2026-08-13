@@ -409,7 +409,28 @@ async function census(id: Identity): Promise<string | null> {
       const invited = n(row, 'coaches_invited')
       const outbound = n(row, 'outbound_to_others')
       const sent = n(row, 'sent_to_others')
+      /**
+       * R8 — a door with no sign. `set_onboarding_state` was the only writer of the
+       * most consequential value in the product, reachable only if the model happened
+       * to choose it, and nothing anywhere named the moment that calls for it. So an
+       * academy with a full roster could sit in `setup` indefinitely while every
+       * proactive path silently suppressed — no error on either side, just a business
+       * that never started.
+       *
+       * It goes FIRST because it changes what every line under it means: "12 sessions
+       * scheduled ahead" reads as a working business, and until this flips, not one of
+       * those reminders will go out.
+       */
+      const live = id.academy.onboarding_state === 'live'
+      const readyToGoLive = !live && n(row, 'classes_active') > 0
       const bits = [
+        live
+          ? null
+          : `NOT LIVE (${id.academy.onboarding_state}) — no reminder, digest or announcement reaches anybody yet, ` +
+            `and every count below is a roster nobody has been told about. ` +
+            (readyToGoLive
+              ? 'There is a timetable in, so going live is now a real next step to offer.'
+              : 'Nothing to go live with yet — the timetable is what is missing.'),
         `${n(row, 'venues')} venue(s)`,
         `${n(row, 'classes_active')} active class(es) with ${n(row, 'slots_all_classes')} weekly slot(s)` +
           (n(row, 'classes_active') === 0 ? ' — so there is nothing to remind anyone about yet' : '') +
@@ -438,7 +459,7 @@ async function census(id: Identity): Promise<string | null> {
           ? `UPI handle set`
           : `no UPI handle on file, so a payment request goes out with nothing to pay to`,
       ]
-      return bits.map((b) => `- ${b}`).join('\n')
+      return bits.filter(Boolean).map((b) => `- ${b}`).join('\n')
     }
 
     if (id.coachId) {

@@ -23,7 +23,10 @@ import { lint } from './lint'
 import { searchFacts, writeFact } from './memory'
 import type { ToolDecl } from './gemini'
 import { audienceFor, executePlan, needsPreview, parseSteps, previewPlan, type PlanStep } from './plan'
-import { checkActionPayload, checkSteps } from './steps'
+import {
+  checkActionPayload, checkSteps, humanAssertionNote,
+  stripHumanAssertions, stripHumanAssertionsFromArgs, stripHumanAssertionsFromPayload,
+} from './steps'
 import { jsonLit, lit, uid, OPERATIONS, operationSignature, type OperationName } from './operations'
 import { parametersFor } from './schema-json'
 
@@ -478,12 +481,24 @@ function resolveAction(raw: unknown, ctx: ToolCtx): { ok: true; action: any } | 
     }
     const checked = checkSteps(steps)
     if (!checked.ok) return { ok: false, error: checked.error }
-    return { ok: true, action: { kind: 'steps', steps: checked.steps, summary: String(a.summary ?? 'that change') } }
+    // The third model entry point for operation args, and the least obvious: a
+    // model-authored button is a plan the model wrote, stored for later replay. A
+    // strip that covered only the tool paths would leave a `{confirmed:true}` button
+    // mintable — and a button is executed with NO model in the loop, which is the one
+    // place a bad payload cannot be recovered from.
+    return {
+      ok: true,
+      action: {
+        kind: 'steps',
+        steps: stripHumanAssertions(checked.steps),
+        summary: String(a.summary ?? 'that change'),
+      },
+    }
   }
 
   const checked = checkActionPayload(a)
   if (!checked.ok) return { ok: false, error: checked.error }
-  return { ok: true, action: checked.payload }
+  return { ok: true, action: stripHumanAssertionsFromPayload(checked.payload).payload }
 }
 
 /**
@@ -1292,6 +1307,11 @@ export async function runTool(
         }
       }
       if (!steps.length) return { result: { error: 'a plan needs at least one step' } }
+      // A plan is the model's other route into an operation, and the one that can
+      // nest: an operation step, and an operation behind a button on a message step.
+      const planStripped: string[] = []
+      steps = stripHumanAssertions(steps, planStripped) as PlanStep[]
+      const planIgnored = planStripped.length ? { ignored: humanAssertionNote(planStripped) } : null
       const preview = await previewPlan(ctx.session, steps)
       if (!preview.ok) return { result: { ok: false, error: preview.error } }
       const handle = newId()
@@ -1340,6 +1360,7 @@ export async function runTool(
             // already done the work.
             handle: null,
             note: 'This is done — it touched nobody else, no money and nothing destructive, so it ran. There is no handle and nothing to commit: do NOT call commit. Say what you did, in the past tense, and offer the next step as a button.',
+            ...planIgnored,
           },
           note: res.summary,
         }
@@ -1363,6 +1384,7 @@ export async function runTool(
           needs_preview: gate,
           ...compactDiff(preview),
           intent: String(args?.intent ?? ''),
+          ...planIgnored,
         },
         note: preview.summary,
       }
@@ -1420,6 +1442,13 @@ export async function runTool(
     case 'act': {
       const opName = String(args?.operation ?? '')
       if (!(opName in OPERATIONS)) return { result: { error: `there is no operation called ${opName}` } }
+      // Every operation-named tool is rewritten into `act` above, so this one strip
+      // covers both of the model's direct routes into an operation.
+      const stripped = stripHumanAssertionsFromArgs(opName, args?.args ?? {})
+      args = { ...args, args: stripped.args }
+      const ignored = stripped.stripped.length
+        ? { ignored: humanAssertionNote(stripped.stripped) }
+        : null
       const steps: PlanStep[] = [{ operation: { name: opName as any, args: (args?.args ?? {}) as any } }]
       const preview = await previewPlan(ctx.session, steps)
       if (!preview.ok) return { result: { ok: false, error: preview.error } }
@@ -1440,6 +1469,7 @@ export async function runTool(
             handle,
             reason: 'this one is worth reading back first',
             ...compactDiff(preview),
+            ...ignored,
           },
           note: preview.summary,
         }
@@ -1463,6 +1493,7 @@ export async function runTool(
           audit_id: res.auditId,
           ...compactDiff(res),
           sent: res.outcomes.map((o) => o.status),
+          ...ignored,
         },
         note: res.summary,
       }

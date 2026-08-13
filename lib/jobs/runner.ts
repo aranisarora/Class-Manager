@@ -67,7 +67,34 @@ const DEFAULT_LIMIT = 200
 /** A handler can enqueue work that is already due (the ladder does). Drain it. */
 const MAX_ROUNDS = 8
 
+/**
+ * How long a `running` row may hold its lock before another runner may take it.
+ *
+ * Nothing releases a lock when the process holding it dies — a crash, a container
+ * restart, or a serverless instance frozen mid-handler leaves the row `running`
+ * with a `locked_by` nobody is listening to. `claim()` only ever looked at
+ * `pending`, and `reportMissed` only reports `pending` and `failed`, so such a row
+ * was invisible to both: it never ran again and it never showed up as a failure.
+ * That is rule 3's exact failure mode — a job that did not run, invisibly.
+ *
+ * Generous on purpose. A handler that legitimately runs for fifteen minutes and a
+ * handler whose process died look identical from here, and reclaiming a live one
+ * runs it twice. Every handler re-checks its own precondition (rule 2), so a
+ * double-run is survivable; a permanently stranded job is not.
+ */
+const LOCK_STALE_MINUTES = 15
+
 async function claim(limit: number): Promise<Job[]> {
+  await withInfra((tx) => tx`
+    update job
+       set status = 'pending', locked_at = null, locked_by = null,
+           last_error = coalesce(last_error, '') ||
+             case when coalesce(last_error, '') = '' then '' else ' | ' end ||
+             'reclaimed: lock held past ' || ${LOCK_STALE_MINUTES}::text || 'm by ' || coalesce(locked_by, '?')
+     where status = 'running'
+       and locked_at is not null
+       and locked_at < app.now() - make_interval(mins => ${LOCK_STALE_MINUTES}::int)
+  `)
   const rows = await withInfra((tx) => tx<Job[]>`
     with due as (
       select id from job
@@ -96,7 +123,11 @@ async function finish(id: string, status: 'done' | 'skipped', reason: string | n
 /** Transient failures get a couple of goes; after that the row stands as failed
  *  evidence rather than disappearing. `attempts` was stamped at claim time. */
 async function fail(job: Job, error: string): Promise<boolean> {
-  const attempts = Number(job.attempts ?? 0) + 1
+  // `claim()` already did `attempts = attempts + 1` and Postgres RETURNING on an
+  // UPDATE yields the NEW row, so `job.attempts` counts this run. Adding one more
+  // here counted every failure twice: MAX_ATTEMPTS of 3 bought two runs, not
+  // three, and the backoff doubled with it (first retry at 10 minutes, not 5).
+  const attempts = Number(job.attempts ?? 0)
   const retry = attempts < MAX_ATTEMPTS
   if (retry) {
     const backoffMinutes = 5 * attempts
@@ -128,7 +159,11 @@ async function reportMissed(log: string[]): Promise<void> {
   >`
     select kind, dedupe_key, run_at, status, last_error
       from job
-     where status in ('pending', 'failed')
+     -- 'running' belongs here too: a row whose worker died holds its lock until
+     -- claim() reclaims it, and until then it is neither pending nor failed. Left
+     -- out, the one status that means nobody is coming back for this was the one
+     -- status rule 3 could not see.
+     where status in ('pending', 'failed', 'running')
        and run_at < app.now() - make_interval(mins => ${MISSED_AFTER_MINUTES}::int)
      order by run_at asc
      limit 50

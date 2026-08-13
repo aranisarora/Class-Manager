@@ -382,31 +382,57 @@ export async function dunningRun(job: Job): Promise<void> {
     `
     if (!account) skip('account gone')
 
-    const [totals] = await tx<{ billed: number; paid: number }[]>`
+    // Two figures, because they answer two different questions and this ladder
+    // used to print one under the other's name.
+    //
+    // `outstanding` is a LIFETIME account balance: every tally line ever raised,
+    // less every confirmed payment. It has no period filter and cannot have one —
+    // `payment` carries no period, so a payment cannot be attributed to a month
+    // and "what is owed for August" is not a computable quantity here.
+    //
+    // The ladder is nonetheless keyed per (account, period), and the message said
+    // "<lifetime> is still open on <that month>". For a family carrying anything
+    // older that is a wrong number attached to a named month, on the one channel
+    // where being wrong about money is the expensive failure. The predicate was
+    // right; the sentence was not. So: keep the predicate, read the period's own
+    // charges alongside it, and let the sentence say only what is true.
+    const [totals] = await tx<{ billed: number; paid: number; period_billed: number }[]>`
       select
         coalesce((select sum(amount) from tally_line
                    where academy_id = ${academyId} and account_id = ${accountId}), 0)::float8 as billed,
         coalesce((select sum(amount) from payment
                    where academy_id = ${academyId} and account_id = ${accountId}
-                     and status = 'confirmed'), 0)::float8 as paid
+                     and status = 'confirmed'), 0)::float8 as paid,
+        coalesce((select sum(amount) from tally_line
+                   where academy_id = ${academyId} and account_id = ${accountId}
+                     and period = ${period}::date), 0)::float8 as period_billed
     `
     const outstanding = num(totals?.billed) - num(totals?.paid)
     if (outstanding <= 0) skip('paid up')
+    const periodBilled = num(totals?.period_billed)
 
     const contactId = await contactFor(tx, academyId, account.holder_person_id)
     const adminRows = (await admins(tx, academyId)).filter((a) => a.contact_id)
-    return { academy, account, outstanding, contactId, adminRows }
+    return { academy, account, outstanding, periodBilled, contactId, adminRows }
   })
 
-  const { academy, account, outstanding, contactId, adminRows } = plan
+  const { academy, account, outstanding, periodBilled, contactId, adminRows } = plan
   const tz = academy.timezone
+
+  // Naming the month is only honest when the whole balance IS that month's.
+  const owedLine =
+    Math.abs(outstanding - periodBilled) < 0.005
+      ? `${formatINR(outstanding)} for ${monthLabel(period, tz)} is still open.`
+      : periodBilled > 0
+        ? `${formatINR(outstanding)} is still open on your account, including ${formatINR(periodBilled)} for ${monthLabel(period, tz)}.`
+        : `${formatINR(outstanding)} is still open on your account.`
 
   if (contactId) {
     await composeAndSend(serviceCtx(academy.id), {
       toContactId: contactId,
       header: clamp(academy.name, LIMITS.headerChars),
       body: clamp(joinLines([
-        `${formatINR(outstanding)} is still open on ${monthLabel(period, tz)}.`,
+        owedLine,
         academy.upi_handle ? `UPI: ${academy.upi_handle}` : null,
       ]), LIMITS.bodyChars),
       buttons: [
@@ -435,8 +461,12 @@ export async function dunningRun(job: Job): Promise<void> {
     await composeAndSend(serviceCtx(academy.id), {
       toContactId: a.contact_id as string,
       header: clamp(academy.name, LIMITS.headerChars),
+      // Same distinction as the family's message above: the figure is a lifetime
+      // balance, so it is only this month's when nothing older is outstanding.
       body: clamp(
-        `${account.holder_name} still owes ${formatINR(outstanding)} for ${monthLabel(period, tz)}. `
+        (Math.abs(outstanding - periodBilled) < 0.005
+          ? `${account.holder_name} still owes ${formatINR(outstanding)} for ${monthLabel(period, tz)}. `
+          : `${account.holder_name} still owes ${formatINR(outstanding)} in total, chased for ${monthLabel(period, tz)}. `)
         + `I've asked ${DUNNING_MAX} times and I'll stop now.`,
         LIMITS.bodyChars,
       ),

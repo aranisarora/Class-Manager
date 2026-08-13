@@ -23,13 +23,28 @@
  * provides false assurance, which is worse. It is a prompt rule (§10.2: every
  * number traces to a query result in the payload) verified by eval (§17).
  */
-import type { Identity } from '@/lib/types'
 import { inZone, nowSync } from '@/lib/clock'
 
 /** What the caller actually has evidence for, from the `message` row's own columns. */
 export type DeliveryEvidence = { delivered?: boolean; read?: boolean }
 
-export function lint(text: string, id: Identity, evidence?: DeliveryEvidence): string {
+/**
+ * The only part of an `Identity` this file has ever read: the business's name, its
+ * timezone and its vocabulary memory.
+ *
+ * The wider parameter was the reason lint could not live at the send path. `send`
+ * holds a `SessionCtx`, not an `Identity`, so every caller that had one applied lint
+ * itself and every caller that did not simply skipped it — which is how "speak the
+ * academy's language" became a guarantee that depended on which code path composed
+ * the message. Narrowing the parameter to what is actually used is what makes the
+ * chokepoint reachable. `Identity` still satisfies it structurally, so no existing
+ * caller changes.
+ */
+export type LintScope = {
+  academy?: { name?: string | null; timezone?: string | null; memory?: string | null } | null
+}
+
+export function lint(text: string, id: LintScope, evidence?: DeliveryEvidence): string {
   if (!text) return text
   const tz = id.academy?.timezone || 'Asia/Kolkata'
 
@@ -161,7 +176,7 @@ const TABLE_WORDS: Record<string, string> = {
 const STATE_WORDS =
   /'(setup|roster|ready|live|added|invited|active|ended|prospect|registered|engaged|opted_out|scheduled|cancelled|completed|present|late|absent|cancelled_timely|queued|sent|delivered|read|failed|requested|confirmed)'/g
 
-function stripIdentifiers(text: string, id: Identity): string {
+function stripIdentifiers(text: string, id: LintScope): string {
   let out = text.replace(STATE_WORDS, '$1')
 
   // "(id: 7f3…)", "[session_id=7f3…]" — the whole parenthetical is machinery.

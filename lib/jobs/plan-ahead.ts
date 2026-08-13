@@ -383,14 +383,21 @@ async function planMonthBoundary(
        and coalesce(e.rate_unit, cl.rate_unit) in ('per_month', 'per_term', 'per_package')
        and e.started_on <= (gs.period + interval '1 month' - interval '1 day')::date
        and (e.ended_on is null or e.ended_on >= gs.period::date)
-       and not exists (
-         select 1 from tally_line tl
-          where tl.academy_id = e.academy_id
-            and tl.player_id = e.player_id
-            and tl.period = gs.period::date
-            and tl.kind in ('monthly', 'term', 'package')
-       )
   `
+  // There was a `not exists` here that skipped any (enrollment, period) for which
+  // the PLAYER already had a recurring line in that period. It was one predicate
+  // coarser than everything around it, and that cost real money: a player enrolled
+  // in two recurring classes got one line and was never billed for the second,
+  // forever, because the first class's line answered for both. The commonest way
+  // an academy grows a player's fees is the one case it dropped.
+  //
+  // Nothing is needed in its place. The dedupe key below is already
+  // (enrollment, period) — `enqueueMany` is `on conflict (dedupe_key) do nothing`
+  // and job rows are never deleted, so a period is enqueued at most once ever —
+  // and `writeLine` re-checks for the exact line before writing it (§13 rule 2:
+  // every handler re-checks its own precondition). A filter that is coarser than
+  // both of those guards can only lose rows; it cannot save any work they were
+  // not already doing.
   for (const e of due) {
     push(
       'monthly_lines',

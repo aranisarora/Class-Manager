@@ -61,11 +61,12 @@ export const dedupe = {
 } as const
 
 /**
- * §13 rule 4 — "rescheduling a session cancels its pending jobs by dedupe key
- * and re-enqueues". Every key family that hangs off one session, as prefixes
- * for `cancelByPrefix`.
+ * The jobs that only make sense BEFORE a session happens: chasing the coach,
+ * reminding the family, warning the admin that nobody is covering it, and
+ * asking for the register. Once the session is over, every one of these is
+ * either moot or actively wrong.
  */
-export function sessionJobPrefixes(sessionId: string): string[] {
+function preSessionPrefixes(sessionId: string): string[] {
   return [
     `co_coming:${sessionId}:`,
     `co_nudge:${sessionId}:`,
@@ -74,8 +75,34 @@ export function sessionJobPrefixes(sessionId: string): string[] {
     `cl_rem:${sessionId}:`,
     `register:${sessionId}`,
     `reg_exp:${sessionId}`,
-    `outcome:${sessionId}:`,
   ]
+}
+
+/**
+ * §13 rule 4 — "rescheduling a session cancels its pending jobs by dedupe key
+ * and re-enqueues". Every key family that hangs off one session, as prefixes
+ * for `cancelByPrefix`.
+ *
+ * `scope` exists because the two reasons to sweep a session's ladder want
+ * different answers, and conflating them cost the product every outcome message
+ * it has ever tried to send:
+ *
+ *   - `'all'` — the session is not going to happen as planned (cancelled, moved,
+ *     retimed). Nothing that hangs off it should fire, the outcome included.
+ *   - `'pre-session'` — the session HAPPENED and the register has just been
+ *     marked. `mark_attendance` schedules the CL-OUTCOME jobs and then sweeps the
+ *     ladder in the same plan; with `outcome:` in the sweep, the same transaction
+ *     inserted those jobs and immediately flipped them to `cancelled`, so no
+ *     family has ever been told how their child's session went. The outcome is
+ *     the one job whose moment is *after* the session, so it is the one job a
+ *     completion must not cancel.
+ */
+export function sessionJobPrefixes(
+  sessionId: string,
+  scope: 'all' | 'pre-session' = 'all',
+): string[] {
+  const pre = preSessionPrefixes(sessionId)
+  return scope === 'pre-session' ? pre : [...pre, `outcome:${sessionId}:`]
 }
 
 /**

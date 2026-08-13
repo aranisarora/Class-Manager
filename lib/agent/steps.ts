@@ -254,6 +254,163 @@ export function checkSteps(raw: unknown): { ok: true; steps: unknown[] } | { ok:
   return { ok: false, error: describe(parsed.error) }
 }
 
+/* ------------------------------------------------------------------------- *
+ * Claims about what a human did
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Operation parameters that assert **a human already acted**, and which the model
+ * must therefore never set.
+ *
+ * Every value of these in the codebase is written by the runtime into a button that
+ * the operation itself mints — `cancel_session` mints `{confirmed:true}`,
+ * `client_cancel` mints `{confirmed:true}`, `opt_out` and `undo` the same, and
+ * `send_invite_draft` mints `{mark_sent:true}` behind `[Sent it]`. That is what they
+ * mean: *this call is a replay of a button somebody tapped.* Nothing else produces
+ * one, so a model that sets one is claiming a tap that never happened.
+ *
+ * Watched live, twice: asked to add a coach and send the invite, the model set
+ * `mark_sent` on its own initiative on the FIRST request. `send_invite_draft` with
+ * `mark_sent` does not draft anything — so no invite message existed at all, the
+ * coach was written to `invited` (making every "chase the uninvited" path skip her
+ * forever), and the admin was told *"Noted — Nisha Rao's invite is out."* The tool
+ * returned `ok: true`. Nothing anywhere disagreed.
+ *
+ * This is the same idea as stripping `requireRows` and `write.service` from
+ * model-authored plans, applied to a claim about the world rather than a privilege:
+ * **the runtime keeps the fields the model must not set.**
+ *
+ * WHAT IS DELIBERATELY NOT HERE, and why the list is not "every boolean":
+ *
+ *   - `arrived`, `running_late`, `all_present` — these relay what the person
+ *     SPEAKING RIGHT NOW just said about themselves. §8.2 ("free text always
+ *     works") is exactly the coach typing *"reached"* or *"running late"*, and the
+ *     model has direct evidence for it: the sentence is in the turn. Stripping
+ *     these would delete a documented capability to fix a defect they do not have.
+ *   - `notify` / `notify_parents` — a delivery preference, not a claim about the
+ *     world.
+ *
+ * The line is: does this parameter assert that **something already happened that
+ * the model did not witness**? If yes it belongs here; if it relays the speaker's
+ * own words, it does not.
+ */
+export const HUMAN_ASSERTION_PARAMS = ['confirmed', 'mark_sent'] as const
+
+function stripArgs(args: unknown, op: string, stripped: string[]): unknown {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return args
+  const rec = args as Record<string, unknown>
+  let out: Record<string, unknown> | null = null
+  for (const key of HUMAN_ASSERTION_PARAMS) {
+    // Only a truthy value is a claim. `confirmed: false` is the honest default and
+    // removing it would be noise in the note the model reads back.
+    if (rec[key]) {
+      out ??= { ...rec }
+      delete out[key]
+      stripped.push(`${op}.${key}`)
+    }
+  }
+  return out ?? rec
+}
+
+function stripPayload(payload: unknown, stripped: string[]): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload
+  const p = payload as Record<string, unknown>
+  if (p.kind === 'operation' && typeof p.op === 'string') {
+    const args = stripArgs(p.args, p.op, stripped)
+    return args === p.args ? p : { ...p, args }
+  }
+  if (p.kind === 'steps' && Array.isArray(p.steps)) {
+    const steps = stripHumanAssertions(p.steps, stripped)
+    return steps === p.steps ? p : { ...p, steps }
+  }
+  return p
+}
+
+/**
+ * Remove every human-assertion parameter from model-authored steps, at every depth
+ * a step can carry one: the step's own operation, and the operation behind any
+ * button on a message step — including a button carrying a whole nested plan.
+ *
+ * Returns the names it removed so the caller can TELL the model, rather than
+ * silently changing what it asked for. A silent strip would produce the same
+ * confusion the defect did, one layer down: the model would believe the invite was
+ * marked sent and say so.
+ *
+ * NOT applied in `plan.ts` or on the tap path, on purpose. The identical payload
+ * arriving from a real tap is the legitimate case this field exists for, and
+ * `loop.ts` builds those steps directly from the stored action. The strip belongs
+ * where "the model wrote this" is known, which is only here.
+ */
+export function stripHumanAssertions(steps: unknown[], into?: string[]): unknown[] {
+  const stripped = into ?? []
+  let changed = false
+  const out = steps.map((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+    const step = raw as Record<string, unknown>
+
+    if (step.operation && typeof step.operation === 'object') {
+      const op = step.operation as Record<string, unknown>
+      const args = stripArgs(op.args, String(op.name ?? 'operation'), stripped)
+      if (args !== op.args) {
+        changed = true
+        return { ...step, operation: { ...op, args } }
+      }
+    }
+
+    if (step.message && typeof step.message === 'object') {
+      const msg = step.message as Record<string, unknown>
+      if (Array.isArray(msg.buttons)) {
+        let btnChanged = false
+        const buttons = msg.buttons.map((b) => {
+          if (!b || typeof b !== 'object') return b
+          const btn = b as Record<string, unknown>
+          const action = stripPayload(btn.action, stripped)
+          if (action === btn.action) return btn
+          btnChanged = true
+          return { ...btn, action }
+        })
+        if (btnChanged) {
+          changed = true
+          return { ...step, message: { ...msg, buttons } }
+        }
+      }
+    }
+
+    return step
+  })
+  return changed ? out : steps
+}
+
+/** The single-operation form, for the `act` tool and every operation-named tool. */
+export function stripHumanAssertionsFromArgs(
+  op: string,
+  args: unknown,
+): { args: unknown; stripped: string[] } {
+  const stripped: string[] = []
+  return { args: stripArgs(args, op, stripped), stripped }
+}
+
+/** The single-payload form, for a model-authored button or list row. */
+export function stripHumanAssertionsFromPayload(
+  payload: unknown,
+): { payload: unknown; stripped: string[] } {
+  const stripped: string[] = []
+  return { payload: stripPayload(payload, stripped), stripped }
+}
+
+/**
+ * The sentence the model is told when something was stripped. It names the button
+ * to offer instead, because the intent was legitimate — the model wanted the coach
+ * marked invited — and the only thing wrong was who is entitled to say it happened.
+ */
+export function humanAssertionNote(stripped: string[]): string {
+  const names = [...new Set(stripped)].join(', ')
+  return (
+    `Ignored ${names}: those say a person has already done something, and only that person's own tap can set them. ` +
+    `The draft/preview was produced instead — offer it, and let them tap to confirm it happened.`
+  )
+}
+
 export function checkActionPayload(raw: unknown): { ok: true; payload: unknown } | { ok: false; error: string } {
   const parsed = ActionPayloadSchema.safeParse(raw)
   if (parsed.success) return { ok: true, payload: parsed.data }
