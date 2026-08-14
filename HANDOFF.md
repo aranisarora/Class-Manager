@@ -70,10 +70,13 @@ that; it is the method working, not time wasted.
 
 ## 2 · Traps that each cost real time. Do not re-pay them.
 
-- **`q.mjs` defaults to `--role service`, which bypasses RLS.** `--as <contact>` alone only
-  sets the GUC. To see what a person can actually see you need `--as <id> --role user`.
-  This nearly produced a false family-privacy report. (The ordering bug that made
-  `--role user` impossible is fixed; the default is still service, deliberately.)
+- **`cm_service` does NOT bypass RLS — the previous version of this line said it did, and
+  it was wrong.** Every service policy is `academy_id = app.academy_id()`, so with no
+  `--academy` every tenant-scoped table reads empty: `select count(*) from payment`
+  answered `0` for a database holding seven. It warns now, and `--all` sweeps every tenant
+  and labels the rows. Use `--all` for any "has this product ever…" question.
+  `--as <contact>` alone still only sets the GUC; to see what a person sees you need
+  `--as <id> --role user`.
 - **`group by` on a truncated body finds duplicates that are not there.** `left(body,60)`
   in the SELECT is fine; grouping on the alias is not. Postgres resolves an ambiguous
   `GROUP BY` name to the *input* column — the probe's invariant is correct, my ad-hoc query
@@ -84,45 +87,51 @@ that; it is the method working, not time wasted.
   verification run becomes a moving target.
 - **`rls-check` skips its hardest sections on an empty world and still prints "0 failed".**
   Seed a fixture, then confirm with `node scripts/rls-check.mjs 2>&1 | grep -ci skip` → `0`.
-- **Advance the clock in ≤1h steps.** One big hop makes every job correctly decline, the
-  transcript reads calm, and you have tested nothing.
+- **Advance the clock in ≤1h steps, and always pass `--academy`.** The clock is per-academy
+  now (0024) but `drive clock` without `--academy` still moves the whole world. One big hop
+  makes every job correctly decline, the transcript reads calm, and you have tested nothing.
+- **Do not drive an academy an explorer owns.** I did, and had to discount that agent's
+  message-timing findings. Its RLS and schedule results survived; the rest is suspect.
 - **The probe's "stranger" is not a stranger.** Nikhil Bose is a pre-registered contact in
   state `engaged`. The genuinely-unknown-number path has never been tested.
 
 ---
 
-## 3 · The swarm, and the one thing that blocks it
+## 3 · The swarm — the blocker is gone, and here is what it bought
 
 The intended shape: **several explorer agents driving academies in parallel — including
 several personas inside one academy, interacting — babysat by an orchestrator (Opus, high
 effort) that also drives. An explorer finds an issue, reports it, the orchestrator fixes the
 root and spins up the next explorer aimed at something untested.**
 
-This works today for **message-only** exploration. It does **not** work for anything
-time-driven, and that is the one thing to build before fanning out.
+**The clock no longer blocks it.** 0024 gave `sim_clock` a nullable `academy_id` — null is
+the world clock and the fallback for anyone without one — `app.now()` resolves the tenant
+first, and `runner.claim()` compares each job against **its own** tenant's clock. Verified:
+moving one academy 11 hours ran exactly one job, its own; under the old global clock that
+same move would have fired 9 jobs across 5 other academies.
 
-### Build this first, or the swarm corrupts itself
+So explorers can now drive time in parallel, provided each **owns one academy** and always
+passes `--academy`. `drive clock` without it still moves the world.
 
-**`sim_clock` is a global singleton.** Two agents driving at once move each other's world.
-Any explorer that calls `drive clock` silently invalidates every other explorer's run —
-their jobs fire early, decline as stale, or never fire, and the transcripts read calm.
+**What the swarm actually bought, measured over one pass.** Worth knowing before you size
+the next one:
 
-`NEXT.md` item 6 proposes a per-academy clock: `sim_clock` gains a nullable `academy_id`,
-null meaning the global default; `app.now()` resolves the tenant's row first and falls back.
-Every read of domain time already goes through `app.now()` or `lib/clock.ts`, so the blast
-radius is small — but `app.now()` is called by nearly every policy and query, so **measure
-the cost before committing**.
+- **Three explorers, one per persona, found the SAME root independently** — a coach, a
+  parent and a prospect each hitting a different symptom of `resolveContact` running under
+  the caller's RLS. That convergence is the strongest signal this method produces, and it
+  only appears if you run several personas *in the same pass* and then look for what their
+  findings share instead of fixing three things.
+- **A refutation pass killed 60% of a read-only audit** — 20 findings in, 12 refuted, 8
+  survived, and three of the eight were real money defects nothing had driven. Without the
+  skeptic stage that is 20 fixes, most spent on nothing. Tell the skeptic to default to
+  refuted when uncertain: a false finding costs more than a missed one.
+- **Read-only agents are safe to fan out wide** and need no clock at all. Forbid them the
+  database entirely and verify their claims yourself — it is one command each and two of
+  mine were wrong.
 
-Until that exists, the safe parallel split is:
-
-- **Many explorers, message-only.** Separate academies, no clock calls. Safe today.
-- **Exactly one clock-owner at a time.** Anything touching sessions, reminders, registers,
-  dunning or month-end needs the clock and must be serialised.
-- Prefer `drive month --period YYYY-MM`, which closes a period by running due work rather
-  than moving time.
-
-Also real: `max: 10` connections per process against a shared `pool_size: 15`. Two busy
-processes exhaust the pooler on arithmetic alone. Cap concurrent explorers accordingly.
+Still real: `max: 10` connections per process against a shared `pool_size: 15`. Two busy
+processes exhaust the pooler on arithmetic alone. Three concurrent driving explorers was
+comfortable; cap accordingly.
 
 ### What an explorer is for, and what it must bring back
 
@@ -222,34 +231,25 @@ in ~200ms in isolation.
 
 ## 4 · Work on this first, in this order
 
-1. **The money back-half. It has still never executed and it is where being wrong is most
-   expensive.** In order: the reconcile ladder to `[Confirm payment]` (the §11.5
-   `requested → confirmed` transition); dunning to escalation; `per_package` exhaustion and
-   the pack rolling over; `per_term`; a waiver through the model; a disputed charge through
-   `money-dispute.md`. Read `tally_line` and `payment` rows directly — never a summary.
-2. **Per-academy clock** (§3 above) — it unblocks everything parallel.
-3. **`tally_line.dedupe_key`.** Money idempotency currently matches on `reason` and
-   `description` — *text also shown to the parent*. Two writers disagreed and a trial player
-   could be credited twice; that is fixed by sharing literals
-   (`lib/billing-keys.ts`, guarded by `scripts/check-billing-keys.mts`), but renaming a class
-   still defeats a description-keyed guard. A key computed from ids with a unique index makes
-   the rule enforceable rather than agreed.
-4. **The register as a Flow.** Decided: **the web surface is for things you read spatially
-   (timetable, calendar); every form is a Flow.** `setup` is a Flow on both paths now.
-   `register` is still a web link and is a form. Dedicated onboarding Flows are wanted for
-   admins (built), coaches, and probably clients.
-5. **An operation that closes a class.** 0021 makes class names unique among *open* classes,
-   so reusing a name requires closing the old one — and nothing can. I created this gap;
-   it is documented.
-6. **R10's fact half, in shadow mode first.** A reply may state a time, date, price or roster
-   never read from a row. Driven instances: *"I've also scheduled the sessions to start from
-   today"* (first session was four days later, and no sessions existed yet); *"Two families
-   have balances, totaling ₹3,500"* composed from a query that returned **one** row and
-   netted a credit against another family's debt; invented surnames *"Aarav Iyer"* where the
-   row says `Aarav`. **Log what it would block, block nothing, drive, read the log.** Do not
-   implement it as a lint rule over message text — `lib/agent/lint.ts` explains why.
+The previous list is done — money back-half, per-academy clock, `tally_line.dedupe_key`,
+`close_class`. `NEXT.md` argues each of these; this is the order.
 
----
+1. **A genuinely unknown number is dropped without trace.** No `message` row, no `job`, no
+   `audit_entry`, in any of seven academies — a lost enquiry is undetectable by
+   construction, on the acquisition path. "Signup is the operator's" is a real decision and
+   it does not require silence.
+2. **§14.8's automatic escalation on refund, complaint and safety language.** No runtime
+   enforcement; `handoff` has fired 0 times in 464 tool calls. The refusal path now performs
+   its own escalation and proves the shape works — copy it rather than adding prompt text.
+3. **R10's fact half, in shadow mode.** Still the most open root. Log what it would block,
+   block nothing, drive, read the log.
+4. **The watch overshoot.** 113 pending `agent_task` rows, ~1 per turn, each a model turn
+   later. One watches the word "replayed", which is a driver artifact.
+5. **The register as a Flow**, and the coach/client onboarding Flows that do not exist.
+
+**Personas, judged by hand-driving each one:** admin `nearly`, coach `not-ready`, parent
+`not-ready`, prospect `not-ready`. The worst symptom in three of the four was one root and
+it is fixed; the verdicts stand until somebody re-drives them.
 
 ## 5 · Never been run. Point explorers here.
 
@@ -294,19 +294,26 @@ Before finishing: `npm run typecheck`, `node scripts/rls-check.mjs`,
 
 ## 7 · Where the roots stand
 
-Closed or much improved last pass: **R3** (runtime knows and doesn't tell — 4 instances),
-**R4** (guarantee on one path of several — 3), **R6** (records narrower than changes),
-**R1**, **R2**, **R7**.
+**R5 is closed** — idempotency is keyed on ids under a unique index (0023), not on prose.
+**R9's self-inflicted one is closed** — `close_class` exists.
 
-Still live: **R5** — partially; literals are shared now but idempotency still keys on prose.
-**R10** — the most open root, fact claims are unchecked. **R8** — untouched; `view` and
-`recall` are still rarely chosen. **R9** — I created one (no way to close a class).
+**R7 fired four more times this pass and is the one to watch**: the evidence tool answering
+`0` to every cross-tenant question; a message step whose recipient resolved to nobody being
+dropped with no row (so `AD-NEW-TRIAL` had never been sent, ever); a plan write matching
+zero rows vanishing from the receipt; a register markable for a class that had not happened.
+Every one read as success.
+
+**R8 is the live one.** `handoff` at 0/464 while a parent was told "I've noted it" about a
+row that never changed, and 113 pending watches at the other extreme. `recall` was deleted
+(0/464, every fact already ships in the hot set); `view` sits at 6.
+
+**R10 is untouched** and is the most open root.
 
 Carried forward, still true and unfixed: `move_class` announces a whole class while moving
-one slot; `reschedule_session` accepts a past time; `client_cancel` declares
-`scope: 'session' | 'series'` and never reads it; `plan.ts`'s `asService` `finally` runs
-`set local role` on an already-aborted transaction, throws 25P02 and **discards the
-in-flight exception**, which defeats `repairHint`.
+one slot; `reschedule_session` accepts a past time (`mark_attendance` no longer does — the
+same one-line comparison); `client_cancel` declares `scope: 'session' | 'series'` and never
+reads it. **`plan.ts`'s `asService` exception-discarding claim was REFUTED** by an
+adversarial reader this pass — do not spend a fix on it without re-deriving it first.
 
 ---
 

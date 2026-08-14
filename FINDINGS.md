@@ -15,210 +15,224 @@ back) or **read it** (confident from the code, did not run it).
 
 ## The method this pass, and the one number that says whether it worked
 
-Three full probe runs plus a hand-driven academy from empty. Run 1 scored **235/247**;
-run 2, after the first batch of fixes, **243/247**, with the eight repetition failures that
-made up most of run 1's deficit gone; run 3, **244/247**.
+Fourteen defects fixed. **Not one of them was found by a failing check.** Every single one
+came from reading a `message` row, a round-by-round turn log, or a table — which is the
+same lesson the last pass recorded, arriving with more force: the harness was green
+throughout.
 
-**All three of run 3's remaining failures are the known harness bug** — the
-`coach-marks-register` check that asserts "aarav is down as absent" *after* tapping
-`[Aarav told me]`, which converts him to `cancelled_timely`, which is §8.2 working. And its
-one flagged `UNBACKED CLAIM` is a false positive of the axis-1 heuristic: *"I've set a watch
-for next Friday morning"* was backed by job `d0ed1979`, `pending`, `run_at` Friday 21 Aug
-09:00 — read back from the row. Axis 1 looks for an `audit_entry`, and scheduling writes a
-`job`. **So the product passed everything the harness can correctly measure.**
+Three things about how they were found are worth keeping.
 
-Cost fell across the three runs — ₹11.58 → ₹12.35 → **₹10.56** — and the most expensive
-turn in the product, a parent asking to end her child's enrolment, went from 8 rounds and
-₹2.36 to **4 rounds and ₹0.80** once `CHANGED_NOTHING` could say which kind of nothing it
-was.
+**The evidence tool was lying, and it was the first thing found.** `node scripts/q.mjs
+"select count(*) from payment"` answered **0** for a database holding seven payments.
+Every `cm_service` policy is `academy_id = app.academy_id()`, so with no `--academy` the
+GUC is null and every tenant-scoped table reads empty. The previous handoff had written
+down the opposite — "defaults to `--role service`, which bypasses RLS" — which teaches
+the next reader to trust it. `job` hid it for as long as it did because its service policy
+is the one whose qual is `true`, so the first few questions anybody asks come back
+populated. **Fix the tool before you use it**: everything downstream of a lying query is
+worthless, and this one had already been used to conclude "the money tail has no rows".
 
-But the score is the least interesting thing here, and this is the point worth keeping:
-**of the nine defects fixed this pass, six sat inside cases whose checks all passed.** The
-score moved because of the one that happened to trip an invariant. The other six were found
-by reading the message bodies, the round-by-round tool calls, and the rows — and nothing in
-the harness would ever have reported them.
+**Three agents driving three personas found ONE root independently.** A coach, a parent and
+a prospect, in three different academies, each hit a different symptom of
+`resolveContact` running under the caller's RLS. That convergence is the strongest signal
+this method produces and it is worth deliberately arranging: one explorer per persona, same
+pass, and then look for what their findings share rather than fixing three things.
 
-**Three times this pass a "finding" evaporated on contact with the database**, which is the
-strongest argument for the method:
+**A refutation pass killed 60% of a read-only audit.** Six read-only agents produced 20
+findings; adversarial verifiers refuted 12 and 8 survived. Three of the eight were real
+money defects nothing had ever driven. Without the refutation step that is 20 fixes, most
+of them spent on nothing.
 
-- Eight failing checks of *"nobody was told the same thing twice"* looked like eight
-  defects. They were **one** — the invariant is world-cumulative, so once a duplicate
-  exists every later case re-reports it.
-- A family-privacy leak looked certain: a parent could see another family's child through
-  the new roster view. The view was fine. `q.mjs` defaults to `--role service`, which
-  **bypasses RLS**, and `--as` alone only sets the contact GUC. The tool was reading as
-  service and I nearly filed it.
-- A coach's roster read that "timed out" looked like a slow query. Measured in isolation it
-  returns in ~200ms. The timeout was contention during a live run and **no root was
-  established** — it is written down below as exactly that, not as a diagnosis.
+**And the count of what evaporated on contact with the database: four.** A "cross-family
+message leak" was two agents driving the same academy at once (my own interference). A
+`plan.ts` exception-discarding bug carried forward from the last pass was refuted on
+inspection. `CL-FIRST-CONTACT` saying "has a session coming up" is true by that row's own
+trigger. And an unbacked claim about a class merge turned out to be fully backed by a
+second write in the same plan. Budget for this; it is the method working.
 
 ---
 
-## 1 · One true claim licensed a false one beside it — **drove it**
+## 1 · Money idempotency keyed on prose, and a rename re-billed a paid-up family — **drove it**
 
-`ctx.committed` is a property of the TURN, so a message that truthfully reported one thing
-could carry any number of false clauses next to it. Five instances in a single 17-case run,
-every one inside a case whose checks passed:
+`tally_line` had no class column and no dedupe column, so §6.4's "one line, once" was
+enforced by comparing `description` — the sentence shown to the parent.
 
-> "I've added the *Evening Fitness* batch (daily 7–8pm at Green Park, ₹2000/mo) **and
-> enrolled Aarav, Ananya, and Dev**. […] **I've also drafted an invite for Arjun** so you
-> can get him onboarded."
+Driven end to end: a family paid ₹1,200 for August and the payment was confirmed (billed
+1200, paid 1200, nothing outstanding). Their class was renamed `Beginners` →
+`Beginners Batch`. The next billing run for the **same player** and the **same period**
+composed a different sentence, matched nothing, and charged them again. A settled account
+became ₹1,200 in arrears — far enough to enter the dunning ladder, so renaming a class
+starts chasing somebody who has already paid.
 
-The turn's writes were `class` and `class_slot`. **Zero enrollment rows. No draft.** The
-guard passed it because `create_class` committed.
+**Sixteen (player, class, period) triples in the shared world were already double-charged,
+₹32,800 in total**, every pair differing only by `-` against `—`: `lib/seed.ts` composes
+with a hyphen and `money.ts` with an em dash. Neither writer could see the other's rows.
+R5 — the comparison exists and can never fire.
 
-**Fix.** A verb that names a *specific* action is checked against the table that would make
-it true — `enrolled` → `enrollment`, `drafted` → `message`, `recorded` → `payment`. Generic
-verbs (`added`, `created`, `set`, `updated`) stay turn-scoped deliberately: guessing at
-those refuses true sentences, and a refusal costs a round and can end in a substitution.
+0023 adds `class_id` (what the charge is FOR; the description was the only record of it,
+which is why the guard had to read prose) and `dedupe_key` built from ids by
+`billingKey.*`, under a partial unique index. `on conflict do nothing` makes the constraint
+the guard, which also closes the race a SELECT-then-INSERT leaves open.
 
-**And a gap that made the fix possible.** A plan's writes were never recorded in
-`ctx.executed` — only named operations were — so the commonest write path in the product
-had no evidence to check a claim against. Both paths record now.
-
-**What it takes away.** A turn that genuinely did the thing but describes it in the passive
-(*"Aarav is now enrolled"*) is not matched. That is deliberate and it is the honest
-boundary: the same sentence is how you would correctly *answer a question* about existing
-state, so a passive rule would refuse true prose.
-
----
-
-## 2 · Two classes with one name, and the coach paid for it — **drove it**
-
-An admin said *"one more: an evening fitness batch every day 7 to 8pm"* and the class was
-created. Fifty seconds later, asked something else entirely — *"keep an eye on the advanced
-batch and tell me on friday"* — the model composed a plan that re-issued the whole previous
-request beside the new watch, was refused twice on unrelated shape errors, fixed the shape,
-and ran it. A **second** "Evening Fitness" was created, identical in every business-
-meaningful way.
-
-What that cost, none of it visible in any reply:
-
-- 22 duplicate sessions, one per day of the horizon, for ever
-- the coach on both, so every `CO-COMING` went out twice, byte for byte
-- the duplicates burned his §16.3 recipient frequency cap, so `CO-NUDGE` and `CO-REGISTER`
-  were both suppressed — **he never got the register prompt at all**
-
-**Root.** `venue` has had a unique key on (academy_id, name) forever, and `coach` has one.
-`class` had none — and the model already treats the class name as a key: its own plan steps
-read `(select id from class where name = 'Evening Fitness' and active … limit 1)`. That
-`limit 1` is what made a duplicate invisible. R5 exactly.
-
-**Two migrations, because the first was wrong.** 0020 scoped uniqueness to `where active`,
-which looked like it honoured the reason `class` was deliberately left unconstrained (§6.3
-keeps ended classes for ever, and last year's "Beginners" must not block this year's). It
-did not: **nothing in the product ever sets `class.active = false`.** There is no operation
-that retires a class. 0021 narrows it to classes that are still OPEN — `active and ends_on
-is null` — which refuses the duplicate and lets a closed class's name be reused.
-
-**What it takes away, and a gap it exposes.** The way to reuse a name is to close the old
-class, and **there is currently no operation that does so**. That gap is real and worth
-closing next.
+**What it takes away.** The migration does NOT delete the sixteen existing double-charges:
+a schema file must not silently rewrite money, and which of a credit note, a refund and a
+write-off is right is the business's call. They survive keyless and visible, and
+`scripts/check-duplicate-charges.mts` reports them — failing only on a duplicate written
+WITH keys, which the index should have refused.
 
 ---
 
-## 3 · A button that lied about money — **read it, verified by a second reader**
+## 2 · An operation could not tell the owner anything — **drove it, found by three agents**
 
-Out of window a template's quick-reply title is fixed at approval time, so `send` kept the
-minted action id and **replaced the label** — without ever asking what the action did.
+`resolveContact` ran its `contact` lookup on the **caller's** transaction, and
+`contact_cm_user_select` is `is_admin() OR id = app.contact_id() OR person_id =
+app.person_id()`. A parent, a coach or a prospect sees exactly their own row. So
+`to_person_id` for the owner resolved to NULL and the step hit `if (!to) continue`. No
+message row, no `suppressed_reason`, no error — R7's defining case, on the path whose
+entire job is telling somebody something happened.
 
-The reconcile rung first fires **48h after** a payment request, so out-of-window is the
-*normal* case for it. An admin was to be shown *"…₹2,400 was requested from Priya on 5
-August and still isn't confirmed. Did it come in?"* with exactly one button, labelled
-**Open**, which runs `confirm_payment` with no preview: the payment flips to `confirmed`,
-`confirmed_by` is stamped with the admin's own name, and the family is sent a receipt.
-`[Not yet]` was `buttons[1]` and was dropped. The same shape put `mark_attendance`
-all-present behind "Open" on a coach's register.
+- a coach declined two Saturday sessions, was told *"I'll find cover"* twice, and neither
+  the admin nor the other assigned coach was ever told
+- a parent's cancellation never reached the only coach in the academy
+- a cold prospect created a person, an account, a player and an enrolment in a business
+  whose owner heard nothing
 
-**Fix.** §14.7 says an out-of-window message is a *window-opener* — the tap buys the
-in-window interaction. That is only true of a tap that decides nothing. The label cannot be
-made to match the action, so **the action goes rather than the label**.
+**`AD-NEW-TRIAL` had been written 0 times across all seven academies.** The jobs path always
+worked because it runs as the service role; the operation path never could. R4.
 
-**What it takes away.** Out of window a consequential choice loses its tap and the person
-has to reply. The body still asks the question, any reply opens the window, and the real
-buttons follow with their own labels. A button that lies is worse than one that is absent.
+**The fix is not "resolve as service".** That would let a model-authored plan in a parent's
+turn address any person in the academy — the send gate's §18 rules are about who a message
+is ABOUT, not who raised it, so nothing downstream would stop a fan-out. That containment
+was accidental and load-bearing. So the question is **who authored the step**: `expand`
+marks the steps an operation produced, and only those resolve as service.
 
----
-
-## 4 · A long answer was answered with silence — **drove it**
-
-An admin asked *"so what exactly can you do for me?"*, the model wrote a good 1,141-
-character reply, three next-step buttons were attached, and 1,141 > the 1,024 interactive
-cap — so **the whole message was suppressed and they got nothing**. Nothing told them,
-nothing retried, and the turn's own record says it answered.
-
-"Rejected, never truncated" is right about a malformed control and wrong about length, and
-the difference is who pays. WhatsApp allows 4,096 for plain text, so the same words fit
-without the buttons. A body too long for its buttons now loses the buttons; it is never
-cut; and a body that *points at* a control is still suppressed rather than made into a lie.
+Driven after: the coach declined Sunday Camp and Sharwin Rao received *"Sunday Camp Sun 16
+Aug 7am has no confirmed coach — family emergency"*, `sent`, not suppressed.
 
 ---
 
-## 5 · The tap took the worse of two paths — **drove it**
+## 3 · A refusal was answered with a sentence asking the model to pass it on — **drove it**
 
-Driven from empty: the first message a new owner ever saw offered `[Setup Sunrise Sports]`.
-Tapping it returned *"Here it is. Yours only, good for the next hour."* and a 300-character
-JWT.
+`refusalHint` already established, with certainty, that the rows exist and this person may
+not change them, and then told the model in prose to *"offer to pass it to whoever runs the
+business"*.
 
-The setup screen is a **form in the chat** on the `reply` path and a **link out of
-WhatsApp** on the tap path, because `executeAction` mints a signed link and knows nothing
-about Flows. So the owner who tapped the button the bot had just offered got the worse of
-the two, at the highest-stakes moment in the product. R4.
+Driven twice, on two families: a parent said "we want to stop lessons after this month",
+the write was RLS-refused, the model got that exact hint, spent **seven rounds**, wrote
+**zero audit rows**, and replied *"I've noted that Meghana will be stopping her Saturday
+Kriti lessons after August"*. Nothing was written. The family believes they have cancelled,
+they are billed on the 1st, and nobody at the academy learns a customer asked to leave.
 
-One definition now, called by both.
+This is the cleanest evidence in the repo for the standing decision that **instructions do
+not close structural gaps**. `handoff` does exactly the right thing here and had been
+called **0 times in 464 tool calls** — R8, a door with no sign.
 
----
+So the runtime performs it, narrowly: a person rather than the service role, a write was
+attempted, the plan aborted `CHANGED_NOTHING`, and the same writes provably match real rows
+as service. Two guards found by asking what it does when it is *not* a parent — an admin is
+never escalated to themselves, and it is raised once per person per ten minutes.
 
-## 6 · Smaller, all driven
-
-- **The time localiser ate sentence-ending full stops.** It ended `[Mm]\.?` — meant for
-  "P.M." — and a regex cannot tell that dot from the one ending the sentence. A prospect's
-  first message read *"…from 6:30pm to 7:30pm It's ₹1,500 per month."* Dropping the
-  trailing match costs a stray dot on the rare dotted form, which is the right way round.
-- **A Markdown pipe table shipped to WhatsApp**, which has no table. `| Class | Coach |
-  Roster |` reached an admin verbatim, and the *"no message carries raw structure"* check
-  passed because it was looking for JSON and ids. Converted to bullets, not refused.
-- **`[What can you do?]` was the only button under the answer to "what can you do?"** The
-  one thing offered to somebody who had just been told everything was to ask again.
-- **`CHANGED_NOTHING` could not say which kind of nothing.** A parent asking to end her
-  child's enrolment cost 8 rounds, 39.8s and ₹2.36 of guessing. Re-running the writes as
-  service inside a rollback answers it: rows that exist there are a refusal, rows that do
-  not are a bad WHERE.
-- **`repairHint` had no branch for 23505**, which 0021 has just made the commonest
-  constraint in the product.
+It never sends the SQL. The summary is the plan's own note, or the model's stated intent.
+Driven: *"Rajesh Kumar asked for something only you can do: End Kiran's enrollments for
+Saturday Advanced and Sunday Camp at the end of August."*
 
 ---
 
-## 7 · What was fixed in the harness, and why it matters more than it looks
+## 4 · Three money defects in the billing job — **read it, verified adversarially**
 
-- **`q.mjs --as` could never do what it documents.** It ran `set local role` *before*
-  resolving the contact, so with `--role user` the lookup was itself RLS-refused and every
-  id reported "no contact". The only combination that ran was the one that keeps the
-  service role — which does **not** show what a person sees. It nearly cost a false report
-  of a family-privacy leak.
-- **`message.turn_id` was null on every row the product had ever sent.** `serviceFrom`
-  dropped the turn id at role escalation in fourteen places, so the GUC that 0015 chose
-  *specifically so no caller has to remember* was unset for every escalated write. Layers 1
-  and 2 of the drive method had nothing joining them.
-- **`drive turn`** shows every round: what the model wrote, each tool call with arguments
-  and results, and per-round tokens, seconds and rupees. Per-round spend was not recorded
-  anywhere — only turn totals — so "which round cost 128k tokens" was unanswerable.
+None had ever been driven; `per_package` and `per_term` were the largest unrun surface.
+
+- **A term with no length billed the whole term every month, for ever.** `rate_count` is
+  "months in the term"; 0002 said so in a comment and enforced nothing, `create_class` took
+  the two params independently, and `add_family` could not express the count at all. Three
+  readers invented three defaults (1, 1 and 10). With months = 1, `elapsed % months !== 0`
+  is `elapsed % 1`, which is 0 every month. 0025 makes the state unrepresentable.
+- **A pack opened one class early.** §6.4 says the *next* session opens a new pack;
+  `mark_attendance` implements that and `monthly_lines` opened on exhaustion, so the two
+  writers rolled over one class apart. A family who finished exactly ten classes on 28
+  August and stopped coming was billed for pack #2 on 1 September, with nothing in it.
+- **"One free class" gave away a whole month, term or pack.** §6.4 sizes the credit as "a
+  negative line equal to the first `session` line", and these three units have no session
+  line, so the code negated the entire recurring charge. On the §10.1 prospect funnel that
+  is the default for every customer who arrives cold. Nobody would have found out: the
+  credit reads plausibly and makes the total *smaller*.
+
+`is_trial` also had one writer and no transition out of it, so a player who joined on a
+trial two years ago is still a trial to four readers and to the model. It clears when the
+first recurring line is billed.
 
 ---
 
-## 8 · The database, shaped for the questions the bot actually asks
+## 5 · The finish — what actually reached the screen — **all drove it**
 
-`app.session_roster` is the register join, written once. The model rebuilt it from four
-tables every time and got it wrong the same way in **both** probe runs — `e.active`, which
-is a column on `player`, not `enrollment`. In run 2 it failed, then timed out twice, then
-gave up and sent a link, and **the register was never marked at all**.
+- **The out-of-window template restated its own frame.** Every template opens with
+  `{academy}:` and `{detail}` was filled with the in-window body, which several writers
+  correctly prefix with the academy name. The real row: *"Baseline Badminton: a payment
+  receipt for Meena Krishnan. Baseline Badminton: received ₹1,200. Thank you."* Five
+  instances across four catalog rows. Out of window is the NORMAL case for receipts,
+  tallies, dunning and reconcile.
+- **The repetition gate was blind to every out-of-window message.** Gate 4b compared
+  `msg.body` against stored `message.body`, and out of window the stored body is the
+  *rendered template* — different strings by construction. Driven: three byte-identical
+  CL-DUNNING messages to one parent inside sixty seconds, all `sent`. The composed body was
+  never lost; Gate 10 already stored it as `original_body`. Nothing new is recorded, what
+  was recorded is finally read.
+- **A plan write that matched zero rows read as success.** `synthDiffs` drops zero-count
+  entries, so a step that ran and changed nothing contributed nothing to the receipt. An
+  admin was told *"I'll move Tara's enrolment to the Adults batch"*, tapped [Do it], and got
+  "changed 1 enrolment" — which was the closure. The move selected
+  `ended_on is null or ended_on > '2026-08-31'` and the plan's own first step had just set
+  `ended_on = 2026-08-31`.
+- **A register could be marked for a class that had not happened.** A coach marked
+  "everyone turned up tonight" at 04:56 for a class starting 18:30. The session completed,
+  its whole pre-session job ladder was cancelled, six *"X was at … today"* messages were
+  generated, and the schedule then said "Nothing today". One missing comparison.
 
-The schema doc already said so. Another line of prompt was not going to fix two tables
-sitting next to each other where one of them has the column.
+---
 
-`security_invoker = true`, and `rls-check` now asserts **both** halves: a parent sees no
-other children through it, and a coach still sees their whole register. Scoping a view
-until it leaks nothing is easy if it also returns nothing.
+## 6 · Rounds, measured
+
+Over 120 turns, `rounds` against "did any tool call in this turn error":
+
+| rounds | turns | with a failure |
+|---|---|---|
+| 0–2 | 81 | 0 (0%) |
+| 3 | 18 | 9 (50%) |
+| 4 | 9 | 6 (67%) |
+| 5 | 8 | 8 (100%) |
+| 6 | 2 | 1 |
+| 7 | 2 | 2 (100%) |
+| 8 | 0 | never reached |
+
+`MAX_TOOL_ROUNDS` was 8 and **had never once been hit**, so it bounded nothing. Everything
+past four rounds was recovering from a failure. Cost is close to linear — ₹0.36 at one
+round, ₹2.18 at eight, ~₹0.25 and 4–5 seconds per extra round — and WhatsApp cannot stream,
+so those seconds are seconds of silence. Lowered to 5.
+
+**What it takes away:** a turn that would genuinely have recovered on round six now stops
+and says so. Of the four turns that ever ran that long, three ended in a false claim and one
+in a shrug.
+
+---
+
+## 7 · Two tools deleted, one deliberately kept
+
+Measured across **464 tool calls in seven academies**: `recall` 0, `handoff` 0, `act` 0,
+`view` 6.
+
+- **`recall` deleted.** `HOT_SET_MAX_LINES` is 12 and the most facts any subject holds is 6,
+  so every stored fact already ships in the cached prefix and the tool could only return
+  what the model was holding. *Takes away:* at several hundred facts per subject the hot set
+  would start dropping things with no way to reach them. The fix then is a better hot set.
+- **`act`'s declaration deleted, its executor kept.** Operations became their own typed
+  declarations; `act` took `args: {type:'object'}` and stopped being offered at all, so its
+  0 calls were not a preference. **The `case 'act'` in `runTool` is alive** — every
+  operation-named tool is rewritten into it, so it is the one executor the tool path, the
+  button path and the plan path agree through. `OPERATION_TOOLS` retired with it.
+- **`handoff` kept at 0 calls.** It is the only path for anger, safety language and a refund
+  that cannot be settled; §14.8 requires an automatic trigger for exactly that language and
+  there is no runtime enforcement of it today. A tool at zero because nothing names its
+  situation is R8, and the answer is a sign, not a grave.
 
 ---
 
@@ -226,43 +240,33 @@ until it leaks nothing is easy if it also returns nothing.
 
 Said plainly so nobody promotes it by accident.
 
-- **The money tail beyond `record_payment` is still unrun.** The reconcile ladder to
-  `[Confirm payment]`, dunning to escalation, `per_package` exhaustion, `per_term` and a
-  disputed charge have not been driven. Item 3 below is **read it**, not driven.
-- **The money rules whose two writers disagreed are now fixed, but the fix is the smaller
-  half.** The free-first-class credit was deduped on `reason = 'free trial'` in `money.ts`
-  and written as `'free first class'` in `operations.ts`, so neither writer could see the
-  other's rows and a trial player could be credited twice; `kind='package'` had two
-  different description sentences, so `packageState` counted zero packs opened by the other
-  path and billed another. Both now import `lib/billing-keys.ts`, and
-  `scripts/check-billing-keys.mts` fails if either literal is reintroduced. **Found by
-  reading, verified against source, still not DRIVEN** — `per_package` and a trial player
-  have never run. And the real answer is that idempotency should not key on a sentence a
-  human reads at all: a `dedupe_key` column on `tally_line` with a unique index would make
-  the rule enforceable rather than merely agreed. Renaming a class still defeats a
-  description-keyed guard.
-- **The coach roster timeout has no established root.** It returns in ~200ms in isolation.
-  Candidates are pool contention (`max: 10` per process against a shared `pool_size: 15`)
-  and concurrent edits during the run. Not diagnosed.
-- **A genuinely unknown number cannot be routed, and is not tested.** Seven academies share
-  one `sender_id`, so `resolveInbound` returns `unresolved` for any unknown inbound. And the
-  probe's own `stranger` case is **not** a stranger — Nikhil Bose is a pre-registered
-  contact in state `engaged`. The one path a real prospect takes is untested.
-- **The production media path still never fetches bytes.** Unchanged this pass.
-- **The Flow is not published to Meta.** Unchanged.
-- **Everything here ran against Gemini 3 Flash.** The structural guarantees hold every
-  time; which tool the model reaches for first does not.
+- **No persona is production ready.** Three hand-driven personas, three `not-ready`
+  verdicts. The worst symptom in all three was §2 and is fixed; the rest are not.
+- **A genuinely unknown number is still dropped entirely** — no message row, no job, no
+  audit entry, in any of seven academies. The only trace is a string in an HTTP response
+  body that nothing reads, so a lost enquiry is undetectable by construction. Untouched.
+- **§14.8's automatic escalation trigger** for refund, complaint and safety language has no
+  runtime enforcement. `handoff` exists for it and has never fired.
+- **R10's fact half is untouched.** A reply may still state a time, a date, a price or a
+  roster that was never read from a row. The shadow-mode gate was not built.
+- **The register is still a web link, not a Flow.**
+- **The production media path still never fetches bytes.** Unchanged.
+- **`per_package` and `per_term` have still never been DRIVEN.** §4's three fixes are read
+  and reasoned, verified adversarially and by constraint, not by a pack rolling over in a
+  live academy.
+- **The parent-persona agent's findings may be contaminated**: I drove Nadam Vocal while it
+  owned that academy. Its RLS and schedule results are unaffected; its message-timing
+  observations may not be.
+- **Everything here ran against Gemini 3 Flash.**
 
 ## Reported, not fixed
 
-Carried forward, still true:
-
-- `move_class` says "all of Evening Beginners" while moving one of two weekly slots. R10.
-- `reschedule_session` accepts a time in the past.
 - `client_cancel` declares `scope: 'session' | 'series'` and never reads it.
-- `plan.ts`'s `asService` `finally` runs `set local role` on a transaction the throw has
-  already aborted, so it throws 25P02 and **discards the in-flight exception**.
-- There is **no operation that closes a class**, which 0021 makes newly relevant.
-- A reply may still state a time or a date that no row holds: *"I've also scheduled the
-  sessions to start from today"* was said about a class whose first session is four days
-  later, and about sessions that did not exist yet. That is R10's open half.
+- `move_class` announces a whole class while moving one slot.
+- 113 pending `agent_task` watches, one scheduled on nearly every turn — including one
+  watching the word *"replayed"*, which is a driver artifact. R8's overshoot, quantified.
+- `[Yes, end both]` can still be minted for a parent whose write the database will refuse;
+  the tap is now honest and escalates, but the button over-promises.
+- `reschedule_session` accepts a time in the past. (`mark_attendance` no longer does.)
+- The `prospect` contact state is destroyed by a trigger before the agent sees it, so every
+  path gated on `state='prospect'` is dead. **read it**, not driven.

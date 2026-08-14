@@ -1,8 +1,11 @@
 # What to do next
 
-Written after the pass that took the core bot from "onboarding cannot finish" to a full
-lifecycle driven end to end in WhatsApp: empty → business shape → timetable → coach →
-roster → live → session day → register → billing → churn.
+Written after the pass that drove the money back-half to the end, gave every business its
+own clock, and hand-drove the coach, parent and prospect personas for the first time.
+
+**All three personas came back `not-ready`**, and the worst symptom in all three was one
+root — an operation raised in a customer's turn could not message the owner, silently. That
+is fixed. What remains is in this file.
 
 This is **not a defect ledger**. `DRIVING.md` holds the method — how to find a defect, the
 ten roots every defect falls into, the seven axes, and the traps. `product-spec.md` remains
@@ -32,6 +35,12 @@ reconcile scheduled, and a family left with its enrolment ended and its player d
 **Treat that as "has run once", not "works".** It is one world, one model, one clock. What
 it does establish is that no stage is *structurally* unreachable any more, which was not
 true at the start of the pass.
+
+**And the money back-half has now run.** §11.5's `requested → confirmed` fired twice with
+correct rows and no double credit; the dunning ladder ran to escalation; a class closed and
+freed its name. `per_package` and `per_term` are fixed but still **not driven** — their
+three defects were found by reading and are held by a constraint, not by a pack rolling
+over in a live academy.
 
 **The defects still cluster in the last six inches** — what reaches the customer's screen —
 **and in the wiring between correctly-built components.** Nine of the ten things fixed this
@@ -124,186 +133,93 @@ four costs apply only to endpoint-powered Flows. A static Flow needs no keypair,
 
 ## The work, ranked
 
-### 0. Done this pass — do not re-find these
+### 0. Done last pass — do not re-find these
 
-Nine defects fixed and driven; the detail and the evidence are in `FINDINGS.md`. Items 1
-and 2 below are **closed**. What is worth carrying forward from them:
+Fourteen defects, evidence in `FINDINGS.md`, each with the *why* at its fix site. In short:
+money idempotency keyed on ids under a unique index (0023); `rate_count` made mandatory for
+`per_term`/`per_package` (0025); the pack rollover moved to the class the spec names; the
+free first class priced from real session rows instead of a whole billing period;
+`is_trial` given a transition out; a per-academy `sim_clock` (0024) with the job runner
+comparing each job to its own tenant's clock; `close_class`; the out-of-window template no
+longer restating its own frame; the repetition gate taught to see out-of-window messages;
+a plan write that matched nothing no longer vanishing from the receipt; an operation able
+to reach the owner from a customer's turn; a permission refusal becoming a real handoff;
+`mark_attendance` refusing a class that has not happened; `MAX_TOOL_ROUNDS` 8 → 5; `recall`
+and `act`'s declaration deleted.
 
-- the honesty guard is claim-scoped now, and a plan's writes are recorded, but the
-  **passive voice** (*"Aarav is now enrolled"*) is deliberately not matched
-- `CHANGED_NOTHING` now distinguishes an RLS refusal from a bad WHERE, which was the
-  expensive half of the parent-cannot-end-enrolment turn; whether a parent *should* be
-  able to is still an unanswered policy question
-- `class` has a unique key on open classes, which newly requires **an operation that
-  closes a class** — there is none
+**What is worth carrying forward from them:**
 
-### 1. ~~Make the honesty guard claim-scoped, not turn-scoped~~ — done
+- **`tally_line.dedupe_key` is the pattern.** Identity in ids, under a unique index,
+  computed in one shared file. Copy it anywhere two writers agree by convention.
+- **The runtime performing an escalation beats telling the model to.** `refusalHint` had
+  the right sentence and the model ignored it twice, at seven rounds a turn.
+- **Ask what a fix does when the actor is NOT the persona you found it with.** Two of the
+  refusal-escalation guards exist only because of that question.
 
-**Why.** **Verified** by reading a clean run turn by turn. Asked to hire a coach, the model
-told the admin *"He hasn't been messaged yet — I've just drafted the invite for you to
-forward."* The turn ran `add_coach` and `reflect:remember` and nothing else; **no draft
-exists**, so the coach is never invited and the admin believes otherwise.
+### 1. A genuinely unknown number is dropped without trace — the largest hole left
 
-The guard passed it because `add_coach` committed. `ctx.committed` is a property of the
-TURN, so one true claim licenses any number of false ones beside it — and the false one is
-invisible precisely because the message is mostly right.
+**Why.** **Verified** by a hand-driven prospect: an inbound from a number no academy knows
+writes no `message` row, no `job`, no `audit_entry`, in any of seven academies. The only
+trace is a string in an HTTP response body that nothing reads. A lost enquiry is
+**undetectable by construction** — the worst answer to "who would find out" is "nobody",
+and this is that answer on the product's acquisition path.
 
-**How.** `ctx.executed[]` already records every operation that ran this turn with the rows
-it wrote. The tractable version is not general fact-grounding: it is asking whether a
-sentence naming a *specific* action (drafted, invited, cancelled, waived, moved) has an
-executed operation of that shape behind it. Start by listing which verbs map to which
-operations — that mapping is small, closed, and already implicit in the registry.
+"Signup is the operator's, not a product flow" is a real standing decision and it does not
+require silence. Deciding not to serve a stranger and *keeping no record that one arrived*
+are different choices, and only the first was made.
 
-**How you will know.** Ask for a coach and an invite in one sentence and confirm the reply
-cannot claim a draft that `send_invite_draft` did not produce.
+**How you will know.** `drive stranger +91… "do you do beginner classes?"` from a number
+that appears nowhere, then ask the database what exists. Today: nothing.
 
-### 2. A parent cannot end her own child's enrolment, and nothing says so
+### 2. §14.8's automatic escalation has no runtime enforcement, and `handoff` has never fired
 
-**Why.** **Verified**, and it was the most expensive turn of the run: 8 rounds, 38.6s,
-₹1.87. She asked to stop; the model tried the operation (`PRECONDITION_FAILED`), then raw
-SQL twice (`CHANGED_NOTHING` both times), then gave up and asked a question. She can READ
-the row and not write it — the write is RLS-refused and silent, which is R7's defining case.
+**Why.** The spec wants refund, complaint and safety language to raise a human
+automatically. There is no mechanism — it is prompt text — and `handoff`, the tool that
+would do it, was called **0 times in 464**. The refusal path now performs its own
+escalation, which proves the shape works and covers only permission refusals. Anger and
+safety are judgement, and they are the cases where being slow is worst.
 
-Whether a parent *should* be able to is a policy question worth answering explicitly. What
-is not in question is that four silent no-ops and a shrug is the wrong answer to either
-policy. The runtime can tell the difference: re-read the row as the service role, and if it
-exists but the write matched nothing, that is a refusal, not a missing row — say so, and
-route it to the admin.
+**How.** The situation has to be named where the model cannot miss it, or the runtime has
+to raise it the way the refusal path now does. Prefer the second: the first has already
+been tried and is what R8 is.
 
-**Also there:** the two buttons she needed to answer with carried `params:` where the schema
-wants `args:`, so both were rejected at mint and she got `[What can you do?]`. The mint-time
-rejection is correct; the model never being told is not — `dropped_buttons` exists for this
-and did not reach it.
+### 3. R10's fact half, in shadow mode first
 
-### 3. Drive the money half to the end — it is now reachable and mostly unrun
+Unchanged and still the most open root. A reply may state a time, a date, a price or a
+roster never read from a row. **Log what it would block, block nothing, drive, read the
+log.** Do not implement it as a lint rule over message text — `lib/agent/lint.ts` explains
+why at length.
 
-**Why.** Every money path is reachable and the front half has now executed once:
-`monthly_lines` billed, `request_payment` wrote a `requested` row, `reconcile` was scheduled
-carrying its tenant. **Everything after that is untouched.** This is the largest unverified
-surface in the product and it is where being wrong is most expensive.
+Turn it on when it catches a class time no row holds without flagging *"his class is
+Mon/Wed/Fri at 6"*, which is a real answer to "when is his class?" and only a wrong answer
+to "when is his *next* class?".
 
-**How, in order.** The reconcile ladder to `[Confirm payment]` (the §11.5
-`requested → confirmed` transition — it has never fired, and until this pass it *could*
-not); the dunning ladder to escalation, which will also verify the period fix in item 6 of
-`FINDINGS.md` that is currently **inferred**; `per_package` exhaustion and the pack rolling
-over; `per_term`; a waiver through the model rather than through `drive waive`; a disputed
-charge through `money-dispute.md`.
+### 4. The watch overshoot, now measured
 
-`drive month --period YYYY-MM` closes a period by running due work rather than moving time,
-which matters because the sim clock is global and shared. Where you must advance, go in
-**≤1h steps through a session window** — a big jump makes every job correctly decline, the
-transcript reads calm, and you have tested nothing.
+**113 pending `agent_task` watches**, roughly one per turn, several of them nonsense — one
+watches the word *"replayed"*, which is a driver artifact rather than anything a person
+said, and every payment confirmation schedules a follow-up to check whether the payment it
+just confirmed went through. Each is a full model turn later. R8's overshoot with a number
+on it.
 
-**How you will know.** `drive money --period` before and after each step, and read
-`tally_line` and `payment` rows directly rather than trusting a summary.
+### 5. The register as a Flow
 
-### 2. The four defects the harness agent found and deliberately did not fix
+Unchanged: the web surface is for things you read spatially, every form is a Flow, and
+`register` is still a web link and still a form. Coach and client onboarding Flows do not
+exist.
 
-All **verified** by them, all left alone because fixing while driving makes a round
-incomparable. In rough order of harm:
+### 6. The finish, and the smaller things
 
-- **`client_cancel` declares `scope: 'session' | 'series'` and never reads it.** "Cancel the
-  whole series" silently cancels one session, and the confirmation says series. A declared
-  parameter that nothing reads is worse than a missing one — R6.
-- **`move_class` moves one slot and announces the whole class.** With no `slot_id` it takes
-  the first slot; the sentence generalises. R10.
-- **`reschedule_session` accepts a time in the past**, so an admin's typo books a session
-  yesterday, and the register ladder then runs for it.
-- **A single waiver became a business policy in memory.** `reflect:remember` wrote *"Offers
-  pro-rated discounts (e.g. 50% off for half a month missed)…"* unprompted, from one
-  instance. That is F9 firing again, and it is the memory half of R10: an invented policy is
-  persisted and then read back as fact for ever.
-
-### 3. `drive state <academy> --to live`, and the reason it is not cosmetic
-
-**Why.** There is no way to make a business live from the command line. `planAheadFor`
-returns early for any academy that is not `live`, so a business built entirely from the
-driver accrues no monthly lines, no coach ladder and no digests — and `drive month` reports
-that honestly and cannot fix it. Four lines; the operation already exists.
-
-### 4. The fact-grounding gate, in shadow mode first
-
-**Why.** A reply may state a time, a date, a price or a roster that was never read out of a
-row. This is the half of R10 that item 2 above does *not* cover, and the only root with no
-structural guard: the send path refuses a reply claiming an *action* with no write, and asks
-nothing about a claimed *fact*.
-
-**Read insight 2 before starting.** The cheap half is now closed, which changes the
-cost/benefit: what is left genuinely needs the world, so it genuinely needs a verifier.
-
-**How.** At the reply chokepoint beside `unbackedClaim`, which is proof the shape is
-buildable. The tractable version is **provenance-exact checking**: hand a verifier the same
-rows the generation saw — `ctx.executed[].wrote` and the turn's `read` results are already
-captured — and ask whether each stated scalar appears in them.
-
-**Build it in shadow mode: log what it would have blocked, block nothing, drive once, read
-the log.** Turn it on when it catches the phantom Friday class and the 6pm-for-06:00 answer
-without flagging *"his class is Mon/Wed/Fri at 6"*, which is a legitimate composed answer to
-"when is his class?" and not an answer to "when is his *next* class?".
-
-**Do not** implement it as a lint rule over the message text. `lib/agent/lint.ts` explains at
-length why no string operation can tell "14 enrollments" from a price, a date or a phone
-number. A regex here is worse than nothing because it provides false assurance.
-
-### 5. The production media path never fetches bytes
-
-**Why.** A Meta media id becomes a literal placeholder string and is handed to Vertex as a
-file URI it cannot resolve. The spec calls multimodal the single biggest friction reducer in
-the product — *"bring the timetable however it exists"* — and in production it is broken.
-The emulator path (data URIs) works, which is exactly why this has never shown up in driving
-and why item 1's "payment screenshot" step will not exercise it either.
-
-### 6. Per-academy clock (needs a schema change)
-
-**Why.** `sim_clock` is a global singleton, so two tenants cannot be held at different
-lifecycle stages at once — which is exactly how you would test that a mature academy and a
-brand-new one behave differently at the same moment. It also means any driving session moves
-the world for every other session against the same database, and this pass had two agents
-and a human driver sharing one clock.
-
-**How.** `sim_clock` gains a nullable `academy_id`, null meaning the global default;
-`app.now()` resolves the tenant's row first and falls back. Every read of domain time already
-goes through `app.now()` or `lib/clock.ts`, so the blast radius is small — but it is a
-migration, and `app.now()` is called by nearly every policy and query, so measure the cost
-before committing.
-
-### 7. The finish — what actually reaches the screen
-
-All **inferred** from a reading pass except where noted.
-
-- **No rule anywhere states how long a message should be.** The only constraint is the
-  WhatsApp wire limit. **Verified this pass:** the first message a new owner receives was
-  **102 words**, and it is the one message where attention is scarcest.
-- **18 of 26 operations end with no follow-up button**, so those turns fall through to the
-  generic backstop.
-- **`[What can you do?]` is the most-minted button in the product** and it *announces*
-  capability instead of demonstrating it. **Verified** again this pass: it was bolted onto
-  the message that told an owner to tap a button that did not exist.
-- **A calendar view button cannot be minted** — the action schema knows two screens and the
-  tool offers three.
-
-### 8. Smaller, but real
-
-- **`lib/agent/lint.ts` still has two over-broad passes**: a global academy-to-business-name
-  replace (which produces "an Rally Point", and does nothing when the business's own name
-  contains "Academy"), and a blanket snake_case humaniser that fires on any token with an
-  underscore.
-- **`plan.ts`'s `asService` destroys the exception that explains a failure.** Its `finally`
-  runs `set local role …` on a transaction the throw has already aborted, so the `finally`
-  throws `25P02` and **discards the in-flight exception**. The caller sees *"current
-  transaction is aborted"* instead of the RLS refusal that caused it — which directly defeats
-  `repairHint`. Every service-role write inside a plan is affected.
-- **`alter role cm_runtime set idle_in_transaction_session_timeout = '60s'`** — a one-line
-  migration nobody has written. The application sets this per session, but there is a ~37ms
-  window per transaction before the preamble applies.
-- **`max: 10` per process against a shared `pool_size: 15`.** Two busy instances exhaust the
-  pooler on arithmetic alone. The number is load-bearing, so this is a constraint to design
-  around rather than a knob to turn down.
-- **The family census is correctly scoped only because migration 0008 gates the roster branch
-  on being a coach.** If that policy is relaxed, `count(*) from player where active` silently
-  becomes every classmate's family, counted and handed to a parent.
-
----
+- `client_cancel` declares `scope: 'session' | 'series'` and never reads it.
+- `move_class` announces a whole class while moving one slot.
+- `reschedule_session` still accepts a past time. `mark_attendance` no longer does — the
+  same one-line comparison fixes it.
+- `[Yes, end both]` can still be minted for a parent whose write the database will refuse.
+  The tap is honest now and escalates, but the button over-promises.
+- The `prospect` contact state is destroyed by a trigger before the agent sees it, so every
+  path gated on `state='prospect'` is dead. **read it**, not driven.
+- The production media path still never fetches bytes.
+- `alter role cm_runtime set idle_in_transaction_session_timeout = '60s'` — still unwritten.
 
 ## What not to do
 

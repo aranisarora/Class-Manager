@@ -71,6 +71,25 @@ It runs as `cm_service` by default, deliberately: its job is to see what a tenan
 session might have been *refused*, because a refusal that reads as an empty result is R7
 and the commonest way a bad run looks like a good one. `--w <n>` widens columns.
 
+**`cm_service` does NOT bypass RLS, and a cross-tenant question used to answer `0`.**
+Every service policy in 0003 is `academy_id = app.academy_id()`. The service role is
+exempt from the *person* half — `is_admin()`, `my_account_ids()`, `sees_money()` — and
+from nothing else. With no `--academy` the GUC is null and **every tenant-scoped table
+reads empty**: `select count(*) from payment` answered `0` for a database holding seven,
+and `tally_line` `0` for seventy-eight. `job` hides it, because its service policy is the
+one whose qual is `true`, so the first questions anybody asks come back populated.
+
+Naming a tenant-scoped table with no tenant now **warns before the rows print** (the list
+is read from `pg_policies` at run time, so a table added later is covered), and `--all`
+sweeps every academy and labels each row with the one it came from:
+
+```bash
+node scripts/q.mjs --all "select status, count(*) from payment group by 1"
+```
+
+Use `--all` for any question of the form "has this product ever…". That is the question
+the tool used to answer wrongly.
+
 The whole lifecycle is drivable, and each stage has a command:
 
 ```bash
@@ -151,10 +170,21 @@ advance the newest message is not the last row in a `queued_at` sort. A message 
 declared missing this way in the middle of a pass; it was there. Use `queued_at` only
 when the question is what the product thought the time was.
 
-**The sim clock is a global singleton.** Two sessions driving the same database move
-each other's world. If somebody else is working, build your own academy, leave the clock
-where you found it, and prefer `drive month`, which closes a period by running due work
-rather than by moving time.
+**The sim clock is per-academy now, and you must scope it.** 0024 gave `sim_clock` a
+nullable `academy_id` — null is the world clock and the fallback for anyone without one —
+so `drive clock +1h --academy "X"` moves that tenant alone and `runner.claim()` compares
+each job against **its own** tenant's clock. Verified: moving one academy 11 hours ran one
+job, its own; under the old global clock the same move would have fired 9 jobs across 5
+other academies.
+
+`drive clock` **without** `--academy` still moves the whole world, and that is still how
+you destroy somebody else's run. If anyone else is driving, always pass `--academy`.
+
+**The honest edge:** SQL resolves the tenant clock from the session GUC automatically.
+A TypeScript caller that does not pass an academy to `now()` gets the world clock. With no
+per-tenant rows the two agree exactly; they diverge only for a tenant somebody has
+deliberately moved, and then only where a timestamp is computed in TypeScript rather than
+in SQL.
 
 ---
 
@@ -195,10 +225,10 @@ new one, check these first.**
 | **R2 · A capability exists with no way to reach it.** From outside, indistinguishable from a model that never wants it. | C14, C13, C4, C45, C46 | `form` and the rest of the component registry. Anything whose only caller is the model. |
 | **R3 · The runtime knows something and does not tell the model.** It then guesses, and the guess is confident. | C15, C16, C20, C41, F3 (a variable called `uncovered_sessions_next_36h` whose predicate meant *unconfirmed*), F4 (reflection told a turn had not replied when it had) | Anywhere the model asks a question the runtime could have answered: coverage, balances, what a gate would do before it tries. **And anywhere the runtime hands the model a named variable — the name is prompt, and it is the part nobody reviews.** |
 | **R4 · A guarantee is enforced on one path when several exist.** Which path a turn takes is the model's choice, so a guarantee that depends on it is not a guarantee. | C21, C22, C12, C9, C26, C49's own first run, F5 (three generators, one fact, no shared dedupe), F7 (`add_family` and `book_trial` disagree about what a person is) | Every place with both a "model does it" and a "runtime does it" branch: preview→commit, menus, escalation, digests, reflection. **Repetition is already split**: byte-identical bodies are caught at the send gate, and *semantic* repetition — the same fact in different words across days — is deliberately not, because that belongs at the generator. |
-| **R5 · A comparison is made on unnormalised values.** The constraint exists and can never fire. | C19, C34 | Names used as keys, class and venue matching by name, dedupe keys, idempotency keys. |
+| **R5 · A comparison is made on unnormalised values.** The constraint exists and can never fire. | C19, C34, **the money one** (16 families double-charged ₹32,800 because `seed.ts` wrote `-` and `money.ts` wrote `—`; a class rename re-billed a family who had paid in full) | Names used as keys, class and venue matching by name, dedupe keys, idempotency keys. **`tally_line.dedupe_key` (0023) is the pattern to copy**: identity in ids, under a unique index, computed in one shared file so writers cannot drift. |
 | **R6 · What the product records is narrower than what it changes.** Invisible to previews, to undo, and to anybody debugging. | C18, C5, C47 | `sender` credentials, `memory_fact`, `job` payload changes. Also any commercial default the product applies without ever asking — a policy nobody chose and no screen shows. |
-| **R7 · Doing nothing succeeds.** A write that matches no row, a lookup that finds nothing, an id that names nothing: Postgres does not consider any of these an error, so `ok: true` comes back and the reply says it is done. **This is the only root whose failures a reader of the transcript scores as a pass.** | C37, C36, C39, C33 | Every `update … where` in the registry; every operation that falls back to a placeholder when a lookup misses; RLS-refused writes, which are the silent case by construction. **And test harnesses**: `rls-check.mjs` prints "N passed, 0 failed" while skipping its cross-role and family-privacy sections entirely when the fixture world is absent. |
-| **R8 · A capability is reachable and never chosen, because nothing names the situation that calls for it.** R2 is a door with no corridor; this is a door with no sign. | C48, C4's menu. **Largely closed** once `watching.md` named the situations that call for `schedule` and `remember`. **The overshoot is now the problem**: several generators each independently decide the same thing is worth saying. | Any tool whose use requires a judgement *in addition to* answering. `view` and `recall` are the two still at zero. |
+| **R7 · Doing nothing succeeds.** A write that matches no row, a lookup that finds nothing, an id that names nothing: Postgres does not consider any of these an error, so `ok: true` comes back and the reply says it is done. **This is the only root whose failures a reader of the transcript scores as a pass.** | C37, C36, C39, C33 | Every `update … where` in the registry; every operation that falls back to a placeholder when a lookup misses; RLS-refused writes, which are the silent case by construction. **And test harnesses, and the evidence tool itself**: `rls-check.mjs` prints "N passed, 0 failed" while skipping its hardest sections on an empty world, and `q.mjs` answered `0` to every cross-tenant question because the tenant GUC was unset. **Three more this pass**: a plan step whose recipient resolved to nobody was dropped with no row and no reason (so `AD-NEW-TRIAL` had never been sent, ever); a plan write matching zero rows vanished from the receipt; a register could be marked for a class that had not happened. |
+| **R8 · A capability is reachable and never chosen, because nothing names the situation that calls for it.** R2 is a door with no corridor; this is a door with no sign. | C48, C4's menu. **The overshoot is measured now**: 113 pending `agent_task` watches, roughly one per turn, including one watching the word *"replayed"* — a driver artifact, not anything a person said. **And `handoff` at 0 calls in 464** while a parent was told "I've noted it" about a row that never changed. | Any tool whose use requires a judgement *in addition to* answering. `recall` was deleted (0/464 — every fact already ships in the hot set); `view` sits at 6. **`handoff` is the live one**: §14.8 wants an automatic trigger on refund, complaint and safety language and there is no runtime enforcement of it. |
 | **R9 · An optimisation removed a capability nobody was measuring.** The fix was correct, the measurement that justified it was sound, and the thing it cost was not in the measurement. | C29, C30, C44 | Every constant introduced "because measured". Re-read what the measurement actually covered. **Apply test 4 to your own fixes.** |
 | **R10 · Claims of *action* are checked at the send path; claims of *fact* are not.** The runtime already refuses a reply that says it did something when nothing was written — it returns *"that message says you did something, and nothing has been written this turn"* and makes the model try again. Nothing anywhere asks whether a reply that states a **time, a date, a price, a roster or a policy** was read out of a row this turn. So the one artifact the customer actually reads is the only one in the product with no structural check on it. | F1 (times, dates and sessions answered from the recurrence pattern, not the calendar), F9 (a business policy invented and then persisted as a memory fact) | The same chokepoint that already lints past-tense-without-a-write. Every reply that names a scalar the database owns. `drive score` axis 1 measures the half that *is* checked; nothing measures this half. |
 
@@ -343,6 +373,17 @@ In this order. The first two have landed; the third has not.
 anything genuinely unpredictable — the model must *see* data before writing a sentence
 about it. Below 2 is not reachable by any architecture, so a proposal that promises it is
 wrong somewhere.
+
+**And the ceiling is 5, measured.** Over 120 turns, rounds against "did any tool call in
+this turn error": 0–2 rounds is 81 turns with **zero** failures; 3 is 50%; 4 is 67%; 5 is
+**100%**; and 8 — the old cap — had never once been reached, so it bounded nothing.
+Everything past four rounds was recovering from a failure rather than doing work. Cost is
+close to linear: **₹0.36 at one round, ₹2.18 at eight**, about ₹0.25 and 4–5 seconds per
+extra round, and WhatsApp cannot stream so those are seconds of silence.
+
+The rounds past four were not buying answers, they were buying more expensive wrong ones —
+both 7-round turns ended in a false claim with no writes. If a genuine recovery-at-six ever
+shows up, the fix is to make the failing tool cheaper to get right, not to buy more rounds.
 
 ---
 
