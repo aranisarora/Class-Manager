@@ -1457,4 +1457,587 @@ Ok we can do saturdays
 | Web surface as an upgrade, never a gate (§15, §14.6) | A1, A3, C3 |
 | Solo case suppression (§18) | C1 (noted) |
 
-**Not covered here, and worth writing next:** a full dunning ladder to admin escalation, a per-package (10-class) parent asking how many are left, a two-academy tenant-isolation transcript, an opt-out and its `AD-OPT-OUT`, and a delivery-failure repair loop.
+**Five gaps were named here originally.** All five are closed in Part Two below.
+
+---
+---
+
+# PART TWO · The five that were missing
+
+Same cast, same rules. These are the five the first twelve skipped — the money ladder, the ten-class pack, two businesses on one number, opting out, and the day the sends went wrong.
+
+---
+
+## D1 · The dunning ladder, and the payment that never arrived
+
+**Persona:** client · **Tests:** `CL-DUNNING` and its escalation on silence (§12.1) · retiming a ladder from a memory fact (§12, §5) · `[ Already paid ]` → Rail 1 attestation → `AD-RECONCILE` (§11.5) · never claiming a payment the admin hasn't confirmed (§2.4) · escalation carrying the record, not a verdict (§14.8)
+
+**The scenario.** Priya, Kiran's mum. Kiran is on ₹2,500/month, Beginners. August's tally went out on 1 September. It's the 5th and nothing has come in.
+
+---
+
+🕐 **5 September**
+
+> **Ace TT Academy — Kiran's August fee, ₹2,500, is still open.**
+>
+> `[ Pay now ]`  `[ Already paid ]`  `[ Not this month ]`
+
+⚙ `dunning`, n=1. Short, no adjectives, no "friendly reminder". The third button exists so a parent who has a reason has somewhere to put it that isn't silence.
+
+**↳ taps `[ Not this month ]`**
+
+**PRIYA**
+salary comes on the 15th, I'll pay then
+
+> Fine — I'll leave it until the 16th and I won't ask again before then.
+
+⚙ **Two things happened.** The ladder is retimed (`dun:<account>:<period>:2` re-enqueued for the 16th, n=2 and n=3 dropped), and a fact is written — *"pays after the 15th, salary day"* — so next month's ladder starts there rather than learning this again (§5, §12 **retime**). Sharwin isn't interrupted; it goes in the evening digest as one line.
+
+**In that night's digest, to Sharwin:**
+
+> Priya says Kiran's ₹2,500 comes after the 15th — salary day. I've moved her reminder to the 16th and I'll start there next month too.
+
+---
+
+🕐 **16 September**
+
+> Hi Priya — you said after the 15th, so: **Kiran's August fee, ₹2,500.**
+>
+> `[ Pay now ]`  `[ Already paid ]`  `[ Need more time ]`
+
+⚙ The message references her own words. A ladder that forgets what it was told is worse than no ladder — the parent has to defend the same position twice.
+
+**↳ taps `[ Already paid ]`**
+
+> Good — I don't see it on Sharwin's side yet, which usually just means it hasn't been matched up.
+>
+> Send me the screenshot or the UPI reference and I'll put it in front of him.
+>
+> `[ I'll send a screenshot ]`  `[ I don't have it ]`
+
+⚙ Note what the bot does **not** say: not "no you haven't", not "payment confirmed". It has one fact — no confirmed payment row — and it reports the fact and its most likely innocent explanation.
+
+**PRIYA** 📷 *GPay screenshot*
+
+> Read: **₹2,500**, 14 Sep 11:20, UTR 7741 2205 8890, to **sharwin@okaxis**.
+>
+> That's Sharwin's personal handle, not Ace TT's — which is why it never showed up on my side. It's not lost, it just landed somewhere I can't see.
+>
+> I've sent it to him to confirm.
+>
+> `[ OK ]`
+
+⚙ §14.5 — the parse resolves the whole dispute, and the *destination handle* is the thing that mattered. The bot still does not mark it paid: only `confirmed_by` an admin closes a Rail 1 payment (§11.5).
+
+**To Sharwin:**
+
+> Priya paid **₹2,500** on 14 Sep to **sharwin@okaxis** — your personal handle, not acett@okhdfcbank. UTR 7741 2205 8890, screenshot attached.
+>
+> That's why she's shown as unpaid. Did it land?
+>
+> `[ Yes, confirm it ]`  `[ Not in my account ]`
+
+**↳ taps `[ Yes, confirm it ]`**
+
+> Marked paid. Kiran's August is settled and I've stopped chasing her.
+>
+> Two of your UPI handles are in circulation — parents will keep using whichever one they have. Want me to add the personal one as a second accepted handle so this doesn't happen again?
+>
+> `[ Add it ]`  `[ No, one handle only ]`
+
+⚙ §4.3 — the follow-up button is the fix for the *cause*, not the symptom. This is the difference between a bot that closes tickets and a manager.
+
+**And to Priya, immediately:**
+
+> **Received — ₹2,500.** Kiran's August is settled. Sorry for the chase.
+>
+> One thing for next time: Ace TT's handle is **acett@okhdfcbank**. What you used works, it just takes a manual check.
+
+---
+
+**The other branch — Priya never replies at all**
+
+🕐 **20 September, n=3, and the last one**
+
+> Kiran's August fee, ₹2,500, is still open and I haven't heard from you.
+>
+> I'm going to leave this with Sharwin now rather than keep messaging you.
+>
+> `[ Pay now ]`  `[ Talk to Sharwin ]`
+
+**To Sharwin:**
+
+> **Priya hasn't paid Kiran's August ₹2,500 and hasn't replied to three messages** — 5th, 16th, 20th. All three delivered, the last two unread.
+>
+> Kiran has attended 11 of 13 September sessions, so they're still coming.
+>
+> This is yours now — I've stopped chasing.
+>
+> `[ Call Priya ]`  `[ Waive it ]`  `[ Keep chasing ]`
+
+⚙ §12.1 — dunning *escalates to admin* rather than continuing forever, and the bot stops when it hands over. The attendance line is the fact that changes what Sharwin does: a family still turning up is a billing problem, not a churn problem. Delivered-vs-read is reported separately (§2.4).
+
+---
+
+**Design notes — D1**
+
+- **The ladder has an end.** Three messages, then a human. A dunning loop with no terminus is how a manager becomes a debt collector.
+- **A stated reason retimes the ladder and is remembered next month.** Making a parent explain their salary date twice is the cheapest possible way to lose them.
+- **"Already paid" is treated as true until an admin says otherwise**, and the bot's language holds the gap open: *not matched up yet*, never *not received*.
+- **The screenshot didn't just confirm a payment — it found the bug.** Two UPI handles in circulation is a business problem, and the follow-up button fixes it once.
+
+---
+
+## D2 · Ten classes, and the man who pays for himself
+
+**Persona:** client · **Tests:** `per_package` rules end to end (§6.4) · *the count remaining rides on the tally* · timely cancellation does not consume a session · package rollover as a money-touching write (§14.2) · the self-paying adult as `account.holder_person_id = player.person_id` at n=1 (§6.2)
+
+**The scenario.** Anand, 34, works nearby, can't commit to a fixed evening. Sharwin sold him **10 classes for ₹4,000** — he drops into Intermediate whenever he can.
+
+---
+
+**ANAND** *taps the invite, sends the prefilled text*
+Hi Ace TT Academy
+
+> Hi Anand — I'm the class manager for **Ace TT Academy**.
+>
+> You've got **10 classes, ₹4,000, paid.** None used yet. Drop into Intermediate — Mon, Wed or Fri, 7:30–8:30 pm at Green Park — whenever suits.
+>
+> Tell me the night before and I'll have you on the list.
+>
+> `[ Book this Wednesday ]`  `[ See the week ]`
+
+⚙ §6.2 — Anand is the account holder *and* the player. Not a second case, not a second flow: the same objects at n=1. Nothing in this conversation asks who he's paying for.
+
+---
+
+🕐 **Wednesday, after class**
+
+> **You were in tonight — Intermediate, 7:30.**
+>
+> Vikram's note: *"good hands, needs footwork."*
+>
+> **7 of your 10 left.**
+
+⚙ §6.4 — *the count remaining rides on the tally.* It appears wherever the bot is already speaking, so Anand never has to ask. A `session` line consumed the class; the package line was written when the pack opened.
+
+---
+
+🕐 **A Friday he can't make**
+
+**ANAND**
+can't come tonight
+
+> Cancelled — you're off tonight's list.
+>
+> That was 6 hours' notice against a 24-hour window, so **it still comes out of your ten.** You're on **6 left.**
+>
+> `[ Book Monday instead ]`
+
+**And the same message, two days earlier:**
+
+> Cancelled for Friday. That's more than 24 hours, so **it doesn't come out of your ten** — you're still on 7.
+>
+> `[ Book another night ]`
+
+⚙ §6.4 — a package consumes on the `per_session` rule, and `cancelled_timely` is the one status that writes no line. The window's money meaning is stated in the currency the parent actually holds: **classes**, not rupees.
+
+---
+
+**ANAND**
+how many do I have left
+
+> **6 of 10.** Pack opened 2 Sep, ₹4,000.
+>
+> Used: 4 Sep, 9 Sep, 11 Sep, 18 Sep. One late cancellation on the 20th counted. Two timely ones didn't.
+>
+> `[ See all the lines ]`
+
+⚙ He shouldn't have had to ask — and when he does, the answer is the arithmetic, not just the number, because a count you can't check is a number you have to trust.
+
+---
+
+🕐 **Two weeks later — 9 used**
+
+> **Your last class of the ten is booked for Friday.**
+>
+> Another ten after that is ₹4,000, or you can stop and pick it up whenever. Nothing happens automatically — I won't open a new pack and bill you for it without asking.
+>
+> `[ Another ten ]`  `[ Stop after Friday ]`  `[ Ask me on Friday ]`
+
+⚙ This is money-touching, so it is previewed and confirmed (§14.2). A pack that silently rolls over and writes a ₹4,000 line is the single most avoidable trust failure available to this product.
+
+**↳ taps `[ Another ten ]`**
+
+> Done — new pack opens after Friday, ₹4,000, due when it opens. You'll be on 10 again.
+>
+> `[ Pay now ]`  `[ Pay when it opens ]`
+
+---
+
+🕐 **A month later**
+
+**ANAND**
+my daughter wants to try, she's 8
+
+> Easy — she'd be in **Beginners**, Mon/Wed/Fri 6:30–7:30, right before your Intermediate. First class free.
+>
+> She goes on **your** account, so it's one bill and one chat. Nothing to set up separately.
+>
+> `[ Book her free trial ]`  `[ Tell me about Beginners ]`
+
+⚙ §6.2 — n=1 becomes n=2 with no new flow, no new onboarding path, no second billing route. The self-paying adult and the parent-of-three were never two products.
+
+---
+
+**Design notes — D2**
+
+- **The count is volunteered, always, wherever the bot is already speaking.** A parent who has bought ten classes will ask; they should never have to.
+- **The cancellation window is explained in classes, not rupees**, because that's the unit the customer is holding.
+- **The rollover is the moment this feature earns or loses trust.** Ask, always, with a real "no" available.
+- **His daughter joining is a two-line change**, and that's the whole argument for `person` / `account` / `player` being three tables.
+
+---
+
+## D3 · One number, two businesses
+
+**Persona:** client, then admin · **Tests:** shared-number routing (§16.3) · one human as two `contact` rows, one per tenant (§6.2 — `unique (academy_id, phone_e164)`) · cross-tenant reads return zero rows (§6.7) · the named trade-off — fragmentation, and "Class Manager" in the chat header (§16.3)
+
+**The scenario.** Rajesh already has Nithya at Ace TT Academy. His son Aditya has just started carnatic vocal at **Shruti Sangeet**, run by Revathi — who also uses Class Manager, on the same number.
+
+---
+
+**PART A — the parent**
+
+**RAJESH** *taps Revathi's invite, sends the prefilled text*
+Hi Shruti Sangeet
+
+> Hi Rajesh — I'm the class manager for **Shruti Sangeet** now as well as Ace TT Academy.
+>
+> Same chat, two different places. **I'll always start with which one I'm talking about**, so you're never guessing.
+>
+> **Aditya's week at Shruti Sangeet:**
+> • Tue, Thu · 5:00–6:00 pm · Beginners Vocal · Jayanagar
+> • Sat · 9:00–10:30 am · Group Practice · Jayanagar
+>
+> `[ See Aditya's schedule ]`
+
+⚙ §16.3's accepted trade-off, handled: parents message "Class Manager", not the business, so **the name leads every message.** Underneath, this is a second `contact` row, a second `person`, a second `account` — one human, two tenants, and neither side's queries can see the other's rows.
+
+**RAJESH**
+what do I owe
+
+> Two separate bills — they don't combine, different businesses:
+>
+> **Ace TT Academy** — Nithya, September
+> • Monthly fee — ₹3,500
+> **Due ₹3,500**
+>
+> **Shruti Sangeet** — Aditya, September
+> • Monthly fee, part month from 12 Sep — ₹1,400
+> **Due ₹1,400**
+>
+> `[ Pay Ace TT ₹3,500 ]`  `[ Pay Shruti Sangeet ₹1,400 ]`
+
+⚙ Two reads, each in its own session, each capped by its own `academy_id`. The bot assembles them into one answer because Rajesh is one human — but it never sums them, because they're two businesses and one total would imply a relationship that doesn't exist.
+
+**RAJESH**
+cancel saturday
+
+> Both of them have a Saturday, so I need one more thing:
+>
+> `[ Nithya — Ace TT, 8:00 ]`  `[ Aditya — Shruti Sangeet, 9:00 ]`  `[ Both ]`
+
+⚙ Genuine ambiguity, so it asks with buttons rather than guessing (§8.2's disambiguation rule, applied on the client side). Note it doesn't ask *which business* — it asks in the terms Rajesh thinks in: which child, which time.
+
+**↳ taps `[ Both ]`**
+
+> Two cancellations, and they're recorded separately:
+>
+> • **Nithya** — Sat 8:00 Advanced, Ace TT. 26 hours' notice, inside the window. Monthly fee, so nothing changes on the bill.
+> • **Aditya** — Sat 9:00 Group Practice, Shruti Sangeet. Revathi asks for 12 hours; you're well inside it.
+>
+> `[ Yes, both ]`  `[ Just Nithya ]`  `[ Just Aditya ]`
+
+⚙ Different `cancellation_window_hours` per tenant, applied per tenant, in one message. Nothing about either business's policy leaks into the other's handling.
+
+---
+
+**PART B — the isolation probe**
+
+**SHARWIN**
+does rajesh have kids at other classes? someone said he does music somewhere
+
+> I can only ever see Ace TT Academy, so for me Rajesh is exactly one thing: **Nithya's father, Saturday Advanced, joined 23 Aug, paid through September.**
+>
+> If he has children elsewhere I have no way to know it, and I wouldn't tell you if I did.
+
+⚙ §6.7 and §2.1 in one answer. Sharwin's session carries his `academy_id`; a query reaching past it returns zero rows. The bot doesn't pretend the other tenant doesn't exist — it says it can't see, which is the true statement.
+
+**SHARWIN**
+show me everyone who trains at green park
+
+> Across **1 business, 4 classes, 39 players**: `[ Open the list ]`
+>
+> That's Ace TT Academy only. Green Park is shared with other people's classes and I can't see those.
+
+⚙ §14.2 — *scope is always shown*, and here the scope line is doing security work as well as arithmetic work: an admin who mistakes 39 for "everyone at Green Park" would draw a wrong conclusion from a correct query.
+
+**SHARWIN**
+can you tell revathi about our saturday timings, we're clashing on court
+
+> No — I can't message another business's people or read their schedule from here.
+>
+> What I can do is write it and you send it, same as a coach invite:
+>
+> *"Hi Revathi — Ace TT runs Sat 8–10 at Green Park. Wanted to flag it in case your group practice overlaps."*
+>
+> `[ Send as is ]`  `[ Edit ]`
+
+⚙ The refusal is one sentence and comes with the nearest thing that *does* work (§8.1's forward-it-yourself pattern, reused). A hard boundary that leaves the admin with nothing is a boundary they'll route around.
+
+---
+
+**Design notes — D3**
+
+- **Every message leads with the business name.** It's the whole mitigation for a shared sender, and it costs four words.
+- **Two bills are never summed.** One total implies one relationship.
+- **Disambiguation is asked in the user's terms** — which child — not in the system's terms — which tenant.
+- **"I can't see that" beats "no results."** The first is true and the second is misleading.
+
+---
+
+## D4 · Opting out, and coming back
+
+**Persona:** client · **Tests:** opt-out confirmed before it takes effect, never a mis-tap (§16.3) · a middle option before the nuclear one · what stops is spelled out, including the cost · per-academy, never global (§16.3) · `AD-OPT-OUT` as a fixed row with `[ Call them ]` (§12.4) · re-engagement
+
+**The scenario.** Latha, Meera's mum. Busy month, and the messages have started to feel like noise. She types it rather than tapping anything.
+
+---
+
+**LATHA**
+please stop sending me all these messages
+
+> Understood. Before I switch anything off — here's what you actually get from Ace TT Academy, so you can cut the right part:
+>
+> • **3 reminders a week**, the evening before each class
+> • **3 outcome messages a week**, after class, with Arjun's note
+> • **1 bill a month**, plus a reminder if it's unpaid
+>
+> That's about 26 a month, and I'd guess it's the outcomes that are tipping it.
+>
+> `[ Stop the outcomes ]`  `[ Stop everything ]`  `[ Just the reminders and the bill ]`
+
+⚙ **The count is the useful fact**, and the bot leads with it rather than with an apology. Offering the middle option before the nuclear one isn't retention trickery — a parent who wanted "fewer" and got "none" loses the bill too.
+
+**↳ taps `[ Just the reminders and the bill ]`**
+
+> Done. From now on: the evening-before reminder, and the monthly bill. Nothing else — no after-class notes, no nudges.
+>
+> Meera's attendance and Arjun's notes are still recorded; you can ask for them any time and I'll send them in one go instead of six times a week.
+>
+> `[ Fine ]`  `[ Actually stop everything ]`
+
+⚙ This is **suppression, not opt-out** — `contact.opted_out_at` stays null, `state` stays `engaged`. Sharwin learns about it as one line in the digest, not as an interruption. The record survives the preference, which is what makes it reversible.
+
+---
+
+🕐 **Three weeks later**
+
+**LATHA**
+stop everything please
+
+> To be sure, because this one's a real switch and I don't want it to be a mis-tap:
+>
+> **Stop all messages from Ace TT Academy.** That means no reminders, no cancellation confirmations, **and no monthly bill** — Sharwin will have to reach you directly about fees.
+>
+> Meera stays enrolled and nothing changes about her classes. You can still message me any time and I'll answer; I just won't start anything.
+>
+> `[ Yes, stop everything ]`  `[ No, leave it as it was ]`
+
+⚙ §16.3 — *opt-out is confirmed before it takes effect, never a mis-tap.* And the honest cost is stated: **losing the bill is the part people don't expect**, so it goes in the confirmation, not in the aftermath.
+
+**↳ taps `[ Yes, stop everything ]`**
+
+> Done — you won't hear from me about Ace TT Academy again unless you message first.
+>
+> This is Ace TT only. If you ever deal with somewhere else through me, that's separate and untouched by this.
+>
+> I've told Sharwin, because he may want to call rather than let it sit.
+
+⚙ §16.3 — **per-academy, never global.** A global opt-out would silently detach a family from a business they never had a problem with. `contact.state = 'opted_out'`, `opted_out_at` stamped.
+
+**To Sharwin — this one is fixed and cannot be suppressed (§12):**
+
+> **Latha has opted out of all messages from Ace TT Academy.** Meera is still enrolled, Mon/Wed/Fri Beginners.
+>
+> She cut the after-class notes three weeks ago and has now stopped everything. Nothing angry in the chat — it reads like volume, not a complaint.
+>
+> **Practically:** she won't get September's bill from me. That's yours now.
+>
+> `[ Call Latha ]`  `[ See the chat ]`
+
+⚙ `AD-OPT-OUT` is fixed for exactly this reason — the admin may want to call, and the one thing they'd otherwise discover at month end is the unbilled fee.
+
+---
+
+🕐 **Six weeks later**
+
+**LATHA**
+you can start the reminders again, things have settled
+
+> Good to hear. Turning back on: **reminders the evening before, and the monthly bill.** Not the after-class notes — you'd cut those first, so I've left them off.
+>
+> `[ That's right ]`  `[ Everything, including the notes ]`
+
+⚙ Re-engagement is confirmed too, and the bot **restores the preference she chose, not the default she never wanted.** The superseded facts are still there, which is what makes that possible (§5).
+
+**↳ taps `[ That's right ]`**
+
+> Back on. First one will be Tuesday evening for Wednesday's class.
+>
+> September and October's fees are still open, ₹5,000 — Sharwin's been handling it directly. Want me to take that back over?
+>
+> `[ Yes, send me the bill ]`  `[ Leave it with Sharwin ]`
+
+---
+
+**Design notes — D4**
+
+- **"Stop these messages" is almost never a request to stop all messages.** Offering the middle first is the difference between losing a channel and losing a customer.
+- **The count of messages is the most useful sentence in the exchange.** It converts a feeling into something choosable.
+- **The bill is the hidden cost of a full opt-out**, so it goes in the confirmation.
+- **Coming back restores what they chose, not the factory default.** Anything else re-litigates a decision they already made.
+
+---
+
+## D5 · The day the sends went wrong
+
+**Persona:** admin · **Tests:** staged first contact halting on a bad signal (§9.1 rule 6, §13 `first_contact_batch`) · `AD-DELIVERY-FAILURE` with `[ Fix number ]` (§12.4) · per-tenant quality proxies (§16.3) · sent ≠ delivered ≠ read, including what's permanently unknowable (§2.4) · history follows the person, not the number (§6.2)
+
+**The scenario.** Immediately after A1. Sharwin has just sent the broadcast invite to 31 families, and the bot is going out in batches of ten behind it.
+
+---
+
+🕐 **Batch 1, 20 minutes in**
+
+> **I've stopped after the first ten.** Here's why:
+>
+> • **7 delivered** — normal
+> • **2 failed** — the numbers aren't on WhatsApp. Sunita M and Harish P
+> • **1 blocked me** — Deepa R blocked the number after the message arrived
+>
+> One block in ten is high. The number is shared with other businesses, so a bad run here costs them too — I'd rather fix these three than push 21 more out behind them.
+>
+> `[ Fix the two numbers ]`  `[ Send the rest anyway ]`  `[ Stop the whole thing ]`
+
+⚙ §9.1 rule 6 — staged as a job with a batch size, **halting on a bad signal**, which is phase 6's acceptance criterion. §16.1 — quality rating is per *number*, pooled across tenants, so this is not the bot being precious.
+
+**↳ taps `[ Fix the two numbers ]`** — a two-row page opens
+
+| Name | On file | On WhatsApp? | Correct it |
+|---|---|---|---|
+| Sunita M | +91 98••• ••210 | ✗ not registered | *[input]* |
+| Harish P | +91 99••• ••847 | ✗ not registered | *[input]* |
+
+**SHARWIN** *fixes Sunita's — a digit was wrong on the register. Leaves Harish's blank:*
+harish doesn't use whatsapp, his wife does, I'll get her number
+
+> Sunita's corrected and I'll include her in the next batch.
+>
+> Harish stays as he is — I won't message that number again. When you have his wife's, send it and I'll add her as the contact for their daughter without touching anything else.
+>
+> On Deepa: **I won't message her again at all, and I won't retry.** A block is a stronger signal than an opt-out and I'm going to treat it that way. If you think it was a mistake, that conversation has to come from you, not from me.
+>
+> `[ Send the remaining 21 ]`  `[ Wait ]`
+
+⚙ A block is not retried, ever, and it is not routed back through the bot. §16.3 — the admin is the one who can repair it, because they have a relationship and the bot has a number.
+
+**↳ taps `[ Send the remaining 21 ]`**
+
+> Going out in two batches of ten and one of one. I'll tell you when they've all landed, or sooner if it goes wrong again.
+
+🕐 **Forty minutes later**
+
+> All 22 out. **22 sent, 21 delivered, 1 pending.** No blocks, no failures.
+>
+> Across the whole go-live: **31 invited, 28 delivered, 11 have already messaged me back.**
+>
+> `[ See who hasn't replied ]`
+
+⚙ Three different counts, three different meanings, none of them collapsed into "31 messaged" (§2.4). The reply count is the only one that means the funnel is working.
+
+---
+
+🕐 **A month later — a persistent failure**
+
+> **Meera's reminders have failed three times this week.** The number stopped accepting messages on the 14th — it looks changed or disconnected, not blocked.
+>
+> She's been at every class, so someone's still bringing her.
+>
+> `[ Fix the number ]`  `[ Ask Arjun at the next class ]`  `[ Ignore ]`
+
+⚙ `AD-DELIVERY-FAILURE`. The attendance line is what turns a delivery error into an actionable fact — the family hasn't left, the channel has broken.
+
+**↳ taps `[ Ask Arjun at the next class ]`** → a line lands on Arjun's next morning brief → he types the new number in that evening
+
+> Latha's number updated from ••210 to ••455.
+>
+> **Everything follows her, not the number** — 6 months of Meera's attendance, her tally, her payments, the fact she cut the after-class notes. Nothing resets.
+>
+> Her reminder for tomorrow will go to the new number. I'll confirm it lands.
+>
+> `[ Send her a test ]`  `[ Just wait for tomorrow ]`
+
+⚙ §6.2 — the `contact` row changes, the `person` doesn't. History attaching to the number rather than the human is the failure this data model exists to prevent.
+
+---
+
+**SHARWIN**
+did everyone get the fee message yesterday
+
+> **31 sent · 30 delivered · 22 read · 1 failed.**
+>
+> The failure was Harish's old number — still on file, still not on WhatsApp.
+>
+> One honest caveat on "read": **8 families have read receipts switched off, so I will never see a read for them.** They'll sit at "delivered" permanently. Of the 22 remaining who could show as read, 22 did.
+>
+> `[ Who hasn't read it ]`  `[ Remove Harish's number ]`
+
+⚙ The sharpest §2.4 moment in the product: the bot distinguishes *not read* from *unknowable*, and recomputes the denominator so the number means something. A dashboard reporting "22 of 31 read" would quietly imply nine people ignored it.
+
+---
+
+**Design notes — D5**
+
+- **Halting is the feature.** A staged send that doesn't stop on a bad signal is just a slow blast.
+- **A block is terminal and is handed to a human.** The bot has no move there that isn't worse.
+- **A broken number is diagnosed with attendance data**, which is what separates "they left" from "the phone changed".
+- **"8 have read receipts off" is the single most trust-building sentence available**, because it's the bot volunteering the limits of its own instrument.
+
+---
+---
+
+# What the five add
+
+| Spec area | Where it's exercised |
+|---|---|
+| `CL-DUNNING` ladder with a terminus (§12.1) | D1 |
+| Retiming a ladder from memory (§5, §12) | D1 |
+| Rail 1 attestation and `AD-RECONCILE` (§11.5) | D1 |
+| `per_package` consumption and rollover (§6.4) | D2 |
+| Timely cancellation writing no line (§6.4) | D2, and L1 |
+| Self-paying adult at n=1 (§6.2) | D2 |
+| Shared-number routing across tenants (§16.3) | D3 |
+| Cross-tenant reads return zero rows (§2.1, §6.7) | D3 |
+| Per-tenant cancellation windows applied per tenant (§6.1) | D3 |
+| Opt-out confirmed, per-academy, with its cost named (§16.3) | D4 |
+| `AD-OPT-OUT` as a fixed row (§12) | D4 |
+| Suppression as distinct from opt-out (§12) | D4 |
+| First-contact staging halting on a bad signal (§9.1) | D5 |
+| `AD-DELIVERY-FAILURE` repair (§12.4) | D5 |
+| Per-tenant quality proxies on a pooled number (§16.1, §16.3) | D5 |
+| Unknowable vs negative — read receipts off (§2.4) | D5 |
+| History follows the person, not the number (§6.2) | D5 |
+
+**Still not written, in rough order of value:** a `per_term` family hitting a quarterly bill they'd forgotten, the register-expired-unmarked path (`AD-REGISTER-MISSING`) with an admin marking it days later, a class being closed outright with 14 enrollments and refunds, a coach who confirms and then no-shows three times (§8.2's *stated reason for departing from a default*), and a full solo-operator day end to end (§18) rather than the note in C1.
