@@ -336,17 +336,6 @@ export type ActionRow = {
   consumed_by_contact_id: string | null
 }
 
-/** The `view_spec` table. Named ViewSpecRow so `ViewSpec` (Web) stays free. */
-export type ViewSpecRow = {
-  id: string
-  created_at: Date
-  academy_id: string
-  spec: Json
-  for_person_id: string
-  expires_at: Date
-  minted_at: Date
-}
-
 // -----------------------------------------------------------------------------
 // §6.6 Jobs, and the rest of the runtime's own tables
 // -----------------------------------------------------------------------------

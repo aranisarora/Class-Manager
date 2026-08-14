@@ -1,18 +1,26 @@
 /**
- * lib/messaging/flows.ts — the Flow JSON artifacts, and what comes back.
+ * lib/messaging/flows.ts — the forms, as published artifacts, and what comes back.
  *
  * WHY THIS EXISTS
  * -----------------------------------------------------------------------------
- * Onboarding asks a new business six things before anything useful can happen:
- * what the place is called, what kind of thing it is, where they play, the hours,
- * how much notice a cancellation needs, and where money should go. In a chat that
- * is six round trips — six model calls, six waits, and six chances for somebody to
- * put the phone down halfway. Driven from empty, the first reply the product ever
- * sends was measured at 102 words and it still only asked for one of the six.
+ * Three moments in this product are form-shaped, and all three used to be bad in
+ * the same two ways.
  *
- * A Flow is the one affordance on WhatsApp that takes all six at once, inside the
- * chat, with no browser, no login and no link. `types.ts` carries the argument for
- * why a static Flow is affordable where an endpoint-powered one is not.
+ *   - **Setting a business up** asks eight or nine things before anything useful
+ *     can happen. In a chat that is nine round trips — nine model calls, nine
+ *     waits, nine chances for somebody to put the phone down halfway. Driven from
+ *     empty, the first reply the product ever sends was measured at 102 words and
+ *     it still only asked for one of them.
+ *   - **Adding a class** is seven fields that only make sense together: a name
+ *     without days is not a class, and days without times are not a timetable.
+ *   - **The register** is one row per player, every session, for ever. It is the
+ *     single most repeated interaction in the product.
+ *
+ * The two bad answers were a ladder of questions in the chat, or a signed link out
+ * to a browser. The link is gone (§15) and it deserved to go: whoever held the URL
+ * held that person's session, so a forwarded register link was an open attendance
+ * sheet. A Flow is the third answer — the same fields, one exchange, no browser, no
+ * login, and a response bound to the conversation that cannot be detached from it.
  *
  * WHAT IS AND IS NOT MODELLED
  * -----------------------------------------------------------------------------
@@ -24,6 +32,14 @@
  * publishing itself (`POST /{WABA}/flows`, `/assets`, `/publish`) — that is an
  * account operation, not a runtime one, and it belongs with the other Meta calls
  * behind `transport-cloud.ts` on the day this connects to a real number.
+ *
+ * ONE SCREEN EACH, DELIBERATELY
+ * -----------------------------------------------------------------------------
+ * Meta supports multi-screen static Flows, and a four-screen setup wizard reads
+ * well on paper. It is worse in the hand: four Continue taps instead of one Save,
+ * and every screen boundary is a place to abandon. A Flow screen scrolls. So each
+ * form here is one screen carrying every field it needs, and the grouping that a
+ * wizard would do with screens is done with `TextSubheading` instead.
  *
  * THE RULES BEING ENFORCED, and where they come from
  * -----------------------------------------------------------------------------
@@ -40,6 +56,9 @@
  */
 
 import { z } from 'zod'
+import { modelQuery, type SessionCtx } from '@/lib/db'
+import type { Identity } from '@/lib/types'
+import { inZone } from '@/lib/clock'
 
 /* ------------------------------------------------------------------------- *
  * The artifact
@@ -76,30 +95,35 @@ export type FlowDefinition = {
 }
 
 /**
- * Flow JSON version. 7.2 is a current published version; the only thing this build
- * depends on is `${form.x}` binding and `complete`, both of which are far older.
+ * Flow JSON version. 7.2 is a current published version; the only things this build
+ * depends on are `${form.x}` binding, a dynamic `data-source`, and `complete`, all of
+ * which are far older.
  */
 const FLOW_VERSION = '7.2'
 
 /* ------------------------------------------------------------------------- *
- * onboarding_setup — the shape of the business, in one screen
+ * business_setup — the shape of the business, in one screen
  * ------------------------------------------------------------------------- */
 
 /**
- * One screen, not six.
+ * One screen, not nine questions.
  *
- * It is deliberately the SAME set of fields the `setup` web screen collects, and it
- * commits through the same plan builder, because a second implementation of one
- * event is the defect this repo has hit most often — the register screen wrote
- * attendance with its own SQL for most of the product's life and produced no money
- * for any of it. A Flow is a different way to reach the setup plan, never a second
- * setup.
+ * Everything optional is genuinely optional. A business with no UPI handle is a real
+ * business (cash), and refusing to let them past this screen would be the product
+ * inventing a policy nobody chose.
  *
- * Everything optional is genuinely optional. A business with no UPI handle is a
- * real business (cash), and refusing to let them past this screen would be the
- * product inventing a policy nobody chose.
+ * **The rhythm fields are the reason the morning brief is allowed to exist.** Doctrine
+ * rule 1 is that every proactive message must be one its recipient would have asked
+ * for, and a daily brief nobody chose a time for fails that test. Asked here, once, it
+ * passes it for ever — which is why they are on the form rather than in a setting
+ * nobody finds.
+ *
+ * **The default charging basis is the reason a timetable read off a photo is worth
+ * anything.** Four classes parsed out of a whiteboard have names, days and times and no
+ * prices; without this the follow-up is four questions. With it, the read-back can say
+ * "all ₹2,500 a month unless you say otherwise" and be right most of the time.
  */
-const ONBOARDING_SETUP_JSON: FlowJson = {
+const BUSINESS_SETUP_JSON: FlowJson = {
   version: FLOW_VERSION,
   screens: [
     {
@@ -114,22 +138,30 @@ const ONBOARDING_SETUP_JSON: FlowJson = {
        * error at the moment somebody first tried to ship this — the failure furthest
        * from the person who could fix it.
        *
-       * Both are prefilled from what the runtime already knows when it sends the
+       * Every one is prefilled from what the runtime already knows when it sends the
        * message, so the first field is right rather than empty.
        */
       data: {
-        name: { type: 'string', __example__: 'Baseline Badminton' },
-        category: { type: 'string', __example__: 'Badminton' },
+        name: { type: 'string', __example__: 'Ace TT Academy' },
+        category: { type: 'string', __example__: 'Table tennis' },
+        timezone: { type: 'string', __example__: 'Asia/Kolkata' },
+        venue: { type: 'string', __example__: 'Green Park Indoor Stadium' },
+        address: { type: 'string', __example__: 'Court 3, opposite the pool gate' },
+        rate_unit: { type: 'string', __example__: 'per_month' },
         cancellation_window_hours: { type: 'string', __example__: '24' },
-        upi_handle: { type: 'string', __example__: 'coach@okhdfc' },
+        morning_brief_at: { type: 'string', __example__: '07:00' },
+        evening_digest_at: { type: 'string', __example__: '21:00' },
+        upi_handle: { type: 'string', __example__: 'acett@okhdfcbank' },
       },
       layout: {
         type: 'SingleColumnLayout',
         children: [
           {
             type: 'TextBody',
-            text: 'A few basics and I can take it from here. You can change any of this later.',
+            text: 'A few basics and I can take it from here. You can change any of this later, and nothing goes out to anyone until you say so.',
           },
+
+          { type: 'TextSubheading', text: 'Your business' },
           {
             type: 'TextInput',
             name: 'name',
@@ -142,29 +174,68 @@ const ONBOARDING_SETUP_JSON: FlowJson = {
             type: 'TextInput',
             name: 'category',
             label: 'What you teach',
-            'helper-text': 'Badminton, vocal, chess…',
+            'helper-text': 'Table tennis, badminton, vocal, chess…',
             'input-type': 'text',
             required: false,
             'init-value': '${data.category}',
           },
           {
+            type: 'Dropdown',
+            name: 'timezone',
+            label: 'Timezone',
+            required: false,
+            'init-value': '${data.timezone}',
+            'data-source': [
+              { id: 'Asia/Kolkata', title: 'India (IST)' },
+              { id: 'Asia/Dubai', title: 'UAE (GST)' },
+              { id: 'Asia/Singapore', title: 'Singapore' },
+              { id: 'Europe/London', title: 'UK' },
+              { id: 'America/New_York', title: 'US Eastern' },
+            ],
+          },
+
+          { type: 'TextSubheading', text: 'Where you teach' },
+          {
             type: 'TextInput',
             name: 'venue',
-            label: 'Where you play',
+            label: 'Venue',
             // Not required, because this form is also how an established business edits
             // its settings — and the venue is the one field that ADDS a row rather than
             // replacing one. Demanding it on every edit would make somebody re-type a
             // hall they already have, or invent a second one to get past the form.
-            'helper-text': 'Add a hall or court — leave blank to keep the ones you have',
+            'helper-text': 'Leave blank to keep the places you already have',
             'input-type': 'text',
             required: false,
+          },
+          {
+            type: 'TextInput',
+            name: 'address',
+            label: 'How to find it',
+            'helper-text': 'The bit people actually need — "Court 3, opposite the pool gate"',
+            'input-type': 'text',
+            required: false,
+          },
+
+          { type: 'TextSubheading', text: 'How you charge' },
+          {
+            type: 'RadioButtonsGroup',
+            name: 'rate_unit',
+            label: 'Mostly',
+            required: false,
+            'init-value': '${data.rate_unit}',
+            'data-source': [
+              { id: 'per_month', title: 'Per month' },
+              { id: 'per_session', title: 'Per session' },
+              { id: 'per_term', title: 'Per term' },
+              { id: 'per_package', title: 'In packs of classes' },
+            ],
           },
           {
             type: 'Dropdown',
             name: 'cancellation_window_hours',
             label: 'Notice needed to cancel',
             required: true,
-            'init-value': '24',
+            'init-value': '${data.cancellation_window_hours}',
             'data-source': [
               { id: '2', title: '2 hours' },
               { id: '6', title: '6 hours' },
@@ -180,7 +251,40 @@ const ONBOARDING_SETUP_JSON: FlowJson = {
             'helper-text': 'Leave blank if you take cash',
             'input-type': 'text',
             required: false,
+            'init-value': '${data.upi_handle}',
           },
+
+          { type: 'TextSubheading', text: 'Your rhythm' },
+          {
+            type: 'Dropdown',
+            name: 'morning_brief_at',
+            label: 'Morning brief at',
+            'helper-text': 'What today looks like, and anything that needs you',
+            required: false,
+            'init-value': '${data.morning_brief_at}',
+            'data-source': [
+              { id: '06:00', title: '6:00 am' },
+              { id: '07:00', title: '7:00 am' },
+              { id: '08:00', title: '8:00 am' },
+              { id: '09:00', title: '9:00 am' },
+              { id: 'off', title: "Don't send one" },
+            ],
+          },
+          {
+            type: 'Dropdown',
+            name: 'evening_digest_at',
+            label: 'Evening summary at',
+            'helper-text': 'How the day went, and the money',
+            required: false,
+            'init-value': '${data.evening_digest_at}',
+            'data-source': [
+              { id: '20:00', title: '8:00 pm' },
+              { id: '21:00', title: '9:00 pm' },
+              { id: '22:00', title: '10:00 pm' },
+              { id: 'off', title: "Don't send one" },
+            ],
+          },
+
           {
             type: 'Footer',
             label: 'Save',
@@ -189,9 +293,14 @@ const ONBOARDING_SETUP_JSON: FlowJson = {
               payload: {
                 name: '${form.name}',
                 category: '${form.category}',
+                timezone: '${form.timezone}',
                 venue: '${form.venue}',
+                address: '${form.address}',
+                rate_unit: '${form.rate_unit}',
                 cancellation_window_hours: '${form.cancellation_window_hours}',
                 upi_handle: '${form.upi_handle}',
+                morning_brief_at: '${form.morning_brief_at}',
+                evening_digest_at: '${form.evening_digest_at}',
               },
             },
           },
@@ -213,10 +322,13 @@ const ONBOARDING_SETUP_JSON: FlowJson = {
  * is exactly as authoritative as a typed message, which is to say not at all. The
  * plan it feeds runs under the submitter's own RLS session like everything else.
  */
-const OnboardingSetupResponse = z.object({
+const BusinessSetupResponse = z.object({
   name: z.string().trim().min(1).max(120),
   category: z.string().trim().max(80).optional().default(''),
+  timezone: z.string().trim().max(60).optional().default(''),
   venue: z.string().trim().max(120).optional().default(''),
+  address: z.string().trim().max(240).optional().default(''),
+  rate_unit: z.string().trim().max(20).optional().default(''),
   /**
    * The empty string is turned into `undefined` BEFORE coercion so the default applies.
    * `z.coerce.number()` reads '' as 0, so "they left it blank" would have been written as
@@ -228,84 +340,567 @@ const OnboardingSetupResponse = z.object({
     z.coerce.number().int().min(0).max(168).default(24),
   ),
   upi_handle: z.string().trim().max(120).optional().default(''),
+  morning_brief_at: z.string().trim().max(10).optional().default(''),
+  evening_digest_at: z.string().trim().max(10).optional().default(''),
 })
 
-export type OnboardingSetupValues = z.infer<typeof OnboardingSetupResponse>
+export type BusinessSetupValues = z.infer<typeof BusinessSetupResponse>
 
-export const ONBOARDING_SETUP: FlowDefinition = {
-  id: 'onboarding_setup',
+export const BUSINESS_SETUP: FlowDefinition = {
+  id: 'business_setup',
   name: 'Business setup',
   entryScreen: 'SETUP',
   cta: 'Set up',
-  json: ONBOARDING_SETUP_JSON,
-  response: OnboardingSetupResponse,
+  json: BUSINESS_SETUP_JSON,
+  response: BusinessSetupResponse,
 }
 
+/* ------------------------------------------------------------------------- *
+ * add_class — one class, prefilled with whatever was already read
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The form that makes a photo of a whiteboard worth taking.
+ *
+ * `onboarding.md` calls the timetable "the biggest single saving in the whole
+ * product", and the saving is only real if the *correction* is cheap too. A row read
+ * off a board at an angle is right about the name and wrong about the end time; the
+ * choice used to be between accepting it wrong and re-asking for all seven fields.
+ *
+ * So every field here is prefilled from `${data.x}`, **including the parts that were
+ * only half-read**. A person correcting "Sub Jr" to "Sub Junior" is doing ten seconds
+ * of work. A person answering "what is it called? which days? what time does it
+ * start? what time does it end? where? how much? per what?" is doing two minutes of
+ * work and will not finish it. That asymmetry is the whole design.
+ *
+ * The days are a static `data-source` — seven weekdays are seven weekdays for every
+ * business on earth — so this artifact never needs republishing.
+ */
+const ADD_CLASS_JSON: FlowJson = {
+  version: FLOW_VERSION,
+  screens: [
+    {
+      id: 'CLASS',
+      title: 'Add a class',
+      terminal: true,
+      data: {
+        name: { type: 'string', __example__: 'Beginners' },
+        days: { type: 'array', items: { type: 'string' }, __example__: ['1', '3', '5'] },
+        starts: { type: 'string', __example__: '18:30' },
+        ends: { type: 'string', __example__: '19:30' },
+        venue: { type: 'string', __example__: 'Green Park Indoor Stadium' },
+        rate: { type: 'string', __example__: '2500' },
+        rate_unit: { type: 'string', __example__: 'per_month' },
+        venues: {
+          type: 'array',
+          items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' } } },
+          __example__: [{ id: 'Green Park Indoor Stadium', title: 'Green Park Indoor Stadium' }],
+        },
+      },
+      layout: {
+        type: 'SingleColumnLayout',
+        children: [
+          {
+            type: 'TextBody',
+            text: 'Anything I got wrong, just fix it here.',
+          },
+          {
+            type: 'TextInput',
+            name: 'name',
+            label: 'Class name',
+            'input-type': 'text',
+            required: true,
+            'init-value': '${data.name}',
+          },
+          {
+            type: 'CheckboxGroup',
+            name: 'days',
+            label: 'Days',
+            required: true,
+            'init-value': '${data.days}',
+            'data-source': [
+              { id: '1', title: 'Monday' },
+              { id: '2', title: 'Tuesday' },
+              { id: '3', title: 'Wednesday' },
+              { id: '4', title: 'Thursday' },
+              { id: '5', title: 'Friday' },
+              { id: '6', title: 'Saturday' },
+              { id: '0', title: 'Sunday' },
+            ],
+          },
+          {
+            type: 'TextInput',
+            name: 'starts',
+            label: 'Starts',
+            'helper-text': '6:30pm, or 18:30',
+            'input-type': 'text',
+            required: true,
+            'init-value': '${data.starts}',
+          },
+          {
+            type: 'TextInput',
+            name: 'ends',
+            label: 'Ends',
+            'helper-text': '7:30pm, or 19:30',
+            'input-type': 'text',
+            required: true,
+            'init-value': '${data.ends}',
+          },
+          {
+            type: 'Dropdown',
+            name: 'venue',
+            label: 'Where',
+            required: false,
+            'init-value': '${data.venue}',
+            'data-source': '${data.venues}',
+          },
+          {
+            type: 'TextInput',
+            name: 'rate',
+            label: 'Fee',
+            'helper-text': 'Leave blank if this one is free',
+            'input-type': 'number',
+            required: false,
+            'init-value': '${data.rate}',
+          },
+          {
+            type: 'RadioButtonsGroup',
+            name: 'rate_unit',
+            label: 'Charged',
+            required: false,
+            'init-value': '${data.rate_unit}',
+            'data-source': [
+              { id: 'per_month', title: 'Per month' },
+              { id: 'per_session', title: 'Per session' },
+              { id: 'per_term', title: 'Per term' },
+              { id: 'per_package', title: 'In a pack' },
+            ],
+          },
+          {
+            type: 'Footer',
+            label: 'Add it',
+            'on-click-action': {
+              name: 'complete',
+              payload: {
+                name: '${form.name}',
+                days: '${form.days}',
+                starts: '${form.starts}',
+                ends: '${form.ends}',
+                venue: '${form.venue}',
+                rate: '${form.rate}',
+                rate_unit: '${form.rate_unit}',
+              },
+            },
+          },
+        ],
+      },
+    },
+  ],
+}
+
+const AddClassResponse = z.object({
+  name: z.string().trim().min(1).max(120),
+  days: z.preprocess(
+    // A single checkbox can arrive as a bare string rather than a one-element array.
+    (v) => (typeof v === 'string' ? (v ? v.split(',') : []) : v),
+    z.array(z.coerce.number().int().min(0).max(6)).min(1),
+  ),
+  starts: z.string().trim().min(1).max(20),
+  ends: z.string().trim().min(1).max(20),
+  venue: z.string().trim().max(120).optional().default(''),
+  rate: z.preprocess(
+    (v) => (v === '' || v === null ? undefined : v),
+    z.coerce.number().min(0).max(10_000_000).optional(),
+  ),
+  rate_unit: z.string().trim().max(20).optional().default(''),
+})
+
+export type AddClassValues = z.infer<typeof AddClassResponse>
+
+export const ADD_CLASS: FlowDefinition = {
+  id: 'add_class',
+  name: 'Add a class',
+  entryScreen: 'CLASS',
+  cta: 'Add a class',
+  json: ADD_CLASS_JSON,
+  response: AddClassResponse,
+}
+
+/* ------------------------------------------------------------------------- *
+ * register — attendance, inverted
+ * ------------------------------------------------------------------------- */
+
+/**
+ * **The register asks who was NOT there.**
+ *
+ * This is the single most repeated interaction in the product — once per session, per
+ * coach, for ever — and the ordinary shape of it is a list of twelve names with four
+ * radio buttons each, forty-eight taps to say a normal thing. On a normal night the
+ * true answer is "everyone came", and a form that costs forty-eight taps to say
+ * "everyone came" is a form that stops being filled in by week three. An unmarked
+ * register is a session that never bills, so this is a money defect wearing a UX
+ * complaint's clothes.
+ *
+ * So the default is present, and the form collects the exceptions. Zero taps and Done
+ * is the normal night. The two that matter — who missed it, who was late — are the
+ * two the coach actually remembers walking off the court.
+ *
+ * **A static Flow cannot draw a variable-length roster**, which is what makes the
+ * inversion structural rather than stylistic. Two `CheckboxGroup`s with a dynamic
+ * `data-source` handle any roster size with one published artifact; twelve radio
+ * groups would need a different artifact for every headcount a business can have.
+ *
+ * The note is what reaches the parents. `CL-OUTCOME` carries it, and one sentence
+ * from the coach is worth more to a parent than the whole of the rest of the message
+ * — so it is asked for on the form rather than hoped for afterwards.
+ */
+const REGISTER_JSON: FlowJson = {
+  version: FLOW_VERSION,
+  screens: [
+    {
+      id: 'REGISTER',
+      title: 'Register',
+      terminal: true,
+      data: {
+        session_id: { type: 'string', __example__: '00000000-0000-0000-0000-000000000000' },
+        heading: { type: 'string', __example__: 'Beginners, 6:30 — 12 on the roster' },
+        roster: {
+          type: 'array',
+          items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' } } },
+          __example__: [{ id: '00000000-0000-0000-0000-000000000000', title: 'Aarav K' }],
+        },
+      },
+      layout: {
+        type: 'SingleColumnLayout',
+        children: [
+          { type: 'TextHeading', text: '${data.heading}' },
+          {
+            type: 'TextBody',
+            text: "Everyone counts as present. Just tick anyone who wasn't.",
+          },
+          {
+            type: 'CheckboxGroup',
+            name: 'absent',
+            label: "Didn't come",
+            required: false,
+            'data-source': '${data.roster}',
+          },
+          {
+            type: 'CheckboxGroup',
+            name: 'late',
+            label: 'Came late',
+            required: false,
+            'data-source': '${data.roster}',
+          },
+          {
+            type: 'TextArea',
+            name: 'note',
+            label: 'Anything to pass on?',
+            'helper-text': "Goes to the parents with tonight's update. Leave it blank if there's nothing.",
+            required: false,
+          },
+          {
+            type: 'Footer',
+            label: 'Done',
+            'on-click-action': {
+              name: 'complete',
+              payload: {
+                session_id: '${data.session_id}',
+                absent: '${form.absent}',
+                late: '${form.late}',
+                note: '${form.note}',
+              },
+            },
+          },
+        ],
+      },
+    },
+  ],
+}
+
+const idList = z.preprocess(
+  (v) => (typeof v === 'string' ? (v ? v.split(',') : []) : (v ?? [])),
+  z.array(z.string().trim().min(1)).default([]),
+)
+
+const RegisterResponse = z.object({
+  session_id: z.string().trim().min(1),
+  absent: idList,
+  late: idList,
+  note: z.string().trim().max(1000).optional().default(''),
+})
+
+export type RegisterValues = z.infer<typeof RegisterResponse>
+
+export const REGISTER: FlowDefinition = {
+  id: 'register',
+  name: 'Register',
+  entryScreen: 'REGISTER',
+  cta: 'Take register',
+  json: REGISTER_JSON,
+  response: RegisterResponse,
+}
+
+/* ------------------------------------------------------------------------- *
+ * The catalog
+ * ------------------------------------------------------------------------- */
+
 export const FLOWS: Record<string, FlowDefinition> = {
-  [ONBOARDING_SETUP.id]: ONBOARDING_SETUP,
+  [BUSINESS_SETUP.id]: BUSINESS_SETUP,
+  [ADD_CLASS.id]: ADD_CLASS,
+  [REGISTER.id]: REGISTER,
 }
 
 /**
- * The setup screen, as a form in the chat — if this person is the one it is for.
+ * The names the model may write, and the only ones.
  *
- * **One definition, because there are two ways to arrive here and they disagreed.**
- * The `reply` tool built this inline, so a model that wrote `link_screen:"setup"`
- * got the Flow. A button tap resolving the same screen went through
- * `executeAction`, which mints a signed link and knows nothing about Flows — so
- * the admin who *tapped the button the bot had just offered them* was sent out of
- * WhatsApp into a browser, and the one who was answered in prose got the form.
+ * Kept as a literal tuple rather than derived from `FLOWS`, because it is projected
+ * into the `reply` tool's JSON schema as an `enum` and a Gemini function-call enum is
+ * a hard decode constraint — it has to be a real string union at build time, not a
+ * value assembled at import. Adding a form is this line and the definition above it.
+ */
+export const FORM_IDS = ['business_setup', 'add_class', 'register'] as const
+export type FormId = (typeof FORM_IDS)[number]
+
+/**
+ * What the runtime says when a BUTTON opens a form.
+ *
+ * The model writes the body when it sends a form itself. This is the other path — a
+ * tap, with no model in the loop — and whatever is written here goes to a phone
+ * exactly as typed. Every one of them ends by saying the form is optional, because
+ * doctrine rule 4 says a form is an offer and never a toll, and the one copy nobody
+ * reviews is the copy where that rule quietly stops being true.
+ */
+export const FORM_INTRO: Record<FormId, string> = {
+  business_setup:
+    'Everything about the business on one screen — what you teach, where, how you charge, '
+    + 'how much notice you want for cancellations, and when you want to hear from me.\n\n'
+    + "Or just tell me any of it here and I'll set it up the same way. Nothing goes out to anyone either way.",
+  add_class:
+    "Here's the class. Fix anything I got wrong.\n\nOr tell me in a sentence and I'll do it from that.",
+  register:
+    "Tonight's register. Everyone counts as present — tick anyone who wasn't, and add a note "
+    + "if there's something the parents should hear.\n\nOr just tell me who missed it.",
+}
+
+export function isFlowId(s: string): s is FormId {
+  return s in FLOWS
+}
+
+/* ------------------------------------------------------------------------- *
+ * Building one, with real data in it
+ * ------------------------------------------------------------------------- */
+
+export type BuiltForm = { flow: string; data: Record<string, unknown> }
+
+/**
+ * The form, prefilled from the database, for this person, right now.
+ *
+ * **One definition, because there are two ways to arrive at a form and they used to
+ * disagree.** The `reply` tool built the setup form inline, so a model that asked for
+ * it in prose got a form in the chat. A button tap resolving the same thing went
+ * through `executeAction`, which knew nothing about Flows — so the owner who *tapped
+ * the button the bot had just offered them* was sent out of WhatsApp into a browser,
+ * and the one who was answered in prose got the form.
  *
  * Driven from empty: the first message offered `[Setup Sunrise Sports]`, the tap
- * returned "Here it is. Yours only, good for the next hour." and a JWT. That is
- * the highest-stakes moment in the product — a new owner's first action — taking
- * the worse of two paths, and R4 exactly: a guarantee enforced on one path when
- * several exist.
+ * returned "Here it is. Yours only, good for the next hour." and a JWT. That is the
+ * highest-stakes moment in the product — a new owner's first action — taking the worse
+ * of two paths, and it is the general defect this codebase has hit most often: a
+ * guarantee enforced on one path when several exist.
  *
- * Returns null when it is not this person's form, in which case the caller falls
- * back to a link. `flow_token` is an action minted for one contact (§2.2), so
- * "the admin themselves" is not a nicety — it is what makes the token bind.
+ * Prefill is read HERE, at send or tap time, and never carried in the button. A
+ * `[Set up my classes]` tapped tomorrow has to show what is true tomorrow.
  */
-export function setupFlowFor(o: {
-  isAdmin: boolean
-  /** The contact the message is addressed to. */
-  toContactId: string
-  /** The contact who is having this conversation. */
-  selfContactId: string
-  academy: {
-    name: string
-    category?: string | null
-    cancellation_window_hours?: number | null
-    upi_handle?: string | null
+export async function formFor(
+  ctx: SessionCtx,
+  id: Identity,
+  form: FormId,
+  opts: { toContactId: string; sessionId?: string; prefill?: Record<string, unknown> },
+): Promise<BuiltForm | { error: string }> {
+  if (form === 'business_setup') return setupFormFor(id, opts.toContactId)
+  if (form === 'add_class') return await addClassFormFor(ctx, id, opts.prefill ?? {})
+  return await registerFormFor(ctx, id, opts.sessionId)
+}
+
+/**
+ * The setup form — if this person is the one it is for.
+ *
+ * Returns an error rather than a form when they are not, because a silent downgrade
+ * to prose is how a caller ends up describing a form it did not send. `flow_token` is
+ * an action minted for one contact (§2.2), so "the owner themselves" is not a nicety —
+ * it is what makes the token bind.
+ */
+function setupFormFor(id: Identity, toContactId: string): BuiltForm | { error: string } {
+  if (!id.roles.includes('admin')) {
+    return { error: 'the business form is the owner’s — anything on it can be said in chat instead' }
   }
-}): { flow: string; data: Record<string, string> } | null {
-  if (!o.isAdmin || o.toContactId !== o.selfContactId) return null
+  if (toContactId !== id.contact.id) {
+    return { error: 'a form is minted for the person filling it in, so it only goes to the owner themselves' }
+  }
+  const a = id.academy
+  /**
+   * EVERY field the form writes, prefilled from what is on the row now.
+   *
+   * The form is a full overwrite of the business shape, and an earlier version
+   * prefilled two of its five fields — so an owner who opened it a second time to
+   * change one thing submitted blanks for the rest, and the UPI handle they had
+   * already given was silently nulled and the cancellation window reset. A form that
+   * overwrites what it does not show is a data-loss bug wearing a convenience
+   * feature's clothes.
+   *
+   * The venue and address are deliberately absent: they are the fields that ADD a row
+   * rather than replacing one, so an empty box means "no new place", not "delete the
+   * places I have".
+   */
   return {
-    flow: ONBOARDING_SETUP.id,
-    /**
-     * EVERY field the form writes, prefilled from what is on the row now.
-     *
-     * The form is a full overwrite of the business shape, and it prefilled two of
-     * its five fields — so an admin who opened it a second time to change one
-     * thing submitted blanks for the rest, and the UPI handle they had already
-     * given was silently nulled and the cancellation window reset. A form that
-     * overwrites what it does not show is a data-loss bug wearing a convenience
-     * feature's clothes.
-     *
-     * The venue is deliberately absent: it is the one field that adds a row rather
-     * than replacing one, so an empty box means "no new place", not "delete the
-     * places I have".
-     */
+    flow: BUSINESS_SETUP.id,
     data: {
-      name: o.academy.name,
-      category: o.academy.category ?? '',
-      cancellation_window_hours: String(o.academy.cancellation_window_hours ?? 24),
-      upi_handle: o.academy.upi_handle ?? '',
+      name: a.name,
+      category: a.category ?? '',
+      timezone: a.timezone || 'Asia/Kolkata',
+      rate_unit: String((a.settings?.['default_rate_unit'] as string) ?? 'per_month'),
+      cancellation_window_hours: String(a.cancellation_window_hours ?? 24),
+      upi_handle: a.upi_handle ?? '',
+      morning_brief_at: hhmm(a.morning_brief_at) || '07:00',
+      evening_digest_at: hhmm(a.evening_digest_at) || '21:00',
     },
   }
 }
 
-export function isFlowId(s: string): s is keyof typeof FLOWS {
-  return s in FLOWS
+/**
+ * The add-a-class form, carrying whatever was already read off a photo or a sentence.
+ *
+ * The venue list comes from the database rather than from the model, because a venue
+ * the model typed is a venue that does not exist — and a class attached to one is a
+ * class nobody can find. Where the business has no venues yet the dropdown is empty
+ * and the field is optional, which is the honest state of a business that has not
+ * said where it plays.
+ */
+async function addClassFormFor(
+  ctx: SessionCtx,
+  id: Identity,
+  prefill: Record<string, unknown>,
+): Promise<BuiltForm | { error: string }> {
+  if (!id.roles.includes('admin')) {
+    return { error: 'only the owner adds classes — tell me what needs changing and I’ll pass it on' }
+  }
+  const res = await modelQuery(ctx, `select name from venue order by name limit 20`)
+  const venues = res.error ? [] : res.rows.map((r) => ({ id: String(r.name), title: String(r.name) }))
+
+  const s = (k: string): string => {
+    const v = prefill[k]
+    return v === undefined || v === null ? '' : String(v)
+  }
+  return {
+    flow: ADD_CLASS.id,
+    data: {
+      name: s('name'),
+      // "mon,wed,fri" and [1,3,5] both arrive here, because the model writes both.
+      days: parseDays(prefill['days']),
+      starts: normaliseTime(s('starts')),
+      ends: normaliseTime(s('ends')),
+      venue: s('venue') || (venues.length === 1 ? venues[0].id : ''),
+      rate: s('rate') || String(id.academy.settings?.['default_rate_amount'] ?? ''),
+      rate_unit: s('rate_unit') || String(id.academy.settings?.['default_rate_unit'] ?? 'per_month'),
+      venues,
+    },
+  }
+}
+
+/**
+ * The register for one session, with its actual roster on it.
+ *
+ * `app.session_roster` is the one definition of who is due at a session (§6.3), and it
+ * is read here rather than rebuilt, because the last time this join was written twice
+ * the two disagreed and the register screen wrote attendance with its own SQL for most
+ * of the product's life — producing no money for any of it.
+ *
+ * Refuses rather than sending an empty form. A register with nobody on it is a form
+ * that can only be submitted wrong, and the sentence explaining why is more use than
+ * the form would have been.
+ */
+async function registerFormFor(
+  ctx: SessionCtx,
+  id: Identity,
+  sessionId?: string,
+): Promise<BuiltForm | { error: string }> {
+  const wanted = (sessionId ?? '').trim()
+  if (!wanted) return { error: 'a register needs to know which session' }
+
+  const res = await modelQuery(
+    ctx,
+    `select r.player_id, r.player_name, r.class_name, r.starts_at
+       from app.session_roster r
+      where r.session_id = '${wanted.replace(/'/g, "''")}'::uuid
+      order by r.player_name`,
+  )
+  if (res.error) return { error: 'I could not read that roster just now' }
+  const rows = res.rows as { player_id: string; player_name: string; class_name: string; starts_at: unknown }[]
+  if (!rows.length) return { error: 'there is nobody on that register' }
+
+  const tz = id.academy.timezone || 'Asia/Kolkata'
+  const at = rows[0].starts_at instanceof Date ? (rows[0].starts_at as Date) : new Date(String(rows[0].starts_at))
+  const when = Number.isNaN(at.getTime()) ? '' : `, ${inZone(at, tz).time}`
+  return {
+    flow: REGISTER.id,
+    data: {
+      session_id: wanted,
+      heading: `${rows[0].class_name}${when} — ${rows.length} on the roster`,
+      roster: rows.map((r) => ({ id: String(r.player_id), title: String(r.player_name) })),
+    },
+  }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Coercions, at the boundary
+ * ------------------------------------------------------------------------- */
+
+/** A postgres `time` reaches here as "07:00:00" and the dropdown speaks "07:00". */
+function hhmm(v: unknown): string {
+  const m = String(v ?? '').match(/^(\d{2}):(\d{2})/)
+  return m ? `${m[1]}:${m[2]}` : ''
+}
+
+/**
+ * "6:30pm", "18:30", "6.30 pm" → "18:30". Anything unrecognisable comes back as it
+ * went in, so the person sees what was read and can correct it — which is strictly
+ * better than an empty box that says nothing about what went wrong.
+ */
+function normaliseTime(raw: string): string {
+  const s = raw.trim().toLowerCase()
+  if (!s) return ''
+  const m = s.match(/^(\d{1,2})[:.]?(\d{2})?\s*(am|pm)?$/)
+  if (!m) return raw
+  let h = Number(m[1])
+  const mins = m[2] ?? '00'
+  if (m[3] === 'pm' && h < 12) h += 12
+  if (m[3] === 'am' && h === 12) h = 0
+  if (h > 23) return raw
+  return `${String(h).padStart(2, '0')}:${mins}`
+}
+
+const DAY_WORDS: Record<string, number> = {
+  sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tues: 2, tuesday: 2,
+  wed: 3, weds: 3, wednesday: 3, thu: 4, thur: 4, thurs: 4, thursday: 4,
+  fri: 5, friday: 5, sat: 6, saturday: 6,
+}
+
+/** `[1,3,5]`, `"mon,wed,fri"`, `"Mon/Wed/Fri"` — all of them, because all of them get written. */
+function parseDays(raw: unknown): string[] {
+  const parts = Array.isArray(raw)
+    ? raw.map((x) => String(x))
+    : String(raw ?? '').split(/[,/|&+]|\band\b/i)
+  const out: string[] = []
+  for (const p of parts) {
+    const t = p.trim().toLowerCase()
+    if (!t) continue
+    const n = /^[0-6]$/.test(t) ? Number(t) : DAY_WORDS[t]
+    if (n === undefined) continue
+    const s = String(n)
+    if (!out.includes(s)) out.push(s)
+  }
+  return out
 }
 
 /* ------------------------------------------------------------------------- *
@@ -372,7 +967,7 @@ export function validateFlowJson(flow: FlowJson): string[] {
      * as JSON Schema with an `__example__`. Meta validates the layout against those
      * examples at publish, so an undeclared reference is a rejection — and it would
      * arrive as an API error the first time somebody tried to ship the flow, which is
-     * the furthest possible point from the person who could fix it. The shipped
+     * the furthest possible point from the person who could fix it. The first shipped
      * onboarding flow had exactly this defect: it prefilled `${data.name}` and declared
      * nothing.
      *
@@ -470,18 +1065,18 @@ export function parseFlowResponse(
   raw: unknown,
 ): { ok: true; values: Record<string, unknown> } | { ok: false; error: string } {
   const def = FLOWS[flowId]
-  if (!def) return { ok: false, error: `there is no flow called ${flowId}` }
+  if (!def) return { ok: false, error: `there is no form called ${flowId}` }
 
   let payload: unknown = raw
   if (typeof raw === 'string') {
     try {
       payload = JSON.parse(raw)
     } catch {
-      return { ok: false, error: 'the flow response was not valid JSON' }
+      return { ok: false, error: 'the form response was not valid JSON' }
     }
   }
   if (!payload || typeof payload !== 'object') {
-    return { ok: false, error: 'the flow response was not an object' }
+    return { ok: false, error: 'the form response was not an object' }
   }
 
   // `flow_token` rides inside the response on the real wire and is not a form field.

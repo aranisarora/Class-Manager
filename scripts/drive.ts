@@ -49,7 +49,6 @@ import { isToolCall } from '@/lib/agent/loop'
 import { costInr } from '@/lib/pricing'
 import type { OperationName } from '@/lib/agent/operations'
 import type { PlanStep } from '@/lib/agent/plan'
-import type { LinkPurpose } from '@/lib/web/jwt'
 
 loadEnvFiles()
 
@@ -730,57 +729,6 @@ async function showTurn(
   }
 }
 
-/**
- * A rendered page as a person would read it: the text, the fields, the buttons.
- * Not a browser — enough to tell whether the screen says the right things, which
- * is the question a driver needs answered.
- */
-/**
- * Which screen a signed link opens, read off the JWT's own payload.
- *
- * No verification here on purpose: this is a driver deciding which of several links
- * you meant, not a boundary. The real check happens in `verifyLink` when the page
- * loads, which is where it belongs.
- */
-function purposeOf(url: string): string | null {
-  const token = url.split('/w/')[1]?.split(/[?#]/)[0]
-  const body = token?.split('.')[1]
-  if (!body) return null
-  try {
-    const json = JSON.parse(Buffer.from(body.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'))
-    return typeof json?.purpose === 'string' ? json.purpose : null
-  } catch {
-    return null
-  }
-}
-
-function renderPage(html: string): string {
-  const body = html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '')
-  const out: string[] = []
-  const inputs = [...body.matchAll(/<(input|select|textarea)\b[^>]*>/gi)].map((m) => {
-    const tag = m[0]
-    const attr = (name: string) => new RegExp(`${name}="([^"]*)"`, 'i').exec(tag)?.[1] ?? ''
-    return `    [${attr('type') || m[1]}] ${attr('name') || attr('placeholder') || attr('aria-label') || '?'}${
-      attr('value') ? ` = ${attr('value')}` : ''
-    }`
-  })
-  const text = body
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|h1|h2|h3|li|tr|label|section)>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&#x27;|&apos;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/[ \t]{2,}/g, ' ')
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
-  out.push(text.map((l) => `    ${l}`).join('\n'))
-  if (inputs.length) out.push(c.dim(`  fields:\n${inputs.join('\n')}`))
-  return out.join('\n')
-}
-
 const MIME: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
   pdf: 'application/pdf', csv: 'text/csv', txt: 'text/plain',
@@ -854,10 +802,8 @@ const HELP: [string, string][] = [
   ['pay request <holderContactId> [--amount]', 'ask an account for what is owed'],
   ['pay attest <holderContactId> [--ref] [--media]', 'the family says they have paid'],
   ['pay confirm [adminContactId] [--payment]', 'the admin says it came in (Rail 1)'],
-  ['open <contactId> [n] [--purpose register]', 'follow a link the bot sent, and read the page'],
-  ['link <contactId> --screen setup|register|calendar|view', 'mint a screen link directly'],
-  ['register <coachContactId> [--absent "A,B"]', 'take a register without hand-writing JSON'],
-  ["submit <contactId> --json '{...}'", "post that page's form, as they would"],
+  ['register <coachContactId> [--absent "A,B"] [--late "C"] [--note "…"]', 'take a register without hand-writing JSON'],
+  ["form <contactId> <business_setup|add_class|register> --json '{...}'", 'fill in a form the bot sent'],
   ['clock +2h | --to <iso> | --next | --reset', 'move domain time, then run what is due'],
   ['tick', 'run due jobs without moving time'],
   ['month [--period 2026-07] [--academy X]', 'close a period: lines, tally, dunning'],
@@ -1932,145 +1878,6 @@ async function main(): Promise<void> {
     }
 
     /**
-     * The web surface is half the product's UI and could not be driven at all.
-     *
-     * §15's screens are reached by a signed link inside a message, so the only
-     * way to test one was to copy a token out of the database by hand. That is
-     * why the setup form and the register — the two screens onboarding depends
-     * on — had never once been opened by anybody testing this. `open` follows
-     * the link the bot actually sent, exactly as a person tapping it would.
-     */
-    case 'open': {
-      const contactId = positional[0]
-      const which = Number(positional[1] ?? flag('n') ?? '1')
-      const purpose = flag('purpose')
-      if (!contactId) {
-        die(
-          c.red('drive open <contactId> [n]  — follow a link the bot sent'),
-          c.dim('  --purpose setup|register|calendar|view   only links of that kind'),
-          c.dim('  --n 2                                    the 2nd most recent'),
-        )
-      }
-      /**
-       * Every link the bot has sent this person, newest first — not just the newest.
-       *
-       * This used to read exactly one row: `order by created_at desc limit 1`. So a
-       * setup link offered five messages ago was unreachable the moment anything else
-       * with a link arrived, and there was no way to say *which* screen you meant. Half
-       * the reason §15's screens went undriven is that the driver could only ever
-       * follow whichever door the bot had most recently opened.
-       */
-      const rows = await q<any>(
-        `select body, payload, created_at from message
-          where contact_id = '${contactId}'::uuid and direction = 'outbound'
-            and suppressed_reason is null
-            and (payload->'link'->>'url' is not null or body ~ 'https?://')
-          order by created_at desc limit 25`,
-        await academyOfContact(contactId),
-      )
-      // The link button first, the body second: a URL still in a body is a bug now, and
-      // reading it here would hide the bug behind a driver that works anyway.
-      const urls: string[] = []
-      for (const r of rows) {
-        const linked = r?.payload?.link?.url
-        if (linked) urls.push(String(linked))
-        else for (const u of String(r?.body ?? '').match(/https?:\/\/\S+/g) ?? []) urls.push(u)
-      }
-      const matching = purpose ? urls.filter((u) => purposeOf(u) === purpose) : urls
-      const url = matching[which - 1]
-      if (!url) {
-        die(
-          c.red(
-            purpose
-              ? `no ${purpose} link in the last 25 messages to that contact (found: ${
-                  urls.map(purposeOf).filter(Boolean).join(', ') || 'none'
-                })`
-              : `that contact has ${urls.length} link(s) in recent messages — asked for #${which}.`,
-          ),
-          c.dim('  `drive link <contactId> --screen register --session <id>` mints one directly.'),
-        )
-      }
-      console.log(c.dim(`  GET ${url}  [${purposeOf(url) ?? 'unknown'}]`))
-      const res = await fetch(url)
-      const html = await res.text()
-      console.log(c.dim(`  ${res.status} · ${html.length} bytes`))
-      console.log(renderPage(html))
-      break
-    }
-
-    /**
-     * **Mint a screen link directly, as the runtime would.**
-     *
-     * The reason §15's register had never been opened by anybody is not that it was
-     * broken — it is that it was unreachable from here. `open` can only follow a link
-     * the bot has already sent, `CO-REGISTER` goes out as a paid template to an
-     * out-of-window coach, and so the highest-traffic screen after the chat sat behind
-     * a door only the model could open, on a path nobody could drive. `attendance` has
-     * zero rows in every world ever driven, and that is the whole explanation.
-     *
-     * This signs the same JWT `linkFor()` does, for the same person, with the same TTL.
-     * It is the operator reaching past the conversation, which is exactly what a driver
-     * is for — and it deliberately does NOT send a message, so it cannot be mistaken
-     * for testing whether the bot would have offered it.
-     */
-    case 'link': {
-      const contactId = positional[0]
-      const screen = (flag('screen') ?? positional[1] ?? '') as LinkPurpose
-      if (!contactId || !['setup', 'register', 'calendar', 'view'].includes(screen)) {
-        die(
-          c.red('drive link <contactId> --screen setup|register|calendar|view [--session <id>] [--ref <viewSpecId>]'),
-          c.dim('  mints the signed link directly — no message sent, no model call'),
-        )
-      }
-      const academyId = await academyOfContact(contactId)
-      const person = await q<any>(
-        `select person_id from contact where id = '${contactId}'::uuid`,
-        academyId,
-      )
-      if (!person[0]) die(c.red('no such contact'))
-
-      let ref = flag('session') ?? flag('ref') ?? ''
-      if (screen === 'register' && !ref) {
-        // The commonest thing you want is "the register for the class that just ended",
-        // and making somebody paste a uuid to get it is the friction this command exists
-        // to remove.
-        const s = await q<any>(
-          `select s.id, s.starts_at, c.name from session s join class c on c.id = s.class_id
-            where s.status = 'scheduled' and s.ends_at < app.now()
-            order by s.ends_at desc limit 1`,
-          academyId,
-        )
-        if (!s[0]) die(c.red('no finished session to take a register for — pass --session <id>'))
-        ref = String(s[0].id)
-        console.log(c.dim(`  register for ${s[0].name} @ ${s[0].starts_at} (${ref})`))
-      }
-
-      const { signLink, linkUrl, TTL } = await import('@/lib/web/jwt')
-      const token = await signLink(
-        {
-          academy_id: academyId,
-          person_id: String(person[0].person_id),
-          contact_id: contactId,
-          purpose: screen,
-          ...(ref ? { ref } : {}),
-        },
-        TTL[screen],
-      )
-      const url = linkUrl(token)
-      console.log(`${c.dim('  url')} ${url}`)
-      if (has('open')) {
-        const res = await fetch(url)
-        const html = await res.text()
-        console.log(c.dim(`  ${res.status} · ${html.length} bytes`))
-        console.log(renderPage(html))
-      } else {
-        console.log(c.dim('  --open to follow it now, or `drive submit <contactId>` against it'))
-      }
-      break
-    }
-
-    /** Post to the screen's own submit route, the way its form does. */
-    /**
      * **Take a register without hand-authoring its JSON.**
      *
      * `submit --json` needs the session id, every player id and a status each, which
@@ -2142,52 +1949,96 @@ async function main(): Promise<void> {
         console.log(c.dim(`  ${String(roster[i].full_name).padEnd(24)} ${m.status}`))
       }
 
-      const person = await q<any>(`select person_id from contact where id = '${contactId}'::uuid`, academyId)
-      const { signLink, linkUrl, TTL } = await import('@/lib/web/jwt')
-      const token = await signLink(
-        {
-          academy_id: academyId,
-          person_id: String(person[0].person_id),
-          contact_id: contactId,
-          purpose: 'register',
-          ref: sessionId,
-        },
-        TTL.register,
+      /**
+       * Submitted as a Flow, down the road a real submission travels.
+       *
+       * This used to POST to the web surface's own submit route behind a signed JWT,
+       * and that surface no longer exists. Reaching for the form instead is not a
+       * workaround — it is the point: the register IS a form now, so a driver posting
+       * anything else would be proving something about a path nobody takes.
+       *
+       * The token has to be a LIVE `flow_token` the product itself minted, because a
+       * submission is a tap that carries answers and the action row is what binds it to
+       * one contact. So this finds the register the bot actually sent rather than
+       * fabricating one — which makes the command an honest test of whether
+       * `CO-REGISTER` reached the coach at all, instead of hiding that it never did.
+       */
+      const pending = await q<any>(
+        `select payload->'flow'->>'flow_token' as token from message
+          where contact_id = '${contactId}'::uuid and direction = 'outbound'
+            and suppressed_reason is null
+            and payload->'flow'->>'flow_id' = 'register'
+          order by created_at desc limit 1`,
+        academyId,
       )
+      const token = pending[0]?.token
+      if (!token) {
+        die(
+          c.red('no register form has been sent to that contact.'),
+          c.dim('  `drive clock --next` past a session end so CO-REGISTER fires, or ask them for it in chat.'),
+        )
+      }
       const at = cursorNow()
-      const res = await fetch(`${linkUrl(token).replace(/\/$/, '')}/submit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: 'register', sessionId, marks }),
+      // The literal `nfm_reply.response_json`: a JSON string, as the wire sends it, with
+      // only the exceptions named — everyone else defaults to present.
+      await api('/api/emulator/inbound', {
+        contactId,
+        flowResponse: JSON.stringify({
+          flow_token: token,
+          session_id: sessionId,
+          absent: marks.filter((m: any) => m.status === 'absent').map((m: any) => m.playerId),
+          late: marks.filter((m: any) => m.status === 'late').map((m: any) => m.playerId),
+          note: flag('note') ?? '',
+        }),
       })
-      console.log(c.dim(`  POST ${res.status}`), await res.text())
       await showTurn(contactId, at, {})
       break
     }
 
-    case 'submit': {
+    /**
+     * **Fill in a form the bot actually sent.**
+     *
+     * The generic half of `register`. It finds the newest form of the kind you name,
+     * takes its `flow_token`, and posts your answers as the literal
+     * `nfm_reply.response_json` a handset would.
+     *
+     * It deliberately will not fabricate a token. A form nobody was sent is a form
+     * nobody can fill in, and a driver that manufactured one would report a working
+     * onboarding for a business whose owner never received anything — which is the
+     * exact failure the old link-minting command hid for months.
+     */
+    case 'form': {
       const contactId = positional[0]
+      const which = flag('form') ?? positional[1] ?? ''
       const payload = flag('json')
-      if (!contactId || !payload) die(c.red(`drive submit <contactId> --json '{"kind":"setup",...}'`))
+      if (!contactId || !which || !payload) {
+        die(
+          c.red(`drive form <contactId> <business_setup|add_class|register> --json '{"name":"…"}'`),
+          c.dim('  posts the answers against the newest form of that kind'),
+        )
+      }
       const rows = await q<any>(
-        `select body, payload from message
+        `select payload->'flow'->>'flow_token' as token from message
           where contact_id = '${contactId}'::uuid and direction = 'outbound'
             and suppressed_reason is null
-            and (payload->'link'->>'url' is not null or body ~ 'https?://')
+            and payload->'flow'->>'flow_id' = '${which}'
           order by created_at desc limit 1`,
         await academyOfContact(contactId),
       )
-      const url =
-        rows[0]?.payload?.link?.url ?? (String(rows[0]?.body ?? '').match(/https?:\/\/\S+/g) ?? [])[0]
-      if (!url) die(c.red('no link in the last message to that contact.'))
+      const token = rows[0]?.token
+      if (!token) die(c.red(`no ${which} form has been sent to that contact.`))
+      let answers: Record<string, unknown> = {}
+      try {
+        answers = JSON.parse(payload)
+      } catch (e) {
+        die(c.red(`--json is not valid JSON: ${e instanceof Error ? e.message : String(e)}`))
+      }
       const at = cursorNow()
-      const res = await fetch(`${url.replace(/\/$/, '')}/submit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
+      await api('/api/emulator/inbound', {
+        contactId,
+        flowResponse: JSON.stringify({ ...answers, flow_token: token }),
       })
-      console.log(c.dim(`  POST ${res.status}`), await res.text())
-      await showTurn(contactId, at, {})
+      await showTurn(contactId, at, { full: has('full') })
       break
     }
 

@@ -120,8 +120,15 @@ export type FlowCta = {
   flowToken: string
   /** The screen to open. Required whenever `flow_action` is `navigate`. */
   screen: string
-  /** Prefill for the first screen, reachable in the Flow JSON as `${data.key}`. */
-  data?: Record<string, string | number | boolean>
+  /**
+   * Prefill for the first screen, reachable in the Flow JSON as `${data.key}`.
+   *
+   * Not just scalars. A `data-source` may itself be a `${data.x}` reference, which is
+   * what lets one published register render tonight's twelve names and next week's
+   * nine — the alternative being a separate artifact per headcount. So a value here
+   * can be a list of `{id, title}` options, and the wire carries it as JSON.
+   */
+  data?: Record<string, unknown>
   /** `draft` sends only work in test mode; anything real is `published`. */
   mode?: 'published' | 'draft'
 }

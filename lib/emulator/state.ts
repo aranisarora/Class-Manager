@@ -103,8 +103,16 @@ export type EmuFlow = {
   flowToken: string
   /** The screen `flow_action: 'navigate'` opens on. */
   screen: string
-  /** Prefill, reachable inside the Flow JSON as `${data.key}`. */
-  data: Record<string, string>
+  /**
+   * Prefill, reachable inside the Flow JSON as `${data.key}`.
+   *
+   * `unknown`, not `string`, because a `data-source` may itself be a `${data.x}`
+   * reference — which is how one published register renders any roster size. Narrowing
+   * this to strings would have made the emulator unable to draw the shape the wire
+   * actually carries, and §17's rule is that the emulator is the other implementation
+   * of the same wire rather than a picture of it.
+   */
+  data: Record<string, unknown>
   mode: string
   consumedAt: string | null
   expiresAt: string | null
@@ -509,12 +517,19 @@ function normalizeFlow(raw: Raw | null | undefined, index: ActionIndex): EmuMess
   const flowId = str(pick(raw, 'flowId', 'flow_id'))
   if (!flowId) return null
   const flowToken = str(pick(raw, 'flowToken', 'flow_token')) ?? ''
+  /**
+   * Carried as it stands, not flattened to strings.
+   *
+   * This used to run every value through `str()` and drop anything that would not
+   * coerce — which silently deleted exactly the values that matter most: a
+   * `data-source` passed as a list of `{id,title}` options. The register's whole
+   * roster arrived as `undefined`, the sheet drew two empty checkbox groups, and the
+   * form was submittable with nobody on it. A normaliser that discards the shape it
+   * does not recognise is worse than one that refuses it, because the result still
+   * renders.
+   */
   const dataRaw = (pick(raw, 'data') as Raw) ?? {}
-  const data: Record<string, string> = {}
-  for (const [k, v] of Object.entries(dataRaw)) {
-    const s = str(v)
-    if (s !== null) data[k] = s
-  }
+  const data: Record<string, unknown> = { ...dataRaw }
   const meta = index[flowToken]
   return {
     cta: str(pick(raw, 'cta', 'flow_cta', 'flowCta')) ?? '',

@@ -349,7 +349,6 @@ export async function dropPerson(
       await tx.unsafe(`delete from coach where id in (${coaches})`)
       await tx.unsafe(`delete from academy_admin where person_id = ${P}`)
       await tx.unsafe(`delete from memory_fact where subject_kind = 'person' and subject_id = ${P}`)
-      await tx.unsafe(`delete from view_spec where for_person_id = ${P}`)
       await tx.unsafe(`delete from action where minted_for_contact_id in (${contacts})`)
       await tx.unsafe(`update action set consumed_by_contact_id = null where consumed_by_contact_id in (${contacts})`)
       await tx.unsafe(`delete from message where contact_id in (${contacts})`)
@@ -1183,8 +1182,9 @@ export type WorldAcademy = {
   upiHandle: string | null
   cancellationWindowHours: number
   clientReminderLeadHours: number
-  morningBriefAt: string
-  eveningDigestAt: string
+  /** Null when the owner declined it — a real answer, not a missing one. */
+  morningBriefAt: string | null
+  eveningDigestAt: string | null
   createdOn: string
   memory: string | null
   rail: string
@@ -1369,8 +1369,9 @@ export async function worldState(): Promise<WorldState> {
       upiHandle: (h.upi_handle as string) ?? null,
       cancellationWindowHours: Number(h.cancellation_window_hours),
       clientReminderLeadHours: Number(h.client_reminder_lead_hours),
-      morningBriefAt: String(h.morning_brief_at),
-      eveningDigestAt: String(h.evening_digest_at),
+      // `String(null)` is the literal word "null", and this feeds a panel a person reads.
+      morningBriefAt: (h.morning_brief_at as string) ?? null,
+      eveningDigestAt: (h.evening_digest_at as string) ?? null,
       createdOn: String(h.created_on),
       memory: (h.memory as string) ?? null,
       rail: String(h.rail),

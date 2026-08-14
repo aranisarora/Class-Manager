@@ -9,17 +9,14 @@
  */
 
 import { assertSingleReadStatement, modelQuery, serviceFrom, withSession, type SessionCtx } from '@/lib/db'
-import { now } from '@/lib/clock'
 import { newId } from '@/lib/ids'
 import type { ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { CATALOG, type CatalogId } from '@/lib/messaging/catalog'
-import { setupFlowFor } from '@/lib/messaging/flows'
+import { formFor, FORM_IDS, type FormId } from '@/lib/messaging/flows'
 import { EXTRA_LIMITS, LIMITS, type SendOutcome, type SuppressReason } from '@/lib/messaging/types'
 import { extractBracketButtons, fitTitle, pointsAtAffordance } from '@/lib/messaging/repair'
 import { AGENT_TASK_CAP, dedupe, enqueue, liveAgentTasks } from '@/lib/jobs'
-import { signLink, linkUrl, TTL } from '@/lib/web/jwt'
-import { ViewSpecSchema } from '@/lib/web/registry'
 import { adminContactIds } from '@/lib/identity'
 import type { Identity } from '@/lib/types'
 import { lint } from './lint'
@@ -30,7 +27,7 @@ import {
   checkActionPayload, checkSteps, humanAssertionNote,
   stripHumanAssertions, stripHumanAssertionsFromArgs, stripHumanAssertionsFromPayload,
 } from './steps'
-import { jsonLit, lit, uid, OPERATIONS, operationSignature, type OperationName } from './operations'
+import { lit, uid, OPERATIONS, operationSignature, type OperationName } from './operations'
 import { parametersFor } from './schema-json'
 
 export type ToolCtx = {
@@ -58,25 +55,6 @@ export type ToolCtx = {
    * model actually takes, not only on the tap path.
    */
   executed?: { op: string; args: Record<string, unknown>; wrote?: { table: string; op: string; after: any[] }[] }[]
-  /**
-   * A screen the model asked for this turn and has not yet attached to anything.
-   *
-   * `view` does not send: it returns the screen with a `send_it_with` line telling
-   * the model to call `reply(link_screen:"…")`. Watched twice on a live onboarding,
-   * the model did the first half and not the second — it called `view(screen:'setup')`
-   * and then composed *"tap the button below to set up the business details"* and
-   * *"you can fill this in on this page"* with **no button, no link and no form on
-   * either message**. The runtime, seeing a bare message, bolted its generic
-   * `[What can you do?]` onto one of them. So the first thing a new owner is ever
-   * told to do referred to an affordance that did not exist.
-   *
-   * A tool whose effect depends on the model remembering a second call in a later
-   * round is a tool that fails whenever it forgets. The runtime already knows
-   * everything it needs — who asked, which screen, for whom — so it attaches it
-   * rather than asking. Same reasoning as `pendingMeta` minting confirmations and
-   * `withFollowUps` attaching the next step.
-   */
-  pendingScreen?: { screen: 'setup' | 'register' | 'calendar'; ref?: string; forContactId: string }
   /** Who this turn has already put a message in front of, and it landed. */
   repliedTo?: Set<string>
   /**
@@ -594,7 +572,7 @@ export function backstopButtons(
   const steps: { title: string; action: ActionPayload }[] = [
     { title: 'Add a class', action: { kind: 'reply', text: 'I want to add a class' } },
     { title: 'Add a coach', action: { kind: 'reply', text: 'I want to add a coach' } },
-    { title: 'Set up the business', action: { kind: 'view', screen: 'setup' } },
+    { title: 'Set up the business', action: { kind: 'form', form: 'business_setup' } },
   ]
   return steps.slice(0, LIMITS.buttons)
 }
@@ -714,7 +692,11 @@ function resolveAction(raw: unknown, ctx: ToolCtx): { ok: true; action: any } | 
     if (typeof a.op === 'string') a = { ...a, kind: 'operation' }
     else if (a.steps !== undefined) a = { ...a, kind: 'steps' }
     else if (typeof a.text === 'string') a = { ...a, kind: 'reply' }
-    else if (typeof a.viewSpecId === 'string' || typeof a.screen === 'string') a = { ...a, kind: 'view' }
+    else if (typeof a.form === 'string') a = { ...a, kind: 'form' }
+    // `{screen:'setup'}` was how the web surface spelled this, and the model still
+    // reaches for it out of habit. It means the business form; say so rather than
+    // rejecting a button whose intent is unambiguous.
+    else if (typeof a.screen === 'string') a = { kind: 'form', form: a.screen === 'setup' ? 'business_setup' : a.screen }
   }
   // `{kind:'replyOption', text}` — a spelling of `reply` that costs the message
   // its buttons. Measured: a model minted `[Add a coach]` and `[Add players]`
@@ -831,146 +813,37 @@ export function closingQuestionButtons(body: string): { title: string; action: a
 }
 
 /**
- * §15's two built-in screens, which existed and could not be reached.
+ * The form a `reply` asked for, resolved at the moment the message is composed.
  *
- * `/w/[token]` has served four purposes since it was written — setup, register,
- * view, form — and exactly one of them, `view`, had anything that minted a link
- * for it. So §7.1 step 1 ("the form-shaped part of onboarding in one screen, one
- * tap out of the chat, once, ever") and §8.2 step 5 ("`[Take register]` opens the
- * whole roster on one screen") were built, correct, unreachable, and therefore
- * never once used by anybody. Instead a new admin was asked for their
- * cancellation window in chat. Same shape as the menu that had no door.
+ * There used to be a second answer to "the thing I want to say is form-shaped": a
+ * signed short-TTL JWT into a web page. It is gone (§15). Everything form-shaped is
+ * a Flow now, which is the same fields with none of the three costs — no tap out of
+ * WhatsApp, no bearer token anybody can forward, and no second rendering surface the
+ * emulator has to be honest about.
  *
- * It lives inside `view` because a screen IS a view — the same "here is a page,
- * attach it to a message" shape, differing only in who authored the spec. It used
- * to live here for a second reason, and that reason has been withdrawn: an
- * eleventh declaration was thought to break the model. `MAX_TOOL_DECLS` below has
- * the re-measurement (60 declarations, clean, on the same model). Nothing stops
- * these becoming their own tools if that ever reads better; nothing requires it.
+ * The model names the form. It never assembles one: what a submission DOES is decided
+ * by the runtime on the way back in (`executeAction`), so a form can only ever reach
+ * work somebody chose to put behind it. Prefill comes from the database, here, because
+ * a form that overwrites what it does not show is a data-loss bug wearing a convenience
+ * feature's clothes.
+ *
+ * Returns `{error}` for a form this person may not be sent, and null for no form asked.
  */
-async function builtInScreen(
-  ctx: ToolCtx,
-  which: string,
-  args: any,
-): Promise<{ result: unknown; note?: string }> {
-  if (which !== 'setup' && which !== 'register' && which !== 'calendar') {
-    return {
-      result: { error: `there is no screen called "${which}" — it is "setup", "register" or "calendar"` },
-    }
-  }
-  const forContactId = String(args?.for_contact_id ?? ctx.identity.contact.id)
-  const target =
-    forContactId === ctx.identity.contact.id
-      ? { personId: ctx.identity.person.id, contactId: ctx.identity.contact.id }
-      : await contactTarget(ctx, forContactId)
-  if (!target) return { result: { error: 'no such contact in this business' } }
-
-  if (which === 'setup' && forContactId === ctx.identity.contact.id && !ctx.identity.roles.includes('admin')) {
-    return { result: { error: "the setup screen is the admin's — anything on it can be said in chat instead" } }
-  }
-  const ref = which === 'register' ? String(args?.session_id ?? '') : undefined
-  if (which === 'register' && !ref) {
-    return { result: { error: "register needs session_id — which session's roster is this?" } }
-  }
-
-  // Remembered so the next `reply` in this turn carries it whether or not the model
-  // passes `link_screen`. See `ToolCtx.pendingScreen`.
-  ctx.pendingScreen = { screen: which, ref, forContactId: target.contactId }
-
-  // No URL comes back. §14.6 is "every link is a button; nothing URL-shaped is pasted
-  // into message text", and this tool used to return the signed token with a note asking
-  // the model to write it into its message — which is the instruction that put a
-  // 300-character JWT on a person's phone. A tool that hands out the thing the rule
-  // forbids is the reason the rule is broken.
-  //
-  // What comes back instead is the action that opens it. `reply` takes it as `link`, or
-  // as a `{kind:'view'}` button, and either way the URL is signed by the runtime and
-  // never passes through the model.
-  return {
-    result: {
-      ok: true,
-      screen: which,
-      good_for_minutes: TTL[which],
-      for_contact_id: target.contactId,
-      send_it_with:
-        which === 'register'
-          ? `reply(body:"…", link_screen:"register", link_session_id:"${ref}")`
-          : which === 'calendar'
-            ? 'reply(body:"…", link_screen:"calendar")'
-            : 'reply(body:"…", link_screen:"setup")',
-      note:
-        'One line saying what the screen is, and say plainly they can tell you the same things here instead — ' +
-        'the screen is an offer, never a toll. Never write a web address into a message yourself.',
-    },
-  }
-}
-
-/**
- * Sign the link a `reply` asked for, at the moment the message is composed.
- *
- * The model names the screen; the runtime knows the person, the tenant and the TTL, and
- * is the only thing that holds the signing key. That split is the whole point: a URL the
- * model never sees is a URL it cannot paste into prose, cannot truncate, and cannot mint
- * for the wrong person.
- */
-async function linkFor(
+async function formForReply(
   ctx: ToolCtx,
   args: any,
   toContactId: string,
-): Promise<{ title: string; url: string } | { error: string } | null> {
-  const screen = String(args?.link_screen ?? '').trim()
-  const viewSpecId = String(args?.link_view_spec_id ?? '').trim()
-  if (!screen && !viewSpecId) return null
-
-  const purpose = viewSpecId
-    ? 'view'
-    : screen === 'register'
-      ? 'register'
-      : screen === 'setup'
-        ? 'setup'
-        : screen === 'calendar'
-          ? 'calendar'
-          : null
-  if (!purpose) {
-    return {
-      error: `there is no screen called "${screen}" — it is "setup", "register" or "calendar", or pass link_view_spec_id`,
-    }
+): Promise<{ flow: string; data: Record<string, unknown> } | { error: string } | null> {
+  const wanted = String(args?.form ?? '').trim()
+  if (!wanted) return null
+  if (!(FORM_IDS as readonly string[]).includes(wanted)) {
+    return { error: `there is no form called "${wanted}" — they are ${FORM_IDS.join(', ')}` }
   }
-  const ref = viewSpecId || (purpose === 'register' ? String(args?.link_session_id ?? '') : '')
-  if (purpose === 'register' && !ref) {
-    return { error: "a register link needs link_session_id — which session's roster is this?" }
-  }
-
-  const target =
-    toContactId === ctx.identity.contact.id
-      ? { personId: ctx.identity.person.id, contactId: ctx.identity.contact.id }
-      : await contactTarget(ctx, toContactId)
-  if (!target) return { error: 'no such contact in this business' }
-
-  const token = await signLink(
-    {
-      academy_id: ctx.session.academyId,
-      person_id: target.personId,
-      contact_id: target.contactId,
-      purpose,
-      ...(ref ? { ref } : {}),
-    },
-    TTL[purpose],
-  )
-  const fallback = purpose === 'setup' ? 'Open setup' : purpose === 'register' ? 'Open register' : 'Open'
-  return { title: fitTitle(args?.link_title || fallback), url: linkUrl(token) }
-}
-
-/** The person behind a contact id, under this session's own RLS. */
-async function contactTarget(
-  ctx: ToolCtx,
-  contactId: string,
-): Promise<{ personId: string; contactId: string } | null> {
-  const rows = await modelQuery(ctx.session, `select id, person_id from contact where id = ${uid(contactId)}`)
-    .then((r) => r.rows)
-    .catch(() => [])
-  const row = rows[0] as { id?: string; person_id?: string } | undefined
-  return row?.person_id ? { personId: String(row.person_id), contactId: String(row.id) } : null
+  return await formFor(ctx.session, ctx.identity, wanted as FormId, {
+    toContactId,
+    sessionId: args?.form_session_id ? String(args.form_session_id) : undefined,
+    prefill: args?.form_prefill && typeof args.form_prefill === 'object' ? args.form_prefill : undefined,
+  })
 }
 
 /**
@@ -1168,7 +1041,6 @@ const PRIMITIVE_NAMES = new Set([
   'act',
   'reply',
   'schedule',
-  'view',
   'remember',
   'handoff',
 ])
@@ -1240,7 +1112,7 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
   {
     name: 'reply',
     description:
-      'Send a message now, to this person or to someone else, with buttons, a list, or a link. Every button carries an action minted here and replayed verbatim on tap. Offer the natural next step as a button. NEVER write a web address into the body — a link is a button, and link_screen is how you send one.',
+      'Send a message now, to this person or to someone else, with buttons, a list, or a form. Every button carries an action minted here and replayed verbatim on tap. Offer the natural next step as a button. NEVER write a web address into the body — there is no browser in this product.',
     parametersJsonSchema: {
       type: 'object',
       properties: {
@@ -1248,15 +1120,18 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
         body: { type: 'string' },
         header: { type: 'string' },
         footer: { type: 'string', description: `≤ ${LIMITS.footerChars} characters` },
-        link_screen: {
+        form: {
           type: 'string',
-          enum: ['setup', 'register', 'calendar'],
+          enum: [...FORM_IDS],
           description:
-            "Attach one of the three built-in screens as a tappable button. 'setup' is the whole business on one screen (name, places, weekly times, cancellation notice, where people pay) — the admin's, once, ever; offer it rather than asking six things in chat. 'register' is one session's roster on a page and needs link_session_id. 'calendar' is the next three weeks of sessions, scoped to whatever this person may see — reach for it when somebody asks about more than a day or two of schedule, because a fortnight does not fit in a message. The link is signed for the recipient at send time; you never see or write the address. A message with a link carries no other buttons and no list.",
+            "Attach a form the person fills in without leaving the chat. 'business_setup' is the shape of the business in one screen — name, what they teach, where, how they charge, the cancellation notice, when they want their brief and their summary, where money goes; the owner's, and it is how onboarding starts rather than six questions in a row. 'add_class' is one class — name, days, times, venue, rate; pass form_prefill with whatever you already read off a photo or heard in a voice note, so they are correcting rather than typing. 'register' is one session's attendance and needs form_session_id: it asks who was NOT there, so a normal night is nought taps. A message with a form carries no other buttons and no list — say the alternative in words instead, because a form is always an offer and never a toll.",
         },
-        link_session_id: { type: 'string', description: "Which session, for link_screen:'register'." },
-        link_view_spec_id: { type: 'string', description: 'Attach a view you minted this turn, as a button.' },
-        link_title: { type: 'string', description: `The words on the link button. ≤ ${LIMITS.buttonTitleChars} characters.` },
+        form_session_id: { type: 'string', description: "Which session, for form:'register'." },
+        form_prefill: {
+          type: 'object',
+          description:
+            "What to fill the form in with, for form:'add_class' — any of name, days (e.g. \"mon,wed,fri\"), starts (\"18:30\"), ends (\"19:30\"), venue, rate, rate_unit. Everything you could read goes in, including the parts you are unsure of; they can see and fix them, which is cheaper than you asking.",
+        },
         catalog_id: { type: 'string', description: 'A catalog moment id, when this is one of them.' },
         subject_person_ids: { type: 'array', items: { type: 'string' } },
         buttons: {
@@ -1269,7 +1144,7 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
               action: {
                 type: 'object',
                 description:
-                  "One of: {kind:'operation',op,args} · {kind:'steps',steps,summary} · {kind:'reply',text} · {kind:'view',viewSpecId} · {kind:'menu',menu} · {kind:'noop',ack}",
+                  "One of: {kind:'operation',op,args} · {kind:'steps',steps,summary} · {kind:'reply',text} · {kind:'form',form} · {kind:'menu',menu} · {kind:'noop',ack}",
               },
             },
             required: ['title', 'action'],
@@ -1283,13 +1158,13 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
   {
     name: 'schedule',
     description:
-      'Schedule yourself to look at something later. It runs as an ordinary turn under this person\'s own permissions, and deciding to do nothing is the common and correct outcome. expires_at is REQUIRED — a watch with no expiry is a leak.',
+      "Schedule yourself to look at something later. It runs as an ordinary turn under this person's own permissions, and deciding to do nothing is the common and correct outcome. Reach for it whenever you say you will check back, whenever you promise to wait, and whenever you route something to somebody else and owe the person who raised it an answer. Then say in one clause what it will actually do — what you look at, how often, against what, until when, and that they will hear nothing if nothing moves. expires_at is REQUIRED: a watch with no expiry is a leak.",
     parametersJsonSchema: {
       type: 'object',
       properties: {
         slug: { type: 'string', description: 'Short stable id for this watch, e.g. "meera-fee-followup".' },
-        instruction: { type: 'string', description: 'What to check, and what to do about it.' },
-        run_at: { type: 'string', description: 'ISO timestamp.' },
+        instruction: { type: 'string', description: 'What to check, what would make it worth saying something, and what to do about it. Include what silence means.' },
+        run_at: { type: 'string', description: 'ISO timestamp. When the answer will actually exist — after the deadline, not before it.' },
         expires_at: { type: 'string', description: 'ISO timestamp. When this stops being worth doing. Required.' },
         context_query: { type: 'string', description: 'A SELECT whose result gives the task its data.' },
       },
@@ -1297,37 +1172,9 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
     },
   },
   {
-    name: 'view',
-    description:
-      'Mint a web page for anything dense, spatial or form-shaped. You author a spec of components and the queries filling them — never markup, and never a web address. It comes back as an id you attach to a message with reply(link_view_spec_id). A view is an upgrade to a text answer, never a prerequisite for one.',
-    parametersJsonSchema: {
-      type: 'object',
-      properties: {
-        title: { type: 'string' },
-        components: {
-          type: 'array',
-          items: {
-            type: 'object',
-            description:
-              "e.g. {type:'table', title, query} · {type:'prose', markdown} · {type:'form', fields, submit}",
-          },
-        },
-        screen: {
-          type: 'string',
-          enum: ['setup', 'register', 'calendar'],
-          description:
-            "Instead of authoring components, link one of the three screens already built — prefer these over composing your own. 'setup' is the whole business in one form (name, venues, hours, cancellation window, UPI) — the admin's, once, ever. 'register' is one session's roster on a page — the coach's, needs session_id. 'calendar' is the next three weeks, scoped by who is asking. None is ever required: anything on them can be said in chat instead.",
-        },
-        session_id: { type: 'string', description: "Which session, for screen:'register'." },
-        for_person_id: { type: 'string', description: 'Defaults to the person you are talking to.' },
-        ttl_minutes: { type: 'number' },
-      },
-    },
-  },
-  {
     name: 'remember',
     description:
-      'Write down a fact worth carrying: vocabulary, a policy, a habit, a preference. Facts, not transcripts. A fact that changes no behaviour was not worth storing.',
+      "Write down a fact worth carrying: vocabulary, a policy, a habit, a preference, a stated boundary. Facts, not transcripts — short, about a person or the business, true beyond today. A fact that changes no behaviour was not worth storing, so be able to name what it changes. The obvious ones are the valuable ones: the word they use for a class, the day they always ask about money, that this parent never taps a button, that this coach wants three hours' notice. Corrections never edit — pass `supersedes` and keep both, so \"why does it think that?\" stays answerable.",
     parametersJsonSchema: {
       type: 'object',
       properties: {
@@ -1342,12 +1189,16 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
   {
     name: 'handoff',
     description:
-      'Hand this conversation to a person, with the reason and a short summary. Use it on anger, safety language, a refund or complaint you cannot settle, or anything the tools genuinely cannot serve.',
+      'Hand this conversation to a person, with the reason and a short summary. Use it on anger, safety language, a refund or complaint you cannot settle, or anything the tools genuinely cannot serve. Agree first if they are right, then say what you have done and that you are stepping back — then stop trying to solve it.',
     parametersJsonSchema: {
       type: 'object',
       properties: {
         reason: { type: 'string' },
-        summary: { type: 'string', description: 'What has happened so far, for the human picking it up.' },
+        summary: {
+          type: 'string',
+          description:
+            'What has happened so far, for the human picking it up. Their own words in quotes, where they physically are if that matters, how many other people are affected, and whether this has happened before — the repeat and the blast radius are what turn a complaint into a decision, and are the two things the admin cannot see from the chat.',
+        },
       },
       required: ['reason', 'summary'],
     },
@@ -2018,91 +1869,50 @@ export async function runTool(
       }
 
       /**
-       * The screen the model asked for, whether or not it remembered to attach it —
-       * and, failing that, the one its own sentence says it attached.
+       * The form the model's own sentence says it attached.
        *
        * The guard below refuses a message that points at a control it does not carry,
        * and refusing costs a round. Where the runtime can simply SATISFY the pointer it
-       * should: an admin told "I've attached the business setup form" wants the setup
-       * form, and the runtime is holding it. Driven — that exact sentence went out with
-       * nothing but the generic `[What can you do?]` under it, and no `view` call in the
-       * turn for `pendingScreen` to have caught.
+       * should: an owner told "I've attached the business setup form" wants that form,
+       * and the runtime is holding it. Driven — that exact sentence went out with
+       * nothing but the generic `[What can you do?]` under it.
        *
        * Only when this message carries no affordance of its own: a model that DID offer
        * buttons has made a deliberate choice and the runtime does not overrule it. And
-       * only to the person the screen would be minted for — a form is single-use and
-       * addressed.
+       * only to the owner themselves — `flow_token` is an action minted for one contact.
        */
-      const bare = !args?.link_screen && !buttons?.length && !args?.list
-      const saysSetupForm =
+      const bare = !args?.form && !buttons?.length && !args?.list
+      if (
         bare
         && to === ctx.identity.contact.id
         && ctx.identity.roles.includes('admin')
         && /\bsetup form\b|\bbusiness setup\b|\bset ?up (?:screen|page|form)\b/i.test(body)
-      const pending =
-        ctx.pendingScreen && ctx.pendingScreen.forContactId === to && bare
-          ? ctx.pendingScreen
-          : saysSetupForm
-            ? ({ screen: 'setup' as const, forContactId: to, ref: undefined })
-            : null
-      if (pending) {
-        args = {
-          ...args,
-          link_screen: pending.screen,
-          ...(pending.ref ? { link_session_id: pending.ref } : {}),
-        }
-        // Once, not on every message the turn sends afterwards.
-        ctx.pendingScreen = undefined
+      ) {
+        args = { ...args, form: 'business_setup' }
       }
 
       /**
-       * `link_screen:"setup"` is answered with a FORM IN THE CHAT, not a link out of it.
+       * Everything form-shaped is a form IN THE CHAT (§14.6).
        *
-       * Onboarding asks a new business six things before anything useful can happen, and
-       * the two ways to ask were both bad: six round trips in chat, or one signed URL
-       * that takes somebody out of WhatsApp into a browser on a phone. The Flow is the
-       * third way — the same fields, one exchange, no browser, no login.
+       * Onboarding asks a new business several things before anything useful can happen,
+       * and the two ways to ask used to be both bad: a round trip per question, or one
+       * signed URL that takes somebody out of WhatsApp into a browser on a phone. A Flow
+       * is the third way — the same fields, one exchange, no browser, no login, and a
+       * response bound to this conversation rather than to whoever holds a link.
        *
-       * The link is not gone. It stays for `register` and `calendar`, and for a setup
-       * screen an admin asks for later, when the wider form (the venue list, operating
-       * pattern, brief and digest times) is worth the trip out. What changes is the
-       * default at the one moment that decides whether a business ever gets set up.
-       *
-       * Only for the admin themselves: `flow_token` is an action minted for one contact,
-       * and the setup screen is the admin's by the check in `builtInScreen`.
+       * Resolved before the backstops below decide the message is bare, because a form is
+       * this message's one action and nothing else may share it.
        */
-      const wantsSetup = String(args?.link_screen ?? '').trim() === 'setup'
-      const setupFlow = wantsSetup
-        ? (setupFlowFor({
-            isAdmin: ctx.identity.roles.includes('admin'),
-            toContactId: to,
-            selfContactId: ctx.identity.contact.id,
-            academy: ctx.identity.academy,
-          }) ?? undefined)
-        : undefined
-
-      // §14.6 — a link is a button, and it is the only action its message can carry, so
-      // it is resolved before the backstops below decide the message is bare.
-      const link = setupFlow ? null : await linkFor(ctx, args, to)
-      if (link && 'error' in link) return { result: { error: link.error } }
-      if (setupFlow && (buttons?.length || args?.list)) {
-        // The same exclusivity the wire imposes on `cta_url`. Said as a sentence the
-        // model can act on rather than discovered as a suppressed message.
+      const form = await formForReply(ctx, args, to)
+      if (form && 'error' in form) return { result: { error: form.error } }
+      if (form && (buttons?.length || args?.list)) {
+        // The same exclusivity the wire imposes. Said as a sentence the model can act on
+        // rather than discovered as a suppressed message.
         return {
           result: {
-            error: 'a message carries the setup form or reply buttons, never both — that is the wire, not a house rule',
-            hint: 'Send the form on its own; offer anything else on the message after it.',
+            error: 'a message carries a form or reply buttons, never both — that is the wire, not a house rule',
+            hint: 'Send the form on its own; offer anything else on the message after it. Say in the body that they can tell you the same things here instead.',
           },
-        }
-      }
-      if (link) {
-        if (buttons?.length || args?.list) {
-          return {
-            result: {
-              error: 'a message carries a link or reply buttons, never both — that is the wire, not a house rule',
-              hint: 'Send the link on its own, and offer the next step on the message after it. Or drop the link and keep the buttons.',
-            },
-          }
         }
       }
 
@@ -2123,22 +1933,22 @@ export async function runTool(
        * exist the check was skipped and the message went out. One round of grace each.
        */
       if (!ctx.affordanceChecked) {
-        const hasAffordance = Boolean(link || setupFlow || buttons?.length || args?.list)
+        const hasAffordance = Boolean(form || buttons?.length || args?.list)
         if (pointsAtMissingAffordance(body, hasAffordance)) {
           ctx.affordanceChecked = true
           return {
             result: {
-              error: 'that message points at a button, link or form, and the message carries none',
+              error: 'that message points at a button or a form, and the message carries none',
               hint:
-                'Either attach it — link_screen:"setup" sends the business form right here in the chat, '
-                + 'link_screen:"register" or "calendar" send those screens, and buttons:[…] offers a next step — '
+                'Either attach it — form:"business_setup" sends the business form right here in the chat, '
+                + 'form:"add_class" and form:"register" send those, and buttons:[…] offers a next step — '
                 + 'or say the thing plainly instead of pointing at a control that is not there.',
             },
           }
         }
       }
 
-      if (to === ctx.identity.contact.id && !setupFlow) buttons = withFollowUps(buttons, ctx)
+      if (to === ctx.identity.contact.id && !form) buttons = withFollowUps(buttons, ctx)
 
       /**
        * The bare-message backstop — `backstopButtons`, not a hardcoded menu.
@@ -2155,7 +1965,7 @@ export async function runTool(
        * enforced on one of the two ways a message leaves a turn, where which one it
        * takes is the model's choice.
        */
-      if (to === ctx.identity.contact.id && !link && !setupFlow && !buttons?.length && !args?.list) {
+      if (to === ctx.identity.contact.id && !form && !buttons?.length && !args?.list) {
         buttons = closingQuestionButtons(body) ?? backstopButtons(ctx.identity, body)
       }
 
@@ -2216,8 +2026,7 @@ export async function runTool(
         footer: args?.footer ? String(args.footer) : undefined,
         buttons,
         list,
-        link: link ?? undefined,
-        flow: setupFlow,
+        flow: form ?? undefined,
         catalogId,
         fixed: catalogId ? CATALOG[catalogId].fixed : false,
         subjectPersonIds: Array.isArray(args?.subject_person_ids) ? args.subject_person_ids : undefined,
@@ -2321,116 +2130,6 @@ export async function runTool(
         }
       } catch (e) {
         return { result: { error: e instanceof Error ? e.message : String(e) } }
-      }
-    }
-
-    /* ---------------------------------------------------------------- view */
-    case 'view': {
-      const builtIn = String(args?.screen ?? '')
-      if (builtIn) return await builtInScreen(ctx, builtIn, args)
-
-      const parsed = ViewSpecSchema.safeParse({ title: args?.title, components: args?.components })
-      let spec: unknown = parsed.success ? parsed.data : null
-      let fellBack = false
-      if (!spec) {
-        // §15 — an invalid spec falls back to `table`, which renders any
-        // tabular result. The floor under all of it: anything that cannot be
-        // rendered gets answered in chat.
-        const query = Array.isArray(args?.components)
-          ? args.components.find((c: any) => typeof c?.query === 'string')?.query
-          : null
-        if (!query) {
-          return {
-            result: { error: 'that view spec is not valid and there is no query to fall back to — answer in chat instead' },
-          }
-        }
-        spec = { title: String(args?.title ?? 'Here you go'), components: [{ type: 'table', query: String(query) }] }
-        fellBack = true
-      }
-      // §15: "Query shape violates the contract → validation rejects at mint
-      // time; retry once, then table." The spec was validated and its queries
-      // never were, so a view could be minted, linked, and sent — and the first
-      // anyone knew was the person reading `Couldn't load this bit. missing
-      // FROM-clause entry for table "academy"` on their own phone. Watched
-      // happening to a parent on her first ever message to the product.
-      //
-      // Running them here costs one round trip per component and moves the
-      // failure to the only moment it can be repaired.
-      const components = Array.isArray((spec as any)?.components) ? (spec as any).components : []
-      const broken: { component: number; query: string; error: string }[] = []
-      let totalRows = 0
-      for (const [i, comp] of components.entries()) {
-        const query = typeof comp?.query === 'string' ? comp.query : null
-        if (!query) continue
-        const probe = await modelQuery(ctx.session, query)
-        if (probe.error) broken.push({ component: i, query, error: probe.error })
-        else totalRows += probe.rowCount
-      }
-      if (broken.length) {
-        return {
-          result: {
-            error: 'the view was not minted: one of its queries does not run',
-            failing: broken,
-            hint: 'Fix the query and call view again, or answer in chat — a view is an upgrade to a text answer, never a prerequisite for one.',
-          },
-        }
-      }
-
-      // §15's floor — "a view is an upgrade to a text answer, never a prerequisite for
-      // one" — was a sentence in a document, so it held exactly as often as the model
-      // remembered it. Measured against the live prompt: asked *"sorry what do i do now"*,
-      // the model minted a web page three times in three. A lost newcomer was handed a
-      // link. That is the whole of the user's complaint that "the web surface is too
-      // available", and it is not a taste question: a tap out of WhatsApp to read four
-      // rows is worse than four rows in the chat, always.
-      //
-      // The queries have just been run, so the runtime knows something the model was only
-      // guessing at: how much there actually is. A view earns its tap when the answer does
-      // not fit in a message, and that is now a fact checked at mint rather than a judgement
-      // made at compose. It also derives §15's own hierarchy without hardcoding a role —
-      // a parent's tally and a coach's week are small and stay in chat, an admin's
-      // attendance-by-class-by-month is not and does not.
-      //
-      // A form is exempt: its size is the number of fields, not the number of rows, and
-      // §14.6 says everything form-shaped goes here.
-      const VIEW_EARNS_ITS_TAP = 8
-      const hasForm = components.some((c: any) => String(c?.type) === 'form')
-      if (!hasForm && totalRows < VIEW_EARNS_ITS_TAP) {
-        return {
-          result: {
-            error: `not minted: those queries return ${totalRows} row(s) in total, which fits in a message`,
-            hint:
-              'Say it in the chat. A page costs them a tap out of WhatsApp and gives nothing back at this size — ' +
-              'a view is an upgrade to a text answer, never a prerequisite for one. If you have not read the rows ' +
-              'yet, read them and answer.',
-          },
-        }
-      }
-
-      const forPersonId = String(args?.for_person_id ?? ctx.identity.person.id)
-      const ttl = Math.min(Math.max(Number(args?.ttl_minutes ?? 120), 5), 60 * 24 * 7)
-      const viewSpecId = newId()
-      const expires = new Date((await now()).getTime() + ttl * 60_000)
-      await withSession(serviceFrom(ctx.session), async (tx) => {
-        await tx.unsafe(
-          `insert into view_spec (id, academy_id, spec, for_person_id, expires_at)
-           values (${uid(viewSpecId)}, ${uid(ctx.session.academyId)}, ${jsonLit(spec)}, ${uid(forPersonId)},
-                   timestamptz ${lit(expires.toISOString())})`,
-        )
-      })
-      // No URL. The page exists; the way to it is an action, and the runtime signs it —
-      // at send time in `reply(link_view_spec_id:…)`, or at tap time behind a
-      // `{kind:'view', viewSpecId}` button, whose link is therefore always fresh.
-      return {
-        result: {
-          ok: true,
-          view_spec_id: viewSpecId,
-          fell_back_to_table: fellBack,
-          send_it_with: `reply(body:"…", link_view_spec_id:"${viewSpecId}")`,
-          note:
-            'A view is an upgrade to a text answer, never a prerequisite for one — say the short answer in ' +
-            'the body and let the page carry the detail. Never write a web address into a message yourself.',
-        },
       }
     }
 

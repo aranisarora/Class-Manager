@@ -138,7 +138,6 @@ message(contact_id, sender_id, direction 'inbound|outbound', catalog_id text,
   conversation_category, in_window bool, reply_to_action_id, idempotency_key unique)
 action(kind text, payload jsonb /* fully resolved */, minted_at, minted_for_contact_id,
   expires_at, consumed_at, consumed_by_contact_id)
-view_spec(spec jsonb, for_person_id uuid, expires_at tstz, minted_at tstz)
 job(kind text, run_at tstz, dedupe_key text unique, status text, attempts int,
   last_error text, payload jsonb, locked_at, locked_by)   -- GLOBAL
 audit_entry(actor_person_id, intent text, plan jsonb, diff jsonb, undone_at, undo_of)
@@ -149,7 +148,7 @@ turn(contact_id, person_id, role_acted, input jsonb, output jsonb, model,
 
 contact.person_id, account.holder_person_id, player.person_id, coach.person_id,
 academy_admin.person_id, tally_line.approved_by, payment.confirmed_by,
-view_spec.for_person_id, turn.person_id -> person
+turn.person_id -> person
 player.account_id, tally_line.account_id, payment.account_id -> account
 enrollment.player_id, attendance.player_id, tally_line.player_id -> player
 class_coach.coach_id, session_coach.coach_id, attendance.marked_by_coach_id -> coach

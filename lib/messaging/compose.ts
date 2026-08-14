@@ -47,7 +47,7 @@ export type ComposeSpec = {
    * the `flow_token` is the `action` row minted here — the same mint-once,
    * replay-verbatim path every button takes (§2.2).
    */
-  flow?: { flow: string; data?: Record<string, string | number | boolean> }
+  flow?: { flow: string; data?: Record<string, unknown> }
   catalogId?: CatalogId | null
   fixed?: boolean
   subjectPersonIds?: string[]

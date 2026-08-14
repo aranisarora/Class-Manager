@@ -35,6 +35,14 @@ import {
 /** A job planned more than this far into the past is a moment we missed. */
 const GRACE_MS = 2 * 60_000
 
+/**
+ * When a coach hears about their day, if neither they nor the owner has said.
+ *
+ * Only reached when the owner has turned their own morning brief off — the coach's
+ * day used to inherit that time, and inheriting a null meant midnight.
+ */
+const DEFAULT_COACH_DAY_AT = '07:00:00'
+
 type SessionRow = {
   id: string; class_id: string; class_name: string; starts_at: Date; ends_at: Date
 }
@@ -252,12 +260,23 @@ export async function planAheadFor(academyId: string): Promise<number> {
     }
 
     // -- the two bookends, today and tomorrow (§7.2, §10.2) ---------------------
+    //
+    // A null time is the owner having chosen "Don't send one" on the setup form, and
+    // it has to be checked HERE rather than inside `atTimeOn`, which reads a missing
+    // time as midnight. Left to that default, declining the morning brief would have
+    // produced one at 00:00 every day — the loudest possible way to honour a request
+    // for silence, and the kind of bug that looks like a scheduling glitch rather
+    // than an ignored answer.
     for (let d = 0; d <= Math.ceil(PLAN_HORIZON_HOURS / 24); d++) {
       const day = zoned(nowAt, tz).plus({ days: d }).toFormat('yyyy-MM-dd')
-      push('admin_morning_brief', atTimeOn(day, academy.morning_brief_at, tz),
-        dedupe.adminMorningBrief(academyId, day), { date: day })
-      push('admin_evening_digest', atTimeOn(day, academy.evening_digest_at, tz),
-        dedupe.adminEveningDigest(academyId, day), { date: day })
+      if (academy.morning_brief_at) {
+        push('admin_morning_brief', atTimeOn(day, academy.morning_brief_at, tz),
+          dedupe.adminMorningBrief(academyId, day), { date: day })
+      }
+      if (academy.evening_digest_at) {
+        push('admin_evening_digest', atTimeOn(day, academy.evening_digest_at, tz),
+          dedupe.adminEveningDigest(academyId, day), { date: day })
+      }
     }
 
     // -- the coach's day, for anyone who has one (§8.2 step 1) ------------------
@@ -274,8 +293,12 @@ export async function planAheadFor(academyId: string): Promise<number> {
       const [coachId, date] = key.split('|')
       const coachSettings = coachRows.find((c) => c.coach_id === coachId)?.settings ?? null
       const briefAt = settingNumber(coachSettings, 'coach_day_at_minutes')
+      // The owner's brief time is the sensible default for a coach's day, but the two
+      // are different people: an owner who wants no 7am message has said nothing about
+      // when their coaches should hear about a class they are teaching. So a null falls
+      // back to a real hour rather than inheriting the silence — or, worse, midnight.
       const runAt = briefAt === null
-        ? atTimeOn(date, academy.morning_brief_at, tz)
+        ? atTimeOn(date, academy.morning_brief_at ?? DEFAULT_COACH_DAY_AT, tz)
         : DateTime.fromISO(`${date}T00:00:00`, { zone: tz }).plus({ minutes: briefAt }).toJSDate()
       push('coach_day', runAt, dedupe.coachDay(coachId, date), { coach_id: coachId, date })
     }

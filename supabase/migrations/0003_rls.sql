@@ -185,11 +185,6 @@ create policy message_cm_service_all on message
   for all to cm_service
   using (academy_id = app.academy_id()) with check (academy_id = app.academy_id());
 
-drop policy if exists view_spec_cm_service_all on view_spec;
-create policy view_spec_cm_service_all on view_spec
-  for all to cm_service
-  using (academy_id = app.academy_id()) with check (academy_id = app.academy_id());
-
 drop policy if exists audit_entry_cm_service_all on audit_entry;
 create policy audit_entry_cm_service_all on audit_entry
   for all to cm_service
@@ -784,16 +779,6 @@ create policy message_cm_user_select on message
   for select to cm_user, cm_readonly
   using (academy_id = app.academy_id()
          and (app.is_admin() or contact_id = app.contact_id()));
-
--- -----------------------------------------------------------------------------
--- view_spec — §15: the magic link is the session, and the spec is minted for
--- one person. Read only; minting is the runtime's.
--- -----------------------------------------------------------------------------
-drop policy if exists view_spec_cm_user_select on view_spec;
-create policy view_spec_cm_user_select on view_spec
-  for select to cm_user, cm_readonly
-  using (academy_id = app.academy_id()
-         and for_person_id = app.person_id());
 
 -- -----------------------------------------------------------------------------
 -- Deliberately without any cm_user / cm_readonly policy (§6.7 — infrastructure,

@@ -1,24 +1,27 @@
 /**
  * lib/setup-plan.ts — the shape of the business, written once.
  *
- * There are two ways to tell this product what the business is: the `setup` web
- * screen behind a signed link, and the onboarding WhatsApp Flow. There must not be
- * two ways to WRITE it. That rule is not abstract here — the register screen wrote
- * `attendance` with its own SQL for most of the product's life, twenty lines above a
- * handler that ran the named operation properly, and the consequence was that
- * marking a register produced no money, no free-first-class credit, no package
- * consumption, and never completed the session. It said "Saved" either way.
+ * There are several ways to tell this product what the business is: the
+ * `business_setup` form, a sentence typed in the chat, and whatever comes next.
+ * There must not be several ways to WRITE it. That rule is not abstract here — the
+ * register screen wrote `attendance` with its own SQL for most of the product's
+ * life, twenty lines above a handler that ran the named operation properly, and the
+ * consequence was that marking a register produced no money, no free-first-class
+ * credit, no package consumption, and never completed the session. It said "Saved"
+ * either way.
  *
- * So: one builder, one plan, and both surfaces run it through `executePlan` — which
+ * So: one builder, one plan, and every surface runs it through `executePlan` — which
  * is what buys the audit entry, the before-images that make `undo` work, atomicity
  * across the academy row and its venues, and `requireRows` turning an RLS refusal
  * into something the person is told about instead of a silent no-op.
  *
- * Everything is optional except the name, because the two surfaces ask for
- * different subsets: the screen has room for the brief and digest times and a whole
- * venue list, and one Flow screen does not. A column nobody supplied is left alone
- * rather than defaulted, which is the difference between "they did not say" and
- * "they said the default".
+ * Everything is optional except the name, because callers supply different subsets.
+ * **A field left `undefined` is left alone; a field set to `null` is cleared.** That
+ * distinction is the difference between "they did not say" and "they said none", and
+ * getting it wrong is not cosmetic: the setup form offers *Don't send one* against
+ * the morning brief, and a builder that treats that answer as "unset" leaves the old
+ * 7am time in place and sends the message they just declined — for ever, with no way
+ * to tell from the outside that the answer was ignored.
  */
 
 import { jsonLit, lit, uid } from '@/lib/agent/operations'
@@ -51,8 +54,16 @@ export function buildSetupSteps(academyId: string, v: SetupValues): PlanStep[] {
   if (v.cancellationWindowHours !== undefined && v.cancellationWindowHours !== null) {
     sets.push(`cancellation_window_hours = ${lit(v.cancellationWindowHours)}`)
   }
-  if (v.morningBriefAt) sets.push(`morning_brief_at = time ${lit(v.morningBriefAt)}`)
-  if (v.eveningDigestAt) sets.push(`evening_digest_at = time ${lit(v.eveningDigestAt)}`)
+  // `null` clears the time, which is how "Don't send one" turns the brief off.
+  // `undefined` means the caller had nothing to say and the column is untouched.
+  // A truthiness check cannot tell those apart, and the answer it loses is the one
+  // somebody chose deliberately.
+  if (v.morningBriefAt !== undefined) {
+    sets.push(`morning_brief_at = ${v.morningBriefAt === null ? 'null' : `time ${lit(v.morningBriefAt)}`}`)
+  }
+  if (v.eveningDigestAt !== undefined) {
+    sets.push(`evening_digest_at = ${v.eveningDigestAt === null ? 'null' : `time ${lit(v.eveningDigestAt)}`}`)
+  }
   if (v.upiHandle !== undefined) sets.push(`upi_handle = ${lit(clean(v.upiHandle))}`)
   if (v.operatingPattern) {
     sets.push(

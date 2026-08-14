@@ -52,8 +52,23 @@ function flag(c: FlowComponent, key: string): boolean {
 
 type Option = { id: string; title: string; description?: string; enabled: boolean }
 
-function options(c: FlowComponent): Option[] {
-  const src = c['data-source']
+/**
+ * The options a picker draws — from the artifact, or from what the send passed in.
+ *
+ * A `data-source` may be a literal list (the seven weekdays are the seven weekdays for
+ * everyone) or a `${data.x}` reference resolved at send time. The second form is what
+ * makes ONE published register able to draw tonight's twelve names and next week's
+ * nine; without it every possible headcount would need its own artifact, which is not
+ * a thing anybody would ship.
+ *
+ * An unresolvable reference returns no options rather than throwing, and the sheet
+ * below refuses to submit a required picker with nothing in it — so a roster that
+ * failed to travel is a visible dead end rather than an attendance record of nobody.
+ */
+function options(c: FlowComponent, data: Record<string, unknown>): Option[] {
+  const raw = c['data-source']
+  const m = typeof raw === 'string' ? REF.exec(raw) : null
+  const src = m ? (m[1] === 'data' ? data[m[2]] : undefined) : raw
   if (!Array.isArray(src)) return []
   return src.flatMap((row) => {
     if (!row || typeof row !== 'object') return []
@@ -70,7 +85,7 @@ function options(c: FlowComponent): Option[] {
 }
 
 /** A literal stays a literal; `${data.x}` resolves against what the send passed in. */
-function resolveInit(raw: unknown, data: Record<string, string>): Value {
+function resolveInit(raw: unknown, data: Record<string, unknown>): Value {
   if (Array.isArray(raw)) return raw.filter((v): v is string => typeof v === 'string')
   if (typeof raw === 'boolean') return raw
   if (typeof raw === 'number') return String(raw)
@@ -79,10 +94,16 @@ function resolveInit(raw: unknown, data: Record<string, string>): Value {
   if (!m) return raw
   // `${form.x}` on an init-value would be this screen's own inputs before anybody has typed —
   // empty by definition, which is what an unresolvable reference is worth.
-  return m[1] === 'data' ? (data[m[2]] ?? '') : ''
+  if (m[1] !== 'data') return ''
+  const v = data[m[2]]
+  // A checkbox group's prefill arrives as a list of ids and must stay one. Coercing it
+  // to a string here would tick nothing and look exactly like "they picked nothing".
+  if (Array.isArray(v)) return v.map((x) => String(x))
+  if (typeof v === 'boolean') return v
+  return v === undefined || v === null ? '' : String(v)
 }
 
-function initialValues(children: FlowComponent[], data: Record<string, string>): Record<string, Value> {
+function initialValues(children: FlowComponent[], data: Record<string, unknown>): Record<string, Value> {
   const out: Record<string, Value> = {}
   for (const c of children) {
     if (!INPUT_FIELDS.has(c.type) || !c.name) continue
@@ -108,10 +129,10 @@ function labelOf(c: FlowComponent): string {
 }
 
 /** How a value reads back to a person: the option's title, not the id that travels. */
-function display(c: FlowComponent, v: Value | undefined): string {
+function display(c: FlowComponent, v: Value | undefined, data: Record<string, unknown>): string {
   if (v === undefined) return ''
   if (typeof v === 'boolean') return v ? 'Yes' : 'No'
-  const titles = new Map(options(c).map((o) => [o.id, o.title]))
+  const titles = new Map(options(c, data).map((o) => [o.id, o.title]))
   if (Array.isArray(v)) return v.map((id) => titles.get(id) ?? id).join(', ')
   if (c.type === 'DatePicker' && /^\d+$/.test(v)) return new Date(Number(v)).toISOString().slice(0, 10)
   return titles.get(v) ?? v
@@ -153,7 +174,8 @@ export function buildSubmission(
       // included, which is why the flow's own response schema coerces.
       built[key] = Array.isArray(v) || typeof v === 'boolean' ? v : String(v ?? '')
     } else if (m?.[1] === 'data') {
-      built[key] = flow.data[m[2]] ?? ''
+      const d = flow.data[m[2]]
+      built[key] = d === undefined || d === null ? '' : Array.isArray(d) || typeof d === 'boolean' ? d : String(d)
     } else {
       built[key] = raw
     }
@@ -169,7 +191,10 @@ export function buildSubmission(
     screen.title ?? screen.id,
     ...children
       .filter((c) => INPUT_FIELDS.has(c.type) && c.name && !isEmpty(values[String(c.name)]))
-      .map((c) => `${labelOf(c)}: ${sensitive.has(String(c.name)) ? '••••••' : display(c, values[String(c.name)])}`),
+      .map(
+        (c) =>
+          `${labelOf(c)}: ${sensitive.has(String(c.name)) ? '••••••' : display(c, values[String(c.name)], flow.data)}`,
+      ),
   ].join('\n')
 
   // `flow_token` rides inside the response and is not a form field — it is what matches the
@@ -213,15 +238,31 @@ export function FlowSheet({
   const footer = children.find((c) => c.type === 'Footer') ?? null
   const unknown = children.filter((c) => !KNOWN.has(c.type))
   const missing = children.filter((c) => INPUT_FIELDS.has(c.type) && flag(c, 'required') && isEmpty(values[String(c.name)]))
+  /**
+   * A picker whose options never arrived.
+   *
+   * `data-source: '${data.roster}'` resolves at send time, and when it resolves to
+   * nothing the control still draws — as an empty list that looks exactly like
+   * "nobody applies". On the register that reads as *everyone was present*, which is a
+   * billing record invented by a missing prefill. Blocked, loudly, rather than
+   * submitted.
+   */
+  const starved = children.filter(
+    (c) =>
+      (c.type === 'Dropdown' || c.type === 'RadioButtonsGroup' || c.type === 'CheckboxGroup')
+      && typeof c['data-source'] === 'string'
+      && options(c, flow.data).length === 0,
+  )
 
   const { responseJson, summary } = buildSubmission(screen, flow, values)
   const dead = buttonDisabled({ ...flow, actionId: flow.flowToken }, nowIso)
   const blocked =
     dead ? `this form is ${dead} — the token behind it is a single-use action row`
       : unknown.length ? `this sheet cannot draw ${unknown.map((c) => c.type).join(', ')}, so it will not pretend to have collected them`
-        : !footer ? 'this screen has no Footer, so there is nothing to submit it with'
-          : summary.length > SUMMARY_LIMIT ? `the summary is ${summary.length} chars and the inbound route takes ${SUMMARY_LIMIT} — shortening an answer to fit would be inventing one`
-            : null
+        : starved.length ? `${starved.map((c) => labelOf(c)).join(', ')} was sent with no options in it, so this form cannot say anything true`
+          : !footer ? 'this screen has no Footer, so there is nothing to submit it with'
+            : summary.length > SUMMARY_LIMIT ? `the summary is ${summary.length} chars and the inbound route takes ${SUMMARY_LIMIT} — shortening an answer to fit would be inventing one`
+              : null
 
   // A required field blocks the send here, in the sheet, exactly as it does on a handset —
   // never by trimming the payload down to what happens to be filled in.
@@ -247,6 +288,7 @@ export function FlowSheet({
           <Field
             key={`${c.type}:${c.name ?? i}`}
             c={c}
+            data={flow.data}
             value={values[String(c.name)]}
             invalid={tried && INPUT_FIELDS.has(c.type) && flag(c, 'required') && isEmpty(values[String(c.name)])}
             onChange={(v) => c.name && set(String(c.name), v)}
@@ -303,11 +345,14 @@ const CONTROL =
 
 function Field({
   c,
+  data,
   value,
   invalid,
   onChange,
 }: {
   c: FlowComponent
+  /** What the send passed in, so a `${data.x}` data-source resolves the same way here. */
+  data: Record<string, unknown>
   value: Value | undefined
   invalid: boolean
   onChange: (v: Value) => void
@@ -371,7 +416,7 @@ function Field({
             className={cx(CONTROL, border)}
           >
             <option value="">—</option>
-            {options(c).map((o) => (
+            {options(c, data).map((o) => (
               <option key={o.id} value={o.id} disabled={!o.enabled}>
                 {o.title}
               </option>
@@ -385,7 +430,7 @@ function Field({
       return (
         <fieldset className="flex flex-col gap-1">
           <legend className={LABEL}>{label}{required ? ' *' : ''}</legend>
-          {options(c).map((o) => (
+          {options(c, data).map((o) => (
             <label key={o.id} className="flex items-start gap-2 text-[12px] text-zinc-200">
               <input
                 type="radio"
@@ -410,7 +455,7 @@ function Field({
       return (
         <fieldset className="flex flex-col gap-1">
           <legend className={LABEL}>{label}{required ? ' *' : ''}</legend>
-          {options(c).map((o) => (
+          {options(c, data).map((o) => (
             <label key={o.id} className="flex items-start gap-2 text-[12px] text-zinc-200">
               <input
                 type="checkbox"

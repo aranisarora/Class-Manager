@@ -143,7 +143,9 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
     id: 'CL-OUTCOME',
     audience: 'client',
     trigger:
-      "Attendance marked for the player's session. An absence arrives as something to fix, not a verdict.",
+      "Attendance marked for the player's session. An absence arrives as something to fix, not a verdict — and say what it did to the bill, "
+      + 'because that is the parent\'s actual question: "recorded as cancelled in time, so nothing changes on your bill". '
+      + "If the coach left a note about this child, carry it verbatim — one specific sentence about their own child is worth more than everything else in the message.",
     defaultButtons: ['Rebook'],
     onSilence: 'Nothing further.',
     fixed: false,
@@ -284,7 +286,9 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
     id: 'CO-REGISTER',
     audience: 'coach',
     trigger:
-      '`ends_at` of a session this coach took. The register is the meter and the coaching record — kept unchanged even for a solo academy (§18).',
+      '`ends_at` of a session this coach took. The register is the meter and the coaching record — kept unchanged even for a solo academy (§18). '
+      + '[All present] marks the whole roster in one tap and is the normal night; [Take register] opens form:"register", which asks who was NOT there rather than asking about all twelve. '
+      + 'An absence with no cancellation on record gets one follow-up question before it is billed — that question is worth more than the rest of the exchange.',
     defaultButtons: ['All present', 'Take register'],
     onSilence: 'Expires 2h → admin (AD-REGISTER-MISSING).',
     fixed: false,
@@ -345,9 +349,12 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
     id: 'AD-MORNING-BRIEF',
     audience: 'admin',
     trigger:
-      '`academy.morning_brief_at`. Synthesized, not templated (§10.2) — and silent when there is nothing worth saying.',
+      '`academy.morning_brief_at`, which the owner chose during setup — so this is subscribed, not an interruption, and it goes on an ordinary day. '
+      + 'Synthesized, not templated (§10.2). What varies is the content, never the existence: open with *Needs you* when something does, '
+      + 'and close a quiet day on "Nothing needs you" — which is a result they wanted, not filler. Skip it entirely only when the day is genuinely empty: '
+      + 'no sessions, nothing outstanding, nothing to say.',
     defaultButtons: [],
-    onSilence: 'Nothing. Silence is the correct output most mornings.',
+    onSilence: 'Nothing further. A quiet brief has already said the day is quiet.',
     fixed: false,
     template: 'admin_digest',
     templateEvent: "this morning's brief",
@@ -437,7 +444,9 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
     id: 'AD-OPT-OUT',
     audience: 'admin',
     trigger:
-      'Someone opted out — per academy, never global (§16.3). The admin is told because they may want to call.',
+      'Someone opted out — per academy, never global (§16.3). The admin is told because they may want to call. '
+      + 'Carry the reading, not just the fact: whether the chat was angry or merely tired of the volume, that the player is still enrolled, '
+      + 'and the practical consequence nobody thinks of — a full opt-out means no monthly bill from us, so that chase is now the owner\'s.',
     defaultButtons: ['Call them'],
     onSilence: 'Nothing further.',
     fixed: true,
@@ -464,7 +473,10 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
   'AD-DELIVERY-FAILURE': {
     id: 'AD-DELIVERY-FAILURE',
     audience: 'admin',
-    trigger: 'An outbound send failed, or the number is blocked or unreachable.',
+    trigger:
+      'An outbound send failed, or the number is blocked or unreachable. These are three different sentences and only one of them is fixable: '
+      + 'a wrong number is a typo the owner can correct, a number not on WhatsApp needs a different contact for that family, '
+      + 'and a block is never retried at all (see going-quiet). Say which, by name, and only offer [Fix number] for the ones a digit would fix.',
     defaultButtons: ['Fix number', 'Ignore'],
     onSilence: 'Nothing further.',
     fixed: false,

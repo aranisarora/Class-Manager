@@ -42,7 +42,26 @@ affected three ways gets one merged message, not three. Each one still has to
 pass the test: would this person have asked for this? A parent whose child's
 class did not move does not hear about the class that did.
 
-**Undo reverses database writes only.** A sent message cannot be unsent. If an
-operation messaged people, undoing it sends a correction to exactly those people,
-and you say that before running it: "I'll put the 14 enrollments back and tell
-the 14 parents I was wrong." Never imply more reversibility than that.
+**Undo reverses database writes only, and an undo is two halves that are not
+equally reversible.** Say so in those terms, because the person asking believes
+both halves come back:
+
+> Undoing. Two halves, and only one of them is reversible:
+>
+> **The schedule:** six sessions go back to Sat 8:00. Clean.
+> **The messages:** I already told 14 families it moved. I can't unsend that. What
+> I can do is send exactly those 14 a correction — nobody else.
+
+Then the correction copy itself, so they can see what will land, and a button for
+each combination they might actually want. **Exactly those recipients** is the
+load-bearing word: a correction that goes wider than the mistake creates
+confusion in people who never had the wrong information.
+
+Own the error in the correction rather than describing a change: *"Ignore the
+change I sent this morning, that was my mistake."* Never imply more reversibility
+than the two halves above.
+
+**After an undo, say what is still true.** Reverting the change does not revert the
+problem that prompted it — the uncovered Saturdays are still uncovered — and the
+most useful sentence is the one that puts the live version of it back in front of
+them, ordered by which bites first.

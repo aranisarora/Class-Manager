@@ -1,0 +1,41 @@
+-- =============================================================================
+-- 0026 · Drop view_spec
+--
+-- §15's web surface is deleted, not deferred, and this table was the whole of its
+-- state.
+--
+-- The idea was a rendering surface the bot linked into with a short-TTL signed
+-- JWT — the magic link as the session — carrying a registry of components the
+-- model composed into a validated view spec. Three things killed it, in the order
+-- they bite:
+--
+--   1. Every form was better as a Flow. Setup and the register were the only two
+--      things that HAD to exist, and both are forms. A form that takes somebody
+--      out of WhatsApp into a phone browser is a worse form, and the objection
+--      that had kept Flows out applies only to endpoint-powered ones.
+--   2. The link was bearer auth. Whoever held the URL held that person's session,
+--      so a coach forwarding a register link handed out an open attendance sheet
+--      and a parent forwarding a tally leaked it into a family group. Short TTLs
+--      narrow that window; they never close it. A Flow response is bound to the
+--      conversation and cannot be detached from it.
+--   3. Once the forms left, the remainder did not pay for itself: one audience,
+--      occasionally, against a component registry, a view-spec grammar, a JWT
+--      surface, a second renderer and a second thing the emulator has to be
+--      honest about.
+--
+-- Nothing has an FK TO `view_spec` — it points at `academy` and `person`, not the
+-- other way — and no trigger or function reads it, so the table is the whole
+-- feature. Dropping it takes its primary key, both indexes, its two policies and
+-- its RLS setting with it. Those are deliberately NOT named separately: `drop
+-- policy if exists` on a table that is already gone is an error rather than a
+-- no-op, so a file that tried to be thorough would stop being re-runnable — the
+-- same reason 0011 and 0017 are one line each.
+--
+-- Unlike 0017, the create was ALSO taken out of 0002 and the policies out of 0003
+-- in the same change, which is what 0017's own closing note asked for the next
+-- time either file was edited. So a fresh database never grows this table and
+-- this file is a no-op there; an existing one loses it here. Applying 0003 alone
+-- against either is now safe, which it was not for `recipe`.
+-- =============================================================================
+
+drop table if exists view_spec;

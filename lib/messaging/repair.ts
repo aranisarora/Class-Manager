@@ -206,7 +206,7 @@ function braceSpan(text: string, at: number): { start: number; end: number } | n
  * that misses a blob.
  */
 const WIRE_KEY_RE =
-  /(?:^|[{,[\s])["']?(kind|buttons|action|steps|menu|args|view_spec_id|viewSpecId|catalog_id|ttl_minutes|to_contact_id|to_person_id)["']?\s*:/
+  /(?:^|[{,[\s])["']?(kind|buttons|action|steps|menu|args|form|form_prefill|catalog_id|to_contact_id|to_person_id)["']?\s*:/
 
 /** `title: 'Add a coach'` / `"title":"Add a coach"` — the labels, whatever the quoting. */
 const TITLE_RE = /["']?(?:title|label)["']?\s*:\s*["']([^"'\n]{1,60})["']/g

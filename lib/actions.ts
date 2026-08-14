@@ -38,17 +38,23 @@ export type ActionPayload =
   | { kind: 'operation'; op: OperationName; args: Record<string, unknown> }
   | { kind: 'steps'; steps: PlanStep[]; summary: string }
   | { kind: 'reply'; text: string } // replays as if the user typed it — goes back through the agent
-  | { kind: 'view'; viewSpecId: string }
-  | { kind: 'view'; screen: 'setup' | 'register'; ref?: string }
+  /**
+   * A button that SENDS a form. The tap composes the next message with the Flow
+   * attached, prefilled from the database at tap time rather than at mint time — so
+   * `[Set up my classes]` tapped tomorrow opens a form showing what is true tomorrow.
+   *
+   * Distinct from `flow` below, which is the form coming back. This one goes out.
+   */
+  | { kind: 'form'; form: string; sessionId?: string; prefill?: Record<string, unknown> }
   | { kind: 'menu'; menu: 'root' | string }
   | { kind: 'noop'; ack: string }
   | { kind: 'handoff'; reason: string; summary: string }
   /**
-   * A form the person fills in inside WhatsApp. The action is minted with the
-   * message, exactly like a button, and the Flow carries its id as `flow_token`;
-   * the submission arrives later and replays it with the answers attached. That is
-   * what lets a Flow inherit expiry, single consumption and the minted-for-contact
-   * check rather than needing a session concept of its own.
+   * A form the person fills in inside WhatsApp, coming back. The action is minted
+   * with the message, exactly like a button, and the Flow carries its id as
+   * `flow_token`; the submission arrives later and replays it with the answers
+   * attached. That is what lets a Flow inherit expiry, single consumption and the
+   * minted-for-contact check rather than needing a session concept of its own.
    *
    * Only the flow's NAME travels, never a plan: what a submission does is the
    * runtime's decision, not something a model may author into a button.

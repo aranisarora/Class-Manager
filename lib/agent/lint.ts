@@ -247,7 +247,7 @@ const TABLES = [
   'academy', 'venue', 'person', 'contact', 'account', 'player', 'coach',
   'academy_admin', 'memory_fact', 'class', 'class_slot', 'class_coach',
   'enrollment', 'session', 'session_coach', 'attendance', 'tally_line',
-  'payment', 'sender', 'message', 'action', 'view_spec', 'job', 'audit_entry',
+  'payment', 'sender', 'message', 'action', 'job', 'audit_entry',
   'turn', 'sim_clock', 'sim_fault',
 ]
 
@@ -259,7 +259,6 @@ const TABLE_WORDS: Record<string, string> = {
   class_coach: 'coach assignment',
   session_coach: 'coach assignment',
   tally_line: 'line on the bill',
-  view_spec: 'page',
   audit_entry: 'change record',
   sim_clock: 'clock',
   sim_fault: 'fault',

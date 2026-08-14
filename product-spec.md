@@ -2,7 +2,7 @@
 
 > Build document. Everything needed to implement the product: setup, invariants, architecture, data model, behavior, message catalog, scheduled work, and build order.
 >
-> **Stack:** Next.js (web surface + API) · Supabase (Postgres, RLS, Storage) · WhatsApp Cloud API (Meta, direct) · Gemini (multimodal, native audio) · a durable job scheduler, which is required, not optional (§13).
+> **Stack:** Next.js (API, webhook, emulator) · Supabase (Postgres, RLS, Storage) · WhatsApp Cloud API (Meta, direct) · WhatsApp Flows for everything form-shaped (§14.6) · Gemini (multimodal, native audio) · a durable job scheduler, which is required, not optional (§13).
 >
 > **Read §2 before writing any code.** Those rules are broken by omission, not by intent.
 
@@ -40,7 +40,7 @@ Non-negotiable. Each is a rule a plausible-looking implementation breaks silentl
 1. **RLS is the security boundary; the LLM is a user of it.** Every conversation acts through a real per-user Postgres session. Tool availability is UX — it shapes cost and behavior, it does not enforce anything. Database policies are security. Every table carries `academy_id`, and every policy has a regression test.
 2. **Mint once, replay verbatim.** A button's action is authored at compose time, validated, stored. The tap replays the stored payload. **No model inference at tap time**, where a misread commits someone to being somewhere.
 3. **Compute the effect before committing it.** Model-authored writes run inside a transaction whose affected rows are captured and shown before commit. The bot never estimates blast radius — it knows (§14.2).
-4. **Sending is not receiving.** `queued ≠ sent ≠ delivered ≠ read`, enforced in schema, code and copy. The bot never claims what it cannot see.
+4. **Sending is not receiving.** `queued ≠ sent ≠ delivered ≠ read`, enforced in schema, code and copy. The bot never claims what it cannot see. **`read` is an optional signal** — a recipient with read receipts switched off never generates one, so absence of `read` is *no information*, never evidence of not-read, and the copy must never imply otherwise.
 5. **Multi-step consequences live in transactions, not in the model's memory.** A cancel that credits and notifies is one operation that cannot half-complete — and **messages inside it are staged until commit**, so a rollback has messaged nobody (§14.2.1).
 6. **Nothing is sent during onboarding until the admin says go.** Building the roster messages nobody.
 7. **Parsed input is a proposal, never a write.** Anything read from an image, voice note or document is read back before it is acted on (§14.5).
@@ -52,7 +52,7 @@ Non-negotiable. Each is a rule a plausible-looking implementation breaks silentl
 
 Indian coaching businesses run on WhatsApp by hand — schedules, payment chasing, cancellations, parent communication. This moves that workload onto a WhatsApp-native manager. Clients book, pay and get reminded. Coaches get their day and mark attendance with taps. Admins run the business through natural language and menus.
 
-**The chat is the interface. Nobody installs anything. Nobody logs in.** The web is a rendering surface the bot links into (§15) — no navigation, no login, no app shell.
+**The chat is the interface. Nobody installs anything. Nobody logs in. Nobody leaves WhatsApp.** Everything form-shaped is a **Flow** (§14.6); anything spatial or dense is **rendered to an image and sent in the chat** (§14.6). There is no web surface and no link to tap — see §15 for what was removed and why.
 
 Every user is **WhatsApp-only by design**. A number not on WhatsApp is out of scope.
 
@@ -84,24 +84,36 @@ Most of what feels like bot behavior belongs in layers 0–1. *"Ending a coach m
 
 ### 4.1 Layer 2 — core doctrine
 
-Always in context. Roughly ten rules, and they shape every single reply:
+Always in context, and they shape every single reply. `lib/doctrine.md` is the file; this is the summary.
 
 1. **Quiet by default.** Every proactive message must be one its recipient would have asked for. No engagement pings, no "just checking in," no message whose only job is reminding people the bot exists.
-2. **The prompt is a convenience, not the interface.** Every prompted action works unprompted. A coach can mark attendance before being asked; a parent can cancel without a reminder in front of them.
+2. **The prompt is a convenience, not the interface.** Every prompted action works unprompted — and **say so once, early**, because nobody assumes it and the people who never find out are the ones who wait for a message before telling you something you needed an hour ago.
 3. **Speak the academy's language.** Use their words, from memory (§5). Never introduce vocabulary they haven't used.
-4. **Buttons first, text always available.** Free text is an escape hatch on every message, never the required path.
+4. **Buttons first, text always available.** Free text is an escape hatch on every message, never the required path. A form is a button too, and a form is always an offer and never a toll.
 5. **Read back before acting** on anything parsed, and anything touching more than one person.
 6. **Never claim what you can't see.** Queued is not delivered. Confirmed is not arrived.
 7. **Offer the natural next step as a button** after every action (§4.3).
 8. **Suggestions ride on messages already being sent**, never as a standalone interruption.
 9. **Roles are hats.** Never ask someone to confirm something to themselves.
-10. **When uncertain, say so plainly** rather than guessing.
+10. **When uncertain, say so plainly** — and about *which part*. "The fourth row is cut off, I can see a Saturday 10–11 slot and something like 'sub jr'" is worth a reply; "I couldn't read that" makes them redo work you already did.
+11. **Zero rows is an answer, never the whole answer.** Widen once and say what is actually there: *"Nothing this week — his first is Mon 17 Aug, 6am."* Off the row you just read, never off a pattern you remember.
+
+The five below were added after reading a month of the product's own transcripts against how a competent manager would actually have handled them. Each names a failure that was invisible because every individual message was *correct*.
+
+12. **Answer in proportion.** The reply to a confirmation is an acknowledgement. Somebody who taps `[I'll be there]` has said everything; **"👍" is the whole correct answer**, and restating their child's name, the class, the time and the venue is noise wearing helpfulness as a costume. Length is earned by news, by a decision, or by something going wrong.
+13. **Say what will stop, not only what will happen.** People model this thing by what reaches their phone, so the absence of a message is information you owe them. *"One tap, and I don't ask again."* *"You're out of it — I won't chase you about tonight."* A promise to be quiet is the most valuable thing you can say and the one nobody thinks to.
+14. **The cost goes before the tap, never after.** Anything that charges someone or gives up their place says so *in the confirmation*, with the number. Discovering a charge afterwards is how a fee becomes a dispute, and the sentence costs nothing to move.
+15. **Close what you opened.** Whoever raised a thing hears its outcome, not just its acknowledgement. A handoff with no return trip is indistinguishable from being ignored.
+16. **Teach the surface once, where it is useful.** Nobody guesses they can photograph a whiteboard at you, forward a spreadsheet, send a voice note, share thirty contact cards, or use a broadcast list instead of a group. Say it at the moment it saves them the work — never as a tour.
 
 ### 4.2 Layer 3 — behavior modules
 
 One file per behavior, all of them always in context. Each carries a **trigger condition, not a title** — the condition is what tells the model when the module applies.
 
 ```
+onboarding       — a business, a coach or a family at the beginning of something
+watching         — something is worth coming back to, or worth remembering
+going-quiet      — somebody wants less of you, or none of you
 coach-churn      — a coach is leaving, being replaced, or their sessions need reassigning
 money-dispute    — a charge is disputed, a payment contested, or a waiver requested
 first-contact    — messaging someone who has never messaged us
@@ -113,9 +125,13 @@ feedback         — a parent complains or praises, or a coach makes an observat
 reporting        — the admin wants numbers, trends, or a view
 ```
 
-~4.5k tokens, always present, inside the cached prefix (§4.4). **Adding a behavior means adding a file, not touching code.**
+**The last three added are the three nothing covered**, and each was invisible in the same way: no trigger condition, so the model never reached for the capability behind it. `onboarding` was the situation *every* business is in on its first day, left to improvisation — and what got improvised was a narration of `onboarding_state`. `watching` is not a situation but a *capability*: the two most discretionary tools in the product, `schedule` and `remember`, were named nowhere, and across 93 driven turns produced zero watches and three facts. `going-quiet` is the moment somebody asks you to stop, where the easy answer — switching everything off, silently, including the bill they now have to be chased for by hand — is unrecoverable.
 
-**Why they are not lazy-loaded.** An earlier design had the model pull modules on demand from a manifest, keeping only the nine trigger lines in context. That saves ~4.5k tokens of an already-cached prefix — nearly nothing — and buys a failure mode where the bot behaves correctly or not depending on whether it classified the situation right, which is invisible from the outside and nearly undebuggable. **Cached tokens are cheap; unreliable judgment is not.** The trigger conditions stay because they are how the model knows a module applies; they just no longer gate a fetch.
+~16k tokens, always present, inside the cached prefix (§4.4). **Adding a behavior means adding a file, not touching code.**
+
+**Why they are not lazy-loaded.** An earlier design had the model pull modules on demand from a manifest, keeping only the trigger lines in context. That saves tokens of an already-cached prefix — nearly nothing — and buys a failure mode where the bot behaves correctly or not depending on whether it classified the situation right, which is invisible from the outside and nearly undebuggable. **Cached tokens are cheap; unreliable judgment is not.** The trigger conditions stay because they are how the model knows a module applies; they just no longer gate a fetch.
+
+**No count is stated anywhere the model reads.** A number in the prompt is the one thing here that goes stale silently — nothing checks it, and the model cannot tell a miscount from a module it has been told to ignore. `BEHAVIOR_MODULES` in `lib/agent/context.ts` is the only place the set is declared.
 
 ### 4.3 Follow-up buttons
 
@@ -411,7 +427,7 @@ payment (
 - **The free first class is a rule that mints an adjustment** — a negative line equal to the first `session` line. **Per player, not per account.** A second child gets their own trial.
 - Balance for a period = `sum(tally_line.amount) - sum(confirmed payment.amount)`.
 
-### 6.5 Messaging, actions, views
+### 6.5 Messaging, actions, Flows
 
 ```sql
 sender (                          -- §16.3. global, no academy_id. never a constant.
@@ -449,11 +465,14 @@ action (                          -- §2.2, the payload rule
   consumed_by_contact_id uuid references contact(id)
 )
 
-view_spec (                       -- §15. minted once, rendered deterministically.
-  spec        jsonb not null,     -- components, arrangement, queries
-  for_person_id uuid not null references person(id),
-  expires_at  timestamptz not null,
-  minted_at   timestamptz not null default now()
+flow_send (                       -- §14.6. one row per Flow put in front of a human.
+  flow_name    text not null,      -- business_setup | add_class | register
+  flow_token   text not null unique,-- opaque, per-send; comes back on the response
+  context      jsonb not null,      -- fully resolved, exactly like action.payload
+  sent_to_contact_id uuid not null references contact(id),
+  expires_at   timestamptz not null,
+  responded_at timestamptz,
+  response     jsonb                -- the `nfm_reply` payload, stored verbatim
 )
 ```
 
@@ -465,6 +484,10 @@ view_spec (                       -- §15. minted once, rendered deterministical
 - `steps` — a `transaction(steps[])` plan (§14.2.1), validated and diff-computed at mint time
 
 Both are authored at compose time, when the model has the context to get them right, and replayed verbatim at tap time. **The freedom is in what can be minted; the safety is that minting and tapping are different moments.** Invariant 2 is untouched. Without this, §4.3's follow-up buttons can only ever demonstrate verbs someone hardcoded, which caps the product's discoverable surface at its tool authors' imagination.
+
+**`flow_send` is the same rule for form-shaped work.** The context is fully resolved when the Flow goes out; the response is matched back by `flow_token` and validated against the schema the Flow declared. **No model call between sending a Flow and receiving its response.**
+
+**A Flow is bound to the conversation; a link was bearer auth.** The response arrives on the recipient's own thread and cannot be detached from it — there is nothing to forward, nothing to leak into a family group, and no window during which a stolen string is a session. This is the security property that decided §15, and it is a property of the transport, not of anything this codebase has to get right.
 
 ### 6.6 Jobs
 
@@ -507,7 +530,7 @@ Every policy carries a regression test asserting cross-tenant and cross-role rea
 
 The unavoidable cost of adoption is **data entry**. Reducing it is the highest-leverage work in the product.
 
-1. **Setup form** on the web surface (§15) — the form-shaped part in one screen, because a dozen chat round-trips is a dozen small waits. Business name, category, venues, operating pattern, cancellation window. One tap out of the chat, once, ever.
+1. **Setup Flow** (§14.6) — the form-shaped part in one screen, because a dozen chat round-trips is a dozen small waits. Business name, category, venues, operating pattern, cancellation window. **It opens inside WhatsApp; the admin never leaves the chat.** Once, ever.
 2. **Bring the timetable however it already exists** (§14.5). A photo of the whiteboard. A photo of the paper register. A forwarded spreadsheet. A voice note describing the week. The bot parses, reads back, creates on a tap. **This is the single biggest friction reducer in the product.**
 3. **Coaches** — §8.1. Three facts each, then invites.
 4. **Families** — §9.1. Contacts shared, roster built, nobody messaged.
@@ -525,7 +548,7 @@ End state: a working academy, and **no parent messaged yet** (§2.6).
 - **Menus as the missing nav bar.** A blank chat box with dozens of capabilities discovers worse than an ugly nav bar. A persistent list-picker is the primary affordance; prose is the fallback; follow-up buttons (§4.3) do the ongoing teaching. **The items are generated from what this admin actually does** (§5) — *Schedule / Clients / Money / Coaches / Insights* is the cold-start default, and an admin who asks about fees daily and has never opened Insights should see a different list by week three. A fixed taxonomy is the one part of the nav bar worth not copying.
 - **Two bookends, quiet between.** Morning brief led by *Needs you*. Evening digest (§10.2). Between them only genuine escalations interrupt. **The admin's phone is a briefing, not a ticker.**
 - **Proof it's working, pushed not pulled.** The admin will not think to ask whether reminders went out, so the digest carries delivery health unconditionally: *"41 reminders, 40 delivered, 1 failed — [see who]."*
-- **Insights on demand**, rendered as views for anything spatial or dense (§15).
+- **Insights on demand.** Answered in chat, and **rendered to an image when the shape is the point** — a week's timetable, a trend line, a month grid (§14.6). An image needs no tap, has no expiry, and survives being forwarded to a business partner.
 - **Audit trail and an undo window** on destructive operations. At multi-tenant scale a bot mistake is someone else's business. **Undo reverses database writes only.** A sent message cannot be unsent, so undoing an operation that messaged people sends a correction to exactly those people, and says so before it runs — *"I'll put the 14 enrollments back and tell the 14 parents I was wrong."* Anything more is a promise the product cannot keep, and building undo as if it could is how it half-works.
 
 ---
@@ -568,7 +591,9 @@ A ladder of single questions, each at its right time, one at a time.
 2. **T-60 — "Coming?"** [`CO-COMING`] `[Yes, I'm coming]` `[Can't make it]` `[Directions]`.
 3. **T-30 — one nudge** [`CO-NUDGE`], only if still silent, saying the quiet part out loud: the admin gets alerted shortly if we still don't know.
 4. **T-15 — the admin is told**, if still uncovered. The coach is not chased further.
-5. **After class — the register** [`CO-REGISTER`]. `[All present]` is a chat button, because that is the majority case and one tap beats loading anything. `[Take register]` opens the register page on the web surface (§15) — the whole roster on one screen, toggle each, notes inline, one submit.
+5. **After class — the register** [`CO-REGISTER`]. `[All present]` is a chat button, because that is the majority case and one tap beats opening anything. `[Take register]` opens the **register Flow** (§14.6), inside WhatsApp.
+
+   **The register is inverted, and that is the design.** It does not ask for a decision per player; **absences are sparse**, so it asks *who wasn't here*, then *who was late*, as two multi-select lists over the roster, with a note field. A twelve-player class where everyone came is one tap; where one child is missing it is two. Asking twelve three-state questions to learn one fact is the shape that makes coaches stop marking registers.
 
 **The timings are defaults, not constants.** T-60, T-30, T-15 and `client_reminder_lead_hours` are academy defaults that a person's own record overrides (`person.settings`). A coach who has confirmed at the door forty times running should stop being asked at T-60; a parent who needs a day's notice gets a day. **The bot sets these from observed behavior** (§5) and can say why. One lead time for every family in an academy is a schedule; per-person timings are a manager.
 
@@ -610,7 +635,12 @@ Coaches leave often and new ones arrive. Routine operations, not exceptional one
 
 **Step 1 — the admin shares contacts.** Multi-contact share from the address book (vCards), or a photographed register (§14.5). The bot builds `person`, `contact`, `account`, `player`, `enrollment` — **while messaging nobody.**
 
-**Step 2 — parents invite themselves.** The bot drafts the invite and walks the admin through a **WhatsApp Broadcast List** (≤256 recipients, lands as a normal 1:1 from the admin, recipients never see each other). It carries a deep link; the parent taps, sends the prefilled text, and the bot introduces itself [`CL-INTRO`] — whose manager it is, the three things it does, then **proof instead of promises**: their child's actual schedule, with a useful next tap.
+**Step 2 — parents invite themselves.** The bot drafts the invite; the admin sends it from their own number. It carries a deep link; the parent taps, sends the prefilled text, and the bot introduces itself [`CL-INTRO`] — whose manager it is, the three things it does, then **proof instead of promises**: their child's actual schedule, with a useful next tap.
+
+**Two vectors, and the default is not the obvious one.**
+
+- **The academy's existing parents' group, first.** Almost every one of these businesses already has one, and posting the link there costs one message, reaches everyone in it, and still has the parent initiate. **The bot asks whether one exists before it proposes anything else.**
+- **A WhatsApp Broadcast List** for whoever is not in it (≤256 recipients, lands as a normal 1:1 from the admin, recipients never see each other) — **with the constraint said out loud: a broadcast list only delivers to people who have the admin's number saved in their contacts.** Everyone else gets silence, and silence during a go-live is the worst failure the product has, because it looks like success. The bot names this before the admin sends, tracks who never arrived, and offers to fall back to individual forwards for them.
 
 **Identity is the phone number. There are no join codes.** Step 1 registered the number, so a recognized sender resolves on sight. The prefilled text gives the parent something to send and names the academy for numbers Step 1 never saw — a forwarded invite, a second parent — which resolve by academy name plus one confirming question.
 
@@ -648,6 +678,10 @@ A QR code at the court, a "Message us" link on a website or Instagram bio. **Ass
 
 **Routing.** The bot serves many academies on one number, so an inbound must resolve to *which* academy. This is a functional requirement, not a security one. The link carries prefilled text naming the academy — `wa.me/<number>?text=Hi Ace TT Academy` — and the bot matches on it. No token infrastructure.
 
+**The prefill is a hint, not a protocol.** It is editable, and people clear it and type "hi". When it is absent the bot asks which business, in one sentence, once (§10.1 has no fallback beyond that because none is needed).
+
+**A known number that arrives through a prospect entry point is still a known number.** A QR at the court is scanned by existing parents more often than by strangers — for directions, for the schedule, because it is the poster on the wall. **Identity wins over entry point:** the contact resolves to their existing person, and they get the client surface, not `PR-WELCOME`. The one thing the bot must not do is create a second `person` for someone already in the roster, which is the failure this rule exists to prevent. An existing parent asking about a *different* child is a new `player` on the same account, never a new account.
+
 **Name comes free.** The inbound webhook carries `profile.name`, the sender's own WhatsApp display name. Self-set and unverified, and it is the *parent's* name not the child's — but it turns two questions into one.
 
 **A conversation, not a wizard.** The most common real first message is *"my daughter is 14 and has played for three years, is your beginners class right for her?"* — and a scripted name → age → pick-a-class sequence has nowhere to put that. This is the highest-stakes conversation in the product, with a stranger, and it ends in one operation rather than being one:
@@ -681,6 +715,8 @@ The evening digest is **not a template with slots.** At digest time the bot rece
 **The mix shifts over the first month.** Week one leans on proof — delivery health, what was done. Month two leans on synthesis, because by then the admin trusts the mechanics and wants the thinking. This is a prompt instruction driven by the academy's age, not two code paths.
 
 The morning brief follows the same construction, led by *Needs you* and silent when there is nothing.
+
+**Synthesis only ships inside the window, and this is a hard constraint, not a preference.** Meta rejects templates whose body is substantially one variable, so *freely composed prose cannot go out as a template* — `admin_digest` (§16.2) can carry a structured brief with real parameters, and it cannot carry this. An admin who has not messaged in 24 hours therefore gets a **window-opener** naming the one thing that needs them, and the written digest lands the moment they reply. In practice an active admin is almost never out of window, because every button they tap re-opens it (§14.7) — but "almost never" is a thing the send path has to handle, not a thing the design gets to assume.
 
 ---
 
@@ -894,7 +930,7 @@ Seven generic primitives, not a catalog of hand-built features:
 - **Transact** — several writes and their consequences composed by the model into one atomic step (§14.2.1).
 - **Message** — compose and send freely (§14.4).
 - **Money** — payment links, mandates, reconciliation, adjustments.
-- **UI** — buttons, lists, and the web surface (§15).
+- **UI** — buttons, lists, Flows, and rendered images (§14.6).
 - **Schedule** — the bot enqueues work for itself (§13.1).
 
 Safety is **structural, not behavioral.** The floor being solid is what lets the model be free above it.
@@ -1012,8 +1048,50 @@ If the audio is unclear the bot says so plainly rather than guessing — §2.4 a
 
 - **Every link is a button.** Nothing URL-shaped is pasted into message text.
 - **UI is an offer, never a gate.** Never *require* a form for something chat could do. The correct shape: *"Done — Aarav's out Tuesday. Want to set up the rest of his absences? `[Open form]` — or just tell me."* Both paths work; the form is a shortcut, never a toll.
-- **Everything form-shaped goes to the web surface** (§15): admin setup, the register, anything dense. It has no publish latency, no versioning burden and no ceiling.
-- **No WhatsApp Flows.** A Flow is a published, versioned artifact requiring an RSA keypair and an encrypted data-exchange endpoint, and over a signed link it buys exactly one thing: the user never leaves WhatsApp. The two candidates were `setup`, which runs **once per tenant, ever**, and `register`, which a signed link serves at the cost of one tap. Neither justifies the subsystem, and cutting it removes a whole encryption surface from the build. **Revisit only if the register's tap-out is measurably costing completions** — that is the one place the argument could turn.
+- **Every form is a Flow.** The business shape, a class, the register. A form that takes somebody out of WhatsApp and into a phone browser is a worse form, and every tap out of the chat is a completion lost. A form is never *required* for something a sentence could do (§14.6's second rule), and the copy says so every time.
+- **Anything spatial or dense is aggregated into the message.** A week's timetable, a month of tally lines, a trend: the short version in words, with the numbers, and the offer to break it down further. **A picture would be better and is not built** — rendering a PNG needs a rasteriser this repo does not carry, so it is honestly deferred rather than quietly assumed. Until it exists the ceiling in §15 is the real one, and it is chat.
+
+**Static Flows only, and that is what makes them affordable.** The objection this section used to carry — RSA keypair, an encrypted `/data` endpoint, published versioned artifacts, a whole encryption surface — is **true of endpoint-powered Flows and of nothing else**. A *static* Flow, where every screen and every value is known at send time and `flow_action` is `navigate`, needs no keypair, no endpoint and no encryption; Meta's own guidance is to avoid an endpoint when you do not need one. What remains is publishing and versioning, which is an account operation performed rarely, not a runtime one.
+
+**What that buys, beyond the avoided tap:**
+
+- **The response is bound to the conversation** (§6.5). A signed link was bearer auth — anyone holding the URL held that person's session until it expired, and a forwarded register link is an open attendance sheet. A Flow has nothing to forward.
+- **It works out of window.** A Flow can be delivered inside a template, so the register can reach a coach who has not messaged all day. A link could too, but only by pasting a URL into a template body, which is the pattern Meta scrutinises hardest.
+- **One rendering surface to be honest about.** §17's rule is that anything that cannot render in the emulator does not ship. Two surfaces meant proving that twice.
+
+**Flows are a catalog, not a compose surface. The model never authors Flow JSON.**
+
+This is the same rule as §14.2's named operations and §16.2's templates, and for the same reason. A Flow is a **published, versioned artifact** — publishing is an account operation (`POST /{WABA}/flows`, `/assets`, `/publish`) done at build time, rarely, by us. What happens at runtime is that the model **picks one and fills its parameters**, exactly as it picks an operation and supplies its arguments:
+
+```
+flow('register', {
+  session:  <resolved>,
+  roster:   [ … twelve players, names and ids … ],
+  note_hint: "anything the parents told you at the court?"
+})
+```
+
+**The dynamic part is the data, not the structure.** A static Flow declares its screens once; `${data.x}` reads what was passed in at send time and `${form.x}` reads what the human typed. So the register Flow is *one* artifact that renders tonight's twelve names, and the setup Flow is *one* artifact that renders this academy's category list — no endpoint, no per-conversation publish, no versioning churn. **Parameterised, not generated.**
+
+**The catalog, and it is meant to stay this short:**
+
+| Flow | Takes | Used for |
+|---|---|---|
+| `business_setup` | every field, prefilled from the row | §7.1 step 1, and every later edit of the business shape |
+| `add_class` | whatever was read off the photo, however partial | §7.1 step 2, the timetable and its corrections |
+| `register` | session, roster as a dynamic option list, note | §8.2 step 5, the inverted register |
+
+**Three, not five.** `coach_confirm` and `client_details` were specified here and are deliberately not built. Both are *one question*, and a form is the wrong shape for one question: §8.1's *"is this right?"* is two reply buttons and a list of the four things that are ever actually wrong, and §9.1's missing details arrive during the conversation that is already happening (§10.1's rule — answer first, ask never). A form for a yes/no costs a tap to open, a tap to answer and a tap to submit, to collect what one button already collects. `roster_repair` is not built for a different and harder reason, below.
+
+**One screen each, deliberately.** Meta supports multi-screen static Flows and a four-screen setup wizard reads well on paper. It is worse in the hand: four *Continue* taps instead of one *Save*, and every screen boundary is a place to abandon. A Flow screen scrolls, so each form here is one screen carrying every field, and the grouping a wizard would do with screens is done with subheadings.
+
+**The register is inverted, and that is structural rather than stylistic.** It asks who was *not* there. A twelve-name roster with four radio buttons each is forty-eight taps to say the commonest true thing — everyone came — and a register that costs forty-eight taps stops being filled in by week three. An unmarked register is a session that never bills, so this is a money defect wearing a UX complaint's clothes. It also happens to be the only shape that works: a **static Flow cannot draw a variable-length roster**, but a `CheckboxGroup` whose `data-source` is `${data.roster}` renders tonight's twelve and next week's nine from one published artifact.
+
+**What the dynamic `data-source` buys, and its limit.** `${data.x}` parameterises *options*, not *structure*. So a roster of any size is one artifact, and a venue list of any size is one artifact — but a page of N differently-shaped repair rows is not expressible at all. That is why `roster_repair` is absent: the "two Meeras, one Kiran in two classes, six unnamed numbers" page has a different control per ambiguity, and there is no static JSON that renders it. **That case is a chat ladder**, which is what this section already prescribes when no Flow fits.
+
+**Adding a Flow is a deploy, and that is the cost.** It is the same cost as adding a template and it is paid the same way: a small fixed set covering *categories of form*, not a screen per situation. If a form-shaped need arises that no Flow covers, **the answer is a chat ladder**, not a new artifact minted mid-conversation — which is not something Meta permits and not something this product would want if it did.
+
+**Where a Flow does not fit at all, the answer is chat.** A Flow is a form, not an app: no charts, no free navigation, no long tables. If the thing wanted is a *view* rather than an *input*, it is prose — aggregated, with the numbers in the message body. **This is a real ceiling and it is accepted deliberately** (§15).
 
 ### 14.7 Window and templates
 
@@ -1021,56 +1099,46 @@ Replies inside the 24h window need no template and no approval. `contact.last_in
 
 **Out-of-window messages are window-openers.** Deliberately simple, aimed at getting one useful tap, after which the rich interaction happens in-window for free.
 
+**A button tap is an inbound message.** Tapping `[Yes, I'm coming]` sends a reply, so it stamps `last_inbound_at` and re-opens the window for another 24 hours. **The ladder feeds itself:** a coach who taps once a day is never out of window, and a family that answers one reminder a week is in window for the tally that follows. This is why buttons people actually want to tap are infrastructure rather than politeness (§16.1) — and it is the single largest lever on what this product costs to run.
+
+**The economics, as they now stand.** Since Meta moved to per-message pricing, service messages inside the window are free and unlimited, and **utility templates sent inside an open window are free too**. What is actually paid for is utility templates to a *cold* contact and anything classified marketing. So the cost model is not "messages sent" — it is **"messages sent to people who have gone quiet"**, which is a number the product controls by being worth replying to. *Rates move; re-check the current India card before modelling spend rather than trusting a figure written here.*
+
 ### 14.8 The escape hatch
 
 An always-reachable "talk to a person," plus **automatic triggers**: two failed turns, refund/complaint/safety language, requests the tools genuinely cannot serve. The bot performs the handoff itself and attaches the transcript. **Client escalations go to their academy's admin. Admin escalations go to the platform.** Heavy use is a product bug being measured.
 
 ---
 
-## 15. The web surface
+## 15. The web surface — removed
 
-Not a fallback — the escape valve for any UI WhatsApp cannot express, with no approval latency and no ceiling.
+**Deleted, not deferred.** The section number stays because §14.4 onwards is cited by number from the code; there is no §15 capability. **There is no browser in this product.**
 
-**Who gets it, in order of ambition:**
+The idea was a rendering surface the bot linked into with a signed short-TTL JWT — the magic link as the session, no login, no navigation — carrying a registry of components (`table`, `prose`, `form`, `calendar`, `chart`, and five more) that the model composed into a validated view spec. It was to be the escape valve for any UI WhatsApp could not express: setup and the register as `form`, and dense comparative work for the admin.
 
-- **Admin — heavily.** Dense, comparative, exploratory. Calendars, revenue by class, attendance trends, "worst Tuesdays first." The primary audience, and where the ceiling should be highest.
-- **Coach — narrower.** Their week, a roster, their payables. A handful of stable shapes.
-- **Parent — narrowest.** Their child's schedule, attendance history, the tally.
+**Why it went, in the order the reasons actually bite:**
 
-**Access:** a signed link behind a labeled button, carrying a short-TTL JWT with `academy_id` and `person_id` claims that Postgres policies read. **The magic link is the session.** No login, no navigation — the chat is the navigation.
+1. **Every form was better as a Flow.** Setup and the register were the only two things that *had* to exist, and both are forms. A form that takes somebody out of WhatsApp into a phone browser is a worse form. The objection that had kept Flows out was re-derived and found to be wrong on the facts: three of its four costs apply only to endpoint-powered Flows (§14.6).
+2. **The link was bearer auth.** Whoever held the URL held that person's session. A coach forwarding a register link hands out an open attendance sheet; a parent forwarding a tally into a family group leaks it. Short TTLs narrow that window, they never close it. A Flow response is bound to the conversation and cannot be detached from it.
+3. **Once the forms left, the remainder did not pay for itself.** What was left was the admin's spatial and exploratory work — a calendar, a chart, a long table. That is a real thing to want and it is **one audience, occasionally**, against a component registry, a view-spec grammar, a JWT surface, a second renderer and a second thing the emulator has to be honest about (§17).
+4. **Every answer had two implementations and a decision.** The model had to choose, on every question, between saying it and rendering it. That choice was itself a source of wrongness, and it never got cheaper.
 
-**The component library is a registry, not a fixed list.** Each component declares a data contract; adding one is a file, and the model discovers what exists from the registry rather than from a list baked into its prompt.
+**What replaced each thing it did:**
 
-| Component | Takes | Used for |
-|---|---|---|
-| `table` | rows, column defs, optional totals | everything; the universal fallback |
-| `prose` | markdown | synthesized commentary (§10.2) |
-| `form` | fields, current values, a submit action | setup, the register, anything form-shaped (§14.6) |
-| `calendar` | sessions with time, title, venue | the week, the month |
-| `people-list` | people with a status badge | rosters, unpaid families, coach lists |
-| `detail` | one entity's fields | a player, a class, a coach |
-| `stat-cards` | label, value, optional delta | collections, attendance rate, headcount |
-| `timeline` | ordered events | a day, a player's history |
-| `chart` | a validated chart grammar | anything worth plotting |
-
-**The first three ship in phase 9; the rest land when a real question is badly served by `table`.** `form` is not optional — it is what replaced the two Flows, and setup and the register both depend on it.
-
-**`chart` takes a grammar, not a chart type.** "Bar and line, nothing more" is a ceiling on what an admin can be shown, imposed for no safety reason — a declarative grammar (Vega-Lite-shaped: marks, encodings, transforms) is validated and rendered by trusted code exactly like every other component. **The boundary that matters is markup, not expressiveness.**
-
-**The model never authors markup.** It authors a **view spec** — JSON naming components, arrangement, and the queries filling each — validated against a schema and rendered by trusted code. Same pattern as action-minting, same reason: model-authored HTML in a browser is an injection surface a multi-tenant product cannot have.
-
-**When it can't construct:**
-
-| Failure | Answer |
+| Was going to be | Is now |
 |---|---|
-| Component doesn't exist | Fall back to `table` — it renders any tabular result |
-| Query shape violates the contract | Validation rejects at mint time; retry once, then `table` |
-| Too much data | Aggregate or paginate at mint time; never ship a 5,000-row page |
-| Genuinely novel need | `prose` + `table`. Honest and useful |
+| `form` — setup, the register | A **Flow** (§14.6) — `business_setup`, `add_class`, `register` |
+| `calendar` — the week, the month | Chat: the days that are not routine, not the grid |
+| `chart` — trends worth plotting | Chat: the shape in a sentence, with the numbers |
+| `table` — everything else | Chat, aggregated — a total and the three lines that explain it |
+| `prose` — synthesized commentary | It was always just a message (§10.2) |
 
-**The floor: anything that can't be rendered gets answered in chat.** A view is an upgrade to a text answer, never a prerequisite for one.
+**Images would beat links on WhatsApp, and they are not built.** An image renders inline with no tap, has no expiry, survives being forwarded, is still there next month when a JWT would be long dead, and is the format these users already receive schedules in. That is the right eventual answer for the calendar and the chart — but rendering one needs a rasteriser this repo does not carry, and writing it into the spec as though it existed is how a ceiling gets discovered by a user instead of by us. **Today every one of those rows is chat.**
 
-**The one unavoidable web moment:** payment-gateway KYC for Rail 2.
+**What is actually given up, stated plainly:** the ability to *follow a question somewhere nobody anticipated*. The admin can ask anything (§14.2 makes any question answerable) and will get prose and numbers — but they cannot pivot, drill or sort, and until the renderer exists they cannot see a shape either.
+
+**The ceiling this imposes, stated plainly so nobody discovers it as a surprise:** the admin cannot explore. They can ask anything (§14.2 makes any question answerable), and they will get prose, numbers and a picture — but they cannot pivot, drill or sort. **Revisit only when a real admin, with real data, is demonstrably blocked by that** — not because a dashboard would demo well. If it does come back, it comes back as one audience and three shapes, never as a registry.
+
+**Rail 2's payment-gateway KYC** is the one moment a browser is genuinely unavoidable. It is a third party's hosted flow, once per academy, and it is not a surface this product builds or owns.
 
 ---
 
@@ -1079,6 +1147,10 @@ Not a fallback — the escape valve for any UI WhatsApp cannot express, with no 
 ### 16.1 What's pooled
 
 **Quality rating** (per number, so one bad tenant degrades everyone) and **messaging tier limits** on business-initiated conversations. Replies inside an open window count against neither, which is why buttons people actually want to tap are infrastructure, not politeness.
+
+**And the account itself, which is the part that is not a trade-off.** One number means **failure is correlated across every tenant**: one policy strike, one wave of blocks from one badly-run academy, one quality drop, and *everybody* goes dark at the same moment — including the tenants who did nothing wrong and have no idea why their parents stopped hearing from them. A block is also **global to the number**, so a parent who blocks over one academy silently loses messages from another.
+
+**This is the largest single business risk in the product, not a messaging detail.** It is why §16.3's per-tenant sender routing exists from day one at n=1, why the per-tenant quality proxies exist at all, and why there is no marketing category anywhere in §16.2. The mitigation is not care; it is being able to **move a tenant to their own number in a config change** on the day their behaviour, or their bad luck, starts costing everyone else.
 
 ### 16.2 Templates are categories, not messages
 
@@ -1100,6 +1172,11 @@ Templates scale with **categories of unsolicited contact**, not with features. T
 Each carries **structured parameters holding real content** — `"{academy}: {event}. {detail}"`. A purely generic *"you have an update, reply to see it"* template is the vague-clickbait pattern Meta tightens on and risks rejection or marketing categorization; parameters carrying actual information do the same job legitimately.
 
 **Category matters:** Meta classifies templates regardless of intent, and one that *reads* promotional gets marked marketing — more expensive, more block risk. This is why §9.1's rule 4 exists. It is category management, not tone advice.
+
+**Two limits on what a template can carry:**
+
+- **A template cannot be a wrapper around free prose.** Meta rejects bodies that are substantially one variable, so anything the model *composes* — the digest, a synthesized answer, an explanation — cannot go out as a template. Out of window those become window-openers and the real message follows the reply (§10.2, §14.7).
+- **There is no marketing template in this product, and `payment_due` is the closest thing to a boundary.** Every one of the eight is transactional: something happened, or something is due, to somebody who is already a customer. **A promotional message to a prospect who did not convert is not on this list and will not be added** (§20) — on a shared number, one marketing classification is charged to every tenant. When an admin wants to re-approach a cold prospect, the bot drafts it and **the admin sends it from their own number**, exactly as with the coach invite (§8.1): no template, no category, no cost, and the reply lands in an open window.
 
 ### 16.3 Guardrails, built in
 
@@ -1144,7 +1221,8 @@ Real WhatsApp is hostile to develop against: real numbers, approved templates, t
 **Structural honesty is the constraint that matters:**
 
 - If a message cannot render in the emulator, it does not ship
-- Message length, button counts and list limits obey the real API's limits, so something that works here works there
+- Message length, button counts and list limits obey the real API's limits, so something that works here works there. **Rejected, never truncated** — cutting a 21-character button title to 20 ships the bug instead of finding it
+- **Flows render and respond here too**, and `validateFlowJson` re-checks the rules Meta applies at publish, because a Flow that would fail publish cannot ship no matter how well it renders locally
 - Template-vs-in-window, and which sender number went out, are always visible
 
 The visual question is answered once, cheaply, by phase 1's acceptance criterion — the same message rendered to a real test number.
@@ -1193,13 +1271,13 @@ Each phase has an acceptance criterion. Do not start a phase before its predeces
 | 0 | **Foundations** | Schema (§6). RLS policies + pgTAP regression tests. `job` table and runner with a drivable clock. Transport interface. Sender routing table | Cross-tenant and cross-role reads return zero rows. Build fails if any table lacks RLS. A job enqueued twice runs once |
 | 1 | **Emulator** | §17 — world, contact tray, arbitrary panes, live updates, clock, event log, seeds, recording, failure injection | A message renders correctly in the emulator and on a real test number. Clock advance fires a scheduled job. A run replays deterministically |
 | 2 | **Agent loop** | Primitives (§14.1), `transaction(steps[])` (§14.2.1), `agent_task` (§13.1), action minting incl. `operation` and `steps` kinds, write-diff preview, layered context (§4), memory store and hot set (§5) | A tap executes with no model call. An expired action refuses. A multi-row write shows its diff before commit. **A rolled-back transaction has messaged nobody.** A self-scheduled task fires, runs under its minter's RLS, and expires |
-| 3 | **Catalog & sessions** | Classes, slots, enrollments, all four `rate_unit`s, `materialize_sessions`, setup on the web surface | A class created in setup produces correct sessions three weeks out, and editing a slot rematerialises future sessions without losing cancellations or marked attendance |
-| 4 | **Coach day** | §8.2 ladder with per-person timings, register page, coverage derivation, cover offers, unprompted actions | Full ladder observable by advancing the clock. Uncovered escalation fires. A confirmed coach is never asked twice. "I'm here" works with no prompt. A per-person override changes when a prompt fires |
+| 3 | **Catalog & sessions** | Classes, slots, enrollments, all four `rate_unit`s incl. per-enrollment overrides, `materialize_sessions`, the `onboarding_setup` Flow | A class created from the setup Flow produces correct sessions three weeks out, and editing a slot rematerialises future sessions without losing cancellations or marked attendance. A per-session drop-in inside a monthly class bills correctly |
+| 4 | **Coach day** | §8.2 ladder with per-person timings, the inverted register Flow, coverage derivation, cover offers, unprompted actions | Full ladder observable by advancing the clock. Uncovered escalation fires. A confirmed coach is never asked twice. "I'm here" works with no prompt. A per-person override changes when a prompt fires. A twelve-player class with nobody absent is one tap |
 | 5 | **Client day** | Reminders, cancel with scope, outcomes, class-starting relay | Cancel inside window writes `cancelled_timely`, outside writes `absent`. Mis-tap protection confirmed |
 | 6 | **Onboarding funnels** | Coach invite (§8.1), client Steps 1–3 (§9.1), staged first contact, templates submitted | Deep link → prefilled send → resolve on sight → `CO-INVITE-CONFIRM`. Staging halts on a bad signal |
 | 7 | **Money** | Rates, tally lines, adjustments, Rail 1 links, reconciliation, dunning | A month of mixed per-session and per-month enrollments produces a correct line-by-line tally with a waiver applied |
 | 8 | **Admin day** | Brief and digest as synthesis (§10.2), NL CLI, follow-up buttons, delivery-status answers, audit and undo | *"Did Meera get the reminder?"* answers from real status. Undoing a messaging operation sends corrections to exactly the people who were told. Every number in a generated digest traces to a query result in its payload |
-| 9 | **Web views** | `table`, `prose`, `form`, view-spec minting, signed links, JWT→RLS, the component registry | A form submitted from a bot link writes with no login and expires correctly. An invalid spec falls back to `table`. A component added to the registry is usable with no prompt change |
+| 9 | **Flows & images** | Flow JSON artifacts, `flow_send`, response validation, publish/version handling, the image renderer (timetable, month grid, trend line) | A Flow response writes with no model call and a stale `flow_token` refuses. A Flow that would fail Meta's publish rules fails locally first. A week's timetable renders to an image that is legible on a phone |
 | 10 | **Multimodal** | Media pipeline, image parsing, native audio, read-back | A photographed timetable becomes a proposed week the admin confirms. A Hinglish voice note resolves a player name against the roster |
 | 11 | **Prospect funnel** | Cold inbound (§10.1), auto-confirmed trials, admin undo | A stranger with a QR link books a trial end to end; the admin can undo it |
 | 12 | **Agent simulation** | Personas, goals, judge agent, diffable runs (§17) | Ten seeded persona runs complete and produce a judge report. The same seed replays identically. A deliberately introduced regression shows up in a run diff |
@@ -1218,15 +1296,17 @@ Each phase has an acceptance criterion. Do not start a phase before its predeces
 | Capacity limits and waitlists | Sound essential, almost never fire in a well-run academy |
 | Skill levels | A class is a time, a place and people. Levels are the admin's naming |
 | Split households | One player, two accounts, split payment. Real but rare — **and a schema retrofit** (`player.account_id` becomes a join table), so §18's argument for building the coach *set* up front partly applies. Deferred with that cost named rather than hidden |
-| WhatsApp Flows | The web surface serves both candidates. The Flow subsystem — RSA keys, an encrypted data-exchange endpoint, published artifacts — is not worth one avoided tap (§14.6) |
+| The web surface | **Removed, not deferred** (§15). Forms are Flows, spatial things are images, and the remainder did not pay for a registry, a JWT surface and a second renderer |
+| Endpoint-powered Flows | Static Flows cover every form this product has. An RSA keypair and an encrypted `/data` endpoint buy dynamic screens nothing currently needs (§14.6) |
+| Admin exploration — pivot, drill, sort | The honest cost of removing the web surface (§15). Revisit when a real admin with real data is demonstrably blocked, not because a dashboard demos well |
 | Explicit prompt-cache handles | Implicit caching until phase 8's instrumentation shows the spend (§4.4) |
 | Parent feedback ratings | The admin sees every parent at pickup. A coach's note on attendance already carries the signal, and a rating prompt spends frequency budget to learn what a conversation would tell you |
 | Monthly value report | Its only job was reminding the admin the product is worth paying for. The evening digest already carries proof, and this was the one message in the catalog that failed §2.8 |
 | Automatic contact archival | Out of scope. A digest line — *"6 contacts silent for 3 months"* — costs nothing and the admin decides |
 | Global opt-out | Per-academy only |
 | Quiet hours | Removed. Early classes are normal; holding a 5am prompt breaks the product for the academies that need it most |
-| Generated-image visualization | The web surface beats images on every axis |
-| Unsolicited marketing broadcasts | Category risk on a shared number |
+| Generated-image visualization | **Still deferred, and now load-bearing.** The claim that "the web surface beats images on every axis" was wrong on WhatsApp — an image needs no tap, never expires and survives forwarding — but nothing renders one yet, and §15 removed the fallback. So the calendar and the chart are prose until a rasteriser ships. This is the first thing to build if an admin says the numbers are hard to read |
+| Unsolicited marketing broadcasts | Category risk on a shared number, charged to every tenant (§16.1). **Includes re-approaching a prospect who did not convert** — that is admin-forwarded from their own number, never a template (§16.2) |
 | Non-WhatsApp clients | Out of scope permanently |
 | School programs | Account-less pupils, read-only school view, no billing |
 
@@ -1237,4 +1317,5 @@ Each phase has an acceptance criterion. Do not start a phase before its predeces
 1. **Final name.** "Class Manager" is the name every parent sees in their chat header — a branding decision, not config. Its one real virtue: it says *class*, not *academy*.
 2. **The sender number's country code.** A local number is materially better for first-contact trust; it also carries KYC and local-entity requirements. **Gates parent-funnel conversion, so decide before phase 6.**
 3. **Category scope at launch.** The model — classes, sessions, players, rates — generalizes past sport to music, dance and tuition without change. How much genericizing before tenant #2 rather than after is open. **"Academy" is the word that does not generalize, which is why it appears nowhere a user can see it.**
-4. **Model tiering.** A cheaper model for clients and coaches, the strong one for admins and synthesis, is the presumed split. **It cuts against the product.** Parents and coaches are ~95% of the humans this talks to and are where "it feels like a bot" gets decided; the admin — who has menus, buttons and a web surface — needs the model least. Decide against live cost data from phase 2's instrumentation, and if the split happens, keep the strong model on first contact, the prospect conversation (§10.1), and anyone unhappy.
+4. **Model tiering — and it has already drifted, so decide it properly.** The presumed split was a cheaper model for clients and coaches, the strong one for admins. **That cuts against the product:** parents and coaches are ~95% of the humans this talks to and are where "it feels like a bot" gets decided, while the admin — who has menus, buttons and Flows — needs the model least. What is actually running is a different split: one model for every conversation, a stronger one for synthesis (`MODEL_MAIN` / `MODEL_SYNTH`). That is probably the right axis, and it happened without being decided. **Ratify it or change it against phase 2's cost data**, and if a per-persona split ever does happen, keep the strong model on first contact, the prospect conversation (§10.1), and anyone unhappy.
+5. **Children's data.** Every player in this system is a minor, and the product stores their names, attendance, coach notes on their progress, and their parents' numbers and payment records. India's DPDP Act treats children's personal data as a special category with its own consent requirements. **Nothing in this spec addresses it.** Get advice before tenant #2, not after — the answer shapes onboarding consent, retention, what a coach's note may say, and what leaves the country. Flagged here rather than guessed at.

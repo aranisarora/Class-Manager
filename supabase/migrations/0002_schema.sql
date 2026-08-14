@@ -348,16 +348,6 @@ create table if not exists message (
   idempotency_key       text unique                     -- REQUIRED on every outbound
 );
 
-create table if not exists view_spec (       -- §15. minted once, rendered deterministically.
-  id            uuid primary key default gen_random_uuid(),
-  created_at    timestamptz not null default now(),
-  academy_id    uuid not null references academy(id) on delete cascade,
-  spec          jsonb not null,              -- components, arrangement, queries
-  for_person_id uuid not null references person(id),
-  expires_at    timestamptz not null,
-  minted_at     timestamptz not null default now()
-);
-
 -- -----------------------------------------------------------------------------
 -- §6.6 Jobs. Global — the runner is infrastructure and claims across tenants;
 -- the academy it acts for rides in payload and is applied with `set local`.
@@ -478,7 +468,6 @@ create index if not exists tally_line_academy_idx    on tally_line (academy_id);
 create index if not exists payment_academy_idx       on payment (academy_id);
 create index if not exists action_academy_idx        on action (academy_id);
 create index if not exists message_academy_idx       on message (academy_id);
-create index if not exists view_spec_academy_idx     on view_spec (academy_id);
 create index if not exists memory_fact_academy_idx   on memory_fact (academy_id);
 create index if not exists audit_entry_academy_idx   on audit_entry (academy_id);
 create index if not exists turn_academy_idx          on turn (academy_id);
@@ -516,7 +505,6 @@ create index if not exists tally_line_account_period_idx on tally_line (account_
 create index if not exists tally_line_player_idx      on tally_line (player_id);
 create index if not exists payment_account_idx        on payment (account_id);
 create index if not exists action_minted_for_idx      on action (minted_for_contact_id);
-create index if not exists view_spec_person_idx       on view_spec (for_person_id);
 create index if not exists turn_contact_idx           on turn (contact_id);
 
 -- =============================================================================
@@ -545,7 +533,6 @@ alter table tally_line    enable row level security;
 alter table payment       enable row level security;
 alter table action        enable row level security;
 alter table message       enable row level security;
-alter table view_spec     enable row level security;
 alter table job           enable row level security;
 alter table audit_entry   enable row level security;
 alter table recipe        enable row level security;

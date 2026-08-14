@@ -71,20 +71,19 @@ export const ActionPayloadSchema: z.ZodTypeAny = z.lazy(() =>
       summary: z.string(),
     }),
     z.object({ kind: z.literal('reply'), text: z.string().min(1) }),
-    // A view button is either a spec this turn authored, or one of the two
-    // screens the product ships. The second form exists because the model kept
-    // writing it — `{kind:'view', screen:'setup'}` was its first instinct for
-    // "put the setup form behind a button", which is exactly right and was
-    // rejected as invalid. The link itself is minted fresh on tap, which is
-    // better than a URL in the body: §15's TTLs are short on purpose.
-    z.union([
-      z.object({ kind: z.literal('view'), viewSpecId: z.string().min(1) }),
-      z.object({
-        kind: z.literal('view'),
-        screen: z.enum(['setup', 'register']),
-        ref: z.string().optional(),
-      }),
-    ]),
+    // A button that sends a form. Checked against the registry at MINT time as well
+    // as at tap, because a button naming a form that does not exist is a dead end
+    // discovered by the person, on their phone, with no way back.
+    //
+    // The prefill and the session ride along so the form the tap opens is the form
+    // the sentence promised: `[Fix the 4th]` has to reopen the row that was
+    // half-read, not a blank one.
+    z.object({
+      kind: z.literal('form'),
+      form: z.string().refine(isFlowId, { message: 'unknown form' }),
+      sessionId: z.string().optional(),
+      prefill: z.record(z.unknown()).optional(),
+    }),
     z.object({ kind: z.literal('menu'), menu: z.string().min(1) }),
     z.object({ kind: z.literal('noop'), ack: z.string() }),
     // §14.8's escape hatch, as a button. The model kept minting

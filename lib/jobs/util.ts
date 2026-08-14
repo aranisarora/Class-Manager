@@ -108,8 +108,15 @@ export type AcademyRow = {
   timezone: string
   cancellation_window_hours: number
   client_reminder_lead_hours: number
-  morning_brief_at: string
-  evening_digest_at: string
+  /**
+   * Null means the owner turned it off, and it is a different value from "07:00".
+   * Typed as nullable because `atTimeOn` reads a missing time as midnight — so a
+   * caller that forgets the distinction does not skip the brief, it schedules one
+   * for 00:00 every day, which is the loudest possible way to honour "don't send
+   * one". `plan-ahead.ts` is the only reader and it skips on null.
+   */
+  morning_brief_at: string | null
+  evening_digest_at: string | null
   onboarding_state: 'setup' | 'roster' | 'ready' | 'live'
   rail: string
   upi_handle: string | null
