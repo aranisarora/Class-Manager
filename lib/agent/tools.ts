@@ -2140,10 +2140,23 @@ export async function runTool(
 
       if (to === ctx.identity.contact.id && !setupFlow) buttons = withFollowUps(buttons, ctx)
 
+      /**
+       * The bare-message backstop — `backstopButtons`, not a hardcoded menu.
+       *
+       * This branch minted `[{title: MENU_BUTTON_TITLE, action:{kind:'menu'}}]` directly,
+       * which is the thing `backstopButtons` exists to improve on and only ever did on
+       * the OTHER path. So both of its judgements were reachable only from the loop's
+       * trailing prose: an admin mid-onboarding got `[What can you do?]` here instead of
+       * `[Add a class] [Add a coach] [Set up the business]`, and the circular case its
+       * own comment is about — a good answer to "what can you do?" with `[What can you
+       * do?]` as its single affordance — was suppressed there and shipped here.
+       *
+       * The same defect as the honesty guard and the follow-ups before it: a rule
+       * enforced on one of the two ways a message leaves a turn, where which one it
+       * takes is the model's choice.
+       */
       if (to === ctx.identity.contact.id && !link && !setupFlow && !buttons?.length && !args?.list) {
-        buttons = closingQuestionButtons(body) ?? [
-          { title: MENU_BUTTON_TITLE, action: { kind: 'menu', menu: 'root' } },
-        ]
+        buttons = closingQuestionButtons(body) ?? backstopButtons(ctx.identity, body)
       }
 
       // A list is the primary affordance (§7.2), so its rows get exactly the same

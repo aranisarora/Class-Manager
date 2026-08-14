@@ -35,7 +35,6 @@ import { LIMITS, type Button, type OutboundMessage, type SendOutcome } from '@/l
 import { CATALOG, type CatalogId } from '@/lib/messaging/catalog'
 import { isJobKind, JOB_KINDS, type JobKind } from '@/lib/jobs'
 import type { Academy, Contact, Identity, Person, Role } from '@/lib/types'
-import { z } from 'zod'
 import { beginAudit, readDiffIn } from '@/lib/audit'
 import { OPERATIONS, jsonLit, lit, moneyLit, uid, type OperationName } from './operations'
 import { parseSteps as parseStepsShared } from './steps'
@@ -1080,34 +1079,31 @@ async function escalateRefusal(
      * these two carry different summaries, so both would reach the owner. Ten
      * minutes is longer than any turn and far shorter than a second genuine ask.
      */
-    const blocked = await withSession(serviceFrom(ctx), async (tx) => {
-      const isAdmin = ((await tx.unsafe(
-        `select 1 from academy_admin
-          where academy_id = ${uid(ctx.academyId)} and person_id = ${uid(ctx.personId as string)}`,
-      )) as unknown as unknown[]).length > 0
-      if (isAdmin) return true
-      return ((await tx.unsafe(
-        `select 1 from message
-          where academy_id = ${uid(ctx.academyId)} and catalog_id = 'AD-NEEDS-YOU'
-            and payload->'subject_person_ids' ? ${lit(ctx.personId as string)}
-            and created_at > app.now() - interval '10 minutes'
-          limit 1`,
-      )) as unknown as unknown[]).length > 0
+    // Both guards and the asker's name in one round trip. This was four sessions and
+    // six statements — the two guards, the admin list, then a name and an academy
+    // name — on a path that runs while somebody is waiting for an answer. The academy
+    // name was fetched and never used; the rest are scalar subqueries over one row.
+    const gate = await withSession(serviceFrom(ctx), async (tx) => {
+      const rows = (await tx.unsafe(
+        `select
+           (select count(*) from academy_admin
+             where academy_id = ${uid(ctx.academyId)}
+               and person_id = ${uid(ctx.personId as string)})::int as is_admin,
+           (select count(*) from message
+             where academy_id = ${uid(ctx.academyId)} and catalog_id = 'AD-NEEDS-YOU'
+               and payload->'subject_person_ids' ? ${lit(ctx.personId as string)}
+               and created_at > app.now() - interval '10 minutes')::int as raised_recently,
+           (select full_name from person where id = ${uid(ctx.personId as string)}) as who`,
+      )) as unknown as { is_admin: number; raised_recently: number; who: string | null }[]
+      return rows[0] ?? null
     })
-    if (blocked) return false
+    // A failed read is not a licence to escalate: no row means the guards could not be
+    // checked, and the safe answer to "should this reach the owner" is not yet.
+    if (!gate || Number(gate.is_admin) > 0 || Number(gate.raised_recently) > 0) return false
+    const who = gate.who ?? 'Someone'
 
     const admins = await adminContactIds(ctx.academyId)
     if (admins.length === 0) return false
-
-    const { who, academyName } = await withSession(serviceFrom(ctx), async (tx) => {
-      const p = (await tx.unsafe(
-        `select full_name from person where id = ${uid(ctx.personId as string)}`,
-      )) as unknown as { full_name: string }[]
-      const a = (await tx.unsafe(
-        `select name from academy where id = ${uid(ctx.academyId)}`,
-      )) as unknown as { name: string }[]
-      return { who: p[0]?.full_name ?? 'Someone', academyName: a[0]?.name ?? null }
-    })
 
     for (const contactId of admins) {
       await composeAndSend(ctx, {

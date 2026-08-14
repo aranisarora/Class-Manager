@@ -52,9 +52,6 @@ export const MAX_ROWS: Record<ComponentType, number> = {
   chart: 2000,
 }
 
-/** Above this, the stored query itself is cut down at mint time. */
-export const HARD_CAP = 2000
-
 export type ResolvedComponent = {
   spec: ComponentSpec
   rows: Record<string, unknown>[]
@@ -92,10 +89,6 @@ export function wrapPaged(query: string, limit: number, offset: number): string 
   const l = Math.max(1, Math.floor(limit))
   const o = Math.max(0, Math.floor(offset))
   return `select * from (\n${clean(query)}\n) _cm_page limit ${l}${o > 0 ? ` offset ${o}` : ''}`
-}
-
-function wrapCount(query: string): string {
-  return `select count(*)::bigint as n from (\n${clean(query)}\n) _cm_count`
 }
 
 function columnsOf(rows: Record<string, unknown>[]): string[] {
@@ -337,70 +330,29 @@ export async function resolveView(
 // read" lookup in the product (`contactFor`, `adminsIn`, `resolveContact`) — one more
 // reason a second minting path was worth losing rather than reviving.
 
-async function probe(
-  holder: SessionCtx,
-  c: ComponentSpec,
-  notes: string[],
-): Promise<ComponentSpec> {
-  if (!hasQuery(c)) return c
-
-  try {
-    assertSingleReadStatement(c.query)
-  } catch (e) {
-    notes.push(`${c.type}: ${(e as Error).message} — shown as a table`)
-    return degradeToTable(c)
-  }
-
-  const sample = async () => modelQuery(holder, wrapPaged(c.query, 5, 0))
-
-  let res = await sample()
-  if (res.error) {
-    // Retry once (§15 row 2) — a timeout or a transient failure should not cost
-    // the whole component.
-    res = await sample()
-    if (res.error) {
-      notes.push(`${c.type}: the query failed (${res.error}) — shown as a table`)
-      return degradeToTable(c)
-    }
-  }
-
-  let violation = contractViolation(c, columnsOf(res.rows), res.rows.length)
-  if (violation) {
-    res = await sample()
-    violation = res.error ? violation : contractViolation(c, columnsOf(res.rows), res.rows.length)
-    if (violation) {
-      notes.push(`${c.type} doesn't fit its data — ${violation}. Shown as a table.`)
-      return degradeToTable(c)
-    }
-  }
-
-  // "Too much data: aggregate or paginate at mint time; never ship a 5,000-row
-  // page." Pagination is the resolver's job and happens for free; what mint
-  // owes is a hard ceiling baked into the stored query.
-  const counted = await modelQuery(holder, wrapCount(c.query))
-  const total = Number(counted.rows[0]?.n ?? 0)
-  if (!counted.error && total > HARD_CAP) {
-    notes.push(`that question matches ${total.toLocaleString('en-IN')} rows — capped at ${HARD_CAP.toLocaleString('en-IN')}`)
-    const capped = wrapPaged(c.query, HARD_CAP, 0)
-    return { ...c, query: capped } as ComponentSpec
-  }
-  return c
-}
-
 /**
- * **`mintView` and `mintPurposeLink` used to live here, and nothing called either.**
+ * **`mintView`, `mintPurposeLink` and `probe` used to live here, and nothing called any
+ * of them.**
  *
  * They are not stale ideas — they are this file's version of what `lib/agent/tools.ts`
- * does inline in `case 'view'` and `linkFor`: validate, probe every query, store the
- * `view_spec` row, sign a link for the holder. The tool path grew its own copy (with the
- * row-count gate and the fall-back-to-table that this one never had), and these two were
- * left behind still describing themselves as the canonical route —
+ * does inline in `case 'view'` and `linkFor`: validate, run every query once, store the
+ * `view_spec` row, sign a link for the holder. The tool path grew its own copy, and these
+ * were left behind still describing themselves as the canonical route —
  * `mintPurposeLink`'s comment read *"this is the one helper that mints them, so no caller
  * hand-rolls a JWT"*, while the one real caller hand-rolls the JWT.
  *
- * Removed rather than rewired: the two implementations have genuinely diverged, and
- * picking a winner is a change to what gets minted, not a cleanup. `validateOrRepair`,
- * `probe` and `resolveView` below are the shared parts and are all still live.
+ * Removed rather than rewired: the two have genuinely diverged (the tool path added an
+ * eight-row floor below which a page is refused outright, and falls the whole spec back
+ * to one table rather than degrading per component), and picking a winner changes what
+ * gets minted, which is not a cleanup.
+ *
+ * **What `probe` did is not lost, only moved later.** Its degrade-to-table on an
+ * unrunnable query or a contract violation is the same thing `resolveView` below does at
+ * render time, from the same `contractViolation` and `degradeToTable`; the difference was
+ * only whether a bad component was caught at mint or at open. Its one unique job was
+ * baking a `HARD_CAP` ceiling into the stored query, and the resolver already paginates
+ * every query it runs, so nothing ships a 5,000-row page either way. `wrapCount` and
+ * `HARD_CAP` went with it as its only users.
  */
 
 /** Load a stored spec under the link holder's own RLS (the `view_spec` policy

@@ -40,7 +40,6 @@ import {
   runTool,
   toolDecls,
   withFollowUps,
-  MENU_BUTTON_TITLE,
   backstopButtons,
   type ToolCtx,
 } from './tools'

@@ -275,31 +275,39 @@ const TABLE_WORDS: Record<string, string> = {
 const STATE_WORDS =
   /'(setup|roster|ready|live|added|invited|active|ended|prospect|registered|engaged|opted_out|scheduled|cancelled|completed|present|late|absent|cancelled_timely|queued|sent|delivered|read|failed|requested|confirmed)'/g
 
+/**
+ * Compiled once, not per message.
+ *
+ * These are built from `UUID`, `TABLES` and `TABLE_WORDS`, all of which are module
+ * constants — so the patterns never vary, and building them inside the function meant
+ * thirteen `new RegExp` on the way out of every single message the product sends.
+ * `String.replace` with a global regex starts at 0 and resets `lastIndex` when it
+ * finishes, so sharing one instance across calls is safe.
+ */
+/** "(id: 7f3…)", "[session_id=7f3…]" — the whole parenthetical is machinery. */
+const UUID_PARENTHETICAL = new RegExp(
+  `\\s*[(\\[][^()\\[\\]]{0,40}${UUID.source}[^()\\[\\]]{0,10}[)\\]]`,
+  'g',
+)
+/** Bare uuids, and any label immediately in front of one. */
+const UUID_LABELLED = new RegExp(`(?:\\b[\\w.]{0,24}\\s*[:=]\\s*)?${UUID.source}`, 'g')
+/** table.column -> the column, humanised. "session.starts_at" -> "start time". */
+const TABLE_COLUMN = new RegExp(`\\b(${TABLES.join('|')})\\.([a-z_]+)\\b`, 'g')
+/** Multi-word table names standing on their own. */
+const TABLE_WORD_PATTERNS: [RegExp, string][] = Object.entries(TABLE_WORDS).map(([table, word]) => [
+  new RegExp(`\\b${table}s?\\b`, 'gi'),
+  word,
+])
+
 function stripIdentifiers(text: string, id: LintScope): string {
   let out = text.replace(STATE_WORDS, '$1')
 
-  // "(id: 7f3…)", "[session_id=7f3…]" — the whole parenthetical is machinery.
-  out = out.replace(
-    new RegExp(`\\s*[(\\[][^()\\[\\]]{0,40}${UUID.source}[^()\\[\\]]{0,10}[)\\]]`, 'g'),
-    '',
-  )
-  // Bare uuids, and any label immediately in front of one.
-  out = out.replace(
-    new RegExp(`(?:\\b[\\w.]{0,24}\\s*[:=]\\s*)?${UUID.source}`, 'g'),
-    '',
-  )
+  out = out.replace(UUID_PARENTHETICAL, '')
+  out = out.replace(UUID_LABELLED, '')
+  out = out.replace(TABLE_COLUMN, (_m, _t: string, col: string) => humanise(col))
 
-  // table.column -> the column, humanised. "session.starts_at" -> "start time".
-  out = out.replace(
-    new RegExp(`\\b(${TABLES.join('|')})\\.([a-z_]+)\\b`, 'g'),
-    (_m, _t: string, col: string) => humanise(col),
-  )
-
-  // Multi-word table names standing on their own.
-  for (const [table, word] of Object.entries(TABLE_WORDS)) {
-    out = out.replace(new RegExp(`\\b${table}s?\\b`, 'gi'), (m) =>
-      m.endsWith('s') && !m.endsWith('ss') ? `${word}s` : word,
-    )
+  for (const [pattern, word] of TABLE_WORD_PATTERNS) {
+    out = out.replace(pattern, (m) => (m.endsWith('s') && !m.endsWith('ss') ? `${word}s` : word))
   }
 
   // §6.1 / §18.4 — "academy" is a table name AND the one word that appears

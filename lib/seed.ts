@@ -2188,7 +2188,6 @@ export async function seedStage(
     { cls: 'squad', player: 'ritu' },
   ]
   const accountOfPlayer: Record<string, string> = { ira: 'bhavna', zaid: 'sameer', ritu: 'ritu' }
-  const playerName: Record<string, string> = { ira: 'Ira Menon', zaid: 'Zaid Khan', ritu: 'Ritu Malhotra' }
 
   const hasAdmin = reached >= REACHED.setup
   const hasRoster = reached >= REACHED.roster
