@@ -202,6 +202,15 @@ export type EmuClock = {
    * without ever drifting from the server's answer.
    */
   syncedAtMs: number
+  /**
+   * Academies holding a clock of their own (0024). Everything *not* in here rides
+   * the world clock, which is what a world-scoped move actually moves.
+   *
+   * The clock routes do not serve this — only `GET /api/emulator/state` does — so
+   * it is carried across a clock response rather than reset to empty, or the
+   * bar's "this moves N academies" would blank out for a beat after every move.
+   */
+  tenantClocks: { academyId: string; offsetMs: number }[]
 }
 
 export type ScenarioMeta = { id: string; name: string; description: string | null }
@@ -330,6 +339,16 @@ export type EmulatorState = {
   showTray: boolean
   showLog: boolean
   autoDelivery: AutoDelivery
+  /**
+   * Whose clock the bar's controls move. `''` is the world clock — the default,
+   * and what every control did unconditionally before this existed.
+   *
+   * 0024 gave `sim_clock` a per-tenant row and the clock route has accepted an
+   * `academyId` ever since; the UI simply never sent one, so "advance 1d" always
+   * meant *every academy without a clock of its own*, which in a world holding a
+   * few leftover test tenants is a great deal more than the one being driven.
+   */
+  clockScope: string
 }
 
 /* ------------------------------------------------------------------ *
@@ -737,7 +756,26 @@ function normalizeClock(raw: Raw | null | undefined, prev: EmuClock): EmuClock {
     offsetMs: num(pick(raw, 'offset_ms', 'offsetMs')) ?? prev.offsetMs,
     nextEventAtIso: iso(pick(raw, 'next_event_at', 'nextEventAt', 'nextEvent')) ?? null,
     syncedAtMs: Date.now(),
+    tenantClocks: normalizeTenantClocks(pick(raw, 'tenant_clocks', 'tenantClocks')) ?? prev.tenantClocks,
   }
+}
+
+/**
+ * `null` — not `[]` — when the payload carries no tenant clocks at all, so the
+ * caller can tell "the world has none" from "this route does not serve them".
+ * Only the state route does; a clock reply that reset the list to empty would
+ * make the bar's blast-radius line flicker to "every academy" after each move.
+ */
+function normalizeTenantClocks(raw: unknown): { academyId: string; offsetMs: number }[] | null {
+  if (!Array.isArray(raw)) return null
+  return raw
+    .map((r) => {
+      const row = r as Raw
+      const academyId = str(pick(row, 'academy_id', 'academyId'))
+      if (!academyId) return null
+      return { academyId, offsetMs: num(pick(row, 'offset_ms', 'offsetMs')) ?? 0 }
+    })
+    .filter((r): r is { academyId: string; offsetMs: number } => r !== null)
 }
 
 function normalizeFaults(raw: unknown, prev: EmulatorState['faults']): EmulatorState['faults'] {
@@ -1044,7 +1082,13 @@ const initialState: EmulatorState = {
   scenarios: [],
   academies: [],
   contacts: [],
-  clock: { nowIso: new Date().toISOString(), offsetMs: 0, nextEventAtIso: null, syncedAtMs: Date.now() },
+  clock: {
+    nowIso: new Date().toISOString(),
+    offsetMs: 0,
+    nextEventAtIso: null,
+    syncedAtMs: Date.now(),
+    tenantClocks: [],
+  },
   faults: FAULT_KINDS.reduce(
     (acc, k) => ({ ...acc, [k]: { active: false, rate: 1 } }),
     {} as EmulatorState['faults'],
@@ -1061,6 +1105,7 @@ const initialState: EmulatorState = {
   showTray: true,
   showLog: true,
   autoDelivery: 'off',
+  clockScope: '',
 }
 
 type Action =
@@ -1088,6 +1133,7 @@ type Action =
   | { type: 'ui/toggle'; key: 'showTray' | 'showLog' }
   | { type: 'scenario/set'; scenario: string }
   | { type: 'delivery/mode'; mode: AutoDelivery }
+  | { type: 'clock/scope'; academyId: string }
 
 function mergeMessages(prev: EmuMessage[], incoming: EmuMessage[]): EmuMessage[] {
   // A refetch is authoritative. Optimistic echoes survive only briefly, so a slow round trip
@@ -1161,6 +1207,17 @@ function reducer(state: EmulatorState, action: Action): EmulatorState {
         clock: normalizeClock(pick(p, 'clock', 'time') as Raw, state.clock),
         faults: normalizeFaults(pick(p, 'faults'), state.faults),
         panes: contacts.length ? state.panes.filter((id) => known.has(id)) : state.panes,
+        /**
+         * A scope pointed at an academy that no longer exists falls back to the
+         * world. Seeding a fixture drops every academy in the world, so without
+         * this the bar would keep posting a dead uuid and the route would happily
+         * create a clock row for a tenant that is gone — while the selector, which
+         * can only render academies it can find, silently showed "world".
+         */
+        clockScope:
+          state.clockScope && !academies.some((a) => a.id === state.clockScope)
+            ? ''
+            : state.clockScope,
       }
     }
     case 'scenario/set':
@@ -1319,6 +1376,8 @@ function reducer(state: EmulatorState, action: Action): EmulatorState {
         : { ...state, showLog: !state.showLog }
     case 'delivery/mode':
       return { ...state, autoDelivery: action.mode }
+    case 'clock/scope':
+      return { ...state, clockScope: action.academyId }
     default:
       return state
   }
@@ -1370,6 +1429,8 @@ export type EmulatorActions = {
   setClockTo: (iso: string) => Promise<void>
   resetClock: () => Promise<void>
   tick: () => Promise<void>
+  /** Point the clock controls at one tenant, or at `''` for the world. */
+  setClockScope: (academyId: string) => void
   sendText: (contactId: string, text: string) => Promise<void>
   sendMedia: (
     contactId: string,
@@ -1678,6 +1739,16 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
       ])
     }
 
+    /**
+     * `{ academyId }` when the bar is pointed at one tenant, `{}` when it is on
+     * the world. Spread into the clock body rather than passed as a parameter so
+     * that adding a scope never changes any control's signature.
+     */
+    const clockScopeBody = (): { academyId?: string } => {
+      const scope = stateRef.current.clockScope
+      return scope ? { academyId: scope } : {}
+    }
+
     const applyClockResponse = (res: Raw) => {
       const clock = (pick(res, 'clock') as Raw) ?? res
       dispatch({ type: 'clock/set', payload: clock })
@@ -1714,30 +1785,48 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
       closeAllPanes: () => dispatch({ type: 'pane/closeAll' }),
       movePane: (contactId, dir) => dispatch({ type: 'pane/move', contactId, dir }),
 
+      /**
+       * The scope every clock control below rides on.
+       *
+       * Read from the ref at call time rather than closed over, so a control
+       * tapped straight after the selector changes moves the clock the operator
+       * is looking at rather than the one they just left. `''` omits the field
+       * entirely, which is the route's documented "world clock" default — an
+       * explicit `academyId: undefined` would serialise to nothing anyway, but
+       * saying so here is what keeps the two readings from drifting apart.
+       */
       advance: (ms) =>
         withBusy('clock', async () => {
-          applyClockResponse((await post('/api/emulator/clock', { advanceMs: ms })) as Raw)
+          applyClockResponse(
+            (await post('/api/emulator/clock', { advanceMs: ms, ...clockScopeBody() })) as Raw,
+          )
           await afterMutation()
         }),
 
       jumpToNextEvent: () =>
         withBusy('clock', async () => {
-          const res = (await post('/api/emulator/clock', { toNextEvent: true })) as Raw
+          const res = (await post('/api/emulator/clock', { toNextEvent: true, ...clockScopeBody() })) as Raw
           applyClockResponse(res)
           await afterMutation()
         }),
 
       setClockTo: (isoStr) =>
         withBusy('clock', async () => {
-          applyClockResponse((await post('/api/emulator/clock', { setToIso: isoStr })) as Raw)
+          applyClockResponse(
+            (await post('/api/emulator/clock', { setToIso: isoStr, ...clockScopeBody() })) as Raw,
+          )
           await afterMutation()
         }),
 
       resetClock: () =>
         withBusy('clock', async () => {
-          applyClockResponse((await post('/api/emulator/clock', { reset: true })) as Raw)
+          applyClockResponse(
+            (await post('/api/emulator/clock', { reset: true, ...clockScopeBody() })) as Raw,
+          )
           await afterMutation()
         }),
+
+      setClockScope: (academyId) => dispatch({ type: 'clock/scope', academyId }),
 
       tick: () =>
         withBusy('tick', async () => {

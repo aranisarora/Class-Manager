@@ -31,6 +31,50 @@ const STEPS: { label: string; ms: number }[] = [
   { label: '+1d', ms: 24 * 60 * 60_000 },
 ]
 
+/**
+ * Past this, a jump asks first.
+ *
+ * Twelve hours is chosen so the three small steps stay one tap — they are how
+ * you walk a session's reminder ladder, and a prompt on each would be noise —
+ * while `+1d` and anything typed into the date field have to be meant. The date
+ * field is the one that actually needs it: a picker makes "three days from now"
+ * exactly as cheap as "one hour from now", and the cost of the two differs by
+ * every job in between.
+ */
+const CONFIRM_MS = 12 * 60 * 60_000
+
+/**
+ * What the bar is pointed at, and — the part that was missing — what a move
+ * would therefore touch.
+ *
+ * A world move hits every academy *without* a clock of its own, which is a set
+ * the client could not previously see at all. Naming it before the move is the
+ * whole point: "advance 1d" reads like one act and can be eight.
+ */
+function useClockScope() {
+  const { state } = useEmulator()
+  const owned = useMemo(
+    () => new Set(state.clock.tenantClocks.map((t) => t.academyId)),
+    [state.clock.tenantClocks],
+  )
+  const scoped = state.clockScope ? (state.academies.find((a) => a.id === state.clockScope) ?? null) : null
+  // Sorted by name so the list a confirm prints is stable between two reads of it.
+  const ridingWorld = useMemo(
+    () => state.academies.filter((a) => !owned.has(a.id)).sort((x, y) => x.name.localeCompare(y.name)),
+    [state.academies, owned],
+  )
+  return { scope: state.clockScope, scoped, ridingWorld, owned }
+}
+
+/** One line naming the blast radius, for both the chip and the confirm text. */
+function blastText(scoped: { name: string } | null, ridingWorld: { name: string }[], total: number): string {
+  if (scoped) return `${scoped.name} alone — its own clock, nobody else's`
+  if (ridingWorld.length === 0) return 'no academy — every one of them holds a clock of its own'
+  const names = ridingWorld.map((a) => a.name)
+  const shown = names.length <= 4 ? names.join(', ') : `${names.slice(0, 4).join(', ')} +${names.length - 4} more`
+  return `${ridingWorld.length} of ${total} academies — ${shown}`
+}
+
 function ConnectionDot() {
   const { state } = useEmulator()
   const map = {
@@ -72,6 +116,14 @@ function WorldPicker() {
   const value = choice || state.scenario || scenarios[0].id
   const description = scenarios.find((s) => s.id === value)?.description ?? null
   const busy = !!state.busy.seed
+  const count = state.academies.length
+  /**
+   * How many academies are in the world over and above what the seeded fixture
+   * accounts for — `both` builds two, `ace` and `solo` one each. Anything past
+   * that arrived from `+ business`, `drive` or `probe` and is invisible in every
+   * other reading of this bar.
+   */
+  const extraAcademies = count - (state.scenario === 'both' ? 2 : state.scenario ? 1 : 0)
 
   return (
     <div className="flex items-center gap-1.5">
@@ -79,7 +131,7 @@ function WorldPicker() {
         className="font-mono text-[10px] tracking-widest text-zinc-600 uppercase"
         title="canned worlds. Real businesses live in the tray — “+ business”."
       >
-        fixture
+        seed
       </span>
       <select
         value={value}
@@ -108,9 +160,28 @@ function WorldPicker() {
       >
         {busy ? <Spinner /> : 'seed'}
       </Btn>
-      {state.scenario ? (
-        <Chip tone="quiet" title="fixture this world was last seeded from">
-          {state.scenario}
+      {/*
+        What is actually in the world, standing next to the control that would
+        replace it.
+        `state.scenario` is derived from whether the two fixture ids are present,
+        so a world holding both fixtures *and* five academies left over from
+        `drive` and `probe` runs reported "both" and nothing else. The label was
+        true; the impression it gave — that the world is those two — was not, and
+        it is the impression that decides how hard somebody thinks a clock jump
+        will land.
+      */}
+      {state.booted ? (
+        <Chip
+          tone={extraAcademies > 0 ? 'warn' : 'quiet'}
+          title={
+            extraAcademies > 0
+              ? `${count} academies in the world — ${extraAcademies} beyond the seeded fixture, ` +
+                'most likely left over from earlier drive/probe runs. They hold real classes and ' +
+                'contacts, and they ride the world clock along with everything else.'
+              : 'every academy currently in the world'
+          }
+        >
+          {count} {count === 1 ? 'academy' : 'academies'}
         </Chip>
       ) : null}
     </div>
@@ -152,9 +223,63 @@ function DeliveryPicker() {
   )
 }
 
+/**
+ * Whose clock the controls to the right of it move.
+ *
+ * The route has taken an `academyId` since 0024 and the bar never sent one, so
+ * every control here moved the world unconditionally. That is fine in a world
+ * holding the two fixtures and quietly awful in one that has accumulated a few
+ * academies from `drive` and `probe` runs, where "advance a day" runs a day of
+ * jobs for every one of them.
+ */
+function ScopePicker() {
+  const { state, actions } = useEmulator()
+  const { scoped, ridingWorld, owned } = useClockScope()
+  const busy = !!state.busy.clock || !!state.busy.tick
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="font-mono text-[10px] tracking-widest text-zinc-600 uppercase">moves</span>
+      <select
+        value={state.clockScope}
+        disabled={busy}
+        onChange={(e) => actions.setClockScope(e.target.value)}
+        title={
+          'which clock every control here moves.\n\n' +
+          'world — the shared clock. Every academy without one of its own follows it.\n' +
+          'a named academy — that tenant alone, on a clock of its own (0024). ' +
+          'Jobs are claimed against their own tenant\'s clock, so nobody else moves.'
+        }
+        className="max-w-[190px] rounded border border-zinc-700 bg-zinc-900 px-1.5 py-1 text-[11px] text-zinc-200 focus:border-emerald-700 focus:outline-none"
+      >
+        <option value="">world clock</option>
+        {[...state.academies]
+          .sort((x, y) => x.name.localeCompare(y.name))
+          .map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+              {owned.has(a.id) ? ' ·' : ''}
+            </option>
+          ))}
+      </select>
+      <Chip
+        tone={scoped ? 'window' : ridingWorld.length > 2 ? 'warn' : 'quiet'}
+        title={
+          scoped
+            ? 'this academy has been given a clock of its own, so moving it moves nothing else'
+            : 'moving the world clock moves every academy that has no clock of its own — these'
+        }
+      >
+        {scoped ? 'this academy only' : `moves ${ridingWorld.length}`}
+      </Chip>
+    </div>
+  )
+}
+
 export function ClockBar() {
   const { state, actions } = useEmulator()
   const tz = usePrimaryTimezone()
+  const { scoped, ridingWorld } = useClockScope()
   const [when, setWhen] = useState('')
   /**
    * Whether the field holds a value the *person* typed, rather than a mirror of the
@@ -186,6 +311,35 @@ export function ClockBar() {
   useEffect(() => {
     if (!dirty) setWhen(isoToZonedInput(state.clock.nowIso, tz))
   }, [state.clock.nowIso, tz, dirty])
+
+  /**
+   * The one guard on this bar, and it guards the thing that actually costs:
+   * not the clock move, which is a single integer and trivially reversible, but
+   * **the jobs the move runs on the way**. Every reminder, digest and dunning
+   * message that falls due in the skipped span is generated and sent, each one a
+   * model call. Winding the clock back afterwards un-sends none of it.
+   *
+   * So the text says what will run rather than what the number will become, and
+   * it names the academies — because the failure this exists to stop is not
+   * "moved too far", it is "moved too far *for seven tenants I wasn't driving*".
+   */
+  const confirmJump = (deltaMs: number, targetIso: string): boolean => {
+    if (Math.abs(deltaMs) < CONFIRM_MS) return true
+    const dir = deltaMs < 0 ? 'back' : 'forward'
+    const blast = blastText(scoped, ridingWorld, state.academies.length)
+    return window.confirm(
+      `Move the clock ${dir} ${fmtDuration(Math.abs(deltaMs))}?\n\n` +
+        `to   ${fmtClockSeconds(targetIso, tz)}\n` +
+        `hits ${blast}\n\n` +
+        'Every job due in that span runs, and every message it produces is sent. ' +
+        'Moving the clock back afterwards does not undo any of it.',
+    )
+  }
+
+  const stepJump = (ms: number) => {
+    if (!confirmJump(ms, new Date(nowMs + ms).toISOString())) return
+    void actions.advance(ms)
+  }
 
   return (
     <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-zinc-800 bg-zinc-900/90 px-3 py-1.5">
@@ -232,9 +386,20 @@ export function ClockBar() {
         </div>
       </div>
 
+      <ScopePicker />
+
       <div className="flex items-center gap-1">
         {STEPS.map((s) => (
-          <Btn key={s.label} disabled={busy} onClick={() => void actions.advance(s.ms)} title={`advance ${s.label}`}>
+          <Btn
+            key={s.label}
+            disabled={busy}
+            onClick={() => stepJump(s.ms)}
+            title={
+              s.ms >= CONFIRM_MS
+                ? `advance ${s.label} — asks first, because it runs a day of jobs`
+                : `advance ${s.label}`
+            }
+          >
             {s.label}
           </Btn>
         ))}
@@ -274,6 +439,11 @@ export function ClockBar() {
           onMouseDown={() => {
             const iso = zonedInputToIso(when, tz)
             if (!iso) return actions.notify('error', 'could not read that date')
+            // Against the *simulated* now, not the browser's: this field sets domain
+            // time, so "how far is this jump" is a question about the clock the bar
+            // is showing. Measuring from real time would call a half-hour nudge a
+            // four-day leap whenever the world was already days ahead.
+            if (!confirmJump(new Date(iso).getTime() - nowMs, iso)) return
             setDirty(false)
             void actions.setClockTo(iso)
           }}
@@ -287,7 +457,11 @@ export function ClockBar() {
             setDirty(false)
             void actions.resetClock()
           }}
-          title="back to real time, offset 0"
+          title={
+            scoped
+              ? `drop ${scoped.name}'s own clock — it goes back to following the world, not to real time`
+              : 'world clock back to real time, offset 0'
+          }
         >
           reset
         </Btn>

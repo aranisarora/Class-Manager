@@ -10,7 +10,7 @@
  * Every model turn with its model, tokens and latency.
  */
 
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import {
   EVENT_KINDS,
   EVENT_LABELS,
@@ -96,6 +96,42 @@ function CacheChip({
   )
 }
 
+/**
+ * The expanded body: the event's own fields as a readable list, with the raw
+ * JSON kept underneath for the cases the list flattens badly.
+ *
+ * The row used to open straight into `JSON.stringify(detail, null, 1)`, which is
+ * the right *data* and the wrong *shape* — the one field you are looking for
+ * (why a send was suppressed, which precondition a job declined on) sits four
+ * lines into a wall of punctuation. Scalars are what a reader is nearly always
+ * after, so they get a two-column list and objects keep their JSON.
+ */
+function DetailList({ detail }: { detail: unknown }) {
+  const entries = useMemo(() => {
+    if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return []
+    return Object.entries(detail as Record<string, unknown>).filter(
+      ([, v]) => v !== null && v !== undefined && v !== '',
+    )
+  }, [detail])
+
+  if (entries.length === 0) return null
+
+  return (
+    <dl className="mt-1 grid grid-cols-[minmax(0,7rem)_1fr] gap-x-2 gap-y-px rounded border border-zinc-800 bg-zinc-950 p-1.5 font-mono text-[9px] leading-relaxed">
+      {entries.map(([k, v]) => (
+        <Fragment key={k}>
+          <dt className="truncate text-zinc-600" title={k}>
+            {k}
+          </dt>
+          <dd className="break-all whitespace-pre-wrap text-zinc-400">
+            {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+          </dd>
+        </Fragment>
+      ))}
+    </dl>
+  )
+}
+
 function Row({ e, tier }: { e: EmuEvent; tier: number | null }) {
   const { state, actions } = useEmulator()
   const tz = usePrimaryTimezone()
@@ -104,31 +140,64 @@ function Row({ e, tier }: { e: EmuEvent; tier: number | null }) {
   const academy = state.academies.find((a) => a.id === e.academyId)
 
   return (
-    <div className="border-b border-zinc-800/60 px-2 py-1 hover:bg-zinc-900/50">
+    /*
+      The whole row opens it, not a 9px `+` glyph pinned to the right edge. That
+      target was about eight pixels square, sat furthest from the summary it
+      expands, and gave no hint that the rest of the row — which looks exactly
+      like a list item in every other log anybody has used — did anything.
+
+      `div role="button"` rather than a real `<button>`: the row contains the
+      contact button, and a button inside a button is invalid HTML that browsers
+      handle inconsistently. Keyboard parity is put back by hand.
+    */
+    <div
+      role="button"
+      tabIndex={0}
+      aria-expanded={open}
+      onClick={() => setOpen((v) => !v)}
+      onKeyDown={(ev) => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return
+        ev.preventDefault()
+        setOpen((v) => !v)
+      }}
+      className={cx(
+        'cursor-pointer border-b border-zinc-800/60 px-2 py-1 hover:bg-zinc-900/60',
+        'focus:bg-zinc-900/60 focus:outline-none',
+        open && 'bg-zinc-900/40',
+      )}
+      title={open ? 'collapse' : 'open — the event’s own fields'}
+    >
       <div className="flex items-baseline gap-1.5">
+        <span
+          className={cx(
+            'shrink-0 font-mono text-[9px] text-zinc-600 transition-transform',
+            open && 'rotate-90 text-zinc-400',
+          )}
+          aria-hidden
+        >
+          ▶
+        </span>
         <span className="font-mono text-[9px] text-zinc-600 tabular-nums">{fmtTime(e.at, tz)}</span>
         <Chip tone={KIND_TONE[e.kind]}>{e.kind}</Chip>
         {contact ? (
           <button
             type="button"
-            onClick={() => actions.openPane(contact.id)}
+            // Otherwise opening a pane also toggles the row underneath it.
+            onClick={(ev) => {
+              ev.stopPropagation()
+              actions.openPane(contact.id)
+            }}
             className="truncate text-[11px] text-zinc-300 underline-offset-2 hover:underline"
             title="open this contact as a pane"
           >
             {contact.name}
           </button>
         ) : null}
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="ml-auto shrink-0 font-mono text-[9px] text-zinc-700 hover:text-zinc-300"
-          title="raw event"
-        >
-          {open ? '−' : '+'}
-        </button>
       </div>
 
-      <div className="mt-0.5 line-clamp-3 text-[11px] leading-snug text-zinc-400">{e.summary}</div>
+      <div className={cx('mt-0.5 text-[11px] leading-snug text-zinc-400', !open && 'line-clamp-3')}>
+        {e.summary}
+      </div>
 
       <div className="mt-1 flex flex-wrap items-center gap-1">
         {academy ? <Chip tone="quiet">{academy.name}</Chip> : null}
@@ -203,13 +272,31 @@ function Row({ e, tier }: { e: EmuEvent; tier: number | null }) {
           </>
         ) : null}
 
-        {e.kind !== 'job' && e.kind !== 'suppress' && e.error ? <Chip tone="danger">{e.error.slice(0, 60)}</Chip> : null}
+        {e.kind !== 'job' && e.kind !== 'suppress' && e.error ? (
+          <Chip tone="danger">{e.error.slice(0, 60)}</Chip>
+        ) : null}
       </div>
 
       {open ? (
-        <pre className="mt-1 max-h-64 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-1.5 font-mono text-[9px] leading-relaxed break-all whitespace-pre-wrap text-zinc-500">
-          {JSON.stringify(e.detail, null, 1)}
-        </pre>
+        // Selecting a value, or opening the raw JSON, must not collapse the row
+        // out from under the pointer — which is what bubbling to the row's own
+        // toggle would do on every click in here.
+        <div className="pt-1" onClick={(ev) => ev.stopPropagation()}>
+          <DetailList detail={e.detail} />
+          {/*
+            The raw JSON stays, one disclosure down. It is the only thing that
+            cannot lie about the event, so removing it in favour of a prettier
+            list would cost exactly the audience this log is for.
+          */}
+          <details className="mt-1">
+            <summary className="cursor-pointer font-mono text-[9px] text-zinc-600 hover:text-zinc-400">
+              raw json
+            </summary>
+            <pre className="mt-1 max-h-64 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-1.5 font-mono text-[9px] leading-relaxed break-all whitespace-pre-wrap text-zinc-500">
+              {JSON.stringify(e.detail, null, 1)}
+            </pre>
+          </details>
+        </div>
       ) : null}
     </div>
   )

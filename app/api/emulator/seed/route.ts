@@ -1,13 +1,13 @@
 import { z } from 'zod'
 
-import { seedWorld } from '@/lib/seed'
+import { seedWorld, SCENARIO_IDS } from '@/lib/seed'
 import { planAhead } from '@/lib/jobs/plan-ahead'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 const Body = z.object({
-  scenario: z.enum(['ace', 'solo', 'both']).optional(),
+  scenario: z.enum(SCENARIO_IDS).optional(),
 })
 
 export async function POST(req: Request): Promise<Response> {

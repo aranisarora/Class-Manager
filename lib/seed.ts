@@ -86,7 +86,17 @@ export function detId(...parts: string[]): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-export type Scenario = 'ace' | 'solo' | 'both'
+/**
+ * The canned fixtures, in one place.
+ *
+ * The union used to be written out here and again as a `z.enum` in the seed
+ * route, so adding a fixture meant remembering a file that names none of them in
+ * its imports. Deriving the type from the tuple makes the route's validator and
+ * this type the same fact.
+ */
+export const SCENARIO_IDS = ['ace', 'solo', 'both'] as const
+
+export type Scenario = (typeof SCENARIO_IDS)[number]
 
 export const SENDER_ID = detId('sender', 'class-manager')
 export const SENDER_PHONE = '+918047182200' // +91 80 4718 2200
@@ -1189,9 +1199,21 @@ export type WorldClock = {
   nowIso: string
   /** Alias, because a clock is read by several consumers under both names. */
   now: string
+  /** The **world** offset — `sim_clock` where `academy_id is null`. */
   offsetMs: number
   nextEventAt: string | null
   nextEventAtIso: string | null
+  /**
+   * The tenants holding a clock of their own (0024), and how far each sits from
+   * real time.
+   *
+   * Served so the emulator can say *what a move will actually touch* before it
+   * makes one. The world offset alone cannot: advancing the world moves every
+   * academy that has no row here, and that set is invisible from the client —
+   * which is exactly how a single "set" lands on eight tenants at once and reads
+   * as one deliberate act.
+   */
+  tenantClocks: { academyId: string; offsetMs: number }[]
 }
 
 export type WorldState = {
@@ -1408,12 +1430,14 @@ export async function worldState(): Promise<WorldState> {
   const academies: WorldAcademy[] = perAcademy.filter((a): a is WorldAcademy => a !== null)
 
   const infra = await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
-    const clock = await tx`select offset_ms from sim_clock where singleton limit 1`
+    const clock = await tx`select offset_ms from sim_clock where academy_id is null`
+    const tenantClocks = await tx`
+      select academy_id, offset_ms from sim_clock where academy_id is not null`
     const faults = await tx`select kind, active, rate from sim_fault order by kind`
     const jobs = await tx`select status, count(*) as n from job group by status`
     const next = await tx`select min(run_at) as next_run_at from job where status = 'pending'`
     const sender = await tx`select id, phone_e164, label from sender where id = ${SENDER_ID}::uuid`
-    return { clock, faults, jobs, next, sender }
+    return { clock, tenantClocks, faults, jobs, next, sender }
   })
 
   const counts = { pending: 0, running: 0, done: 0, failed: 0, skipped: 0 }
@@ -1436,6 +1460,10 @@ export async function worldState(): Promise<WorldState> {
       offsetMs: infra.clock.length > 0 ? Number(infra.clock[0].offset_ms) : 0,
       nextEventAt: nextIso,
       nextEventAtIso: nextIso,
+      tenantClocks: infra.tenantClocks.map((r) => ({
+        academyId: String(r.academy_id),
+        offsetMs: Number(r.offset_ms),
+      })),
     },
     sender:
       infra.sender.length > 0
@@ -2825,7 +2853,7 @@ export async function pollWorld(o: { cursor?: string | null; statusLimit?: numbe
 
   const nowD = await now()
   const offset = await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
-    return await tx`select offset_ms from sim_clock where singleton limit 1`
+    return await tx`select offset_ms from sim_clock where academy_id is null`
   })
 
   return {
@@ -2883,10 +2911,20 @@ export async function setFault(f: { kind: FaultKind; active: boolean; rate?: num
   })
 }
 
-/** The sim clock's current offset. Cheap enough to attach to every clock reply. */
+/**
+ * The **world** clock's current offset. Cheap enough to attach to every clock reply.
+ *
+ * `where academy_id is null`, not `where singleton limit 1`. 0024 dropped the
+ * singleton unique constraint and left `singleton` true on every row it writes —
+ * the world's and each tenant's alike — so `limit 1` picked an arbitrary clock.
+ * That is not merely a wrong number on a chip: `app/api/emulator/stream` diffs
+ * this value to decide the clock moved and push to every open pane, so a read
+ * that landed on a tenant row left the panes stale through a world advance, and
+ * one that landed on a tenant being driven pushed on a clock nobody moved.
+ */
 export async function clockOffsetMs(): Promise<number> {
   const rows = await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
-    return await tx`select offset_ms from sim_clock where singleton limit 1`
+    return await tx`select offset_ms from sim_clock where academy_id is null`
   })
   return rows.length > 0 ? Number(rows[0].offset_ms) : 0
 }
