@@ -32,19 +32,16 @@ export interface Transport {
   send(req: TransportRequest): Promise<TransportResult>
 }
 
-let override: Transport | null = null
-
 /**
  * `TRANSPORT=emulator|cloud`. Read per call rather than captured at module load, so the
  * emulator can be pointed at the other implementation without a restart.
+ *
+ * There used to be a module-level `override` here with a `setTransport` seam to write
+ * it. Nothing ever wrote it, so the branch on every send was testing a variable that
+ * was permanently null — and the env read below is already per-call, which is the
+ * property the seam was reaching for.
  */
 export function getTransport(): Transport {
-  if (override) return override
   const want = String(env.TRANSPORT ?? 'emulator').toLowerCase()
   return want === 'cloud' ? cloudTransport : emulatorTransport
-}
-
-/** Test/emulator seam. Pass null to go back to whatever `TRANSPORT` says. */
-export function setTransport(t: Transport | null): void {
-  override = t
 }

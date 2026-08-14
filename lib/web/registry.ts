@@ -478,18 +478,16 @@ export const REGISTRY: Record<ComponentType, RegistryEntry> = {
  */
 export const MINTABLE: readonly ComponentType[] = ['table', 'prose', 'calendar']
 
-/** What the model reads to discover the surface. Not baked into its prompt —
- *  derived from the registry, so adding a component really is one file. */
-export function registryDigest(): string {
-  const lines = MINTABLE.map((t) => `- ${t}: ${REGISTRY[t].dataContract}`)
-  return [
-    'View components (§15). A view spec is {title, components:[...]}; every component is {type, ...}.',
-    'Every query runs under the link holder\'s own RLS, so it can only return what that person could see by hand.',
-    ...lines,
-    'Anything that does not fit one of these is a table, and a table is never the wrong answer — §15\'s floor is that ' +
-      'anything which cannot be rendered gets answered in the chat instead.',
-  ].join('\n')
-}
+/**
+ * `registryDigest()` used to be here, described as "what the model reads to discover the
+ * surface... derived from the registry, so adding a component really is one file".
+ *
+ * The model never read it. Nothing called this, and the component surface reaches the
+ * prompt through the `view` tool's own declaration in `lib/agent/tools.ts`, which spells
+ * three examples by hand — so adding a component is two files, and the second one is the
+ * one that decides whether the model knows about it. Recording that here because deleting
+ * the function does not fix it; wiring the declaration to `MINTABLE` would.
+ */
 
 export { resolveView } from '@/lib/web/views'
 export type { ResolvedComponent, ResolvedView } from '@/lib/web/views'

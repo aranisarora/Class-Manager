@@ -112,60 +112,21 @@ export function formatDate(
   return parts.join(' ')
 }
 
-/**
- * Sat 15 Aug, 8–10 am · Sat 15 Aug, 11 am – 1 pm · 15–17 Aug · 28 Aug – 3 Sep
- * One day with two times reads as a session; two days read as a stretch.
- */
-export function formatDateRange(from: TimeInput, to: TimeInput, tz: string = DEFAULT_ZONE, opts: { relativeTo?: TimeInput } = {}): string {
-  const a = toDateTime(from, tz)
-  const b = toDateTime(to, tz)
-  if (!a.isValid) return ''
-  if (!b.isValid) return formatDate(a, tz, opts)
-
-  if (a.hasSame(b, 'day')) {
-    const day = formatDate(a, tz, opts)
-    const sameMeridiem = a.hour < 12 === b.hour < 12
-    const times = sameMeridiem
-      ? `${bareClock(a)}–${bareClock(b)} ${b.hour < 12 ? 'am' : 'pm'}`
-      : `${clockOf(a)} – ${clockOf(b)}`
-    const hasTime = !(a.hour === 0 && a.minute === 0 && b.hour === 0 && b.minute === 0)
-    return hasTime ? `${day}, ${times}` : day
-  }
-
-  const sameYear = a.year === b.year
-  if (sameYear && a.month === b.month) {
-    return `${a.day}–${b.day} ${b.toFormat('LLL')}${sameYear ? '' : ` ${b.year}`}`
-  }
-  const left = sameYear ? `${a.day} ${a.toFormat('LLL')}` : `${a.day} ${a.toFormat('LLL')} ${a.year}`
-  const right = sameYear ? `${b.day} ${b.toFormat('LLL')}` : `${b.day} ${b.toFormat('LLL')} ${b.year}`
-  return `${left} – ${right}`
-}
-
-/** 1 session · 3 sessions · 2 people (pass the irregular when there is one). */
-export function pluralise(n: number, singular: string, plural?: string): string {
-  const word = Math.abs(n) === 1 ? singular : plural ?? `${singular}s`
-  return `${n} ${word}`
-}
-
 /** The word alone, when the count is already in the sentence. */
 export function plural(n: number, singular: string, pluralForm?: string): string {
   return Math.abs(n) === 1 ? singular : pluralForm ?? `${singular}s`
 }
 
-/**
- * "Meera, Aarav, Kiran, +11 more" — §14.2's exact shape once the list runs
- * past `max`. Short lists read naturally instead: "Meera and Aarav".
- */
-export function joinNames(names: readonly string[], max = 3): string {
-  const list = names.map((n) => String(n ?? '').trim()).filter((n) => n.length > 0)
-  if (list.length === 0) return ''
-  if (list.length === 1) return list[0]
-
-  if (list.length <= max) {
-    return `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`
-  }
-  return `${list.slice(0, max).join(', ')}, +${list.length - max} more`
-}
+// Three more renderers used to live here and none of them had a caller:
+// `formatDateRange` (spans — the job handlers use `spanLabel` in lib/jobs/util.ts
+// instead), `pluralise` (the count-plus-word form; `plural` above is the one that
+// gets used, with the count already in the sentence), and `joinNames`, described as
+// "§14.2's exact shape". That shape is real and does get produced — by
+// `string_agg(full_name, ', ')` in SQL, on the query that has the names — so the
+// TypeScript version was a second implementation waiting for a caller that never
+// came. Left as a note rather than silently: if a caller ever does want them, they
+// are one `git log -p` away, and it should be a deliberate choice to render names in
+// two places rather than an accident.
 
 /* ------------------------------------------------------------------------- *
  * The WhatsApp idiom

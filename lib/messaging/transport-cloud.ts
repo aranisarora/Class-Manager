@@ -15,7 +15,6 @@
  * it here, because a transport with a database connection is not a transport.
  */
 
-import { createHmac, timingSafeEqual } from 'node:crypto'
 import type { Transport, TransportRequest, TransportResult } from './transport'
 import { TEMPLATES, templateWireParams } from './templates'
 import { msgError } from './types'
@@ -57,33 +56,24 @@ export function getSenderCredentials(senderPhoneE164: string): CloudCredentials 
   return credentials.get(normalizePhone(senderPhoneE164)) ?? null
 }
 
-export function clearSenderCredentials(): void {
-  credentials.clear()
-}
-
 /**
- * `X-Hub-Signature-256: sha256=<hmac>` over the **raw** body bytes. Re-serialising the parsed
- * JSON changes the bytes and the signature stops matching, which is why the webhook route
- * must keep the raw body and hand it here.
+ * **Meta's webhook signature is verified in `app/api/webhook/route.ts`, not here.**
+ *
+ * There was a `verifyMetaSignature(raw, sig, appSecret)` in this file with no caller,
+ * while the route computed the same HMAC inline — two implementations of the check that
+ * decides whether an inbound request is really from Meta, one of them exercised and one
+ * of them not. The route's is the live one and is correct (raw body, `sha256=` prefix
+ * kept, length-checked `timingSafeEqual`, fail-closed on a missing secret), so this is
+ * the copy that goes.
+ *
+ * It is deliberately not the other way round. The route reads its two secrets straight
+ * from `process.env` rather than `lib/env.ts` — they belong to the production transport,
+ * not to the emulator build — and importing this module would pull the whole Cloud
+ * transport, its auth client and that env object into the one route that must still work
+ * when none of them are configured.
+ *
+ * `clearSenderCredentials()` went at the same time: a cache-reset seam nothing called.
  */
-export function verifyMetaSignature(
-  raw: string | Buffer,
-  sig: string | null | undefined,
-  appSecret: string,
-): boolean {
-  if (!sig || !appSecret) return false
-  const provided = sig.startsWith('sha256=') ? sig.slice('sha256='.length) : sig
-  if (!/^[0-9a-f]+$/i.test(provided)) return false
-
-  const expected = createHmac('sha256', appSecret)
-    .update(typeof raw === 'string' ? Buffer.from(raw, 'utf8') : raw)
-    .digest('hex')
-
-  const a = Buffer.from(expected, 'utf8')
-  const b = Buffer.from(provided.toLowerCase(), 'utf8')
-  if (a.length !== b.length) return false
-  return timingSafeEqual(a, b)
-}
 
 /** The `messages` endpoint for a given number. */
 export function messagesUrl(phoneNumberId: string): string {

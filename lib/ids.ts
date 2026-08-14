@@ -36,11 +36,6 @@ export function idem(...parts: string[]): string {
   return `${key.slice(0, MAX_KEY_LENGTH - 33)}:${digest}`
 }
 
-/** Deterministic short hash. Dedupe keys, cache keys, seeded simulation. */
-export function shortHash(...parts: string[]): string {
-  return createHash('sha256').update(parts.join('\0')).digest('hex').slice(0, 12)
-}
-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export function isUuid(v: unknown): v is string {

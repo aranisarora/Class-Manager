@@ -43,6 +43,9 @@ import { runTurn, type TurnOutput } from '@/lib/agent/loop'
 import { CURATE_THRESHOLD } from '@/lib/agent/memory'
 import { markStatus } from '@/lib/messaging/send'
 import { splitFlowResponse } from '@/lib/messaging/flows'
+// The 24h window rule, from the file that owns it (§14.7). This read model used to
+// inline the arithmetic against a `WINDOW_MS` of its own, in two places.
+import { isInWindowAt } from '@/lib/messaging/window'
 import type { Role } from '@/lib/types'
 
 // -----------------------------------------------------------------------------
@@ -1134,8 +1137,6 @@ async function seedNadam(base: Date): Promise<AcademySummary> {
 // READ MODEL — what the emulator renders.
 // =============================================================================
 
-const WINDOW_MS = 24 * 60 * 60 * 1000
-
 export type WorldContact = {
   id: string
   academyId: string
@@ -1403,7 +1404,7 @@ export async function worldState(): Promise<WorldState> {
           note: (c.notes as string) ?? (c.role_hint as string) ?? null,
           optedOutAt: isoOrNull(c.opted_out_at),
           lastInboundAt: last,
-          inWindow: last !== null && nowD.getTime() - new Date(last).getTime() < WINDOW_MS,
+          inWindow: isInWindowAt({ last_inbound_at: last }, nowD),
           messageCount: Number(c.message_count),
           lastMessageAt: isoOrNull(c.last_message_at),
           lastMessageBody: (c.last_message_body as string) ?? null,
@@ -1584,7 +1585,7 @@ export async function threadFor(contactId: string): Promise<Thread | null> {
         note: (c.notes as string) ?? (c.role_hint as string) ?? null,
         optedOutAt: isoOrNull(c.opted_out_at),
         lastInboundAt: last,
-        inWindow: last !== null && nowD.getTime() - new Date(last).getTime() < WINDOW_MS,
+        inWindow: isInWindowAt({ last_inbound_at: last }, nowD),
         messageCount: found.messages.length,
         lastMessageAt: isoOrNull(found.messages[found.messages.length - 1]?.queued_at),
         // Same rule as the tray's: the last message that actually went somewhere.

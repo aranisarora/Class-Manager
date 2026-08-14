@@ -164,11 +164,8 @@ export function Badge({ children, tone }: { children: ReactNode; tone?: Tone }) 
   )
 }
 
-export function isDateish(v: unknown): boolean {
-  if (v instanceof Date) return true
-  if (typeof v !== 'string') return false
-  return /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2})?/.test(v)
-}
+// `isDateish(v)` sat here with no caller — `toDate(v) !== null` is the same question and
+// is what every renderer actually asks.
 
 export function toDate(v: unknown): Date | null {
   if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v

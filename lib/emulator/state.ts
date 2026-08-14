@@ -1996,9 +1996,8 @@ export function useEmulator(): Ctx {
   return ctx
 }
 
-export function useEmulatorState(): EmulatorState {
-  return useEmulator().state
-}
+// `useEmulatorState()` — `useEmulator().state` — had no caller: every pane either wants
+// the actions or destructures `const { state } = useEmulator()` itself.
 
 export function useEmulatorActions(): EmulatorActions {
   return useEmulator().actions
@@ -2057,14 +2056,9 @@ export function usePrimaryTimezone(): string {
   return safeTz(first?.timezone)
 }
 
-/** Cost / sender / window facts arrive on the event stream; join them onto the bubble. */
-export function useSendMeta(messageId: string): EmuEvent | null {
-  const { state } = useEmulator()
-  return useMemo(
-    () => state.events.find((e) => e.messageId === messageId && (e.kind === 'send' || e.kind === 'suppress')) ?? null,
-    [state.events, messageId],
-  )
-}
+// `useSendMeta(messageId)` — "cost / sender / window facts arrive on the event stream;
+// join them onto the bubble" — was never joined onto a bubble. `Bubble.tsx` renders from
+// the message row alone.
 
 /**
  * §16.1's tier accounting, derived from the log itself.
