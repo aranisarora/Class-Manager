@@ -1,8 +1,15 @@
 # Ideal conversations
 
-Twelve realistic WhatsApp conversations — three each for **admin**, **coach**, **client** and **prospect** — written as the bot should actually behave. Everything here is derived from `product-spec.md` only. Where a line is doing spec work, there's a note underneath saying which rule it's honouring.
+Realistic WhatsApp conversations written as the bot should actually behave, grouped **persona × phase** — onboarding, then day-to-day. Derived from `product-spec.md`, except where research says the spec is wrong; those places are marked.
 
-These are meant as targets: if the built bot can't hold up its side of these twelve, something is missing.
+These are targets. If the built bot can't hold up its side of these, something is missing.
+
+| | Onboarding | Day-to-day |
+|---|---|---|
+| **Admin** | A1 | A2 · A3 · D5 |
+| **Coach** | C1 | C2 · C3 |
+| **Client** | L1 | L2 · L3 · D1 · D2 · D3 · D4 |
+| **Prospect** | P1 · P2 | P3 |
 
 ---
 
@@ -12,15 +19,57 @@ These are meant as targets: if the built bot can't hold up its side of these twe
 |---|---|
 | **SHARWIN** | a human typing or tapping |
 | > blockquote | a bot message bubble |
-| `[ Button ]` | a WhatsApp reply button (max 3 per message) |
-| `≡ List: …` | a WhatsApp list picker (used when >3 options) |
-| **↳ taps `[ X ]`** | the human taps a button |
+| `[ Button ]` | a reply button — **max 3 per message** |
+| `≡ List: …` | a list picker — used for 4–10 options |
+| `▤ Flow: …` | a WhatsApp Flow — a multi-screen form inside the chat |
+| **↳ taps `[ X ]`** | the human taps |
 | ⚙ | what happens underneath — operation, job, state change, spec rule |
 | 🕐 | time passes |
 
-**The cast** — Ace TT Academy, table tennis, Green Park, Bangalore. Sharwin (admin), Arjun and Vikram (coaches), families: Meera's mum Latha, Aarav's dad Rajesh, Kiran's mum Priya. Timezone `Asia/Kolkata`. Cancellation window 24h. All money in ₹.
+**The cast** — Ace TT Academy, table tennis, Green Park, Bangalore. Sharwin (admin), Arjun and Vikram (coaches), families: Meera's mum Latha, Aarav's dad Rajesh, Kiran's mum Priya, Anand (adult player). Second business: Shruti Sangeet, run by Revathi. Timezone `Asia/Kolkata`. Cancellation window 24h. All money in ₹.
 
-**Two things the bot never does, in any conversation below:** say the word "academy" as a product noun (§18.4 — it says "Ace TT Academy", the business's own name, and nothing else), and claim something was *delivered* when it only knows it was *sent* (§2.4).
+---
+
+## Rules that hold everywhere
+
+Stated once here so the conversations don't restate them. Everything below is assumed in every transcript; annotations only appear where a rule is doing something *surprising*.
+
+1. **Never collect what the platform already gave us.** `profile.name` arrives on every inbound webhook. The bot greets people by name and never asks for one. Same for the number, and for anything a vCard already carried.
+2. **A button tap is just a message.** Two mechanisms wear the same clothes: a *minted action* replays a stored payload with no model call (§2.2), and a plain reply button sends text back and hands the turn to the model. `[ I'll type it instead ]` is the second kind — it works precisely because it's ordinary.
+3. **Buttons first, text always.** Three buttons max, then a list, then a Flow. Free text works at every point, with no prompt in front of it.
+4. **Everything parsed is read back before it's acted on** — photo, voice, document, screenshot. A parse is a proposal (§2.7).
+5. **A failed parse keeps what it got.** Corrections arrive prefilled with everything the parse got right.
+6. **Preview scales with blast radius.** One row in your own scope executes; more than one person, anything money-shaped, anything destructive is previewed at real size and confirmed (§14.2).
+7. **Scope is always asked** — this one, or every week?
+8. **Claims never exceed evidence.** queued → sent → delivered → read; scheduled → confirmed → arrived. The bot uses the strongest word it has evidence for and no stronger (§2.4).
+9. **Every message leads with the business name**, because the sender is shared (§16.3).
+10. **After every action, the natural next step as a button** (§4.3).
+11. **Nothing proactive that the recipient wouldn't have asked for** (§2.8).
+12. **Never ask someone to confirm something to themselves; never escalate about a person to that person** (§18). These two suppressions produce the whole solo-operator case for free.
+13. **The word "academy" never appears as a product noun.** Businesses are called by their own names (§18.4).
+
+---
+
+## Which surface, and why
+
+The spec (§14.6) rules out WhatsApp Flows entirely, on the grounds that a Flow needs an RSA keypair and an encrypted data-exchange endpoint. **Research says that's only true of dynamic Flows.**
+
+- A **static Flow** — navigation only, no `data_exchange` — needs no keypair and no endpoint. It returns one payload on completion. ([Meta: Flow JSON components](https://developers.facebook.com/docs/whatsapp/flows/reference/components))
+- Components are rich enough for real onboarding: `TextInput` (typed, regex-validated), `TextArea`, `Dropdown` (up to 200 options), `CheckboxGroup` / `RadioButtonsGroup` (20), `CalendarPicker`, `OptIn`, `Image`, and `If` / `Switch` conditionals. **50 components per screen.**
+- **There is no time picker** — times are `Dropdown`s of half-hour steps.
+- **There is no repeater.** An unbounded "add another" list requires `data_exchange`, and with it the encryption surface. Bounded reveals via `OptIn` + `If` are the static workaround.
+- **There is no contact picker.** vCards arrive as a native `contacts` message on the webhook, already parsed. ([Cloud API message types](https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/payload-examples))
+
+So the rule is **per task, not per product**:
+
+| Surface | Use it for | Because |
+|---|---|---|
+| **Chat** | anything conversational; contact sharing; corrections; everything unbounded | vCards beat form fields, and a sentence beats a screen when the user already knows what to say |
+| **Static Flow** | bounded, structured input with a known shape — setup, one class, one rate | never leaves WhatsApp, no endpoint, no encryption, no publish latency on the data path |
+| **Photo / voice / document** | bulk anything that already exists on paper | one message replaces four Flow runs (§14.5) |
+| **Web surface** | unknown-shape, dense, exploratory, or per-session dynamic — the register, roster repair, charts | this is the genuinely dynamic case, and the only one worth an endpoint (§15) |
+
+**The one thing that makes them work together:** a parse failure hands its partial result to a prefilled Flow. Neither instrument is good enough alone.
 
 ---
 ---
@@ -31,104 +80,168 @@ The admin gets the widest surface: a natural-language CLI over the whole busines
 
 ---
 
-## A1 · Onboarding — whiteboard photo to working business in eleven minutes
+## A1 · Admin — onboarding
 
-**Tests:** setup form (§7.1) · timetable parsing and read-back (§14.5, §2.7) · coach add + self-initiated invite (§8.1) · roster build that messages nobody (§2.6) · mid-cycle join (§7.1) · broadcast-list go-live (§9.1)
+**Tests:** name taken from the webhook, never asked (§10.1) · setup as WhatsApp Flows, not a web form (§14.6, revisited) · timetable parsing and read-back (§14.5, §2.7) · **the parse becomes the Flow's default values** · coach add + self-initiated invite (§8.1) · roster built while messaging nobody (§2.6) · mid-cycle join (§7.1) · staged go-live (§9.1)
 
-**The scenario.** Sharwin has just signed up. Four classes, two coaches, 38 players, mid-August. He has a whiteboard with the week on it and a WhatsApp group full of parents.
+**The scenario.** Sharwin has just signed up. Four classes, two coaches, 38 players, mid-August. Six paths in and out of this conversation are shown, because the whiteboard photo is the *best* case and the product is judged on the other five.
 
 ---
 
 **SHARWIN**
 Hi
 
-> Hi Sharwin — I'm Class Manager. I'll run scheduling, reminders and fees for Ace TT Academy over WhatsApp, so you're not doing it by hand.
+> Hi **Sharwin** — I'm Class Manager. I'll run scheduling, reminders and fees over WhatsApp so you're not doing it by hand.
 >
-> Fastest way in: one form for the things that are annoying to type in chat — your venues, your hours, your cancellation rule. Two minutes, once, and then we never leave the chat again.
+> Three things and you're live: **where and when you teach**, **who coaches**, **who attends**. Nothing goes out to anyone until you say so.
 >
-> `[ Open setup ]`  `[ What do you need from me? ]`
+> `[ Set up my classes ]`  `[ What do you need from me? ]`
 
-⚙ The form is an *offer*, not a gate (§14.6). `[ What do you need from me? ]` exists because an admin who wants the shape of the whole thing before starting should get it in chat.
+⚙ **His name was never asked for.** `profile.name` arrives on every inbound webhook (§10.1) — the same fact the prospect funnel already relies on. Asking a stranger to type a name WhatsApp just handed us is the clearest form of the general rule: *never collect what the platform already gave us.* If it's wrong he'll say so, and that correction rides on a later message rather than costing a question of its own.
 
-**↳ taps `[ Open setup ]`** — signed link, short-TTL JWT, no login (§15)
+**↳ taps `[ Set up my classes ]`**
 
-**The setup form** (one screen, `form` component):
+---
 
-| Field | What's asked | Sharwin enters |
+### The setup Flow
+
+▤ **Flow · "Set up Ace TT" · 4 screens · no endpoint**
+
+Static Flow — navigation only, no `data_exchange`. **No RSA keypair, no encrypted endpoint, no web surface.** Everything below is standard Flow JSON components, and the whole thing returns one payload on completion.
+
+**Screen 1 · Your business**
+
+| Component | Asks | Sharwin enters |
 |---|---|---|
-| Business name | Shown to every parent, in every message | Ace TT Academy |
-| What you teach | Display only | Table tennis |
-| Venues | Name + address, add as many as needed | Green Park Indoor Stadium, Court 3 |
-| Operating pattern | Rough days/times — helps read your timetable | Mon–Sat, mornings and evenings |
-| Cancellation notice | How much warning before a class stops being chargeable | 24 hours |
-| Your name | What coaches and parents see when you send something | Sharwin |
-| Timezone | Prefilled | Asia/Kolkata |
+| `TextInput` text | Business name — parents see this on every message | Ace TT Academy |
+| `Dropdown` | What you teach | Table tennis |
+| `Dropdown` | Timezone | *India (IST)* — prefilled |
 
-**↳ submits**
+**Screen 2 · Where**
 
-> Got it. Ace TT Academy, Green Park, 24 hours' notice.
+| Component | Asks | Sharwin enters |
+|---|---|---|
+| `TextInput` text | Venue name | Green Park Indoor Stadium |
+| `TextArea` | Address, landmark, court or room | Court 3, opposite the pool gate |
+| `OptIn` | I teach at more than one place | *unchecked* |
+
+⚙ `OptIn` + `If` reveals a second and third venue block on the same screen. **Flows have no repeater** — an unbounded "add another" list needs `data_exchange`, which is the encryption surface the spec objected to. So the Flow covers three, and beyond that the bot says *"tell me the rest here"* and takes them in chat. A bounded control with an honest overflow beats a subsystem.
+
+**Screen 3 · How you charge**
+
+| Component | Asks | Sharwin enters |
+|---|---|---|
+| `RadioButtonsGroup` | Mostly how do you charge? | Per month |
+| `RadioButtonsGroup` | Notice needed to cancel | 24 hours |
+
+⚙ *Mostly* is deliberate — this sets the default the class screens inherit, and per-class and per-player overrides still exist (§6.4). Asking for a policy is fine; asking for four rate structures before he's entered a class is not.
+
+**Screen 4 · Your rhythm**
+
+| Component | Asks | Sharwin enters |
+|---|---|---|
+| `Dropdown` | Morning brief at | 7:00 am |
+| `Dropdown` | Evening summary at | 9:00 pm |
+
+⚙ **Flow JSON has `DatePicker` and `CalendarPicker` but no time picker**, so every time in this product is a `Dropdown` of half-hour steps. Worth knowing before designing any screen that takes a time.
+
+**↳ completes** — the Flow returns one payload, and the bot picks the conversation straight back up.
+
+> Got it. **Ace TT Academy**, Green Park, 24 hours' notice, brief at 7.
 >
-> Now the part that usually takes an hour: your timetable. Send it however it already exists — a photo of the whiteboard, the paper register, a forwarded spreadsheet, or just a voice note telling me the week.
+> Now the part that usually takes an hour — your timetable. Send it however it already exists: a photo of the whiteboard or the register, a forwarded sheet, or a voice note telling me the week.
 >
-> `[ I'll type it instead ]`
+> `[ Add classes one by one ]`
 
-⚙ §7.1 step 2. This is named in the spec as *the single biggest friction reducer in the product*, so it gets asked first and asked wide.
+⚙ §7.1 step 2, and the reason the Flow isn't the primary path here: **four classes is four Flow runs; one photo is one message.** The Flow is the fallback and the repair tool, not the front door.
 
-**SHARWIN** 📷 *photo of a whiteboard, marker, slightly angled*
+---
+
+### The six ways this actually goes
+
+**(a) A clean photo — the good case**
+
+**SHARWIN** 📷 *whiteboard, marker, slightly angled*
 
 > I read this off your board — check it before I create anything:
 >
 > • **Mon, Wed, Fri · 6:30–7:30 pm** · Beginners · Green Park
 > • **Mon, Wed, Fri · 7:30–8:30 pm** · Intermediate · Green Park
 > • **Sat · 8:00–10:00 am** · Advanced · Green Park
-> • **Sat · 10:00–11:00 am** · ❓ — the last row was cut off. "Sub jr"? Tell me what it says.
 >
-> `[ Create the first 3 ]`  `[ Fix something ]`  `[ Cancel ]`
+> All ₹2,500/month unless you tell me otherwise.
+>
+> `[ Create these 3 ]`  `[ Fix one ]`  `[ Start over ]`
 
-⚙ Parsed input is a *proposal*, never a write (§2.7). The unclear row is said plainly rather than guessed (§14.5, §4.1 rule 10) — and it doesn't block the three good ones.
+**(b) A photo with one bad row — the common case**
+
+> Three read cleanly. **The fourth row is cut off** — I can see a Saturday 10–11 slot and something like "sub jr", but I won't guess a class into existence.
+>
+> `[ Create the 3 ]`  `[ Fix the 4th ]`
+
+**↳ taps `[ Fix the 4th ]`**
+
+▤ **Flow · "Add a class" · 1 screen · prefilled from the photo**
+
+| Component | Field | Prefilled |
+|---|---|---|
+| `TextInput` | Class name | *Sub Jr* |
+| `CheckboxGroup` | Days | **Sat** ✓ |
+| `Dropdown` | Starts | **10:00 am** |
+| `Dropdown` | Ends | **11:00 am** |
+| `Dropdown` | Venue | **Green Park** |
+| `TextInput` number | Rate | **2500** |
+| `RadioButtonsGroup` | Per | **Month** |
+
+⚙ **This is the move that makes parsing and Flows worth having together: the parse becomes the Flow's default values.** A bad OCR row costs one screen with six fields already right, not a retype. A read-back that can only be accepted or rejected wastes everything the parse *did* get.
+
+**(c) No photo — "I'll type it instead"**
 
 **SHARWIN**
-Sub junior, 10-11 sat, same place
+I'll type it instead
 
-> Added. Four classes:
-> Beginners · Intermediate · Advanced · Sub Junior.
+> Fine. Quickest way is one screen per class — name, days, times, rate. Four classes, about a minute.
 >
-> Two things I still need before these can produce sessions and bills:
->
-> ≡ **List: What's next**
-> › Set rates for the four classes
-> › Add coaches
-> › Add families
-> › I'll do rates later
+> `[ Add the first class ]`  `[ I'd rather just tell you ]`
 
-**↳ taps `Set rates for the four classes`**
+⚙ The button is a plain text message; nothing is minted and no action is replayed. It hands the turn back to the model, which is exactly what an escape hatch should do — **the escape hatch is not a special mechanism, it's the ordinary one.**
 
-> One at a time. **Beginners** — what do you charge, and how?
->
-> `[ Per month ]`  `[ Per session ]`  `[ Other ]`
-
-⚙ Four rate units exist in the schema (§6.4). Only the two common ones get buttons; term and 10-class packs live behind `[ Other ]`, so the common path is one tap.
+**(d) He'd rather just say it**
 
 **SHARWIN**
-2500 a month, all of them except advanced. advanced is 3500
+beginners mon wed fri 6:30 to 7:30, intermediate same days 7:30 to 8:30, advanced saturday 8 to 10, all green park, 2500 a month except advanced is 3500
 
-> Set:
-> • Beginners, Intermediate, Sub Junior — **₹2,500/month**
-> • Advanced — **₹3,500/month**
+> Four lines, read back the same way as a photo would be. Same `[ Create these 3 ]` buttons, same prefilled Flow if one is wrong.
+
+⚙ Typed, photographed, spoken and forwarded all land in the same place: **a proposal, read back, confirmed on a tap** (§2.7). One pipeline, four front doors.
+
+**(e) A voice note, or a forwarded spreadsheet**
+
+**SHARWIN** 🎙 *0:22, Hinglish* — or 📄 *timetable.xlsx*
+
+> Same read-back. With audio there's no transcript for you to check, so **the read-back is the only place an error can be caught** — I'll always show you the parse before I create anything (§14.5).
+
+**(f) "I'll do the rest later"**
+
+> I'd rather not go half-live. If I have two of your four classes, you'd have to remember which ones I handle, a parent with two children gets reminders for one, and a coach seeing half their week stops trusting me on day one (§7.1).
 >
-> Monthly means a line is written on the 1st per player, whatever their attendance. Cancellations still matter — they tell the coach the headcount — they just don't change the bill.
+> So I'll hold everything — nothing sends, nothing bills — until the timetable is complete. **Partial is the one state I won't run in.**
 >
-> `[ That's right ]`  `[ Some are per-session ]`
+> `[ Finish it now ]`  `[ Remind me tonight ]`
 
-**↳ taps `[ That's right ]`**
+⚙ `[ Remind me tonight ]` mints an `agent_task` with an expiry (§13.1) rather than a nag.
 
-> Coaches next. Share their contact cards, or just type name and number.
+---
 
-**SHARWIN** 📇 *shares two contacts: Arjun M, Vikram R*
+### Coaches — chat, not a Flow
 
-> Arjun and Vikram. Two questions each, then I'm done.
->
-> **Arjun** — which classes?
+> Coaches next. **Share their contact cards** — the ⊕ button, Contact, pick as many as you like.
+
+**SHARWIN** 📇 *shares Arjun M and Vikram R*
+
+⚙ **Flows have no contact picker.** vCards arrive as a native `contacts` message on the webhook and carry name and number already parsed — cheaper and more accurate than any form field. Choosing chat here isn't a fallback, it's the better instrument.
+
+> Arjun and Vikram. Two questions each.
 >
 > ≡ **List: Arjun's classes** (multi-select)
 > › Beginners · Mon/Wed/Fri 6:30
@@ -142,8 +255,6 @@ Sub junior, 10-11 sat, same place
 >
 > `[ Per session ]`  `[ Per month ]`  `[ Don't track it ]`
 
-⚙ `pay_amount = null` is a first-class state, not a skipped field (§8.1).
-
 **SHARWIN**
 500 per session
 
@@ -151,89 +262,70 @@ Sub junior, 10-11 sat, same place
 >
 > Same two for Vikram?
 
-**SHARWIN**
-intermediate and sub junior, also 500
+⚙ `pay_amount = null` is a first-class state (§8.1), which is why "Don't track it" is a button and not an omission.
 
-> Done. Both coaches are in, neither has been contacted.
+> Both in, neither contacted. When you're ready I'll write their invite and **you** forward it from your own number — it should read as coming from you.
 >
-> When you're ready, I'll write their invite and you forward it from your own number — it lands as a message from you, which is how it should read.
->
-> `[ Do that now ]`  `[ Later, families first ]`
+> `[ Draft it ]`  `[ Families first ]`
 
-**↳ taps `[ Do that now ]`**
+**↳ taps `[ Draft it ]`**
 
-> Here's Arjun's. Send it as is, or edit it:
->
-> ⁠—
 > *Hi Arjun, I've moved Ace TT scheduling onto WhatsApp — you'll get your day, and mark attendance with a tap instead of texting me. Tap here to start: wa.me/…*
-> ⁠—
 >
 > `[ Send as is ]`  `[ Edit ]`
 
-⚙ §8.1 step 2. The bot deliberately does **not** imitate Sharwin's voice — Arjun already knows him; the draft only has to not read like a blast.
+⚙ §8.1 step 2. No attempt to imitate Sharwin's voice — Arjun already knows him. The coach taps, sends the prefilled text, and **the window opens from their side**: free, no template, no block risk.
 
-**↳ taps `[ Send as is ]`** — WhatsApp opens Sharwin's chat with Arjun, text prefilled, he hits send. Same for Vikram.
+---
 
-⚙ The coach taps the deep link, sends the prefilled text, and **the 24h window opens from their side** — free, no template, no block risk (§8.1, §16.1).
+### Families
 
-> Both forwarded. I'll confirm here when each of them lands.
+> Same again — share the contacts, or photograph the register.
+
+**SHARWIN** 📇 *34 vCards* — then 📷 *the paper register*
+
+> **34 contacts, 38 players.** Three things I can't resolve alone:
 >
-> Now families — the big one. Same deal: share the contacts, photograph your register, or forward a list.
-
-**SHARWIN** 📇 *multi-contact share, 34 vCards* — then 📷 *a photo of the paper register*
-
-> Read: **34 contacts** and **38 players** across the four classes.
+> 1. **Two Meeras** in Beginners — one register line, two numbers
+> 2. **Kiran S** in Beginners *and* Advanced — two children, or one in two classes?
+> 3. **Six numbers with no name** on the register
 >
-> Almost all of it lines up. Three things I can't resolve on my own:
->
-> 1. **Two "Meera"s** in Beginners — one register, two numbers
-> 2. **Kiran S** appears in Beginners *and* Advanced — two children with the same first name, or one child in two classes?
-> 3. **Six numbers with no name on the register** — I can guess from the contact card, but I'd rather you look
->
-> `[ Sort these out ]` — opens a page with just those 9 rows
-> `[ Skip, I'll fix later ]`
+> `[ Sort these out ]`  `[ Skip, I'll fix later ]`
 
-⚙ Reading a register is a proposal; the bot fixes what it can and escalates only the genuinely ambiguous. Dense correction work goes to the web surface, not to twelve chat round-trips (§14.6, §15).
+**↳ taps `[ Sort these out ]`** — nine rows, one page on the web surface
 
-**↳ taps `[ Sort these out ]`, fixes nine rows on one page, submits**
+⚙ **This is where the web surface earns its place and a Flow doesn't.** Nine rows of unknown shape, each needing a different question, is exactly the dynamic case that would force `data_exchange` and its encryption. §15's ceiling is the right tool; the Flow's isn't.
 
-> Roster's built: **38 players · 31 families · 4 classes · 2 coaches.** Nobody has been messaged.
+> Roster built: **38 players · 31 families · 4 classes · 2 coaches.** Nobody has been messaged.
 >
-> One thing before you go live, because it decides whether anyone gets chased wrongly: **who has already paid, and until when?** Anything before that date, I never mention. You're not going to have me dunning people for July.
+> Before go-live: **who has already paid, and until when?** Anything before that date I never mention — you're not going to have me chasing people for July.
 >
 > `[ Everyone's paid through August ]`  `[ Mark them individually ]`
 
-⚙ §7.1 — *nobody is ever chased for money from before the platform*. Getting this wrong on day one is unrecoverable trust damage, so it's asked, not assumed.
+⚙ §7.1 — *nobody is ever chased for money from before the platform.* Asked once, before go-live, because discovering it at month end is unrecoverable.
 
-**↳ taps `[ Everyone's paid through August ]`**
+**↳ taps `[ Everyone's paid through August ]`** → UPI handle → done.
 
-> September's the first month I'll bill. Last thing: your UPI handle, so parents can pay in the chat.
-
-**SHARWIN**
-acett@okhdfcbank
-
-> Set. **Ace TT Academy is live and completely silent** — 38 players, four classes, sessions generated three weeks out, and not one parent knows I exist.
+> **Ace TT Academy is live and completely silent** — 38 players, four classes, sessions generated three weeks out, and not one parent knows I exist.
 >
-> Going live with parents is the one thing I won't do on my own. When you say go: I write the invite, you send it through a broadcast list — it lands as a normal one-to-one from you, they never see each other — and I go out in batches of ten so we can stop if anything looks wrong.
+> When you say go: I write the invite, you send it through a broadcast list — it lands as a normal one-to-one from you, they never see each other — and I go out in batches of ten so we can stop if anything looks wrong.
 >
 > `[ Show me the invite ]`  `[ Not yet ]`
 
-⚙ Invariant 6 stated out loud. §9.1 step 2: staged batches with a halt condition, not a campaign (§13 `first_contact_batch`).
-
-**↳ taps `[ Show me the invite ]`** → draft shown → `[ Send as is ]` → broadcast-list walkthrough (3 screenshots, ≤256 recipients) → parents start tapping in.
+⚙ Invariant 6, said out loud. Staging and its halt condition are D5.
 
 ---
 
 **Design notes — A1**
 
-- **The form appears once, ever.** Everything after it is chat. The register-fixing page is the one exception, and it's a shortcut out of nine chat round-trips.
-- **Every step ends with "nobody was messaged."** The admin's real fear during onboarding is an accidental blast to 31 families. The bot repeats that it hasn't, unprompted, four times.
-- **Ambiguity is surfaced, never resolved silently.** Two Meeras, a cut-off row, six unnamed numbers — each one said plainly.
-- **The money question is asked before go-live, not at month end.** Discovering the "already paid through" rule when the first dunning message fires is too late.
-
+- **Nothing is asked that the platform already answered.** The name is the example; the principle is the point.
+- **Parse first, Flow second, chat always.** One photo beats four Flow runs; a prefilled Flow beats a re-read; a sentence beats both when he already knows what he wants to say.
+- **A failed parse must not cost the whole parse.** Defaults carry into the repair screen.
+- **Instrument choice is per-task, not per-product:** vCards are better than a form, a Flow is better than nine chat round-trips, and a page is better than a Flow when the shape is unknown.
+- **Half-live is refused, out loud, with the reason.** It's the only "no" in the onboarding.
 ---
 
-## A2 · A coach quits mid-term, on a Tuesday morning
+## A2 · Admin — day to day: a coach quits mid-term
 
 **Tests:** morning brief led by *Needs you* (§7.2) · `end_coach` as one transactional operation (§8.3) · write-diff preview at real blast radius (§14.2) · undo that sends corrections (§7.2) · delivery-status honesty (§2.4) · self-scheduled watch (§13.1)
 
@@ -393,7 +485,7 @@ what are you watching?
 
 ---
 
-## A3 · Evening digest, a disputed fee, and the bot's own memory
+## A3 · Admin — day to day: the digest, a disputed fee, and memory
 
 **Tests:** synthesized digest with grounding rules (§10.2) · money-dispute escalated from a parent (§4.2) · adjustment as the one primitive (§6.4) · view on the web surface (§15) · memory that's visible, editable and acted on (§5)
 
@@ -502,7 +594,7 @@ The coach gets a ladder of single questions, each at its right time, one at a ti
 
 ---
 
-## C1 · Invite, a wrong detail, then the first real day
+## C1 · Coach — onboarding
 
 **Tests:** `CO-INVITE-CONFIRM` (§8.1) · the coach does not edit the catalog (§8.1) · `CO-DAY` → `CO-COMING` → `CO-REGISTER` ladder (§8.2) · one confirmation is enough (§8.2) · unprompted action (§4.1 rule 2)
 
@@ -624,7 +716,7 @@ reached
 
 ---
 
-## C2 · Can't make it, and two coaches race for the cover
+## C2 · Coach — day to day: a drop-out and the cover race
 
 **Tests:** decline confirms before acting (§8.2) · cover offered only when the session would be *uncovered* (§6.3) · first tap wins, `CO-COVER-TAKEN` · running late relayed to parents (§9.2, §12.1) · escalation is about sessions, never people (§6.3)
 
@@ -743,7 +835,7 @@ stuck in traffic, 15 min late
 
 ---
 
-## C3 · The register catches a bill that was about to be wrong
+## C3 · Coach — day to day: the register catches a wrong bill
 
 **Tests:** register page on the web surface (§8.2, §15) · the out-of-band repair (§8.2 — *the highest value catch-point*) · retroactive `cancelled_timely` and its money meaning (§6.4) · payables visible to the coach, own only (§8.1, §6.7) · Hinglish voice note resolved against the roster (§14.5)
 
@@ -859,7 +951,7 @@ Parents are ~95% of the humans this talks to. Every message has to be worth the 
 
 ---
 
-## L1 · Invite, first reminder, and a cancellation with scope
+## L1 · Client — onboarding, and a first cancellation
 
 **Tests:** `CL-INTRO` proof instead of promises (§9.1) · `CL-REMINDER` (§12.1) · mis-tap protection before acting (§9.2) · *this session or every week?* (§9.2) · timely vs late cancellation (§6.4) · reschedule as the makeup (§9.2)
 
@@ -948,7 +1040,7 @@ Hi Ace TT Academy
 
 ---
 
-## L2 · The month's bill, a challenged line, and paying by UPI
+## L2 · Client — day to day: the bill, a challenged line, UPI
 
 **Tests:** `CL-TALLY` line by line (§9.2) · a parent disputing a specific line (§4.2) · escalation carrying the record (§14.8) · Rail 1 payment (§11.5) · GPay screenshot parsed into a payment record (§14.5) · `CL-RECEIPT` (fixed, §12)
 
@@ -1038,7 +1130,7 @@ ok. but you charged me for 2 august, she was sick that day also
 
 ---
 
-## L3 · Two children, a coach running late, and a parent who's had enough
+## L3 · Client — day to day: two children, a late coach, an angry parent
 
 **Tests:** merging (§12 — *three things happened to one parent today, so they get one message*) · `CL-SESSION-TROUBLE` and only when it carries something new (§9.2) · `CL-OUTCOME` as something to fix, not a verdict (§9.2) · escalation on anger with transcript attached (§14.8) · per-person timing from observed behaviour (§8.2)
 
@@ -1150,7 +1242,7 @@ The cheapest acquisition path in the product — the stranger initiates, so the 
 
 ---
 
-## P1 · QR code at the court to a booked trial
+## P1 · Prospect — first contact to booked trial
 
 **Tests:** cold inbound routed to the right business by prefilled text (§10.1) · `profile.name` used for free (§10.1) · **a conversation, not a wizard** (§10.1 step 3) · `book_trial` as one transactional operation · auto-confirmed with no admin gate, admin gets an undo (§10.1 step 5)
 
@@ -1238,7 +1330,7 @@ Nithya, yes 14
 
 ---
 
-## P2 · Numbers the system doesn't know
+## P2 · Prospect — numbers the system does not know
 
 **Tests:** inbound with no academy in it (§10.1 routing) · a second parent on an unregistered number resolved by name + one confirming question (§9.1) · a forwarded invite from a stranger · a genuine wrong number · money-shaped rows never routed to an unverified person (§6.7)
 
@@ -1325,7 +1417,7 @@ is this dr rekha's clinic
 
 ---
 
-## P3 · The prospect who doesn't convert
+## P3 · Prospect — the one who does not convert
 
 **Tests:** the bot answering hard questions it actually holds the data for · asking for a human on request (§14.8) · quiet by default when a prospect goes cold (§4.1 rule 1) · out-of-window contact as a **window-opener** (§14.7) · no marketing category (§16.2)
 
@@ -1424,51 +1516,13 @@ Ok we can do saturdays
 ---
 ---
 
-# What these twelve cover
+# More conversations
 
-| Spec area | Where it's exercised |
-|---|---|
-| Nothing sent during onboarding (§2.6) | A1 |
-| Parsed input read back before acting (§2.7, §14.5) | A1, C3, L2 |
-| Effect computed before commit (§2.3, §14.2) | A2 |
-| Multi-step consequences in one transaction (§2.5, §14.2.1) | A2, P1 |
-| Sending ≠ delivered (§2.4) | A2, L2 |
-| Would this person have asked for it? (§2.8) | L3, P3, C2 |
-| Quiet by default (§4.1) | P1, P3 |
-| Prompt is a convenience, not the interface (§4.1) | C1, C2, C3 |
-| Follow-up buttons (§4.3) | everywhere |
-| Memory visible, editable, acted on (§5) | A3, L3 |
-| Rate units and their money meaning (§6.4) | A1, C3, L1, L2 |
-| Adjustments as one primitive (§6.4) | A3, L2 |
-| RLS boundaries felt by a user (§6.7) | C3, P2 |
-| Admin undo that corrects the right people (§7.2) | A2 |
-| Coach ladder, one confirmation (§8.2) | C1, C2 |
-| Out-of-band repair at the register (§8.2) | C3 |
-| Coach churn reusing uncovered escalation (§8.3) | A2 |
-| Cover race, first tap wins (§8.2, §12.3) | C2 |
-| Scope always asked (§9.2) | L1, A2 |
-| Mis-tap protection (§9.2) | L1, C2 |
-| Merging catalog rows (§12) | L3 |
-| Synthesized digest with grounding rules (§10.2) | A3 |
-| Conversation, not a wizard (§10.1) | P1, P3 |
-| Self-scheduled `agent_task` (§13.1) | A2 |
-| Escape hatch on anger (§14.8) | L3, L2 |
-| Window vs template economics (§14.7, §16.1) | P3, A1 |
-| Web surface as an upgrade, never a gate (§15, §14.6) | A1, A3, C3 |
-| Solo case suppression (§18) | C1 (noted) |
-
-**Five gaps were named here originally.** All five are closed in Part Two below.
-
----
----
-
-# PART TWO · The five that were missing
-
-Same cast, same rules. These are the five the first twelve skipped — the money ladder, the ten-class pack, two businesses on one number, opting out, and the day the sends went wrong.
+Five more — the dunning ladder, the ten-class pack, two businesses on one number, opting out, and the day the sends went wrong. Indexed in the table at the top like the rest.
 
 ---
 
-## D1 · The dunning ladder, and the payment that never arrived
+## D1 · Client — day to day: the dunning ladder
 
 **Persona:** client · **Tests:** `CL-DUNNING` and its escalation on silence (§12.1) · retiming a ladder from a memory fact (§12, §5) · `[ Already paid ]` → Rail 1 attestation → `AD-RECONCILE` (§11.5) · never claiming a payment the admin hasn't confirmed (§2.4) · escalation carrying the record, not a verdict (§14.8)
 
@@ -1588,7 +1642,7 @@ salary comes on the 15th, I'll pay then
 
 ---
 
-## D2 · Ten classes, and the man who pays for himself
+## D2 · Client — day to day: ten classes, and the man who pays for himself
 
 **Persona:** client · **Tests:** `per_package` rules end to end (§6.4) · *the count remaining rides on the tally* · timely cancellation does not consume a session · package rollover as a money-touching write (§14.2) · the self-paying adult as `account.holder_person_id = player.person_id` at n=1 (§6.2)
 
@@ -1699,7 +1753,7 @@ my daughter wants to try, she's 8
 
 ---
 
-## D3 · One number, two businesses
+## D3 · Client, then admin — one number, two businesses
 
 **Persona:** client, then admin · **Tests:** shared-number routing (§16.3) · one human as two `contact` rows, one per tenant (§6.2 — `unique (academy_id, phone_e164)`) · cross-tenant reads return zero rows (§6.7) · the named trade-off — fragmentation, and "Class Manager" in the chat header (§16.3)
 
@@ -1807,7 +1861,7 @@ can you tell revathi about our saturday timings, we're clashing on court
 
 ---
 
-## D4 · Opting out, and coming back
+## D4 · Client — day to day: opting out, and coming back
 
 **Persona:** client · **Tests:** opt-out confirmed before it takes effect, never a mis-tap (§16.3) · a middle option before the nuclear one · what stops is spelled out, including the cost · per-academy, never global (§16.3) · `AD-OPT-OUT` as a fixed row with `[ Call them ]` (§12.4) · re-engagement
 
@@ -1911,7 +1965,7 @@ you can start the reminders again, things have settled
 
 ---
 
-## D5 · The day the sends went wrong
+## D5 · Admin — day to day: the day the sends went wrong
 
 **Persona:** admin · **Tests:** staged first contact halting on a bad signal (§9.1 rule 6, §13 `first_contact_batch`) · `AD-DELIVERY-FAILURE` with `[ Fix number ]` (§12.4) · per-tenant quality proxies (§16.3) · sent ≠ delivered ≠ read, including what's permanently unknowable (§2.4) · history follows the person, not the number (§6.2)
 
@@ -2018,10 +2072,39 @@ did everyone get the fee message yesterday
 ---
 ---
 
-# What the five add
+# Spec coverage
 
 | Spec area | Where it's exercised |
 |---|---|
+| Nothing sent during onboarding (§2.6) | A1 |
+| Parsed input read back before acting (§2.7, §14.5) | A1, C3, L2 |
+| A failed parse keeps what it got, into a prefilled Flow | A1 |
+| Never collecting what the webhook already gave (§10.1) | A1, P1 |
+| Effect computed before commit (§2.3, §14.2) | A2 |
+| Multi-step consequences in one transaction (§2.5, §14.2.1) | A2, P1 |
+| Sending ≠ delivered (§2.4) | A2, L2, D5 |
+| Would this person have asked for it? (§2.8) | L3, P3, C2 |
+| Quiet by default (§4.1) | P1, P3 |
+| Prompt is a convenience, not the interface (§4.1) | C1, C2, C3 |
+| Memory visible, editable, acted on (§5) | A3, L3, D1 |
+| Rate units and their money meaning (§6.4) | A1, C3, L1, L2, D2 |
+| Adjustments as one primitive (§6.4) | A3, L2 |
+| RLS boundaries felt by a user (§6.7) | C3, P2, D3 |
+| Admin undo that corrects the right people (§7.2) | A2 |
+| Coach ladder, one confirmation (§8.2) | C1, C2 |
+| Out-of-band repair at the register (§8.2) | C3 |
+| Coach churn reusing uncovered escalation (§8.3) | A2 |
+| Cover race, first tap wins (§8.2, §12.3) | C2 |
+| Scope always asked (§9.2) | L1, A2 |
+| Mis-tap protection (§9.2) | L1, C2, D4 |
+| Merging catalog rows (§12) | L3 |
+| Synthesized digest with grounding rules (§10.2) | A3 |
+| Conversation, not a wizard (§10.1) | P1, P3 |
+| Self-scheduled `agent_task` (§13.1) | A2, A1 |
+| Escape hatch on anger (§14.8) | L3, L2 |
+| Window vs template economics (§14.7, §16.1) | P3, A1 |
+| Static Flows vs web surface vs chat (§14.6, revisited) | A1 |
+| Solo case suppression (§18) | C1 (noted) |
 | `CL-DUNNING` ladder with a terminus (§12.1) | D1 |
 | Retiming a ladder from memory (§5, §12) | D1 |
 | Rail 1 attestation and `AD-RECONCILE` (§11.5) | D1 |
