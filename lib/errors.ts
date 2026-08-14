@@ -47,10 +47,10 @@ export function isAppError(e: unknown): e is AppError {
   return e instanceof AppError || (typeof e === 'object' && e !== null && (e as { name?: string }).name === 'AppError')
 }
 
-/** Shorthand for the common three-argument case. */
-export function appError(code: string, message: string, userMessage?: string): AppError {
-  return new AppError({ code, message, userMessage })
-}
+// The three-argument shorthand lives in `lib/messaging/types.ts` as `msgError`, which
+// is what the twelve call sites actually import. There was an identical `appError` here
+// with no callers at all — two names for `new AppError({code, message, userMessage})`,
+// and the one in the file named after the error type was the dead one.
 
 /** Never throws. Use wherever an error has to become a string. */
 export function errorMessage(e: unknown): string {
@@ -64,12 +64,19 @@ export function errorMessage(e: unknown): string {
   }
 }
 
-/** The line a person is allowed to see. Falls back to something plain. */
-export function userFacingMessage(e: unknown, fallback = "Something went wrong on my side. I haven't changed anything."): string {
-  if (isAppError(e) && e.userMessage) return e.userMessage
-  return fallback
-}
-
-export function errorCode(e: unknown): string {
-  return isAppError(e) ? e.code : 'unknown'
-}
+/**
+ * **`userMessage` is currently write-only, and that is worth knowing.**
+ *
+ * There was a `userFacingMessage(e, fallback)` here — the reader for the field this
+ * file's own header calls "the only thing a human on WhatsApp may ever see" — and
+ * nothing called it. `msgError` sites do populate `userMessage`, so the value is
+ * written and never read: the sentence an author carefully wrote for a person is
+ * discarded, and what a person actually gets is `humanError()` in `lib/agent/loop.ts`,
+ * which re-derives a safe sentence from the raw message instead.
+ *
+ * Removed rather than left sitting there, because a dead reader reads as a live path
+ * and is how the gap stayed invisible. Two honest ways to close it, neither of them a
+ * cleanup: have `humanError` prefer `userMessage` when the error carries one, or stop
+ * writing the field. `errorCode(e)` went with it — also unused, and `isAppError(e) ?
+ * e.code : 'unknown'` at a call site is the same thing without the indirection.
+ */

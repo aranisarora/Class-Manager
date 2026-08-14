@@ -112,59 +112,106 @@ export function formatDate(
   return parts.join(' ')
 }
 
-/**
- * Sat 15 Aug, 8–10 am · Sat 15 Aug, 11 am – 1 pm · 15–17 Aug · 28 Aug – 3 Sep
- * One day with two times reads as a session; two days read as a stretch.
- */
-export function formatDateRange(from: TimeInput, to: TimeInput, tz: string = DEFAULT_ZONE, opts: { relativeTo?: TimeInput } = {}): string {
-  const a = toDateTime(from, tz)
-  const b = toDateTime(to, tz)
-  if (!a.isValid) return ''
-  if (!b.isValid) return formatDate(a, tz, opts)
-
-  if (a.hasSame(b, 'day')) {
-    const day = formatDate(a, tz, opts)
-    const sameMeridiem = a.hour < 12 === b.hour < 12
-    const times = sameMeridiem
-      ? `${bareClock(a)}–${bareClock(b)} ${b.hour < 12 ? 'am' : 'pm'}`
-      : `${clockOf(a)} – ${clockOf(b)}`
-    const hasTime = !(a.hour === 0 && a.minute === 0 && b.hour === 0 && b.minute === 0)
-    return hasTime ? `${day}, ${times}` : day
-  }
-
-  const sameYear = a.year === b.year
-  if (sameYear && a.month === b.month) {
-    return `${a.day}–${b.day} ${b.toFormat('LLL')}${sameYear ? '' : ` ${b.year}`}`
-  }
-  const left = sameYear ? `${a.day} ${a.toFormat('LLL')}` : `${a.day} ${a.toFormat('LLL')} ${a.year}`
-  const right = sameYear ? `${b.day} ${b.toFormat('LLL')}` : `${b.day} ${b.toFormat('LLL')} ${b.year}`
-  return `${left} – ${right}`
-}
-
-/** 1 session · 3 sessions · 2 people (pass the irregular when there is one). */
-export function pluralise(n: number, singular: string, plural?: string): string {
-  const word = Math.abs(n) === 1 ? singular : plural ?? `${singular}s`
-  return `${n} ${word}`
-}
-
 /** The word alone, when the count is already in the sentence. */
 export function plural(n: number, singular: string, pluralForm?: string): string {
   return Math.abs(n) === 1 ? singular : pluralForm ?? `${singular}s`
 }
 
-/**
- * "Meera, Aarav, Kiran, +11 more" — §14.2's exact shape once the list runs
- * past `max`. Short lists read naturally instead: "Meera and Aarav".
- */
-export function joinNames(names: readonly string[], max = 3): string {
-  const list = names.map((n) => String(n ?? '').trim()).filter((n) => n.length > 0)
-  if (list.length === 0) return ''
-  if (list.length === 1) return list[0]
+// Three more renderers used to live here and none of them had a caller:
+// `formatDateRange` (spans — the job handlers use `spanLabel` in lib/jobs/util.ts
+// instead), `pluralise` (the count-plus-word form; `plural` above is the one that
+// gets used, with the count already in the sentence), and `joinNames`, described as
+// "§14.2's exact shape". That shape is real and does get produced — by
+// `string_agg(full_name, ', ')` in SQL, on the query that has the names — so the
+// TypeScript version was a second implementation waiting for a caller that never
+// came. Left as a note rather than silently: if a caller ever does want them, they
+// are one `git log -p` away, and it should be a deliberate choice to render names in
+// two places rather than an accident.
 
-  if (list.length <= max) {
-    return `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`
-  }
-  return `${list.slice(0, max).join(', ')}, +${list.length - max} more`
+/* ------------------------------------------------------------------------- *
+ * The WhatsApp idiom
+ *
+ * There are two idioms in this product and they are not the same:
+ *
+ *   the UI idiom     `formatTime` above — "6:30 pm", "8 am". What the emulator,
+ *                    the web screens and the spec's own prose write.
+ *   the chat idiom   below — "6:30pm", "8am". Doctrine's own examples
+ *                    ("tomorrow 6:30pm", "Sat 8am"), and what goes to a phone.
+ *
+ * **They both existed already; what was missing was that either knew about the
+ * other.** `lib/agent/lint.ts` held a second, hand-rolled date/time formatter —
+ * its own `MONTHS`, its own `WEEKDAYS`, its own day arithmetic — and one of the
+ * things it rewrote on the way out was this file's output: `formatTime` writes
+ * "6:30 pm", lint's pass turns it into "6:30pm". Correct in the end, and arrived
+ * at by two files disagreeing rather than by anybody deciding.
+ *
+ * So both live here, named, and the conversion is one function rather than a
+ * regex in another module. `lib/agent/context.ts` had a third copy of the month
+ * and weekday tables for its prompt header; it uses these now too.
+ *
+ * These take strings rather than a `TimeInput` on purpose: their caller is a lint
+ * pass working on text it has just matched with a regex, so what it holds is
+ * already 'YYYY-MM-DD' and 'HH:MM', and re-parsing them into a zoned instant
+ * would be inventing a day the string never carried.
+ * ------------------------------------------------------------------------- */
+
+export const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+export const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+/** Whole days from one 'YYYY-MM-DD' to another. 0 when either is unparseable. */
+export function dayDiff(fromIso: string, toIso: string): number {
+  const a = Date.parse(`${fromIso}T00:00:00Z`)
+  const b = Date.parse(`${toIso}T00:00:00Z`)
+  if (Number.isNaN(a) || Number.isNaN(b)) return 0
+  return Math.round((b - a) / 86_400_000)
+}
+
+/** 0 = Sunday .. 6 = Saturday, matching `class_slot.weekday`. */
+export function weekdayOf(isoDate: string): number {
+  const t = Date.parse(`${isoDate}T00:00:00Z`)
+  return Number.isNaN(t) ? 0 : new Date(t).getUTCDay()
+}
+
+/** "18:30" -> "6:30pm", "08:00" -> "8am". Tolerates a clock that already formats. */
+export function compactTime(time: string | null): string {
+  if (!time) return ''
+  const t = time.trim()
+  const m = t.match(/^(\d{1,2}):(\d{2})/)
+  if (!m) return t.replace(/\s+/g, '').toLowerCase()
+  if (/[ap]\.?m/i.test(t)) return t.replace(/\s+/g, '').toLowerCase()
+  const h24 = Number(m[1])
+  const min = m[2]
+  const suffix = h24 < 12 ? 'am' : 'pm'
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12
+  return min === '00' ? `${h12}${suffix}` : `${h12}:${min}${suffix}`
+}
+
+/**
+ * "today 6:30pm" · "tomorrow" · "Saturday 8am" · "17 Aug" · "17 Aug 2027".
+ * Near days get their name; anything past a week gets its date.
+ */
+export function compactDate(date: string, time: string | null, todayDate: string): string {
+  const t = compactTime(time)
+  const diff = dayDiff(todayDate, date)
+  const join = (label: string) => (t ? `${label} ${t}` : label)
+  if (diff === 0) return join('today')
+  if (diff === 1) return join('tomorrow')
+  if (diff === -1) return join('yesterday')
+  const [y, mo, d] = date.split('-')
+  const weekday = WEEKDAY_NAMES[weekdayOf(date)]
+  if (diff > 1 && diff <= 6) return join(weekday)
+  if (diff < -1 && diff >= -6) return join(`last ${weekday}`)
+  const sameYear = todayDate.slice(0, 4) === y
+  const stamp = `${Number(d)} ${MONTHS_SHORT[Number(mo) - 1] ?? mo}${sameYear ? '' : ` ${y}`}`
+  return join(stamp)
+}
+
+/** "Monday 17 Aug 2026" — the long form, for a prompt header rather than a message. */
+export function longDate(isoDate: string): string {
+  const bits = isoDate.split('-')
+  if (bits.length !== 3) return isoDate
+  const month = MONTHS_SHORT[Number(bits[1]) - 1] ?? ''
+  return `${WEEKDAY_NAMES[weekdayOf(isoDate)] ?? ''} ${Number(bits[2])} ${month} ${bits[0]}`.trim()
 }
 
 /** 98765 43210 — how an Indian number is read aloud. Never used for matching. */

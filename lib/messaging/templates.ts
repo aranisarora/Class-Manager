@@ -155,10 +155,6 @@ export function templateParams(name: TemplateName): string[] {
   return TEMPLATES[name].params.slice()
 }
 
-export function templateCategory(name: TemplateName): TemplateCategory {
-  return TEMPLATES[name].category
-}
-
 /**
  * Meta rejects template parameters containing newlines, tabs, or four-plus consecutive
  * spaces, and truncates nothing for you. Sanitising the value is not the same as truncating
@@ -212,17 +208,7 @@ export function templateWireParams(name: TemplateName, params: Record<string, st
   })
 }
 
-/** The approval-submission view of the eight. Also readable in the emulator's fault panel. */
-export function templateDigest(): string {
-  const lines = [
-    'TEMPLATES (§16.2) — eight categories of unsolicited contact, not eight features.',
-    'Out of window one of these carries the message; in window nothing here is used.',
-    '',
-    'NAME | CATEGORY | BODY | COVERS',
-  ]
-  for (const name of TEMPLATE_NAMES) {
-    const t = TEMPLATES[name]
-    lines.push(`${t.name} | ${t.category} | ${t.body} | ${t.covers}`)
-  }
-  return lines.join('\n')
-}
+// `templateDigest()` used to sit here — a pipe-table rendering of the eight, described
+// as "the approval-submission view" and "readable in the emulator's fault panel". It was
+// neither: nothing called it. The catalog's own `catalogDigest()` is what reaches the
+// prompt, and `TEMPLATES` below is what an approval submission would be built from.

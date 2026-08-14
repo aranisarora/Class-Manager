@@ -24,6 +24,7 @@
  * number traces to a query result in the payload) verified by eval (§17).
  */
 import { inZone, nowSync } from '@/lib/clock'
+import { compactDate } from '@/lib/format'
 
 /** What the caller actually has evidence for, from the `message` row's own columns. */
 export type DeliveryEvidence = { delivered?: boolean; read?: boolean }
@@ -57,9 +58,10 @@ export type LintScope = {
  * meant delivered and read — the delivery-health line, with its own health rewritten
  * out of it.
  *
- * The model path is unaffected: the `reply` tool lints with its own evidence before the
- * message ever reaches `send`, so a model claim is still checked exactly once, by the
- * caller that has the evidence to check it against.
+ * The model path is unaffected: the `reply` tool lints before the message ever reaches
+ * `send`, so a model claim is still checked exactly once, on the way in. It passes no
+ * evidence — nothing has been delivered at compose time either — so both passes fire
+ * there, which is the right direction for a claim nobody can back yet.
  */
 export type LintOptions = { deliveryClaims?: boolean }
 
@@ -228,8 +230,10 @@ function stripDoctrineRefs(text: string): string {
     // "§16.3" bare, and "per §7.2" / "under §7.2" with its preposition.
     .replace(/\b(?:per|under|see|as per)\s+§+\s*\d+(?:\.\d+)*/gi, '')
     .replace(/§+\s*\d+(?:\.\d+)*/g, '')
-    // "rule 10" only when it was hanging off a section reference we just removed.
-    .replace(/\s+,/g, ',')
+  // The space a stripped reference leaves in front of the next comma or full stop
+  // is closed by `tidy()` at the end of the pass, along with every other one. There
+  // used to be a `.replace(/\s+,/g, ',')` here doing a subset of that, under a
+  // comment about "rule 10" describing something it never did.
 }
 
 // -----------------------------------------------------------------------------
@@ -271,31 +275,39 @@ const TABLE_WORDS: Record<string, string> = {
 const STATE_WORDS =
   /'(setup|roster|ready|live|added|invited|active|ended|prospect|registered|engaged|opted_out|scheduled|cancelled|completed|present|late|absent|cancelled_timely|queued|sent|delivered|read|failed|requested|confirmed)'/g
 
+/**
+ * Compiled once, not per message.
+ *
+ * These are built from `UUID`, `TABLES` and `TABLE_WORDS`, all of which are module
+ * constants — so the patterns never vary, and building them inside the function meant
+ * thirteen `new RegExp` on the way out of every single message the product sends.
+ * `String.replace` with a global regex starts at 0 and resets `lastIndex` when it
+ * finishes, so sharing one instance across calls is safe.
+ */
+/** "(id: 7f3…)", "[session_id=7f3…]" — the whole parenthetical is machinery. */
+const UUID_PARENTHETICAL = new RegExp(
+  `\\s*[(\\[][^()\\[\\]]{0,40}${UUID.source}[^()\\[\\]]{0,10}[)\\]]`,
+  'g',
+)
+/** Bare uuids, and any label immediately in front of one. */
+const UUID_LABELLED = new RegExp(`(?:\\b[\\w.]{0,24}\\s*[:=]\\s*)?${UUID.source}`, 'g')
+/** table.column -> the column, humanised. "session.starts_at" -> "start time". */
+const TABLE_COLUMN = new RegExp(`\\b(${TABLES.join('|')})\\.([a-z_]+)\\b`, 'g')
+/** Multi-word table names standing on their own. */
+const TABLE_WORD_PATTERNS: [RegExp, string][] = Object.entries(TABLE_WORDS).map(([table, word]) => [
+  new RegExp(`\\b${table}s?\\b`, 'gi'),
+  word,
+])
+
 function stripIdentifiers(text: string, id: LintScope): string {
   let out = text.replace(STATE_WORDS, '$1')
 
-  // "(id: 7f3…)", "[session_id=7f3…]" — the whole parenthetical is machinery.
-  out = out.replace(
-    new RegExp(`\\s*[(\\[][^()\\[\\]]{0,40}${UUID.source}[^()\\[\\]]{0,10}[)\\]]`, 'g'),
-    '',
-  )
-  // Bare uuids, and any label immediately in front of one.
-  out = out.replace(
-    new RegExp(`(?:\\b[\\w.]{0,24}\\s*[:=]\\s*)?${UUID.source}`, 'g'),
-    '',
-  )
+  out = out.replace(UUID_PARENTHETICAL, '')
+  out = out.replace(UUID_LABELLED, '')
+  out = out.replace(TABLE_COLUMN, (_m, _t: string, col: string) => humanise(col))
 
-  // table.column -> the column, humanised. "session.starts_at" -> "start time".
-  out = out.replace(
-    new RegExp(`\\b(${TABLES.join('|')})\\.([a-z_]+)\\b`, 'g'),
-    (_m, _t: string, col: string) => humanise(col),
-  )
-
-  // Multi-word table names standing on their own.
-  for (const [table, word] of Object.entries(TABLE_WORDS)) {
-    out = out.replace(new RegExp(`\\b${table}s?\\b`, 'gi'), (m) =>
-      m.endsWith('s') && !m.endsWith('ss') ? `${word}s` : word,
-    )
+  for (const [pattern, word] of TABLE_WORD_PATTERNS) {
+    out = out.replace(pattern, (m) => (m.endsWith('s') && !m.endsWith('ss') ? `${word}s` : word))
   }
 
   // §6.1 / §18.4 — "academy" is a table name AND the one word that appears
@@ -367,9 +379,6 @@ function humanise(token: string): string {
 // 2. timestamps
 // -----------------------------------------------------------------------------
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-
 const ISO =
   /\b(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?\s*(Z|[+-]\d{2}:?\d{2})?)?\b/g
 
@@ -433,62 +442,28 @@ function localiseEnglishDates(text: string): string {
   )
 }
 
+/**
+ * `compactDate` and its tables live in `lib/format.ts`, which is where this
+ * product decides how a time reaches a human. This file used to hold a second
+ * copy of both — and one of the things it rewrote on the way out was the FIRST
+ * copy's output ("6:30 pm" -> "6:30pm"), which is two files disagreeing rather
+ * than anybody choosing. The chat idiom is still the right one for this pass;
+ * only its definition moved.
+ */
 function rewriteTimestamps(text: string, tz: string): string {
   const today = inZone(nowSync(), tz)
   return localiseEnglishDates(text).replace(ISO, (whole, y, mo, d, hh, mm, _ss, off) => {
     if (hh === undefined) {
       // A calendar date. Converting a bare date between zones would move the day,
       // so it is formatted where it stands.
-      return dateIdiom(`${y}-${mo}-${d}`, null, today.date)
+      return compactDate(`${y}-${mo}-${d}`, null, today.date)
     }
     const iso = `${y}-${mo}-${d}T${hh}:${mm}:00${off ? String(off) : 'Z'}`
     const parsed = new Date(iso)
     if (Number.isNaN(parsed.getTime())) return whole
     const local = inZone(parsed, tz)
-    return dateIdiom(local.date, local.time, today.date)
+    return compactDate(local.date, local.time, today.date)
   })
-}
-
-/** "18:30" -> "6:30pm", "08:00" -> "8am". Tolerates a clock that already formats. */
-function timeIdiom(time: string | null): string {
-  if (!time) return ''
-  const t = time.trim()
-  const m = t.match(/^(\d{1,2}):(\d{2})/)
-  if (!m) return t.replace(/\s+/g, '').toLowerCase()
-  if (/[ap]\.?m/i.test(t)) return t.replace(/\s+/g, '').toLowerCase()
-  const h24 = Number(m[1])
-  const min = m[2]
-  const suffix = h24 < 12 ? 'am' : 'pm'
-  const h12 = h24 % 12 === 0 ? 12 : h24 % 12
-  return min === '00' ? `${h12}${suffix}` : `${h12}:${min}${suffix}`
-}
-
-function dateIdiom(date: string, time: string | null, todayDate: string): string {
-  const t = timeIdiom(time)
-  const diff = dayDiff(todayDate, date)
-  const join = (label: string) => (t ? `${label} ${t}` : label)
-  if (diff === 0) return join('today')
-  if (diff === 1) return join('tomorrow')
-  if (diff === -1) return join('yesterday')
-  const [y, mo, d] = date.split('-')
-  const weekday = WEEKDAYS[weekdayOf(date)]
-  if (diff > 1 && diff <= 6) return join(weekday)
-  if (diff < -1 && diff >= -6) return join(`last ${weekday}`)
-  const sameYear = todayDate.slice(0, 4) === y
-  const stamp = `${Number(d)} ${MONTHS[Number(mo) - 1] ?? mo}${sameYear ? '' : ` ${y}`}`
-  return join(stamp)
-}
-
-function dayDiff(fromIso: string, toIso: string): number {
-  const a = Date.parse(`${fromIso}T00:00:00Z`)
-  const b = Date.parse(`${toIso}T00:00:00Z`)
-  if (Number.isNaN(a) || Number.isNaN(b)) return 0
-  return Math.round((b - a) / 86_400_000)
-}
-
-function weekdayOf(isoDate: string): number {
-  const t = Date.parse(`${isoDate}T00:00:00Z`)
-  return Number.isNaN(t) ? 0 : new Date(t).getUTCDay()
 }
 
 // -----------------------------------------------------------------------------
@@ -523,9 +498,28 @@ function downgradeClaims(text: string, evidence?: DeliveryEvidence): string {
     out = out.replace(/\bread receipts?\b/gi, 'delivery status')
   }
   if (!evidence?.delivered) {
-    out = out.replace(/\bdeliver(?:ed|y confirmed)\b/gi, (m) =>
-      m[0] === m[0].toUpperCase() ? 'Sent' : 'sent',
+    /**
+     * **Bounded the same way, and for the same reason.**
+     *
+     * The "read/seen/opened" pass above was narrowed after it inverted English —
+     * *"she has read the notice"* became *"she has sent the notice"* — and the
+     * discriminator it landed on is that a delivery claim is about *the message*,
+     * so it lands on "it", "that", "your message", or the end of the clause.
+     *
+     * This one was left unbounded: `\bdeliver(?:ed|y confirmed)\b` matched any use
+     * of the word, so *"the coach delivered a great session"* became *"the coach
+     * sent a great session"*. Same defect, same fix, one line apart — it survived
+     * because "delivered" reads like jargon and "read" reads like English, which is
+     * a fact about the reader rather than about the string.
+     *
+     * "delivery confirmed" keeps its own rule: it is a status phrase, never
+     * ordinary prose, so it needs no object to disambiguate it.
+     */
+    out = out.replace(
+      /\b(has|have|had|was|were|been|is|are|'ve|'s)\s+(?:already\s+)?delivered\b(?=\s*(?:it|this|that|them|the message|your message|my message|the reminder|the update)\b|\s*[.,;!?]|\s*$)/gi,
+      (_m, aux: string) => `${aux} sent`,
     )
+    out = out.replace(/\bdelivery confirmed\b/gi, (m) => (m[0] === m[0].toUpperCase() ? 'Sent' : 'sent'))
   }
   return out
 }

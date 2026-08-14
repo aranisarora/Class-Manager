@@ -478,23 +478,13 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
 export const CATALOG_IDS: CatalogId[] = Object.keys(CATALOG) as CatalogId[]
 
 /** §12: the seven rows the bot may reword or merge but never suppress. */
-export const FIXED_IDS: CatalogId[] = CATALOG_IDS.filter((id) => CATALOG[id].fixed)
-
 export function isCatalogId(x: unknown): x is CatalogId {
   return typeof x === 'string' && Object.prototype.hasOwnProperty.call(CATALOG, x)
-}
-
-export function isFixed(id: CatalogId | null | undefined): boolean {
-  return Boolean(id && isCatalogId(id) && CATALOG[id].fixed)
 }
 
 /** Which of the eight §16.2 templates carries this row out of window. */
 export function templateFor(id: CatalogId | null | undefined): TemplateName | null {
   return id && isCatalogId(id) ? CATALOG[id].template : null
-}
-
-export function catalogFor(id: CatalogId | null | undefined): CatalogEntry | null {
-  return id && isCatalogId(id) ? CATALOG[id] : null
 }
 
 const AUDIENCE_ORDER: CatalogEntry['audience'][] = ['client', 'prospect', 'coach', 'admin']

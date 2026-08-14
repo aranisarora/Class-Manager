@@ -25,12 +25,9 @@
 import type { SessionCtx } from '@/lib/db'
 import { modelQuery, withSession, assertSingleReadStatement } from '@/lib/db'
 import { now } from '@/lib/clock'
-import { signLink, linkUrl, TTL } from '@/lib/web/jwt'
-import type { LinkPurpose } from '@/lib/web/jwt'
 import {
   ALIASES,
   COMPONENT_TYPES,
-  REGISTRY,
   ViewSpecSchema,
   hasQuery,
   pickKey,
@@ -55,9 +52,6 @@ export const MAX_ROWS: Record<ComponentType, number> = {
   chart: 2000,
 }
 
-/** Above this, the stored query itself is cut down at mint time. */
-export const HARD_CAP = 2000
-
 export type ResolvedComponent = {
   spec: ComponentSpec
   rows: Record<string, unknown>[]
@@ -79,16 +73,7 @@ export type ResolvedView = {
   ms: number
 }
 
-export type MintedView = {
-  id: string
-  token: string
-  /** The signed link. This is what goes behind the button (§14.6). */
-  url: string
-  spec: ViewSpec
-  expiresAt: Date
-  /** Everything that was changed to make the spec renderable. */
-  notes: string[]
-}
+// `MintedView` was `mintView`'s return type and went with it.
 
 // ---------------------------------------------------------------------------
 // Query plumbing
@@ -104,10 +89,6 @@ export function wrapPaged(query: string, limit: number, offset: number): string 
   const l = Math.max(1, Math.floor(limit))
   const o = Math.max(0, Math.floor(offset))
   return `select * from (\n${clean(query)}\n) _cm_page limit ${l}${o > 0 ? ` offset ${o}` : ''}`
-}
-
-function wrapCount(query: string): string {
-  return `select count(*)::bigint as n from (\n${clean(query)}\n) _cm_count`
 }
 
 function columnsOf(rows: Record<string, unknown>[]): string[] {
@@ -344,118 +325,35 @@ export async function resolveView(
 // Mint
 // ---------------------------------------------------------------------------
 
-/** The contact a link for this person should be signed to. */
-async function primaryContactId(academyId: string, personId: string): Promise<string | null> {
-  return withSession({ role: 'service', academyId }, async (tx) => {
-    const rows = await tx<{ id: string }[]>`
-      select id from contact
-       where academy_id = ${academyId}
-         and person_id  = ${personId}
-       order by is_primary desc, created_at asc
-       limit 1`
-    return rows[0]?.id ?? null
-  })
-}
-
-async function probe(
-  holder: SessionCtx,
-  c: ComponentSpec,
-  notes: string[],
-): Promise<ComponentSpec> {
-  if (!hasQuery(c)) return c
-
-  try {
-    assertSingleReadStatement(c.query)
-  } catch (e) {
-    notes.push(`${c.type}: ${(e as Error).message} — shown as a table`)
-    return degradeToTable(c)
-  }
-
-  const sample = async () => modelQuery(holder, wrapPaged(c.query, 5, 0))
-
-  let res = await sample()
-  if (res.error) {
-    // Retry once (§15 row 2) — a timeout or a transient failure should not cost
-    // the whole component.
-    res = await sample()
-    if (res.error) {
-      notes.push(`${c.type}: the query failed (${res.error}) — shown as a table`)
-      return degradeToTable(c)
-    }
-  }
-
-  let violation = contractViolation(c, columnsOf(res.rows), res.rows.length)
-  if (violation) {
-    res = await sample()
-    violation = res.error ? violation : contractViolation(c, columnsOf(res.rows), res.rows.length)
-    if (violation) {
-      notes.push(`${c.type} doesn't fit its data — ${violation}. Shown as a table.`)
-      return degradeToTable(c)
-    }
-  }
-
-  // "Too much data: aggregate or paginate at mint time; never ship a 5,000-row
-  // page." Pagination is the resolver's job and happens for free; what mint
-  // owes is a hard ceiling baked into the stored query.
-  const counted = await modelQuery(holder, wrapCount(c.query))
-  const total = Number(counted.rows[0]?.n ?? 0)
-  if (!counted.error && total > HARD_CAP) {
-    notes.push(`that question matches ${total.toLocaleString('en-IN')} rows — capped at ${HARD_CAP.toLocaleString('en-IN')}`)
-    const capped = wrapPaged(c.query, HARD_CAP, 0)
-    return { ...c, query: capped } as ComponentSpec
-  }
-  return c
-}
+// `primaryContactId` was `mintView`'s only helper and went with it. Note that it did
+// NOT exclude opted-out contacts, unlike every other "which number does this person
+// read" lookup in the product (`contactFor`, `adminsIn`, `resolveContact`) — one more
+// reason a second minting path was worth losing rather than reviving.
 
 /**
- * Validate, probe, store, sign. Returns the signed link plus the id of the
- * `view_spec` row (which is what an `{kind:'view'}` action payload carries).
+ * **`mintView`, `mintPurposeLink` and `probe` used to live here, and nothing called any
+ * of them.**
  *
- * Throws `view_unrenderable` when nothing survives validation — the caller then
- * answers in chat, which is the floor (§15).
+ * They are not stale ideas — they are this file's version of what `lib/agent/tools.ts`
+ * does inline in `case 'view'` and `linkFor`: validate, run every query once, store the
+ * `view_spec` row, sign a link for the holder. The tool path grew its own copy, and these
+ * were left behind still describing themselves as the canonical route —
+ * `mintPurposeLink`'s comment read *"this is the one helper that mints them, so no caller
+ * hand-rolls a JWT"*, while the one real caller hand-rolls the JWT.
+ *
+ * Removed rather than rewired: the two have genuinely diverged (the tool path added an
+ * eight-row floor below which a page is refused outright, and falls the whole spec back
+ * to one table rather than degrading per component), and picking a winner changes what
+ * gets minted, which is not a cleanup.
+ *
+ * **What `probe` did is not lost, only moved later.** Its degrade-to-table on an
+ * unrunnable query or a contract violation is the same thing `resolveView` below does at
+ * render time, from the same `contractViolation` and `degradeToTable`; the difference was
+ * only whether a bad component was caught at mint or at open. Its one unique job was
+ * baking a `HARD_CAP` ceiling into the stored query, and the resolver already paginates
+ * every query it runs, so nothing ships a 5,000-row page either way. `wrapCount` and
+ * `HARD_CAP` went with it as its only users.
  */
-export async function mintView(
-  ctx: SessionCtx,
-  spec: unknown,
-  forPersonId: string,
-  ttlMinutes: number = TTL.view,
-): Promise<MintedView> {
-  const { spec: validated, notes } = validateOrRepair(spec)
-
-  const contactId = await primaryContactId(ctx.academyId, forPersonId)
-  if (!contactId) throw new Error('view_unrenderable: that person has no contact to sign a link to')
-
-  const holder: SessionCtx = {
-    role: 'user',
-    academyId: ctx.academyId,
-    personId: forPersonId,
-    contactId,
-  }
-
-  const components: ComponentSpec[] = []
-  for (const c of validated.components) components.push(await probe(holder, c, notes))
-
-  const stored: ViewSpec = { title: validated.title, components }
-  const at = await now()
-  const ttl = Number.isFinite(ttlMinutes) && ttlMinutes > 0 ? ttlMinutes : TTL.view
-  const expiresAt = new Date(at.getTime() + ttl * 60_000)
-
-  const id = await withSession({ role: 'service', academyId: ctx.academyId }, async (tx) => {
-    const rows = await tx<{ id: string }[]>`
-      insert into view_spec (academy_id, spec, for_person_id, expires_at, minted_at)
-      values (${ctx.academyId}, ${JSON.stringify(stored)}::text::jsonb, ${forPersonId}, ${expiresAt}, ${at})
-      returning id`
-    return rows[0]!.id
-  })
-
-  const purpose: LinkPurpose = stored.components.some((c) => c.type === 'form') ? 'form' : 'view'
-  const token = await signLink(
-    { academy_id: ctx.academyId, person_id: forPersonId, contact_id: contactId, purpose, ref: id },
-    ttl,
-  )
-
-  return { id, token, url: linkUrl(token), spec: stored, expiresAt, notes }
-}
 
 /** Load a stored spec under the link holder's own RLS (the `view_spec` policy
  *  is `for_person_id = app.person_id()`), checking expiry against the drivable
@@ -485,34 +383,6 @@ export async function loadViewSpec(
   return { spec: parsed.data, expired: new Date(row.expires_at).getTime() <= at.getTime() }
 }
 
-/**
- * The other three link purposes (§7.1 setup, §8.2 the register, and a bare
- * form) do not carry a stored spec — the page IS the spec. This is the one
- * helper that mints them, so no caller hand-rolls a JWT.
- */
-export async function mintPurposeLink(o: {
-  academyId: string
-  personId: string
-  contactId: string
-  purpose: LinkPurpose
-  ref?: string
-  ttlMinutes?: number
-}): Promise<{ token: string; url: string }> {
-  const ttl = o.ttlMinutes ?? TTL[o.purpose]
-  const token = await signLink(
-    {
-      academy_id: o.academyId,
-      person_id: o.personId,
-      contact_id: o.contactId,
-      purpose: o.purpose,
-      ...(o.ref ? { ref: o.ref } : {}),
-    },
-    ttl,
-  )
-  return { token, url: linkUrl(token) }
-}
-
-/** Registry lookup used by the renderer; keeps the two files honest. */
-export function registryEntry(type: ComponentType) {
-  return REGISTRY[type]
-}
+// `registryEntry(type)` used to close this file — "registry lookup used by the renderer;
+// keeps the two files honest". The renderer reads `REGISTRY` directly, so it kept nothing
+// honest; it was a one-line indirection nobody went through.

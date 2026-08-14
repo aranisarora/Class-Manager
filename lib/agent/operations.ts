@@ -507,7 +507,6 @@ const endCoach: OperationDef = {
   }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
-    const today = zoned(await now(), a.timezone)
     const endIso = isoDate(args.end_date, a.timezone)
 
     const [coach] = await q<{

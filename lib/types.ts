@@ -432,18 +432,8 @@ export type SimFault = {
   rate: number
 }
 
-export type SimRun = {
-  id: string
-  created_at: Date
-  seed: string
-  label: string | null
-  started_at: Date
-  ended_at: Date | null
-  transcript: Json | null
-  judge_report: Json | null
-  persona: Json | null
-  goal: string | null
-}
+// `SimRun` used to sit here, mirroring a `sim_run` table that migration 0011 dropped.
+// A row type for a table that does not exist is worse than no type: it type-checks.
 
 // -----------------------------------------------------------------------------
 // Identity (CONTRACTS §4) — resolved by lib/identity.ts

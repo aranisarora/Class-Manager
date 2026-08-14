@@ -241,16 +241,7 @@ export async function composeAndSend(ctx: SessionCtx, rawSpec: ComposeSpec): Pro
   return outcome
 }
 
-/**
- * The §12 path: raise a catalog moment with its default buttons already wired to payloads.
- * The defaults are what a competent manager would do knowing nothing about the person — the
- * bot is expected to depart from them knowing something, which is why this takes the payloads
- * rather than inventing them.
- */
-export async function composeCatalog(
-  ctx: SessionCtx,
-  catalogId: CatalogId,
-  spec: Omit<ComposeSpec, 'catalogId'>,
-): Promise<SendOutcome> {
-  return composeAndSend(ctx, { ...spec, catalogId })
-}
+// `composeCatalog(ctx, id, spec)` used to sit here, described as "the §12 path" for
+// raising a catalog moment. It was `composeAndSend(ctx, {...spec, catalogId})` and
+// nothing called it: every catalog moment in the product passes `catalogId` on the spec
+// directly, which is the same call with one fewer name to know.

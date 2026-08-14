@@ -330,47 +330,8 @@ export async function consumeAction(
   })
 }
 
-/**
- * Read a minted action without consuming it — for the emulator's action inspector and for a
- * caller that needs to know whether a button is still live before re-offering it. Never a
- * substitute for `consumeAction`: looking is not claiming.
- */
-export type PeekResult =
-  | {
-      ok: true
-      payload: ActionPayload
-      mintedForContactId: string
-      expiresAt: Date | null
-      consumedAt: Date | null
-    }
-  | { ok: false }
-
-export async function peekAction(ctx: SessionCtx, actionId: string): Promise<PeekResult> {
-  if (!actionId || !UUID_RE.test(actionId)) return { ok: false }
-
-  return withSession(serviceFrom(ctx), async (tx): Promise<PeekResult> => {
-    const rows = await tx<
-      {
-        payload: unknown
-        minted_for_contact_id: string
-        expires_at: Date | null
-        consumed_at: Date | null
-      }[]
-    >`
-      select payload, minted_for_contact_id, expires_at, consumed_at
-        from action
-       where id = ${actionId}
-         and academy_id = ${ctx.academyId}`
-
-    if (rows.length === 0) return { ok: false }
-    const payload = parsePayload(rows[0].payload)
-    if (!payload) return { ok: false }
-    return {
-      ok: true,
-      payload,
-      mintedForContactId: rows[0].minted_for_contact_id,
-      expiresAt: rows[0].expires_at,
-      consumedAt: rows[0].consumed_at,
-    }
-  })
-}
+// `peekAction` used to sit here — read a minted action without consuming it, "for the
+// emulator's action inspector and for a caller that needs to know whether a button is
+// still live". Neither ever existed: the emulator reads the `action` table directly and
+// nothing anywhere re-offers a button conditionally. `consumeAction` is the whole of this
+// module's contract, and looking without claiming turned out to be a use nobody had.
