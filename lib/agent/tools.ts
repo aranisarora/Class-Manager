@@ -1017,7 +1017,16 @@ const MAX_TOOL_DECLS = 128
  * against each other by `scripts/probe-model.ts` rather than argued about, and
  * should be deleted once they have been.
  */
-export const OPERATION_TOOLS = process.env.OPERATION_TOOLS !== '0'
+/**
+ * Retired. The flag existed so the two shapes could be measured against each
+ * other by `scripts/probe-model.ts` "rather than argued about, and should be
+ * deleted once they have been". They have been: typed per-operation
+ * declarations are what every academy has been running, `act` was measured at 0
+ * calls in 464, and the untyped fallback has not been exercised in any pass.
+ * Kept as a `true` constant for one commit so a reader following the old name
+ * lands here rather than on nothing.
+ */
+export const OPERATION_TOOLS = true
 
 function buildToolDecls(): ToolDecl[] {
   const ops = Object.keys(OPERATIONS)
@@ -1088,7 +1097,6 @@ function declareOperations(ops: string[]): ToolDecl[] {
  */
 function declare(ops: string[]): ToolDecl[] {
   const primitives = declarePrimitives(ops)
-  if (!OPERATION_TOOLS) return primitives
   const taken = new Set(primitives.map((t) => t.name))
   return [...declareOperations(ops.filter((n) => !taken.has(n))), ...primitives]
 }
@@ -1107,7 +1115,6 @@ const PRIMITIVE_NAMES = new Set([
   'schedule',
   'view',
   'remember',
-  'recall',
   'handoff',
 ])
 
@@ -1162,27 +1169,19 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
       required: ['handle'],
     },
   },
-  // Replaced by one typed declaration per operation when OPERATION_TOOLS is on.
-  // `args: {type:'object'}` gave the decoder nothing to hold onto, which is the
-  // whole reason the registry's schemas now travel as declarations instead.
-  ...(OPERATION_TOOLS
-    ? []
-    : [
-        {
-          name: 'act',
-          description:
-            'Run one named operation. If it is a single-row, own-scope, reversible write it executes directly — a diff there is pure friction. If it is bigger, money-touching or destructive it comes back as a preview with a handle instead, for you to read back before committing.',
-          parametersJsonSchema: {
-            type: 'object',
-            properties: {
-              operation: { type: 'string', enum: ops },
-              args: { type: 'object' },
-              intent: { type: 'string' },
-            },
-            required: ['operation', 'args'],
-          },
-        },
-      ]),
+  /**
+   * `act` is NOT declared to the model, and has not been since operations became
+   * their own typed declarations. Each of the 28 carries its own zod schema
+   * projected into the constraint Gemini decodes against; `act` took
+   * `args: {type:'object'}`, which gave the decoder nothing to hold onto, and it
+   * was measured at 0 calls across 464 tool calls in seven academies because it
+   * was not on the list.
+   *
+   * **The `act` CASE in `runTool` is very much alive** — every operation-named
+   * tool is rewritten into it, so it is the one executor the tool path, the
+   * button path (`{kind:'operation'}`) and the plan path (`{"operation":{…}}`)
+   * all agree through. Only the declaration is gone.
+   */
   {
     name: 'reply',
     description:
@@ -1283,18 +1282,6 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
         supersedes: { type: 'string', description: 'The id of the fact this corrects.' },
       },
       required: ['subject_kind', 'fact'],
-    },
-  },
-  {
-    name: 'recall',
-    description: 'Search the fact store for something you are not currently carrying.',
-    parametersJsonSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string' },
-        subject_id: { type: 'string', description: 'Defaults to this person; pass the academy id for academy facts.' },
-      },
-      required: ['query'],
     },
   },
   {
@@ -2410,12 +2397,6 @@ export async function runTool(
     }
 
     /* -------------------------------------------------------------- recall */
-    case 'recall': {
-      const subjectId = String(args?.subject_id ?? ctx.identity.person.id)
-      const facts = await searchFacts(ctx.session, subjectId, String(args?.query ?? ''))
-      return { result: { facts: facts.map((f) => ({ id: f.id, fact: f.fact, source: f.source })) } }
-    }
-
     /* ------------------------------------------------------------- handoff */
     case 'handoff': {
       // §14.8 — client escalations go to their academy's admin; admin

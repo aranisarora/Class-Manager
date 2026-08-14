@@ -17,8 +17,6 @@ import { modelQuery, type SessionCtx } from '@/lib/db'
 import { repoRoot } from '@/lib/env'
 import { now, inZone } from '@/lib/clock'
 import { catalogDigest } from '@/lib/messaging/catalog'
-import { operationSignatures } from '@/lib/agent/operations'
-import { OPERATION_TOOLS } from '@/lib/agent/tools'
 import { SCHEMA_DOC } from '@/lib/agent/schema-doc'
 import { hotSet } from '@/lib/agent/memory'
 import { vocabularyPreferences } from '@/lib/agent/lint'
@@ -136,8 +134,8 @@ choose from. Two of them applying at once is normal.`,
    * function-call decoder cannot apply. It applies a declared schema as a hard
    * constraint while generating; it can do nothing with a paragraph.
    *
-   * With `OPERATION_TOOLS` on, each operation is its own declaration and its zod
-   * schema is projected into that constraint (`schema-json.ts`). The prose would
+   * Each operation is its own declaration and its zod schema is projected into
+   * that constraint (`schema-json.ts`). The prose would
    * then be the same information a second time, in the weaker form, so only the
    * framing stays — *when* to reach for an operation is a judgement the prefix
    * should still shape; *what to call the arguments* is the schema's job.
@@ -158,13 +156,8 @@ consistent than composing from scratch, and their arguments are already resolved
 for you. They are not gates: a consequence chain nobody anticipated is composed
 as a transaction of steps, with the same atomicity, the same diff and the same
 staged messages.
-${
-  OPERATION_TOOLS
-    ? `
-Each one is a tool you can call directly, and its arguments are on the tool.`
-    : `
-${operationSignatures().trim()}`
-}`,
+
+Each one is a tool you can call directly, and its arguments are on the tool.`,
   )
 
   /**

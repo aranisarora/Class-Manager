@@ -2898,7 +2898,7 @@ async function main(): Promise<void> {
       h(`5 · capability ${c.dim('— what did it actually reach for?')}`)
       const shown = tools.filter((t: any) => !String(t.tool).startsWith('('))
       console.log(`  ${shown.map((t: any) => `${t.tool} ${t.n}`).join(' · ') || c.dim('nothing')}`)
-      for (const want of ['schedule', 'view', 'remember', 'recall', 'handoff']) {
+      for (const want of ['schedule', 'view', 'remember', 'handoff']) {
         if (!shown.some((t: any) => t.tool === want)) {
           console.log(c.yellow(`  never once: ${want}`))
         }

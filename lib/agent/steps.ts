@@ -284,7 +284,6 @@ const NOT_OPERATIONS: Record<string, string> = {
   reply: 'a plan sends with a step of its own: {"message": {"to_contact_id"|"to_person_id", "body", "buttons"?}}',
   view: 'a plan cannot open a screen — send the message first, and offer the screen on it',
   read: 'a plan does not read; do the lookup before you compose it, and put the answer in the steps',
-  recall: 'a plan does not read; do the lookup before you compose it',
   handoff: 'reaching a person is a button on a message step, not an operation',
   plan: 'you are already inside a plan',
   commit: 'you are already inside a plan — there is nothing here to commit',

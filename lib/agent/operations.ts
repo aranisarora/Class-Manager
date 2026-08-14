@@ -1496,6 +1496,39 @@ const markAttendance: OperationDef = {
     const a = await academyOf(ctx)
     const today = zoned(await now(), a.timezone)
     const s = await sessionOf(ctx, args.session_id)
+
+    /**
+     * **A register is a record of something that happened.**
+     *
+     * There was no precondition that the session had started, and marking one is
+     * not a small write — it flips `session.status` to `completed`, cancels that
+     * session's whole pre-session job ladder, and tells every family how their
+     * child did. Driven, on a coach's first hand-driven day: he marked "everyone
+     * turned up tonight" at **04:56**, about a class that starts at **18:30 the
+     * same evening**. The session completed, the reminder and coach-confirmation
+     * ladder for it was cancelled, six *"X was at 6:30 Beginners Batch today"*
+     * messages were generated for parents — only a frequency cap stopped them
+     * reaching anyone — and the schedule read-out then told him "Nothing today,
+     * your next one is Sunday" about a class he was teaching in twelve hours.
+     *
+     * Every one of those is downstream of one missing comparison. R1: composed
+     * and accepted at a moment when it could still have been questioned, and paid
+     * for later in a job and on six parents' screens where nobody can recover it.
+     *
+     * The bar is `starts_at`, not "the session has ended". A coach marking the
+     * register as the class begins is the normal case and the product should not
+     * argue with it; a coach marking one before it exists is answering about a
+     * thing that has not occurred. The refusal says when it becomes markable,
+     * because a bare "no" costs a round.
+     */
+    if (new Date(s.starts_at).getTime() > (await now()).getTime()) {
+      throw new Error(
+        `that session hasn't started yet — it begins ${dayLabel(s.starts_at, a.timezone, today)} at ` +
+        `${zoned(s.starts_at, a.timezone).toFormat('h:mma').toLowerCase()}. ` +
+        `Mark the register from then. If somebody has told you they can't make it, that is a cancellation, not a register.`,
+      )
+    }
+
     const onDate = isoDate(s.starts_at, a.timezone)
     const period = periodOf(s.starts_at, a.timezone)
     const roster = await rosterOf(ctx, s.class_id, onDate)
