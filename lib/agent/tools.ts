@@ -20,9 +20,10 @@ import { extractBracketButtons, fitTitle, pointsAtAffordance } from '@/lib/messa
 import { AGENT_TASK_CAP, dedupe, enqueue, liveAgentTasks } from '@/lib/jobs'
 import { signLink, linkUrl, TTL } from '@/lib/web/jwt'
 import { ViewSpecSchema } from '@/lib/web/registry'
+import { adminContactIds } from '@/lib/identity'
 import type { Identity } from '@/lib/types'
 import { lint } from './lint'
-import { searchFacts, writeFact } from './memory'
+import { writeFact } from './memory'
 import type { ToolDecl } from './gemini'
 import { audienceFor, executePlan, needsPreview, parseSteps, previewPlan, type PlanStep } from './plan'
 import {
@@ -238,6 +239,26 @@ const CLAIM_TABLES: Record<string, string[]> = {
   deleted: ['enrollment', 'session', 'class_coach', 'session_coach'],
 }
 
+/**
+ * The three shapes a claim about a specific verb arrives in, compiled once.
+ *
+ * These were built inside the loop in `unsupportedClaims` — three `new RegExp`
+ * per verb, thirteen verbs, so thirty-nine compilations per call, on a function
+ * that runs on every outbound message and again on the loop's trailing prose.
+ * The patterns are constant; only the verb varies, and the verbs are a literal.
+ */
+const CLAIM_PATTERNS: [verb: string, patterns: RegExp[]][] = Object.keys(CLAIM_TABLES).map((verb) => [
+  verb,
+  [
+    // "I've enrolled", "I have also enrolled"
+    new RegExp(`\\bi(?:'ve| have)\\s+(?:just\\s+|now\\s+|also\\s+)*${verb}\\b`, 'i'),
+    // "Enrolled Aarav…" — the bare past tense opening a line or a sentence.
+    new RegExp(`(?:^|[.\\n]\\s*)(?:and\\s+)?${verb[0].toUpperCase()}${verb.slice(1)}\\s`),
+    // "…and enrolled Aarav" — a second clause riding the first claim's subject.
+    new RegExp(`\\band\\s+${verb}\\s+(?=[A-Z₹\\d])`),
+  ],
+])
+
 /** Record what a plan wrote, so a claim can be checked against it. */
 export function recordExecuted(
   ctx: ToolCtx,
@@ -267,17 +288,69 @@ export function unsupportedClaims(body: string, ctx: ToolCtx): string[] {
   if (ctx.outcomes?.some((o) => o.status === 'sent' || o.status === 'queued')) wrote.add('message')
 
   const missing: string[] = []
-  for (const [verb, tables] of Object.entries(CLAIM_TABLES)) {
+  for (const [verb, patterns] of CLAIM_PATTERNS) {
     // Same two shapes `unbackedClaim` matches: "I've <verb>" anywhere, or the
     // bare past tense opening a line. Mid-sentence lower-case is ordinary English
     // ("sessions cancelled in time are credited") and must not be read as a receipt.
-    const claimed =
-      new RegExp(`\\bi(?:'ve| have)\\s+(?:just\\s+|now\\s+|also\\s+)*${verb}\\b`, 'i').test(body) ||
-      new RegExp(`(?:^|[.\\n]\\s*)(?:and\\s+)?${verb[0].toUpperCase()}${verb.slice(1)}\\s`, '').test(body) ||
-      new RegExp(`\\band\\s+${verb}\\s+(?=[A-Z₹\\d])`, '').test(body)
-    if (claimed && !tables.some((t) => wrote.has(t))) missing.push(verb)
+    if (!patterns.some((re) => re.test(body))) continue
+    if (!CLAIM_TABLES[verb].some((t) => wrote.has(t))) missing.push(verb)
   }
   return missing
+}
+
+export type ClaimCheck = {
+  /** What kind of sentence this is, if it is one of the two. */
+  claim: 'claimed' | 'promised' | null
+  /** The specific verbs it claims that no write this turn supports. */
+  unsupported: string[]
+  /** It makes a claim, and the turn has nothing behind it. */
+  unbacked: boolean
+}
+
+/**
+ * Does this message's own sentence match what this turn actually did?
+ *
+ * **One function, because there are two paths out of a turn and the guarantee has
+ * to hold on both.** A message leaves either through the `reply` tool or as the
+ * loop's trailing prose, and which one a given turn takes is the model's choice —
+ * so a check living on one of them is not a check. That was understood; the fix
+ * was to write the same four lines in both places, and they promptly drifted:
+ * the two substituted read-backs ended up saying *"Nothing has run yet — tap to
+ * confirm and I'll do it"* and *"Nothing is done yet — tap to confirm and I'll
+ * run it"*, which is two products' worth of voice for one runtime sentence.
+ *
+ * The asymmetry between the paths is real and stays at the call sites: `reply`
+ * has a round of grace to spend (it can refuse and ask for a rewrite), while the
+ * trailing path has none — there is no round left to ask. What is identical is
+ * the judgement, and that is what lives here.
+ *
+ * Past tense needs something to be TRUE; a promise needs something to be in
+ * motion. A previewed plan satisfies the second and not the first. `unsupported`
+ * is the claim-scoped half: `ctx.committed` asks only whether the TURN wrote
+ * anything, so a message that truthfully reports creating a class could carry
+ * "and enrolled Aarav, Ananya and Dev" beside it with no enrollment row
+ * anywhere — and did. A verb naming a table that was never written is unbacked
+ * however much else the turn got right.
+ */
+export function checkClaims(body: string, ctx: ToolCtx): ClaimCheck {
+  const claim = unbackedClaim(body)
+  const unsupported = unsupportedClaims(body, ctx)
+  const backed = claim === 'claimed' ? Boolean(ctx.committed) && !unsupported.length : Boolean(ctx.worked)
+  return { claim, unsupported, unbacked: Boolean(claim || unsupported.length) && !backed }
+}
+
+/**
+ * What the runtime says instead of a false receipt, when a plan is sitting here
+ * unconfirmed.
+ *
+ * The runtime is entitled to substitute this: the summary is computed from the
+ * diff, so it is strictly better evidence than the prose it replaces, and the
+ * affordance is untouched so the person can still act. One wording, because a
+ * person cannot tell which code path composed their message and should not be
+ * able to.
+ */
+export function pendingReadBack(summary: string): string {
+  return `${summary}\n\nNothing has run yet — tap to confirm and I'll do it.`
 }
 
 /* ------------------------------------------------------------------------- *
@@ -768,8 +841,12 @@ export function closingQuestionButtons(body: string): { title: string; action: a
  * never once used by anybody. Instead a new admin was asked for their
  * cancellation window in chat. Same shape as the menu that had no door.
  *
- * It lives inside `view` rather than as a tool of its own for a hard reason, not
- * a tidiness one: an eleventh declaration breaks the model (see `toolDecls`).
+ * It lives inside `view` because a screen IS a view — the same "here is a page,
+ * attach it to a message" shape, differing only in who authored the spec. It used
+ * to live here for a second reason, and that reason has been withdrawn: an
+ * eleventh declaration was thought to break the model. `MAX_TOOL_DECLS` below has
+ * the re-measurement (60 declarations, clean, on the same model). Nothing stops
+ * these becoming their own tools if that ever reads better; nothing requires it.
  */
 async function builtInScreen(
   ctx: ToolCtx,
@@ -1007,27 +1084,6 @@ export function toolDecls(): ToolDecl[] {
  */
 const MAX_TOOL_DECLS = 128
 
-/**
- * Whether the operation registry is declared as real functions.
- *
- * On (the default): every operation is its own declaration, with its zod schema
- * projected into the JSON Schema Gemini constrains decoding with, and `act` and
- * the prefix's prose signatures both go away. Off (`OPERATION_TOOLS=0`): the
- * previous shape, one untyped `act`. The flag exists so the two can be measured
- * against each other by `scripts/probe-model.ts` rather than argued about, and
- * should be deleted once they have been.
- */
-/**
- * Retired. The flag existed so the two shapes could be measured against each
- * other by `scripts/probe-model.ts` "rather than argued about, and should be
- * deleted once they have been". They have been: typed per-operation
- * declarations are what every academy has been running, `act` was measured at 0
- * calls in 464, and the untyped fallback has not been exercised in any pass.
- * Kept as a `true` constant for one commit so a reader following the old name
- * lands here rather than on nothing.
- */
-export const OPERATION_TOOLS = true
-
 function buildToolDecls(): ToolDecl[] {
   const ops = Object.keys(OPERATIONS)
   if (!ops.length) {
@@ -1055,10 +1111,9 @@ function buildToolDecls(): ToolDecl[] {
 
   if (decls.length > MAX_TOOL_DECLS) {
     throw new Error(
-      `tools: ${decls.length} declarations, and ${MAX_TOOL_DECLS} is the measured ceiling — past it every turn ` +
-        `comes back MALFORMED_FUNCTION_CALL with no candidate and no explanation. Fold the new capability into an ` +
-        `existing tool (a property on \`view\`, an entry in the operation registry behind \`act\`) instead of ` +
-        `declaring another one.`,
+      `tools: ${decls.length} declarations, and ${MAX_TOOL_DECLS} is the documented API limit — past it the ` +
+        `request is rejected far from here and unreadably. Fold the new capability into an existing tool (a ` +
+        `property on \`view\`, an entry in the operation registry) instead of declaring another one.`,
     )
   }
   return decls
@@ -1861,20 +1916,11 @@ export async function runTool(
        * Silencing somebody is worse than telling them something slightly wrong.
        */
       {
-        const claim = unbackedClaim(body)
-        // Past tense needs something to be TRUE; a promise needs something to be in
-        // motion. A previewed plan satisfies the second and not the first.
-        //
-        // `unsupportedClaims` is the claim-scoped half. `ctx.committed` asks only
-        // whether the TURN wrote anything, so a message that truthfully reports
-        // creating a class could carry "and enrolled Aarav, Ananya and Dev"
-        // beside it with no enrollment row anywhere, and did. A specific verb is
-        // now checked against the specific table that would make it true, and a
-        // sentence naming one that was never written is unbacked however much
-        // else the turn got right.
-        const unsupported = unsupportedClaims(body, ctx)
-        const backed = claim === 'claimed' ? ctx.committed && !unsupported.length : ctx.worked
-        if ((claim || unsupported.length) && !backed) {
+        // The judgement is `checkClaims`, shared with the loop's trailing path.
+        // What differs here, and stays here, is that this path has a round of
+        // grace to spend: it can refuse and ask for a rewrite.
+        const { claim, unsupported, unbacked } = checkClaims(body, ctx)
+        if (unbacked) {
           if (!ctx.promiseChecked) {
             ctx.promiseChecked = true
             // Naming the verb is the difference between one round and three. A
@@ -1967,9 +2013,7 @@ export async function runTool(
            * hands off and the one refusal round above remains the whole intervention.
            */
           const waiting = pendingConfirmation(ctx)
-          if (waiting) {
-            body = `${waiting.summary}\n\nNothing has run yet — tap to confirm and I'll do it.`
-          }
+          if (waiting) body = pendingReadBack(waiting.summary)
         }
       }
 
@@ -2354,7 +2398,6 @@ export async function runTool(
       const ttl = Math.min(Math.max(Number(args?.ttl_minutes ?? 120), 5), 60 * 24 * 7)
       const viewSpecId = newId()
       const expires = new Date((await now()).getTime() + ttl * 60_000)
-      void linkUrl // the URL is minted at send time, by `linkFor`, and never returned here
       await withSession(serviceFrom(ctx.session), async (tx) => {
         await tx.unsafe(
           `insert into view_spec (id, academy_id, spec, for_person_id, expires_at)
@@ -2396,7 +2439,6 @@ export async function runTool(
       return { result: { ok: true } }
     }
 
-    /* -------------------------------------------------------------- recall */
     /* ------------------------------------------------------------- handoff */
     case 'handoff': {
       // §14.8 — client escalations go to their academy's admin; admin
@@ -2408,16 +2450,8 @@ export async function runTool(
       const summary = String(args?.summary ?? '')
       const sent: string[] = []
       if (!isAdmin) {
-        const admins = await withSession(serviceFrom(ctx.session), async (tx) => {
-          const rows = (await tx.unsafe(
-            `select c.id from academy_admin aa
-               join contact c on c.person_id = aa.person_id and c.academy_id = aa.academy_id
-              where aa.academy_id = ${uid(ctx.session.academyId)} and c.opted_out_at is null
-              order by c.is_primary desc`,
-          )) as unknown as { id: string }[]
-          return rows.map((r) => r.id)
-        })
-        for (const contactId of admins) {
+        const contactIds = await adminContactIds(ctx.session.academyId)
+        for (const contactId of contactIds) {
           const o = await composeAndSend(ctx.session, {
             toContactId: contactId,
             body:

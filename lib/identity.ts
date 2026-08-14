@@ -18,7 +18,7 @@
  */
 
 import { now } from '@/lib/clock'
-import { unsafeQuery, withSession, type SessionCtx } from '@/lib/db'
+import { unsafeQuery, withSession, type SessionCtx, type Tx } from '@/lib/db'
 import { formatPhone } from '@/lib/format'
 import { isUuid } from '@/lib/ids'
 import type { Academy, Contact, Identity, Person, Role } from '@/lib/types'
@@ -83,6 +83,62 @@ export async function resolveIdentity(contactId: string): Promise<Identity | nul
 
   const json = rows[0]?.identity
   return json ? toIdentity(json) : null
+}
+
+// -----------------------------------------------------------------------------
+// Who runs this business
+// -----------------------------------------------------------------------------
+
+export type AdminRecipient = { person_id: string; full_name: string; contact_id: string | null }
+
+/**
+ * The people who run this academy, and the number each of them actually reads.
+ *
+ * **One definition, because there were four.** "Which admins do I tell" is asked
+ * by the digest (`loop.ts`), by `handoff`, by the refusal escalation in
+ * `plan.ts`, and by every proactive job (`lib/jobs/util.ts`) — and each had
+ * written its own join. They had already diverged in the two ways this join can
+ * be wrong: three used an inner join to `contact`, so an admin with no contact
+ * row simply vanished from the result rather than showing up unreachable, and
+ * each sorted differently, so "the first admin" meant a different person
+ * depending on which caller asked.
+ *
+ * The lateral join is what makes `contact_id` nullable rather than disqualifying:
+ * an admin who cannot be reached is a fact the caller needs, not a row to hide.
+ * Opted-out contacts never come back — that is the one exclusion, and it belongs
+ * to the contact rather than to the person.
+ *
+ * Order is reachable-first, then by name: deterministic across callers, and the
+ * admin who can actually be messaged is the one `[0]` should mean.
+ */
+export async function adminsIn(tx: Tx, academyId: string): Promise<AdminRecipient[]> {
+  return unsafeQuery<AdminRecipient>(
+    tx,
+    `select aa.person_id, pe.full_name, ct.id as contact_id
+       from academy_admin aa
+       join person pe on pe.id = aa.person_id
+       left join lateral (
+         select c.id from contact c
+          where c.academy_id = aa.academy_id and c.person_id = aa.person_id
+            and c.opted_out_at is null
+          order by c.is_primary desc, c.created_at asc
+          limit 1
+       ) ct on true
+      where aa.academy_id = $1::uuid
+      order by (ct.id is not null) desc, pe.full_name`,
+    [academyId],
+  )
+}
+
+/** The same, opening its own service session — for callers that have no `Tx` in hand. */
+export async function admins(academyId: string): Promise<AdminRecipient[]> {
+  return withSession({ role: 'service', academyId }, (tx) => adminsIn(tx, academyId))
+}
+
+/** Just the numbers, for the paths that only want somebody to message. */
+export async function adminContactIds(academyId: string): Promise<string[]> {
+  const rows = await admins(academyId)
+  return rows.map((r) => r.contact_id).filter((id): id is string => Boolean(id))
 }
 
 // -----------------------------------------------------------------------------

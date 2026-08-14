@@ -16,7 +16,7 @@
  * retrievable through `searchFacts` — forgetting is a context decision, never a
  * storage one.
  */
-import type { MemoryFact, SubjectKind } from '@/lib/types'
+import type { SubjectKind } from '@/lib/types'
 import { withSession, type SessionCtx } from '@/lib/db'
 import { env } from '@/lib/env'
 import { AppError } from '@/lib/errors'
@@ -44,8 +44,24 @@ function fail(code: string, message: string): never {
 
 const TENANT_OF = new Map<string, string>()
 
+/**
+ * Bounded, because this is a process-lifetime cache in a process that serves
+ * every tenant. It only ever grows — one entry per person anybody has written a
+ * fact about — and nothing evicted it, so a long-lived worker's floor rose with
+ * every new subject it ever saw. The oldest entry goes when the map is full:
+ * losing one is a re-derivation from `academyId`, which every caller already
+ * passes (see `hotSet`), not a wrong answer.
+ */
+const TENANT_OF_MAX = 5_000
+
 function noteTenant(subjectId: string, academyId: string): void {
-  if (subjectId && academyId) TENANT_OF.set(subjectId, academyId)
+  if (!subjectId || !academyId) return
+  if (TENANT_OF.size >= TENANT_OF_MAX && !TENANT_OF.has(subjectId)) {
+    // Map iterates in insertion order, so the first key is the oldest.
+    const oldest = TENANT_OF.keys().next()
+    if (!oldest.done) TENANT_OF.delete(oldest.value)
+  }
+  TENANT_OF.set(subjectId, academyId)
 }
 
 function tenantOf(kind: SubjectKind, subjectId: string, hint?: string): string | null {
@@ -230,84 +246,21 @@ export async function hotSet(
 }
 
 // -----------------------------------------------------------------------------
-// searchFacts — reaching past the hot set
+// Reaching past the hot set
+//
+// There used to be a `searchFacts` here: ILIKE over the live fact set, re-ranked
+// with character trigrams and a Dice coefficient, ~75 lines. It was built for a
+// `recall` tool that no longer exists, and after that tool was removed nothing
+// ever called it — the only surviving reference was a dead import in `tools.ts`,
+// which is why it read as live to anything counting references.
+//
+// The capability itself is not gone, and that is why deleting this costs nothing:
+// `memory_fact` is in `SCHEMA_DOC`, including the live-set predicate
+// (`retired_at is null and id not in (select supersedes …)`), so the model reaches
+// past the hot set with `read` like it reaches everything else. One query surface,
+// not two — and `lib/behaviors/feedback.md`'s "search the fact store before saying
+// you don't know" is satisfied by the tool that actually exists.
 // -----------------------------------------------------------------------------
-
-const SEARCH_CANDIDATES = 400
-const SEARCH_RESULTS = 20
-
-export async function searchFacts(
-  ctx: SessionCtx,
-  subjectId: string,
-  query: string,
-): Promise<MemoryFact[]> {
-  noteTenant(subjectId, ctx.academyId)
-  const terms = tokenise(query)
-  const patterns = terms.map((t) => `%${t}%`)
-
-  const rows = await withSession(serviceCtx(ctx.academyId), async (tx) => {
-    const r = await tx`
-      select * from memory_fact
-      where subject_id = ${subjectId}
-        and retired_at is null
-        and id not in (select supersedes from memory_fact where supersedes is not null)
-        and (${patterns.length === 0}::boolean or fact ilike any(${patterns}::text[]))
-      order by created_at desc
-      limit ${SEARCH_CANDIDATES}
-    `
-    return r as unknown as MemoryFact[]
-  })
-
-  // ILIKE finds the exact word; the ranking is what copes with "aarav's fees" vs
-  // "fee cycle for Aarav". Character trigrams, scored by Dice coefficient — the
-  // same shape pg_trgm uses, computed here so the store needs no extension.
-  if (terms.length === 0) return rows.slice(0, SEARCH_RESULTS)
-  const q = trigrams(query.toLowerCase())
-  const scored = rows.map((r, i) => {
-    const factText = String((r as unknown as { fact: string }).fact ?? '').toLowerCase()
-    const overlap = terms.filter((t) => factText.includes(t)).length / terms.length
-    const fuzzy = dice(q, trigrams(factText))
-    // Newer facts break ties: the store is ordered newest first.
-    const recency = (rows.length - i) / (rows.length * 1000)
-    return { row: r, score: overlap * 0.6 + fuzzy * 0.4 + recency }
-  })
-  return scored
-    .filter((s) => s.score > 0.02)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, SEARCH_RESULTS)
-    .map((s) => s.row)
-}
-
-function tokenise(q: string): string[] {
-  return Array.from(
-    new Set(
-      q
-        .toLowerCase()
-        .split(/[^a-z0-9]+/i)
-        .filter((t) => t.length >= 3 && !STOPWORDS.has(t)),
-    ),
-  ).slice(0, 8)
-}
-
-const STOPWORDS = new Set([
-  'the', 'and', 'for', 'with', 'about', 'what', 'when', 'they', 'them',
-  'this', 'that', 'from', 'have', 'has', 'does', 'did', 'you', 'your', 'our',
-  'any', 'all', 'know', 'tell', 'say', 'said',
-])
-
-function trigrams(s: string): Set<string> {
-  const padded = `  ${s.replace(/\s+/g, ' ').trim()} `
-  const out = new Set<string>()
-  for (let i = 0; i + 3 <= padded.length; i++) out.add(padded.slice(i, i + 3))
-  return out
-}
-
-function dice(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 || b.size === 0) return 0
-  let shared = 0
-  for (const g of a) if (b.has(g)) shared++
-  return (2 * shared) / (a.size + b.size)
-}
 
 // -----------------------------------------------------------------------------
 // curate — rebuild the hot set from the live fact set. Scheduled, not per-turn.

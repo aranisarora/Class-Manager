@@ -16,6 +16,7 @@ import type { Identity } from '@/lib/types'
 import { modelQuery, type SessionCtx } from '@/lib/db'
 import { repoRoot } from '@/lib/env'
 import { now, inZone } from '@/lib/clock'
+import { dayDiff, longDate } from '@/lib/format'
 import { catalogDigest } from '@/lib/messaging/catalog'
 import { SCHEMA_DOC } from '@/lib/agent/schema-doc'
 import { hotSet } from '@/lib/agent/memory'
@@ -204,12 +205,6 @@ const ROLE_LABEL: Record<string, string> = {
   prospect: 'prospect (not signed up)',
 }
 
-const MONTHS = [
-  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-]
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-
 function isoDateOf(v: unknown): string | null {
   if (!v) return null
   if (v instanceof Date) return v.toISOString().slice(0, 10)
@@ -218,15 +213,17 @@ function isoDateOf(v: unknown): string | null {
   return m ? m[0] : null
 }
 
-function daysBetween(fromIso: string, toIso: string): number {
-  const a = Date.parse(`${fromIso}T00:00:00Z`)
-  const b = Date.parse(`${toIso}T00:00:00Z`)
-  if (Number.isNaN(a) || Number.isNaN(b)) return 0
-  return Math.round((b - a) / 86_400_000)
-}
-
-/** §10.2 — the mix shifts over the first month. One prompt instruction, not two code paths. */
-function mixInstruction(ageDays: number): string {
+/**
+ * §10.2 — the mix shifts over the first month. One prompt instruction, not two
+ * code paths, and now not two ladders either.
+ *
+ * `loop.ts` had a second version of this for the brief and the digest, splitting
+ * at 30 days where this splits at 14 and 45. Same dial, same three positions,
+ * two sets of thresholds — so an academy 20 days old was told to lean on proof
+ * inside a turn and to lean on synthesis in its own evening digest, on the same
+ * evening. Exported so the synthesis path shares it; it is prose either way.
+ */
+export function mixInstruction(ageDays: number): string {
   if (ageDays <= 14) {
     return `This business is ${ageDays} day${ageDays === 1 ? '' : 's'} old. **Lean on proof.** They do not yet trust that the mechanics work, so what they need from you is evidence: what went out, what was delivered, which sessions ran, which registers got marked, what you did. Keep synthesis to a line. Numbers and receipts beat opinions this week.`
   }
@@ -762,15 +759,10 @@ export async function variableTail(
   out.push(mem.join('\n\n'))
 
   // --- now -------------------------------------------------------------------
-  const dateBits = local.date.split('-')
-  const prettyDate =
-    dateBits.length === 3
-      ? `${WEEKDAYS[local.weekday] ?? ''} ${Number(dateBits[2])} ${MONTHS[Number(dateBits[1]) - 1] ?? ''} ${dateBits[0]}`.trim()
-      : local.date
   const nowBits = [
     `# Now`,
     ``,
-    `It is ${local.time} on ${prettyDate}, ${tz}.`,
+    `It is ${local.time} on ${longDate(local.date)}, ${tz}.`,
     `Every time you write is in that zone and in their idiom — "tomorrow 6:30pm", "Sat 8am" — never an ISO timestamp and never UTC.`,
   ]
   if (extra?.clockNote) nowBits.push(extra.clockNote)
@@ -779,7 +771,7 @@ export async function variableTail(
   // --- §10.2 mix -------------------------------------------------------------
   const createdOn = isoDateOf(a.created_on)
   if (createdOn) {
-    const age = Math.max(0, daysBetween(createdOn, local.date))
+    const age = Math.max(0, dayDiff(createdOn, local.date))
     out.push(`# How much to synthesise\n\n${mixInstruction(age)}`)
   }
 

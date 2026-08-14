@@ -13,6 +13,7 @@
 
 import { DateTime } from 'luxon'
 import { withSession, type SessionCtx, type Tx } from '@/lib/db'
+import { adminsIn } from '@/lib/identity'
 import { TIMING_DEFAULTS, TIMING_KEYS, type TimingName } from './kinds'
 
 /** `job` rows are global; the GUC still has to be *something* for infra reads. */
@@ -141,20 +142,13 @@ export async function contactFor(tx: Tx, academyId: string, personId: string): P
   return row?.id ?? null
 }
 
+/**
+ * Delegates to `lib/identity.ts`, which owns the one definition of this join —
+ * see the note there. This shape (`Recipient`) is structurally the same and is
+ * kept so the handlers that import it read unchanged.
+ */
 export async function admins(tx: Tx, academyId: string): Promise<Recipient[]> {
-  return tx<Recipient[]>`
-    select aa.person_id, pe.full_name, ct.id as contact_id
-      from academy_admin aa
-      join person pe on pe.id = aa.person_id
-      left join lateral (
-        select c.id from contact c
-         where c.academy_id = aa.academy_id and c.person_id = aa.person_id
-           and c.opted_out_at is null
-         order by c.is_primary desc, c.created_at asc limit 1
-      ) ct on true
-     where aa.academy_id = ${academyId}
-     order by pe.full_name
-  `
+  return adminsIn(tx, academyId)
 }
 
 /**

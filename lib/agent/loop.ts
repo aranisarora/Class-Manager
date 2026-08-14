@@ -12,7 +12,7 @@ import { modelQuery, withSession, type SessionCtx } from '@/lib/db'
 import { now, inZone } from '@/lib/clock'
 import { newId } from '@/lib/ids'
 import { env } from '@/lib/env'
-import { resolveIdentity } from '@/lib/identity'
+import { admins as adminRecipients, resolveIdentity } from '@/lib/identity'
 import { consumeAction, type ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { LIMITS, type SendOutcome } from '@/lib/messaging/types'
@@ -26,19 +26,19 @@ import { buildSetupSteps, summariseSetup } from '@/lib/setup-plan'
 import { signLink, linkUrl, TTL } from '@/lib/web/jwt'
 import type { Identity, Job, Role } from '@/lib/types'
 import { generate, TURN_THINKING, type GenContent } from './gemini'
-import { lint, stablePrefix, synthesisDoctrine, variableTail } from './context'
+import { lint, mixInstruction, stablePrefix, synthesisDoctrine, variableTail } from './context'
 import { hotSet } from './memory'
 import { audienceFor, executePlan, type PlanStep } from './plan'
 import { jsonLit, lit, uid, type OperationName } from './operations'
 import {
+  checkClaims,
   closingQuestionButtons,
   extractBracketButtons,
   FOLLOW_UPS,
   pendingConfirmation,
+  pendingReadBack,
   runTool,
   toolDecls,
-  unbackedClaim,
-  unsupportedClaims,
   withFollowUps,
   MENU_BUTTON_TITLE,
   backstopButtons,
@@ -973,62 +973,62 @@ async function modelTurn(
      * it" failure introduced by the fix meant to save money.
      */
     if (toolCtx.repliedTo?.has(identity.contact.id) && toolCtx.pendingPlans.size === 0) break
-
-    if (round === MAX_TOOL_ROUNDS - 1) {
-      /**
-       * Out of rounds. Say so plainly rather than going quiet — **unless somebody
-       * has already told them something true.**
-       *
-       * `outcomes` and `repliedTo` only see what the TOOLS sent, and the runtime
-       * itself sends too: a plan refused by RLS now tells the person "that's not
-       * something I can change from here, I've passed it to whoever runs
-       * <academy>" from inside `plan.ts`, where neither of those is in scope.
-       *
-       * Driven: a mother asked to stop her son's Saturday lessons, the runtime
-       * answered her honestly and escalated to the owner, the model then failed
-       * to compose anything the honesty guard would accept, and she received a
-       * SECOND message — "I'm going round in circles on this one, can you tell me
-       * the short version of what you need?" — about a request that was perfectly
-       * clear and had already been actioned. An apology after an answer reads as
-       * the answer being withdrawn.
-       *
-       * `message.turn_id` is stamped on every outbound (0015/0019), so "has
-       * anything reached this person this turn" is one query, asked once, on the
-       * last round only. It is the general form: any future runtime-sent message
-       * is covered without anybody remembering this exists.
-       */
-      if (!text) {
-        const seen = await withSession(
-          { role: 'service', academyId: identity.academyId },
-          async (tx) =>
-            (await tx.unsafe(
-              `select
-                 (select count(*) from message
-                   where turn_id = '${turnId}' and contact_id = '${identity.contact.id}'
-                     and direction = 'outbound' and suppressed_reason is null)::int as told,
-                 (select count(*) from message
-                   where turn_id = '${turnId}' and catalog_id = 'AD-NEEDS-YOU')::int as raised`,
-            )) as unknown as { told: number; raised: number }[],
-        ).catch(() => [] as { told: number; raised: number }[])
-        const told = Number(seen[0]?.told ?? 0)
-        const raised = Number(seen[0]?.raised ?? 0)
-
-        if (told > 0) {
-          // Already answered by something the runtime sent. Adding an apology
-          // after an answer reads as the answer being withdrawn.
-        } else if (raised > 0) {
-          // A plan was refused by permissions and the owner has been told. Say
-          // that, rather than blaming the conversation for going in circles —
-          // the request was clear, and it has in fact been actioned.
-          text =
-            "That's not something I can change from here. I've passed it to whoever runs the academy " +
-            "and they'll come back to you."
-        } else {
-          text = "I'm going round in circles on this one — can you tell me the short version of what you need?"
-        }
-      }
-    }
   }
+
+  /**
+   * Nothing said, nothing sent. What follows is the one ladder for that, and its
+   * ORDER is the whole of it.
+   *
+   * There were two mechanisms here and they were competing. The last round used
+   * to fill `text` with *"I'm going round in circles on this one"* before the
+   * loop exited — which meant the recovery round below, guarded on `!text`, was
+   * skipped in exactly the case with the most to salvage: five rounds of tool
+   * results sitting in `contents` and nobody to put them into words. The
+   * recovery only ever fired when the model returned nothing EARLY, and the
+   * cheaper, worse answer won every expensive turn.
+   *
+   * So the apology moved after it. Try to answer first; apologise only if that
+   * fails too. Same two mechanisms, opposite order, and the apologies collapse
+   * from three near-identical sentences to one ladder that picks between them.
+   */
+  const silent = (): boolean => !text.trim() && !spoke()
+
+  /**
+   * Has anything at all reached this person this turn, and was a refusal raised
+   * on their behalf.
+   *
+   * `outcomes` and `repliedTo` only see what the TOOLS sent, and the runtime
+   * itself sends too: a plan refused by RLS tells the person "that's not
+   * something I can change from here, I've passed it to whoever runs <academy>"
+   * from inside `plan.ts`, where neither of those is in scope.
+   *
+   * Driven: a mother asked to stop her son's Saturday lessons, the runtime
+   * answered her honestly and escalated to the owner, the model then failed to
+   * compose anything the honesty guard would accept, and she received a SECOND
+   * message about a request that was perfectly clear and had already been
+   * actioned. An apology after an answer reads as the answer being withdrawn.
+   *
+   * `message.turn_id` is stamped on every outbound (0015/0019), so this is one
+   * query, asked once. It gates the recovery round as well as the apology —
+   * which the in-loop version could not, being upstream of it, and that gap is
+   * how a runtime answer could still be followed by a composed second message.
+   */
+  const heard = silent()
+    ? await withSession(
+        { role: 'service', academyId: identity.academyId },
+        async (tx) =>
+          (await tx.unsafe(
+            `select
+               (select count(*) from message
+                 where turn_id = '${turnId}' and contact_id = '${identity.contact.id}'
+                   and direction = 'outbound' and suppressed_reason is null)::int as told,
+               (select count(*) from message
+                 where turn_id = '${turnId}' and catalog_id = 'AD-NEEDS-YOU')::int as raised`,
+          )) as unknown as { told: number; raised: number }[],
+      ).catch(() => [] as { told: number; raised: number }[])
+    : []
+  const told = Number(heard[0]?.told ?? 0)
+  const raised = Number(heard[0]?.raised ?? 0)
 
   // Going quiet is the one failure a person cannot tell apart from being ignored.
   // A model that returns an empty candidate — out of output budget, done
@@ -1044,7 +1044,7 @@ async function modelTurn(
   // straight to "something broke on my side" without ever asking again. One more
   // round is cheaper than an apology, and it is the difference between a product
   // that stumbles and one that ignores you.
-  if (!text.trim() && !spoke()) {
+  if (silent() && told === 0) {
     try {
       const forced = await generate({
         system,
@@ -1106,12 +1106,23 @@ async function modelTurn(
     })
   }
 
-  if (!text.trim() && !spoke()) {
-    // Two different failures wearing one sentence. "Try again" is only honest when
-    // trying again could work; a turn that burned every round needs to say so, and
-    // one that broke needs to not pretend it is waiting on the person.
-    text =
-      rounds >= MAX_TOOL_ROUNDS
+  /**
+   * The recovery round could not answer either. Now, and only now, say so.
+   *
+   * Three failures, three sentences, and picking the wrong one is its own defect:
+   * "try again" is only honest when trying again could work, a turn that burned
+   * every round needs to say that, and a request that was in fact actioned by an
+   * escalation must not be answered with an apology for going in circles.
+   *
+   * `told > 0` is the fourth case and gets nothing at all: somebody has already
+   * been told something true this turn, and a second message would read as the
+   * first being withdrawn.
+   */
+  if (silent() && told === 0) {
+    text = raised > 0
+      ? "That's not something I can change from here. I've passed it to whoever runs the academy "
+        + "and they'll come back to you."
+      : rounds >= MAX_TOOL_ROUNDS
         ? "I went round in circles on that one and didn't get to an answer. Can you tell me the short version of what you need?"
         : "Something broke on my side working that out — it isn't you, and repeating it won't help. I've flagged it."
   }
@@ -1186,16 +1197,17 @@ async function modelTurn(
      * substituting there tells somebody the rows do not exist when they do. A pending
      * plan is the runtime's evidence that the sentence is about THIS turn.
      */
-    const claim = unbackedClaim(text.trim())
-    // The claim-scoped half, on this path too. A guarantee enforced where the
-    // model happens to call `reply` and not where the loop emits its own
-    // trailing prose is not a guarantee — which path a turn takes is the model's
-    // choice (R4), and this is the path that shipped "I've marked Aditya and
-    // Ananya as present" over zero attendance rows.
-    const unsupported = unsupportedClaims(text.trim(), toolCtx)
-    const backed = claim === 'claimed' ? toolCtx.committed && !unsupported.length : toolCtx.worked
-    if ((claim || unsupported.length) && !backed && pending) {
-      text = `${pending.summary}\n\nNothing is done yet — tap to confirm and I'll run it.`
+    // The same judgement the `reply` tool makes, from the same function. A
+    // guarantee enforced where the model happens to call `reply` and not where
+    // the loop emits its own trailing prose is not a guarantee — which path a
+    // turn takes is the model's choice (R4), and this is the path that shipped
+    // "I've marked Aditya and Ananya as present" over zero attendance rows.
+    //
+    // What is different here is that there is no round of grace: nothing left to
+    // ask, so the runtime substitutes rather than refusing — and only when a plan
+    // is pending, which is its evidence that the sentence is about THIS turn.
+    if (pending && checkClaims(text.trim(), toolCtx).unbacked) {
+      text = pendingReadBack(pending.summary)
     }
 
     const trailingBody = lint(text.trim(), identity)
@@ -1639,17 +1651,7 @@ export async function synthesize(academyId: string, kind: 'brief' | 'digest'): P
 
   try {
     const payload = await synthesisPayload(svc, academyId)
-    const admins = await withSession(svc, async (tx) => {
-      return (await tx.unsafe(
-        `select aa.person_id, p.full_name, c.id as contact_id
-           from academy_admin aa
-           join person p on p.id = aa.person_id
-           left join contact c on c.person_id = aa.person_id and c.academy_id = aa.academy_id
-                               and c.opted_out_at is null
-          where aa.academy_id = ${uid(academyId)}
-          order by c.is_primary desc nulls last`,
-      )) as unknown as { person_id: string; full_name: string; contact_id: string | null }[]
-    })
+    const admins = await adminRecipients(academyId)
     if (!admins.length) return { turnId, sent: [], toolCalls: 0 }
 
     const memory = {
@@ -1666,11 +1668,11 @@ Then, only if it is worth their attention, what today looks like.`
 with the uncertainty stated. Then the day in a line or two. Then delivery health, unconditionally: the admin
 will never think to ask whether the reminders went out. Then who is unpaid.`
 
-    const ageDays = Number(payload.academy.age_days ?? 0)
-    const mix =
-      ageDays < 30
-        ? 'This academy is new here. Lean on proof — what was actually done, what actually went out — over synthesis.'
-        : 'This academy has been here a while. They trust the mechanics; lean on the thinking, not the receipts.'
+    // The same ladder the turn prompt uses (`context.ts`), not a second one. It
+    // used to be a two-way split at 30 days against that file's three-way split
+    // at 14 and 45, so a three-week-old academy was told to lean on proof inside
+    // a turn and to lean on synthesis in its digest, on the same evening.
+    const mix = mixInstruction(Number(payload.academy.age_days ?? 0))
 
     // **The digest does not get the stable prefix, and should never have had it.**
     //

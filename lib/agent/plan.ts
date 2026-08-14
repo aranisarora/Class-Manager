@@ -26,7 +26,7 @@ import {
 } from '@/lib/db'
 import { idem, newId } from '@/lib/ids'
 import { now } from '@/lib/clock'
-import { resolveIdentity } from '@/lib/identity'
+import { adminContactIds, resolveIdentity } from '@/lib/identity'
 import { attachActionsToMessage, mintAction, type ActionPayload } from '@/lib/actions'
 import { send } from '@/lib/messaging/send'
 import { composeAndSend } from '@/lib/messaging/compose'
@@ -1096,15 +1096,7 @@ async function escalateRefusal(
     })
     if (blocked) return false
 
-    const admins = await withSession(serviceFrom(ctx), async (tx) => {
-      const rows = (await tx.unsafe(
-        `select c.id from academy_admin aa
-           join contact c on c.person_id = aa.person_id and c.academy_id = aa.academy_id
-          where aa.academy_id = ${uid(ctx.academyId)} and c.opted_out_at is null
-          order by c.is_primary desc`,
-      )) as unknown as { id: string }[]
-      return rows.map((r) => r.id)
-    })
+    const admins = await adminContactIds(ctx.academyId)
     if (admins.length === 0) return false
 
     const { who, academyName } = await withSession(serviceFrom(ctx), async (tx) => {
