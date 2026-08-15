@@ -1166,10 +1166,25 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
       required: ['intent', 'steps'],
     },
   },
+  /**
+   * The gate is stated HERE, not only in the refusal it produces.
+   *
+   * It used to live solely in commit's error text, so the model learned it by
+   * being refused — once per consequential flow, every flow, forever, because
+   * history is rebuilt from message text and the lesson cannot persist. The
+   * month drive priced that in: a wasted round and pre-composed "Committing it
+   * now" prose on six flows, and once the post-refusal re-stage downgraded
+   * `cancel_session` into a raw session write — losing the operation's sends,
+   * which is how "All 3 families are told" shipped over steps that told nobody.
+   * The rule below is `needsPreview` (plan.ts §14.2) in prose, said once at the
+   * decode point; the refusal stays as the backstop.
+   */
   {
     name: 'commit',
     description:
-      'Execute the plan you just previewed, by handle. Only then do its messages go out. You cannot commit a plan you did not preview in this turn.',
+      'Execute the plan you just previewed, by handle. Only then do its messages go out. You cannot commit a plan you did not preview in this turn. ' +
+      "And know the gate: a plan that reaches past this conversation — money or the business's own settings, a message to anyone else, a delete, changing existing rows in bulk, an operation that declares itself destructive — REFUSES this call every time. For those the person's tap is the commit: put the read-back on a reply with the plan as a steps button, and nothing runs until they tap it. " +
+      'Commit is for plans that stay inward: new rows nobody has been told about, small changes touching nobody else.',
     parametersJsonSchema: {
       type: 'object',
       properties: { handle: { type: 'string' } },
