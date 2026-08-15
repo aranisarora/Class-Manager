@@ -1182,7 +1182,8 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
   {
     name: 'reply',
     description:
-      'Send a message now, to this person or to someone else, with buttons, a list, or a form. Every button carries an action minted here and replayed verbatim on tap. Offer the natural next step as a button. NEVER write a web address into the body — there is no browser in this product.',
+      'Send a message now, to this person or to someone else, with buttons, a list, or a form. Every button carries an action minted here and replayed verbatim on tap. Offer the natural next step as a button. NEVER write a web address into the body — there is no browser in this product. ' +
+      'And know your channel: prose you write in a round that calls tools reaches NOBODY — it is your notebook, not a message. What a person sees is what you pass here (or, on an interactive turn only, the closing text of your final round).',
     parametersJsonSchema: {
       type: 'object',
       properties: {

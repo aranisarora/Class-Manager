@@ -1009,7 +1009,9 @@ async function modelTurn(
   if (input.source === 'job' && input.task) {
     situation.push(
       'This is a task you scheduled for yourself. Deciding to do nothing is the common and correct outcome — ' +
-        'only send something if this person would have asked for it.',
+        'only send something if this person would have asked for it. If you DO decide to speak, `reply` is the ' +
+        'only path that reaches anyone on a job turn: prose you write here is discarded, not delivered. A report ' +
+        'you promised and then wrote as prose is a promise broken silently.',
     )
   }
 
