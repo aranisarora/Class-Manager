@@ -209,6 +209,15 @@ export async function clientOutcome(job: Job): Promise<void> {
     if (!player) skip('player is no longer on this roster')
     if (!player.contact_id) skip('no reachable number for this family')
 
+    // "Stop the recaps" as a setting, not a memory (TIMING_KEYS): a truthy
+    // client_outcome_muted on the holder's person settings ends the outcome
+    // messages. The bill does not travel through here and is unaffected.
+    const [holder] = await tx<{ settings: Record<string, unknown> | null }[]>`
+      select p.settings from contact c join person p on p.id = c.person_id
+       where c.id = ${player.contact_id}
+    `
+    if (holder?.settings?.['client_outcome_muted']) skip('outcomes muted for this family')
+
     // Rule 7 — one event, one family, one message. Two children marked in the
     // same register produced two "how the session went" messages in the same
     // minute (driven, month drive day 3). The whole family's marked outcomes

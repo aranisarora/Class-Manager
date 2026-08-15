@@ -2501,17 +2501,19 @@ const TIMING_KEY = z.enum([
   TIMING_KEYS.adminEscalateLeadMinutes,
   TIMING_KEYS.clientReminderLeadHours,
   TIMING_KEYS.registerExpiryHours,
+  TIMING_KEYS.clientReminderMuted,
+  TIMING_KEYS.clientOutcomeMuted,
 ])
 
 const setTiming: OperationDef = {
   name: 'set_timing',
   ownScope: true,
   description:
-    "Override one person's prompt timing (how far ahead they're asked, how much notice they want). Defaults live on the academy; this is the per-person override.",
+    "Override one person's prompt timing (how far ahead they're asked, how much notice they want), or mute a category for them — client_reminder_muted / client_outcome_muted with value true are the structural home of \"just the bill\" and \"stop the recaps\": a preference stored only as a memory fact stops nothing. Defaults live on the academy; this is the per-person override.",
   params: z.object({
     person_id: uuid.nullish(),
     key: TIMING_KEY,
-    value: z.union([z.number(), z.string(), z.null()]),
+    value: z.union([z.number(), z.string(), z.boolean(), z.null()]),
     reason: z.string().nullish(),
   }),
   async build(ctx, args, id) {

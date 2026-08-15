@@ -236,6 +236,10 @@ export async function planAheadFor(academyId: string): Promise<number> {
       for (const e of enrolByClass.get(s.class_id) ?? []) {
         if (e.started_on > date) continue
         if (e.ended_on && e.ended_on < date) continue
+        // "Bill only" is a real setting, not a memory: a muted holder gets no
+        // class reminders (the tally and dunning are not planned here and are
+        // deliberately unaffected).
+        if (e.holder_settings?.['client_reminder_muted']) continue
         // §8.2 again: one lead time for every family is a schedule; per-person
         // timings are a manager. The parent's own record wins.
         const leadHours = leadFor(

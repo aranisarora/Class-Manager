@@ -125,6 +125,15 @@ export const TIMING_KEYS = {
   adminEscalateLeadMinutes: 'admin_escalate_lead_minutes',
   clientReminderLeadHours: 'client_reminder_lead_hours',
   registerExpiryHours: 'register_expiry_hours',
+  // The partial cuts the opt-out conversation offers ("just the bill", "stop
+  // the recaps") had no structural home: the choice went into memory, the
+  // scheduler read enrollments, and the promise was broken by the next
+  // planned reminder (driven, month drive: "bill only is fine" → "Done…
+  // I won't ask again" → nothing anywhere would have stopped the asking).
+  // A truthy value on the holder person's settings mutes the category; the
+  // bill and dunning are deliberately not mutable this way.
+  clientReminderMuted: 'client_reminder_muted',
+  clientOutcomeMuted: 'client_outcome_muted',
 } as const
 
 export type TimingName = keyof typeof TIMING_DEFAULTS
