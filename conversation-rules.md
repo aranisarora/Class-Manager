@@ -499,3 +499,74 @@ Fixes below landed same day; each is its own commit.
   "Just reply here — a word is enough" fallback appears where buttons were dropped.
 - **Placeholder phone numbers are refused** at the operation boundary (uncommitted fix,
   exercised on `add_coach` this pass).
+
+### F-P · Verifying F-O's own fixes, 16 Aug 2026 — the behaviour landed, three mechanisms did not
+
+F-O's five commits were checked two ways: eight regression cases driven through the real loop
+in a fresh business (`npm run probe -- --suite f-o`, evidence in `.probe/fo/`), and a read of
+the code each commit's message describes. **Seven of eight cases held; two of the five commits
+keep every claim they make.** The gap is instructive and is the whole entry: a claim can be
+kept on every prompt anybody thought to write and still be false, because a mechanism that
+never fires looks exactly like a mechanism that is never needed.
+
+- **The commit gate works, and the tool it documents cannot succeed.** Live: `commit` was
+  called **0 times in 13 turns**, against **7 of 7 refused** across the month drive — the
+  wasted round is gone, and money, fan-out and destructive flows all went straight to a
+  read-back with a steps button. But `commit` has no reachable success path at all: a plan
+  that does not gate is executed inside `plan` and returns `handle: null` with "do NOT call
+  commit" (`tools.ts:1571`), and every handle that IS stored carries `needsConfirm: true`
+  (`tools.ts:1605-1614`, `pendingMeta` always live at `loop.ts:983`), so `tools.ts:1644`
+  refuses all of them. The declaration's closing sentence — "Commit is for plans that stay
+  inward" — therefore describes a path that does not exist, which is a two-author seam of
+  exactly the kind F-O named: the runtime's note at `tools.ts:1598` says the opposite at the
+  moment it matters. **Fix site:** state that `commit` only ever confirms, or retire the tool.
+  Also imprecise: "changing existing rows in bulk" is `changed > 1` (`plan.ts:1717`) — two
+  rows, not bulk — and `plan.ts:1719` gates on 40 rows counting inserts.
+- **Reflection's refusal marker cannot fire.** The "what you ran" line marks a call refused
+  from the trace's `error` field (`loop.ts:1820`), and that field is written only when a tool
+  *throws* (`loop.ts:1234`). The loop computes the fuller notion one line earlier —
+  `Boolean(threw) || 'error' in out.result` (`loop.ts:1207-1209`) — and drops it. Nearly
+  every refusal in this product returns instead of throwing, the commit gate included
+  (`tools.ts:1645`). Measured against the drive's own rows: **21 of 21 refused calls would
+  still reach reflection unmarked.** **Fix site:** carry `failed` onto the trace at
+  `loop.ts:1234`, not a change at 1820.
+- **The standing-jobs fact omits `dunning`, and that is the one case that broke.** The fact
+  (`loop.ts:1830`) lists reminders, register chases, coach days, brief and digest, and "bill
+  the month" — which is `monthly_lines` *minting*. Chasing an unpaid bill is `dunning`
+  (`kinds.ts:20`), a self-re-enqueuing ladder (`money.ts:474`, `money.ts:613`), and rule 8
+  names it explicitly. Asked "make sure meera gets a nudge about her bill", the model minted a
+  private 28 Sep watch doing precisely what dunning does. No dunning row existed yet to be
+  read, so the fact was the only thing that could have told it. **Fix site:** the enumeration
+  at `loop.ts:1830` — one clause.
+- **One falsehood traded for another in the digest fact.** Two of the three rewrites are
+  accurate against the runtime (the tally minting in full with no pro-rating; the trial
+  booking on the prospect's own tap — both confirmed live). The third overreaches:
+  `catalog.ts:547-551` now says a raw write "raises no moment … only the standing schedules
+  scan the rows", and `0004_functions.sql:283-286` falsifies it — `attendance_enqueue_outcome`
+  fires `client_outcome` from the row, on insert or update, and the migration's own comment
+  says that is deliberate so a model-authored transaction raises it too. Invited failure: the
+  model writes attendance raw, believes nobody was told, sends its own outcome message, and
+  the trigger sends one as well. **Fix site:** name attendance as the exception in that
+  paragraph.
+- **The copy fix is real, and is the model for the others.** `decline_coach`'s replacement
+  promise has a send behind it (`operations.ts:2025-2051`), verified live from both ends: the
+  coach read "the owner's been told it needs cover" and the owner received "Evening Fitness
+  tomorrow 7pm has no confirmed coach". One edge left: that step marks the declining coach as
+  its own subject with `is_escalation`, so where the coach IS an admin, gate 3
+  (`send.ts:564-566`) suppresses it as `escalation_about_self` and the sentence is literally
+  unkept — harmless, since the owner is the reader, but it is the solo case the commit cites.
+- **Logged, not fixed.** A register on a `per_session` rate still gates: `needsPreview` tests
+  money tables (`plan.ts:1705`) before the single-own-scope exemption (`plan.ts:1710`), and
+  `mark_attendance` writes a `tally_line` at that rate — a diff in front of a coach standing
+  on a court, which the function's own comment says row 1 exists to remove. Pre-existing, and
+  invisible to the button path because a tap never re-previews. Also: reflection stored a
+  verbatim restatement of the prefix's own billing fact ("Monthly fees are billed in full on
+  the 1st…"), which is neither a row copy nor an invented policy but is redundant with the
+  block it came from — a third shape of memory pollution, one instance.
+
+**Harness.** The regression suite is `--suite f-o` in `scripts/probe-model.ts`, reusing the
+arc's engine and five of its setup cases by reference. Two harness traps worth keeping: a
+check query that throws is recorded as `expectation query failed` and reads exactly like the
+model failing the case (`jsonb_array_length` raises on the explicit JSON `null` that 36 of the
+drive's 189 outbound rows carry — guard with `jsonb_typeof`); and reply-text checks are
+written as negatives, so silence passes and only an assertion fails.
