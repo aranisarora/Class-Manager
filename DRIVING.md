@@ -106,17 +106,14 @@ npm run drive -- deliver [--read]                # the delivery ladder
 npm run drive -- fault send_fail on --rate 1
 ```
 
-The web surface is half the product and goes untested unless you reach for it
-deliberately, because its screens arrive as signed links inside messages:
+There is no web surface any more — the browser was deleted (`367e8b6`); everything
+form-shaped is a WhatsApp Flow and anything spatial renders to an image (§14.6, §15).
+Forms are driven from here:
 
 ```bash
-npm run drive -- link <contact> --screen setup|register|calendar [--open]
-npm run drive -- open <contact> --purpose register
 npm run drive -- register <coachContact> --absent "Aarav,Meera"
+npm run drive -- form <contact> business_setup --json '{...}'
 ```
-
-`link` mints the signed link directly — no message, no model call. `open` follows a link
-the bot actually sent, as a person tapping it would.
 
 Before you finish:
 
@@ -180,11 +177,14 @@ other academies.
 `drive clock` **without** `--academy` still moves the whole world, and that is still how
 you destroy somebody else's run. If anyone else is driving, always pass `--academy`.
 
-**The honest edge:** SQL resolves the tenant clock from the session GUC automatically.
-A TypeScript caller that does not pass an academy to `now()` gets the world clock. With no
-per-tenant rows the two agree exactly; they diverge only for a tenant somebody has
-deliberately moved, and then only where a timestamp is computed in TypeScript rather than
-in SQL.
+**The edge is not honest — it is the worst open defect in the harness.** SQL resolves the
+tenant clock from the session GUC automatically; a TypeScript caller that does not pass an
+academy to `now()` gets the world clock. That is precisely the model-facing paths — the
+variable tail's "now", operation date defaults and cancellation windows, `agent_task`
+expiry, `post_class_register`'s finished check — so the moment a tenant clock is moved,
+every driven turn runs on the wrong day. Driven consequences are in
+`conversation-rules.md` F-A, with the call sites. Until it is fixed, treat any driven
+claim about "today", a window, or a watch's timing as suspect.
 
 ---
 
@@ -399,19 +399,11 @@ shows up, the fix is to make the failing tool cheaper to get right, not to buy m
   is that the Flow JSON is a versioned artifact published through the Flows API and
   immutable once published.
 
-  `onboarding_setup` is built and driven (`lib/messaging/flows.ts`). `flow_token` is an
-  `action` row id, so a submission inherits expiry, single consumption and the
-  minted-for-contact check from §2.2 rather than inventing a session concept.
-  `link_screen:"setup"` sent to an admin is now a form in the chat; `register` and
-  `calendar` still send links, and the web setup screen is unchanged.
-
-  **The register is still the open question.** It has now been marked — by chat, and by
-  the `[All present]` button — but nobody has measured whether its tap-out costs
-  completions. That is the argument for a *second* Flow, and it is still unmade.
-- **The web surface is three screens**: `setup`, `register`, `calendar`. Only `table`,
-  `prose` and `calendar` are mintable; the other six components still render but the
-  model may no longer author them. Put one back when a real question is badly served by
-  a table, which is the bar the spec set.
+  `flow_token` is an `action` row id, so a submission inherits expiry, single consumption
+  and the minted-for-contact check from §2.2 rather than inventing a session concept.
+- **The web surface is gone** (`367e8b6`). Every form is a Flow; anything spatial renders
+  to an image and is sent in the chat (§14.6, §15). If a screen ever comes back, it has to
+  clear the bar §15 set — something a chat genuinely cannot show — not convenience.
 - **Signup is the operator's, not a product flow.** `resolveInbound` returning
   `unresolved` for an unknown number is that decision working, not a gap.
 - **Do not trim the operation registry.** Measured against the bodies rather than the
@@ -428,11 +420,15 @@ shows up, the fix is to make the failing tool cheaper to get right, not to buy m
 
 ## How to record what you found
 
-**There is deliberately no standing findings file in this repo.** One went stale faster
+**There is deliberately no standing defect ledger in this repo.** One went stale faster
 than it was read, and a stale ledger costs more than no ledger: it sends the next person
 to build a fix against a defect that has already been closed, or against the wrong root.
 Findings go wherever this round's work goes — the pull request, the issue, the handoff to
 whoever fixes. The shape is what has to survive, not the filename.
+
+The one exception is `conversation-rules.md`: its rules half is durable (what an ideal
+conversation is, stated testably), and its findings half is a **dated snapshot** — trust
+the rules, and re-drive anything in the findings before building on it.
 
 One block per finding, this shape:
 

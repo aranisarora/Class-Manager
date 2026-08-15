@@ -204,10 +204,9 @@ scripts/drive.ts          the harness — talk to it, then read the tables back
   run once**: a register was marked from chat, both families were told the outcome, both players
   were billed for the month, a payment reached `requested` and a `reconcile` was scheduled
   carrying its tenant. `client_outcome`, `monthly_lines` and `month_end_tally` have fired.
-  **Everything after that is still unrun** — the reconcile ladder to `[Confirm payment]`, the
-  dunning ladder to escalation, `per_package` exhaustion, `per_term`, a waiver through the model,
-  a disputed charge. Treat that half as unverified, not as working; it is item 1 in
-  [`NEXT.md`](./NEXT.md).
+  The back half has since run once too — `requested → confirmed` without double credit, and the
+  dunning ladder to escalation — but `per_package` exhaustion, `per_term`, a waiver through the
+  model and a disputed charge remain undriven. Treat those as unverified, not as working.
 - **`academy.prompt_cache_handle` stays null, deliberately.** Implicit caching turned out *not* to
   do the work — measured across turns it served 0 cached tokens, hitting only between hops inside
   one turn — so `lib/agent/gemini.ts` now takes an explicit `CachedContent` for the stable prefix
