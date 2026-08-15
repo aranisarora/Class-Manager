@@ -188,12 +188,19 @@ export async function clientOutcome(job: Job): Promise<void> {
     if (!session) skip('session gone')
     if (session.status === 'cancelled') skip('session cancelled')
 
-    const [att] = await tx<{ status: string; note: string | null }[]>`
-      select status, note from attendance
+    const [att] = await tx<{ status: string; note: string | null; marked_by_coach_id: string | null }[]>`
+      select status, note, marked_by_coach_id from attendance
        where session_id = ${sessionId} and player_id = ${playerId}
     `
     if (!att) skip('attendance not marked (yet)')
     if (att.status === 'cancelled_timely') skip('cancelled in time — nothing to report')
+    // An absence nobody marked is the family's own notice: `client_cancel`
+    // writes it when a parent cancels inside the window. Reporting it back —
+    // "Aarav missed Beginners", the parent's own reason relabelled "Coach's
+    // note" — tells a family what they told us, as a verdict, with a false
+    // attribution (driven, month drive day 3). Same rule as the timely case:
+    // the parent told us, so there is nothing to report.
+    if (att.status === 'absent' && !att.marked_by_coach_id) skip('the family cancelled it themselves — they know')
 
     const roster = await enrolledPlayers(
       tx, academyId, session.class_id, isoDate(session.starts_at, academy.timezone),
