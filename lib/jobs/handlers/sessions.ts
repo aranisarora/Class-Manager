@@ -183,27 +183,35 @@ export async function postClassRegister(job: Job): Promise<void> {
     if (session.status === 'cancelled') skip('session cancelled')
     if (nowAt.getTime() < session.ends_at.getTime()) skip('class has not finished')
 
-    const [marked] = await tx<{ n: number }[]>`
-      select count(*)::int as n from attendance where session_id = ${sessionId}
-    `
-    if ((marked?.n ?? 0) > 0) skip('register already marked')
-
     const coaches = (await assignedCoaches(tx, sessionId)).filter((c) => c.declined_at === null)
     if (coaches.length === 0) skip('nobody was assigned to this session')
 
-    const roster = await enrolledPlayers(
+    const fullRoster = await enrolledPlayers(
       tx, academyId, session.class_id, isoDate(session.starts_at, academy.timezone),
     )
-    if (roster.length === 0) skip('nobody enrolled')
+    if (fullRoster.length === 0) skip('nobody enrolled')
+
+    // The register's universe is the UNRESOLVED roster. "Already marked" used
+    // to mean any attendance row existed — so one parent's advance cancellation
+    // suppressed the whole register and the coach was never asked about anyone
+    // else (F-I, reproduced in the month drive). Marked means every enrolled
+    // player resolved; the ask covers the remainder only, so [All present]
+    // cannot clobber a cancellation already on record.
+    const markedRows = await tx<{ player_id: string }[]>`
+      select player_id from attendance where session_id = ${sessionId}
+    `
+    const resolved = new Set(markedRows.map((m) => m.player_id))
+    const roster = fullRoster.filter((r) => !resolved.has(r.player_id))
+    if (roster.length === 0) skip('register already marked')
 
     // Whoever actually took it, if we know; otherwise everyone still assigned.
     const answered = coaches.filter((c) => c.confirmed_at !== null || c.arrived_at !== null)
     const askThese = answered.length > 0 ? answered : coaches
 
-    return { academy, session, roster, askThese }
+    return { academy, session, roster, askThese, alreadyOut: fullRoster.length - roster.length }
   })
 
-  const { academy, session, roster, askThese } = plan
+  const { academy, session, roster, askThese, alreadyOut } = plan
   const tz = academy.timezone
   const playerIds = roster.map((r) => r.player_id)
   const when = `${dayLabel(session.starts_at, tz, nowAt)} ${spanLabel(session.starts_at, session.ends_at, tz)}`
@@ -216,7 +224,8 @@ export async function postClassRegister(job: Job): Promise<void> {
       header: clamp(academy.name, LIMITS.headerChars),
       body: clamp(joinLines([
         `${session.class_name} — ${when}. Who was there?`,
-        `${roster.length} on the roster: ${roster.map((r) => r.player_name).join(', ')}`,
+        `${roster.length} to mark: ${roster.map((r) => r.player_name).join(', ')}` +
+          (alreadyOut ? ` (${alreadyOut} already recorded as out)` : ''),
       ]), LIMITS.bodyChars),
       buttons: [
         {

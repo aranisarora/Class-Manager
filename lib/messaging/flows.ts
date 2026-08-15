@@ -829,16 +829,23 @@ async function registerFormFor(
   const wanted = (sessionId ?? '').trim()
   if (!wanted) return { error: 'a register needs to know which session' }
 
+  // The register's universe is the UNRESOLVED roster: a player whose family
+  // already cancelled has an attendance row, and a form that lists them
+  // present-by-default is one Done tap away from overwriting their
+  // cancellation (F-I; the job handler and the submit path apply the same
+  // exclusion).
   const res = await modelQuery(
     ctx,
     `select r.player_id, r.player_name, r.class_name, r.starts_at
        from app.session_roster r
       where r.session_id = '${wanted.replace(/'/g, "''")}'::uuid
+        and not exists (select 1 from attendance a
+                         where a.session_id = r.session_id and a.player_id = r.player_id)
       order by r.player_name`,
   )
   if (res.error) return { error: 'I could not read that roster just now' }
   const rows = res.rows as { player_id: string; player_name: string; class_name: string; starts_at: unknown }[]
-  if (!rows.length) return { error: 'there is nobody on that register' }
+  if (!rows.length) return { error: 'everyone on that register is already marked' }
 
   const tz = id.academy.timezone || 'Asia/Kolkata'
   const at = rows[0].starts_at instanceof Date ? (rows[0].starts_at as Date) : new Date(String(rows[0].starts_at))

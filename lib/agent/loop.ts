@@ -596,9 +596,14 @@ async function executeAction(
      */
     if (payload.flow === REGISTER.id) {
       const v = parsed.values as RegisterValues
+      // Same exclusion the form was built with: present-by-default applies to
+      // the unresolved roster only, or a family's earlier cancellation is
+      // overwritten by a blanket "everyone else came" (F-I).
       const roster = await modelQuery(
         session,
-        `select player_id from app.session_roster where session_id = ${uid(v.session_id)}`,
+        `select player_id from app.session_roster r where session_id = ${uid(v.session_id)}
+            and not exists (select 1 from attendance a
+                             where a.session_id = r.session_id and a.player_id = r.player_id)`,
       )
       if (roster.error || !roster.rows.length) {
         outcomes.push(
