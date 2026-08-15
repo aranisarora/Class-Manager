@@ -710,7 +710,11 @@ const endCoach: OperationDef = {
               `${a.name}: ${coach.full_name} is finishing up with us on ${zoned(endIso, a.timezone).toFormat(
                 'd LLL',
               )}. ` +
-              `${[...t.classes].join(' and ')} carries on as usual — I'll tell you who's taking it as soon as it's set.`,
+              // No "I'll tell you who's taking it as soon as it's set" — nothing
+              // keeps that promise. Cover lands as an assignment, and the parents'
+              // ordinary messages carry on; a promise the machinery does not keep
+              // is a lie with a delay on it.
+              `${[...t.classes].join(' and ')} carries on as usual.`,
           },
         })
       }
@@ -1943,6 +1947,13 @@ const declineCoach: OperationDef = {
     if (!coachId) throw new Error('I do not know which coach that is')
     const s = await sessionOf(ctx, args.session_id)
     const coaches = await coachesOnSession(ctx, s.id)
+    // Computed before the confirmation branch so both copies can say what is
+    // true. "I'll sort out cover" was the old sentence, and in a one-coach
+    // business it promised a person who does not exist — what this operation
+    // actually does on an uncovered decline is tell the owner and offer the
+    // session to the other coaches, so that is what the copy says.
+    const remaining = coaches.filter((c) => c.coach_id !== coachId && !c.declined_at)
+    const stillCovered = isCovered(remaining)
 
     // §8.2 — the tap confirms first. Dropping a class is not mis-tappable, and
     // that guarantee belongs in the operation rather than in whoever raised
@@ -1952,7 +1963,9 @@ const declineCoach: OperationDef = {
         {
           message: {
             to_person_id: id.person.id,
-            body: `Just to be sure — you can't make ${s.class_name} ${whenLabel(s.starts_at, a.timezone, today)}? I'll sort out cover.`,
+            body: `Just to be sure — you can't make ${s.class_name} ${whenLabel(s.starts_at, a.timezone, today)}?${
+              stillCovered ? '' : ' The owner will be told it needs cover.'
+            }`,
             buttons: [
               {
                 title: "Yes, can't make it",
@@ -1968,8 +1981,6 @@ const declineCoach: OperationDef = {
         },
       ]
     }
-    const remaining = coaches.filter((c) => c.coach_id !== coachId && !c.declined_at)
-    const stillCovered = isCovered(remaining)
     const when = whenLabel(s.starts_at, a.timezone, today)
 
     const steps: PlanStep[] = [
@@ -1977,7 +1988,9 @@ const declineCoach: OperationDef = {
         note: `${s.class_name} ${when} loses one coach${stillCovered ? ', still covered' : ', now uncovered'}`,
         // Said to the coach who just declined. What happens to the session's coverage
         // is the admin's question, not theirs.
-        personal: `you're off ${s.class_name} ${when}${stillCovered ? ' — it is still covered' : " — I'll find cover"}`,
+        personal: `you're off ${s.class_name} ${when}${
+          stillCovered ? ' — it is still covered' : " — the owner's been told it needs cover"
+        }`,
       },
       {
         write: `update session_coach set declined_at = app.now(), confirmed_at = null
