@@ -1318,7 +1318,8 @@ const bookTrial: OperationDef = {
   name: 'book_trial',
   ownScope: true,
   description:
-    'Book a free trial from a cold conversation: creates the account, the player, a trial enrollment and the booking, confirms to the parent and tells the admin with an undo.',
+    'Book a free trial from a cold conversation: creates the account, the player, a trial enrollment and the booking, confirms to the parent and tells the admin with an undo. ' +
+    "The class's next scheduled session is resolved for you (or pass session_id) — never read the session table first to check: a prospect's own view of the calendar is empty by design, and that empty read is not the truth.",
   params: z.object({
     player_name: z.string().min(1),
     class_id: uuid,
@@ -1357,15 +1358,25 @@ const bookTrial: OperationDef = {
     )
     if (!cls) throw new Error('I cannot see that class')
 
+    // `svc`, like the contact lookup above, and for the same reason: the caller
+    // is a PROSPECT, and a prospect's own view of `session` is empty by design
+    // (`app.my_session_ids()` — no enrolled players yet). Under `ctx` this read
+    // returned nothing for every class, so the one operation §10.1 built for
+    // cold conversations could not find the session it exists to book into —
+    // driven, month drive day 6: a trial request answered with "give me a
+    // second" and a watch that then found the same empty calendar and went
+    // quiet. The operation is the privilege boundary; this read is its own.
     const [firstSession] = args.session_id
       ? await q<{ id: string; starts_at: string }>(
-          ctx,
-          `select id, starts_at from session where id = ${uid(args.session_id)}`,
+          svc(ctx),
+          `select id, starts_at from session
+            where id = ${uid(args.session_id)} and academy_id = ${uid(ctx.academyId)}`,
         )
       : await q<{ id: string; starts_at: string }>(
-          ctx,
+          svc(ctx),
           `select id, starts_at from session
-            where class_id = ${uid(args.class_id)} and status = 'scheduled' and starts_at > app.now()
+            where class_id = ${uid(args.class_id)} and academy_id = ${uid(ctx.academyId)}
+              and status = 'scheduled' and starts_at > app.now()
             order by starts_at limit 1`,
         )
 
