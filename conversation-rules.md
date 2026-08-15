@@ -428,6 +428,61 @@ family-initiated leave routes to the admin instead of dying as "the world
 moved", and the executed end closes rule 15's return trip (`4320558`).
 Full narrative: `.probe/drive-month/` (journal.md, score.md, transcript/).
 
+### F-O · The post-drive read-through, 15 Aug 2026 — one blind mini-brain, one refusal-taught gate, three falsified facts
+
+Found by reading the whole of `.probe/drive-month/` against the brain, after the drive closed.
+Fixes below landed same day; each is its own commit.
+
+- **Reflection is a blind mini-brain, and two judged failures share that root.** `reflect()`
+  runs on ~300 tokens with no prefix: it makes a schema-placement judgement (row vs fact)
+  without the schema and a duplication judgement without the catalog. The judges' only
+  outright fail (rule 10, the memory store) and the only rule-8 recurrence (T048's
+  reminder watch duplicating the standing `client_reminder`) are one problem, not two.
+  Its own prompt was also generative: "a policy that came up" is the exact license behind
+  the T004 schedule copy and T066's invented pro-rata policy. **Fixed:** the policy
+  invitation is gone from both the reflection prompt and the `remember` declaration,
+  replaced by the placement boundary; reflection's prompt now carries the standing-jobs
+  fact its duplication judgement needs; the "what you ran" line marks refused calls as
+  refused. F-D's structural write-gate remains the named home and is still unbuilt.
+- **The commit gate was taught only by refusal, once per consequential flow, forever.**
+  `commit`'s declaration invited the call; the gate's rule lived solely in the error
+  text, and history is rebuilt from message text so the lesson could not persist. Cost,
+  measured across the month: a wasted round and pre-composed "Committing it now" prose on
+  six flows — and at T054 the post-refusal re-stage downgraded `cancel_session` into a
+  raw session write, losing the operation's sends, which is how "All 3 families are told"
+  shipped over steps that told nobody. **Fixed:** the gate (`needsPreview`, §14.2) is
+  stated on the `commit` declaration; the refusal stays as backstop.
+- **Three prefix facts the runtime falsifies.** "Nothing bills itself" — `monthly_lines`
+  mints in full, unasked; the model's "billing starts itself on 1 Sep" (T047/T048),
+  judged as negating a cached fact, described the shipping product accurately. "A trial
+  is auto-confirmed" vs the tap-gated reality. The digest's "code guarantees each one
+  reaches you" vs the raw-write path raising no moment (T054→T056). **Fixed:** all three
+  rewritten to what is true (facts state — so they must be true, or the block trains the
+  model to distrust it). The ask-first billing behaviour, if wanted, is a structural
+  decision still open (mid-month joins still bill in full — F-I carried).
+- **Copy promising what nothing keeps.** `decline_coach`'s "I'll sort out cover" / "I'll
+  find cover" (a person who may not exist — the operation actually tells the owner and
+  offers the others; the copy now says so) and `end_coach`'s "I'll tell you who's taking
+  it as soon as it's set" (no job keeps it; dropped). Null result, verified: T007's
+  invite-chase promise IS kept — `coach_not_onboarded` is planned and handled (48h).
+- **Open, documented, not fixed here — the two-author seams.** Every remaining
+  claim-shaped defect is a place two authors describe one act and nobody reconciles
+  them: template lead-in + composed body (F-G), model summary + runtime steps under one
+  button (F-M), model reply + operation ack as adjacent messages (`drop_watch`'s
+  "Dropped — I'll stop watching that" beside the real answer, T014), digest promise +
+  raw-write path. The product has one-send-path discipline for delivery; it needs
+  one-author discipline for meaning — wherever both describe the same act, the runtime's
+  description travels with the model's at the point of confirmation. F-M's diff-carrying
+  read-back is the first instance.
+- **Runtime copy that fails the census label test.** "Added 2 charges." for two ₹1,000
+  *credits* (T066 tap — `plural()` maps `tally_line` blind to sign; constraint for the
+  fix: diff table names feed `MONEY_TABLES`, so fix the rendering or carry a note from
+  the adjust step, never rename tables in diffs). "N steps matched no rows — check that
+  part landed" lands on the person with nothing they can do (deliberate R7 bluntness —
+  the tension is real in both directions and is a design call, recorded here). Also
+  logged: the final Sunita balance read-back attributed the August pro-rata credits to
+  September (total right, labels wrong — rule 5-adjacent, model behaviour, one instance).
+
 ### What is now known-good (null results, worth not re-driving)
 
 - **Coach onboarding is fixed.** [Looks right] / [Something's wrong] both appear, the
