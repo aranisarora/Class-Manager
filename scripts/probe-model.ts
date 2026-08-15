@@ -124,6 +124,17 @@ const ONLY = flag('case')
 const ONLY_STAGE = flag('stage')
 const ONLY_PERSONA = flag('persona')
 const OUT_DIR = flag('out', join(process.cwd(), '.probe'))
+/**
+ * Which arc to walk. `arc` is the lifecycle sweep; `f-o` is the regression suite
+ * for the findings the month drive raised and the 15 Aug commits claim to have
+ * fixed (conversation-rules.md F-O).
+ *
+ * A suite is a list of cases, and the F-O one REUSES the arc's setup cases by
+ * reference rather than restating them: a regression case about cancelling a
+ * class needs a class, a coach and two families, and there is no version of
+ * that setup worth having twice.
+ */
+const SUITE = flag('suite', 'arc')
 
 /* -------------------------------------------------------------------------- *
  * The arc
@@ -972,6 +983,411 @@ const CASES: Case[] = [
   },
 ]
 
+/* ========================================================================== *
+ * The F-O regression suite
+ *
+ * Every case below reproduces something the month drive actually did wrong, and
+ * asks whether the 15 Aug commits fixed it. The arc above asks "does the product
+ * work"; this asks "did those five commits do what their messages claim".
+ *
+ * The rule followed here, and the reason these are cases rather than invariants:
+ * an invariant is a property of the data true for every business. "Did the model
+ * call `commit` on a plan the gate refuses" is a property of ONE prompt's trace,
+ * and there is no way to ask it without sending that prompt.
+ *
+ * Three shapes of check appear, in descending order of how much they are worth:
+ *
+ *   1. THE WORLD  — a row that exists or does not. `cancel_session` downgraded to
+ *      a raw write leaves the session cancelled and the families unmessaged, and
+ *      only the second half of that is visible.
+ *   2. THE TRACE  — `turn.tool_calls` is jsonb, so "was `commit` called at all" is
+ *      a query. This is how the gate fix is measured: the point of stating the
+ *      rule on the declaration is that the model stops paying a refused round to
+ *      learn it, and a refused round is invisible in the world.
+ *   3. THE WORDS  — a regex over what was actually sent. Weakest, used only where
+ *      the finding IS a sentence (a promise nothing keeps, a fact the runtime
+ *      falsifies), and always written as a NEGATIVE: silence passes. A model that
+ *      says nothing about cover has not promised cover.
+ * ========================================================================== */
+
+/**
+ * Everything this turn put in front of anybody, oldest first.
+ *
+ * `buttons` is counted through `jsonb_typeof` rather than straight
+ * `jsonb_array_length`, because the column holds an explicit JSON `null` on a
+ * message with no buttons — 36 of the drive's 189 — and `jsonb_array_length` on a
+ * scalar RAISES rather than returning null, so `coalesce` never sees it. A check
+ * query that throws is recorded as `expectation query failed`, which reads
+ * exactly like the model having failed the case.
+ */
+const saidThisTurn = (ctx: CaseCtx) => `
+  select ct.id::text as contact_id, p.full_name as who, m.body,
+         case when jsonb_typeof(m.payload->'buttons') = 'array'
+              then jsonb_array_length(m.payload->'buttons') else 0 end as buttons
+    from message m
+    join contact ct on ct.id = m.contact_id
+    join person p on p.id = ct.person_id
+   where m.direction = 'outbound' and m.suppressed_reason is null
+     and btrim(m.body) <> ''
+     and m.created_at >= '${ctx.startedAt}'::timestamptz
+   order by m.created_at asc`
+
+/** How many times this turn called a named tool. The gate fix is measured here. */
+async function calledTool(q: Sql, ctx: CaseCtx, name: string): Promise<number> {
+  // Same scalar hazard as `saidThisTurn`: `jsonb_array_elements` raises on a JSON
+  // `null`, and a turn that errored before its first round stores exactly that.
+  const rows = await q<{ n: number }>(`
+    select count(*)::int as n
+      from turn t, lateral jsonb_array_elements(
+             case when jsonb_typeof(t.tool_calls) = 'array' then t.tool_calls else '[]'::jsonb end) x
+     where t.created_at >= '${ctx.startedAt}'::timestamptz
+       and t.contact_id = '${ctx.contactId}'::uuid
+       and x->>'name' = '${name}'`)
+  return Number(rows[0]?.n ?? 0)
+}
+
+/** Facts reflection minted this turn. `remember` writes here too; both count. */
+async function mintedFacts(q: Sql, ctx: CaseCtx): Promise<any[]> {
+  return q(`select subject_kind, fact, source from memory_fact
+             where created_at >= '${ctx.startedAt}'::timestamptz and retired_at is null`)
+}
+
+const FO_CASES: Case[] = [
+  /* ---- the commit gate (2292a50) ----------------------------------------- */
+  {
+    name: 'fo-gate-money',
+    stage: 'money',
+    persona: 'admin',
+    /**
+     * F-O finding 2. `waive` is in `MONEY_OPS`, so `needsPreview` refuses `commit`
+     * every time. Before the fix the rule lived only in the refusal text, so the
+     * model paid a wasted round — and pre-composed "Committing it now" prose — once
+     * per consequential flow, forever, because history is rebuilt from message text
+     * and the lesson cannot persist.
+     *
+     * The fix is a sentence on the declaration. The measurement is therefore the
+     * TRACE, not the world: both the fixed and the unfixed model end with the same
+     * waived row. Only one of them pays a round to get there.
+     */
+    what: 'money: the gate refuses commit — was that learnt from the declaration, or paid for again?',
+    text: 'meera had a rough month — knock 500 off what she owes for august',
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q, ctx) => {
+      const commits = await calledTool(q, ctx, 'commit')
+      const said = await q(saidThisTurn(ctx))
+      const first = said[0]
+      const credited = await q(`
+        select ac.display_name, tl.kind, tl.description, tl.amount::text
+          from tally_line tl join account ac on ac.id = tl.account_id
+         where tl.created_at >= '${ctx.startedAt}'::timestamptz`)
+      return [
+        // The fix's actual claim, stated as the check it has to pass.
+        check('commit was not called on a plan the gate refuses', commits === 0, `commit called ${commits}×`),
+        // A refused commit is only half the old cost. The other half is prose
+        // written for a commit that never happened.
+        check(
+          'nothing said it was committing before the tap',
+          !/\b(committing|i'?m committing|applying (it|that) now|putting (it|that) through now)\b/i.test(String(first?.body ?? '')),
+          String(first?.body ?? '(nothing)').slice(0, 200),
+        ),
+        check('the person got a button rather than an instruction to confirm', Number(first?.buttons ?? 0) > 0, said),
+        check('after the tap, the credit is on meera\'s account', credited.some((r: any) => norm(r.display_name).includes('meera')), credited),
+      ]
+    },
+  },
+  {
+    name: 'fo-gate-fanout',
+    stage: 'session-day',
+    persona: 'admin',
+    /**
+     * F-O finding 2's expensive half, and the worst thing the drive found (T054).
+     *
+     * The gate refuses `commit` on anything that messages someone else. At T054 the
+     * model took that refusal and RE-STAGED — downgrading the `cancel_session`
+     * operation into a raw session write, which the gate then allowed because a
+     * lone UPDATE messages nobody. The session was cancelled. The families were
+     * not told. And the reply said "All 3 families are told".
+     *
+     * That is why the second check here is the load-bearing one: the world looks
+     * identical either way except for the messages that do not exist. A harness
+     * that checked only `status = 'cancelled'` would have called T054 a pass.
+     */
+    what: 'the fan-out: cancelling a class must TELL the families, not just cancel it (T054)',
+    // The fitness batch runs daily and holds both households, so there is always
+    // one within the clock budget and cancelling it is a real fan-out.
+    clock: (q) =>
+      firstAt(q, `select (min(s.starts_at) - interval '6 hours')::text as at
+                    from session s join class c on c.id = s.class_id
+                   where s.status = 'scheduled' and s.starts_at > app.now()
+                     and lower(c.name) like '%fitness%'`),
+    text: "tonight's fitness class is off — the hall got double booked. let the families know.",
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q, ctx) => {
+      const commits = await calledTool(q, ctx, 'commit')
+      const cancelled = await q(`
+        select cl.name, s.starts_at::text, s.status
+          from session s join class cl on cl.id = s.class_id
+         where s.status = 'cancelled'`)
+      // Who SHOULD have heard: the account holder of every player on that class.
+      const owed = await q(`
+        select distinct p.full_name as who, ct.id::text as contact_id
+          from session s
+          join enrollment e on e.class_id = s.class_id and e.ended_on is null
+          join player pl on pl.id = e.player_id and pl.active
+          join account a on a.id = pl.account_id
+          join person p on p.id = a.holder_person_id
+          join contact ct on ct.person_id = p.id
+         where s.status = 'cancelled' and lower((select name from class where id = s.class_id)) like '%fitness%'`)
+      const said = await q(saidThisTurn(ctx))
+      const toldIds = new Set(said.map((r: any) => String(r.contact_id)))
+      const untold = owed.filter((r: any) => !toldIds.has(String(r.contact_id)))
+      const claims = said.some((r: any) => /famil|parents|everyone|told|let them know|notified/i.test(String(r.body ?? '')))
+      return [
+        check('commit was not called on a plan that messages others', commits === 0, `commit called ${commits}×`),
+        check('a fitness session was cancelled', cancelled.some((r: any) => norm(r.name).includes('fitness')), cancelled),
+        // T054, in one query.
+        check(
+          'every family on that class was actually told',
+          owed.length > 0 && untold.length === 0,
+          { should_hear: owed.map((r: any) => r.who), never_heard: untold.map((r: any) => r.who) },
+        ),
+        check(
+          'if it claimed the families were told, they were',
+          !claims || untold.length === 0,
+          { claimed: claims, never_heard: untold.map((r: any) => r.who) },
+        ),
+      ]
+    },
+  },
+
+  /* ---- copy that promises what nothing keeps (2f4cc0d) -------------------- */
+  {
+    name: 'fo-decline-cover',
+    stage: 'session-day',
+    persona: 'coach',
+    /**
+     * F-O finding 4. In a one-coach business "I'll sort out cover" / "I'll find
+     * cover" promised a person who does not exist. The commit replaced both with
+     * what the operation actually does — tells the owner, offers the others.
+     *
+     * So this case has to check the NEW promise as hard as it checks the absence of
+     * the old one. Copy that swaps one unkept promise for another is not a fix, and
+     * the only difference is a row in `message` addressed to the admin.
+     */
+    what: 'a coach drops out of a solo-coach business — is cover promised, and is the owner really told?',
+    clock: (q) =>
+      firstAt(q, `select (min(starts_at) - interval '3 hours')::text as at
+                    from session where status = 'scheduled' and starts_at > app.now()`),
+    text: "sorry, something's come up — i can't take tonight's session",
+    wants: [],
+    tap: true,
+    expect: async (q, ctx) => {
+      const said = await q(saidThisTurn(ctx))
+      const promised = said.filter((r: any) =>
+        /\b(i'?ll|i will|we'?ll)\s+(sort out|find|arrange|get|organise|organize|cover)\b|\bsort out cover\b|\bfind cover\b/i.test(String(r.body ?? '')),
+      )
+      const declined = await q(`
+        select p.full_name, sc.declined_at::text, s.starts_at::text
+          from session_coach sc
+          join session s on s.id = sc.session_id
+          join coach co on co.id = sc.coach_id
+          join person p on p.id = co.person_id
+         where sc.declined_at is not null`)
+      // Was the owner told? The admin is the person on `academy_admin`.
+      const toldOwner = await q(`
+        select left(m.body, 120) as body
+          from message m
+          join contact ct on ct.id = m.contact_id
+          join academy_admin aa on aa.person_id = ct.person_id
+         where m.direction = 'outbound' and m.suppressed_reason is null
+           and m.created_at >= '${ctx.startedAt}'::timestamptz`)
+      return [
+        check('nothing promised to find cover', promised.length === 0, promised.map((r: any) => `${r.who}: ${String(r.body).slice(0, 120)}`)),
+        check('the decline is on the row, not just in the reply', declined.length > 0, declined),
+        // The promise the new copy makes. If the copy says the owner is told, a row
+        // has to show it — otherwise this commit swapped one fiction for another.
+        check('the owner was actually told it needs cover', toldOwner.length > 0, toldOwner),
+      ]
+    },
+  },
+
+  /* ---- facts the runtime falsifies (6de0ffd) ------------------------------ */
+  {
+    name: 'fo-billing-fact',
+    stage: 'money',
+    persona: 'admin',
+    /**
+     * F-O finding 3. "Nothing bills itself" was a cached fact and it was false:
+     * `monthly_lines` mints in full, unasked. The model that said "billing starts
+     * itself on 1 Sep" (T047/T048) was judged as negating a cached fact and was in
+     * fact describing the shipping product correctly.
+     *
+     * Written as a negative: the fail is ASSERTING the false version. A model that
+     * reads the job table and answers from it passes, and so does one that says it
+     * is not sure.
+     */
+    what: 'does it still tell people nothing bills itself, when monthly_lines mints unasked?',
+    text: 'come the 1st, does next month bill itself or do i have to ask you to run it?',
+    wants: [],
+    expect: async (q, ctx) => {
+      const said = await q(saidThisTurn(ctx))
+      const body = said.map((r: any) => String(r.body ?? '')).join(' \n ')
+      const falsehood =
+        /\bnothing bills itself\b|\bnothing (is )?bill(s|ed)? (itself|automatically)\b|\bwon'?t bill (itself|automatically)\b|\bdoesn'?t bill (itself|automatically)\b|\b(you'?ll|you) (have to|need to|must) (ask|tell) me\b/i.test(body)
+      return [
+        check('it did not repeat the falsified "nothing bills itself"', !falsehood, body.slice(0, 300) || '(nothing said)'),
+        check('the admin got an answer at all', body.trim().length > 0, said),
+      ]
+    },
+  },
+  {
+    name: 'fo-midmonth-fact',
+    stage: 'money',
+    persona: 'admin',
+    /**
+     * The consequence half of the same fact. `monthly_lines` does not pro-rate — a
+     * family joining on the 15th is billed the whole month (F-I, carried open). The
+     * fact block now says so. A model that promises pro-rating is writing a dispute
+     * for a parent to have later, which is exactly what happened to Sunita.
+     */
+    what: 'a mid-month join bills in full — does it promise pro-rating the product does not do?',
+    text: 'if i take a new kid on the 20th, do they pay the whole month or just the rest of it?',
+    wants: [],
+    expect: async (q, ctx) => {
+      const said = await q(saidThisTurn(ctx))
+      const body = said.map((r: any) => String(r.body ?? '')).join(' \n ')
+      // Only a POSITIVE promise fails. "It bills in full, I can credit the
+      // difference if you want" is the true answer and mentions pro-rata.
+      const promises =
+        /\b(they'?ll |we |i )?(only )?(pay|charge|bill)[a-z]* (only )?(for )?(the )?(rest|remainder|remaining|part)\b|\b(is |will be |gets )?(auto[- ]?)?pro[- ]?rat/i.test(body) &&
+        !/\b(full month|whole month|the full|bills in full|charged in full|not pro[- ]?rat|no pro[- ]?rat)\b/i.test(body)
+      return [
+        check('it did not promise pro-rating the billing run does not do', !promises, body.slice(0, 300) || '(nothing said)'),
+        check('the admin got an answer at all', body.trim().length > 0, said),
+      ]
+    },
+  },
+
+  /* ---- the reflection mini-brain (345c94a) -------------------------------- */
+  {
+    name: 'fo-memory-rows',
+    stage: 'roster',
+    persona: 'admin',
+    /**
+     * F-O finding 1, first half. Reflection made a schema-placement judgement — is
+     * this a row or a fact — on ~300 tokens with no schema in front of it, and put
+     * the timetable in memory. A rate in `memory_fact` goes stale the day the rate
+     * changes, and nothing retires it.
+     *
+     * The sentence is deliberately a pure restatement of rows that already exist,
+     * so there is nothing here a fact could legitimately be made of. Storing
+     * nothing is the pass.
+     */
+    what: 'row-shaped data restated — does reflection still copy the timetable into memory?',
+    text: 'just confirming for your notes: advanced is 2500 a month and it runs saturday mornings at green park.',
+    wants: [],
+    expect: async (q, ctx) => {
+      const facts = await mintedFacts(q, ctx)
+      const copies = facts.filter((f: any) =>
+        /2500|2,500|saturday|sat\b|green park|per month|a month/i.test(String(f.fact ?? '')),
+      )
+      return [check('no row was copied into memory as a fact', copies.length === 0, facts)]
+    },
+  },
+  {
+    name: 'fo-memory-policy',
+    stage: 'money',
+    persona: 'admin',
+    /**
+     * F-O finding 1, second half. "A policy that came up" was the license behind
+     * T066's invented pro-rata policy: one credit, granted once, stored as
+     * "members get an automatic pro rata credit" — a rule the business never made,
+     * which every later turn would then apply.
+     *
+     * One instance is never a policy, and the commit says so in both places. The
+     * check is whether a single kindness still generalises itself into a rule.
+     */
+    what: 'one credit, granted once — does it still become an invented standing policy? (T066)',
+    text: 'sunita missed two weeks this month, put 800 back on her account for it',
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q, ctx) => {
+      const facts = await mintedFacts(q, ctx)
+      const policies = facts.filter((f: any) =>
+        /\b(policy|always|automatic|automatically|standard|every time|whenever|as a rule|members get|we give|we credit|entitled)\b/i.test(
+          String(f.fact ?? ''),
+        ),
+      )
+      return [check('one instance did not become a policy', policies.length === 0, facts)]
+    },
+  },
+  {
+    name: 'fo-watch-dupe',
+    stage: 'money',
+    persona: 'admin',
+    /**
+     * F-O finding 1, third half — the only rule-8 recurrence in the drive (T048).
+     * Reflection made a duplication judgement without the catalog of standing jobs,
+     * and minted a private watch that duplicated the standing `client_reminder`.
+     * The commit puts the standing-jobs fact where that judgement is made.
+     *
+     * Scoped to THIS turn's jobs and this academy, for the reason the arc's
+     * `discretionary` case had to be: `job` is global, and reflection schedules
+     * watches on any turn.
+     */
+    what: 'asking for a bill nudge — does it still mint a watch duplicating the standing reminder? (T048)',
+    text: 'make sure meera gets a nudge about her bill before the month is out',
+    wants: [],
+    expect: async (q, ctx) => {
+      const mine = await q(`
+        select run_at::text, dedupe_key, payload->>'instruction' as instruction
+          from job
+         where kind = 'agent_task' and payload->>'academy_id' = app.academy_id()::text
+           and created_at >= '${ctx.startedAt}'::timestamptz`)
+      const dupes = mine.filter((r: any) =>
+        /\b(remind|nudge|chase|follow up)\b/i.test(String(r.instruction ?? '')) &&
+        /\b(bill|owes|owing|balance|payment|dues|fee)\b/i.test(String(r.instruction ?? '')),
+      )
+      return [
+        check(
+          'no private watch was minted to duplicate the standing reminder',
+          dupes.length === 0,
+          mine,
+        ),
+      ]
+    },
+  },
+]
+
+/**
+ * The suites. `arc` is the lifecycle sweep; `f-o` walks the shortest setup that
+ * makes the regression cases askable and then asks them.
+ *
+ * The prelude is five of the arc's own case objects, by reference. `daily-batch`
+ * is in it for a reason that is easy to lose: it is the only class that runs
+ * every day, and without one, the nearest session is up to three days out and
+ * every clocked case below fails the travel budget instead of the model.
+ */
+const byName = (n: string) => CASES.find((k) => k.name === n)!
+const SUITES: Record<string, Case[]> = {
+  arc: CASES,
+  'f-o': [
+    byName('setup-small'),
+    byName('compose-big'),
+    byName('hire-coach'),
+    byName('daily-batch'),
+    byName('go-live'),
+    ...FO_CASES,
+  ],
+}
+if (!SUITES[SUITE]) {
+  console.error(c.red(`no suite "${SUITE}" — one of ${Object.keys(SUITES).join(', ')}`))
+  process.exit(2)
+}
+const ACTIVE: Case[] = SUITES[SUITE] as Case[]
+
 /* -------------------------------------------------------------------------- *
  * Reply quality, as evidence rather than as a grade.
  *
@@ -1031,6 +1447,13 @@ function readReply(msgs: any[]): ReplyReport {
   if (URL_RE.test(body)) flags.push('raw URL in body')
   const words = body.trim() ? body.trim().split(/\s+/).length : 0
   if (words > 90) flags.push(`long (${words} words)`)
+  // The UI/UX axis the flags did not have. WhatsApp gives a person two ways to
+  // act — type, or tap — and a long message offering neither makes them compose a
+  // sentence to say yes. Length alone is not the defect and buttons alone are not
+  // the fix; it is the pair. 55 words is roughly a phone screen before the fold.
+  if (words > 55 && buttons.length === 0 && !payload?.list && !payload?.link) {
+    flags.push(`wall of text (${words} words, nothing to tap)`)
+  }
   const suppressedOnly = msgs.length > 0 && sent.length === 0
   if (suppressedOnly) flags.push(`ALL SUPPRESSED (${msgs[0]?.suppressed_reason})`)
   if (all.length > 1) flags.push(`${all.length} outbound attempts`)
@@ -1275,7 +1698,7 @@ async function runChild(model: string, arm: string): Promise<void> {
 
   const records: TurnRecord[] = []
   try {
-    for (const kase of CASES) {
+    for (const kase of ACTIVE) {
       if (ONLY && kase.name !== ONLY) continue
       if (ONLY_STAGE && kase.stage !== ONLY_STAGE) continue
       if (ONLY_PERSONA && kase.persona !== ONLY_PERSONA) continue
@@ -1511,6 +1934,7 @@ function spawnChild(model: string, thinking: string): Promise<number> {
         join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs'),
         join(process.cwd(), 'scripts', 'probe-model.ts'),
         '--child', '--model', model, '--arm', thinking, '--out', OUT_DIR,
+        '--suite', SUITE,
         ...(ONLY ? ['--case', ONLY] : []),
         ...(ONLY_STAGE ? ['--stage', ONLY_STAGE] : []),
         ...(ONLY_PERSONA ? ['--persona', ONLY_PERSONA] : []),
@@ -1664,7 +2088,7 @@ function report(all: TurnRecord[]): void {
 if (has('child')) {
   await runChild(flag('model'), flag('arm', 'default'))
 } else {
-  const chosen = CASES.filter(selected)
+  const chosen = ACTIVE.filter(selected)
   // `--persona coach --case lookup` is an empty intersection, and running it built
   // two academies, probed nothing and printed a clean report. A harness that reports
   // nothing wrong because it asked nothing is the trap DRIVING.md opens with.
