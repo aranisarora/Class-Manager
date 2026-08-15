@@ -162,7 +162,19 @@ watched, normalised) the way `tally_line.dedupe_key` normalises billing identity
 second watch on the same subject supersedes rather than accumulates. The reflection prompt
 minting most of these is the symptom, not the fix site.
 
-### F-D · Memory is a copy of the schema plus things that are not facts, and reflection is the generator
+### F-D · Memory is a copy of the schema plus things that are not facts, and reflection is the generator — **structural home built 16 Aug 2026, partial by design**
+
+**Status:** the write gate exists. `rowShapedFact` (lib/agent/memory.ts) refuses, at both the
+`remember` tool and `writeFact` itself, any fact carrying a rupee figure, a phone number, a
+payment handle, or a multi-day schedule — the shapes every poisoned fact in the month drive
+had and no legitimate keeper did — and the refusal says what to keep instead. `memory_curate`'s
+prompt now carries the placement test, so a copy that slips through is retired at the next
+rebuild. Partial on purpose: a parentage restatement or a self-authored policy with no figure
+in it still passes the deterministic gate and is left to the prompt boundary and curation.
+Also fixed alongside: `remember` silently coerced `subject_kind: "business"` — the product's
+own word, taught by the reflection prompt itself — to *person*, so every reflection fact about
+the business failed on "no such person", was swallowed by the fire-and-forget, and was
+reported `ok:true`. The record below is the evidence.
 
 **Root:** R8-inverse (a capability with no gate on *when not to use it*). §5's placement
 test exists in prose; nothing enforces any of it at the write.
@@ -388,7 +400,16 @@ not a behavior rule):** the `reply` declaration and the job-turn situation line
 state the channel contract. Verified: the re-fired watch called `reply` and the
 report landed.
 
-### F-M · A model-authored steps button does what its prose never said
+### F-M · A model-authored steps button does what its prose never said — **chokepoint built 16 Aug 2026**
+
+**Status:** the diff-carrying read-back exists. `withRuntimeDiffLine`
+(lib/agent/tools.ts) runs on both paths a message leaves a turn by: any message
+to the acting person carrying a `steps` button gets the runtime's own summary —
+counts of writes, who hears — appended under the model's prose ("Tapping runs
+exactly this: …"). Steps matching a plan previewed this turn reuse its stored
+summary; novel inline steps are previewed at mint time, which is also the first
+moment a broken button can be caught before a person taps it. A body already
+carrying the summary verbatim is left alone. The record below is the evidence.
 
 **Root:** R10's tap-shaped corner. The runtime computes the diff (`previewPlan`)
 but a model-minted `steps` button carries only the model's own summary, so what
@@ -396,25 +417,27 @@ the person confirms and what the tap writes can diverge in either direction.
 Driven, three times in one month: go-live promised intro messages the steps
 never contained; a trial's [Confirm] converted it and minted ₹1,600 of charges
 behind "free, nothing to pay"; a cancellation's read-back said "all 3 families
-are told" over steps holding only the session write. **Where the fix lives:**
-the tap read-back for money- or message-carrying steps should carry the
-runtime's own diff line (counts of writes and sends), not only the model's
-prose — same chokepoint that already gates commits. Partial mitigations landed:
-staged previews now say NOTHING HAS RUN in their own voice, and bare "Done" is
-a claim (`986939f`); a trial is free until converted on purpose (`7fa4bcf`).
+are told" over steps holding only the session write. Partial mitigations landed
+first: staged previews say NOTHING HAS RUN in their own voice, and bare "Done"
+is a claim (`986939f`); a trial is free until converted on purpose (`7fa4bcf`).
 
-### F-N · The model lives on the tenant clock; `created_at` lives on the wall
+### F-N · The model lives on the tenant clock; `created_at` lives on the wall — **FIXED 16 Aug 2026**
+
+**Status:** migration `0027_tenant_time_stamps.sql` — every timestamptz default on a
+tenant-scoped table follows `app.now()` (`sender` and `sim_clock` exempt). In production
+the offset is zero and nothing changes by construction; in a driven world, rows land on
+the clock the queries already read, so "what went out today?" answers truthfully and the
+digest's 24-hour delivery window survives a clock jump. Relies on the forward-only drive
+discipline, stated in the migration: a mid-drive clock reset would disorder stamps the
+same way the wall clock used to.
 
 **Root:** F-A's ghost, one table over. In a driven world the tenant clock moves
-and `message.created_at` (and `turn`, `audit_entry`…) stays wall time, so any
-model query filtering "today's messages" by tenant date returns a confident
+and `message.created_at` (and `turn`, `audit_entry`…) stayed wall time, so any
+model query filtering "today's messages" by tenant date returned a confident
 empty — driven: the model retracted a TRUE "the cancellations went out" on the
 strength of exactly that read, then diagnosed its own wrong-column error when
 challenged and corrected itself. No production impact (the clocks agree); every
-driven "what went out today?" is corrupted. **Where the fix lives:** timestamp
-defaults on model-queried tables should follow `app.now()` (needs its own pass —
-ordering around clock jumps, and the turn/message pairing in DRIVING.md, both
-depend on created_at monotonicity).
+driven "what went out today?" was corrupted.
 
 ### The month drive, 15 Aug 2026 — what else it found and fixed (post-`049f28b` brain)
 
@@ -570,3 +593,155 @@ check query that throws is recorded as `expectation query failed` and reads exac
 model failing the case (`jsonb_array_length` raises on the explicit JSON `null` that 36 of the
 drive's 189 outbound rows carry — guard with `jsonb_typeof`); and reply-text checks are
 written as negatives, so silence passes and only an assertion fails.
+
+### F-Q · The whole-drive re-read, 16 Aug 2026 — the mechanisms F-P named, plus what nobody had catalogued
+
+The month drive's 76 transcripts read end to end against the brain, with F-P's findings as the
+starting list. Every fix below landed this pass, each at the layer that can hold it; the new
+finds are the entries with transcript references, because the curated record (journal, judges)
+had missed them.
+
+**F-P's four mechanisms, closed.** Refusals now reach the trace — `failed` (thrown OR returned
+error) stamps `error` on the trace entry at the one site that writes it, so reflection's
+"(refused — it did not happen)" marker can actually fire (was: 21 of 21 refusals unmarked).
+The standing-jobs fact names `dunning`, at BOTH decode points — the reflection prompt and the
+`schedule` declaration, because `fo-watch-dupe`'s duplicate was minted by the main loop, not
+by reflection. The catalog digest's raw-write paragraph names attendance as its deliberate
+exception (the outcome trigger), so a raw mark no longer invites a duplicate outcome message.
+And `commit` is retired from the declared surface: the truth — an ungated plan has already run;
+a gated one commits on the tap — is stated on `plan`'s declaration, the handle's real consumer
+(`{op:'commit',args:{handle}}` on a BUTTON) is named there, and the `runTool` case stays as a
+backstop that answers any stray call with the route that works. `needsPreview` now applies the
+single-own-scope exemption before the money-tables test, exactly as its own comment always
+claimed — a register at a per_session rate no longer puts a diff in front of a coach on a court.
+
+**New find — one child became two people (T010 → T073).** "Aarav in beginners and fitness"
+arrives as two `add_family` entries both named Aarav, and the per-entry loop minted a person
+and a player for each: the drive's Aarav existed twice, with two person ids, and the family's
+leave then failed on "needed 2 rows and matched 0" (T071) with the duplicate surfacing in the
+repair reads. §10.1's one hard rule is never to create a second person for someone already in
+the roster. Fixed in the operation: entries group by the same `normalName` the holder check
+trusts, a same-name player already on the household's account is reused across calls, and a
+duplicate live enrollment in one class is a no-op.
+
+**New find — the one-confirmation guard never armed (F-O's decline trace, explained).**
+`ToolCtx.confirmationAskedTo` (db7f1b6) is fed by `is_confirmation_request` on the staged
+message, and only `opt_out` ever set it — `client_cancel` and `decline_coach` staged bare
+confirmations, so the runtime never knew one was on the screen and the model's re-worded
+second confirmation shipped beside the operation's own (two "Just to be sure" messages a
+minute apart, the second with its yes-button refused at mint). One flag on each confirmation
+step; `undo`'s gains it too. The guard's plumbing was verified live at F-O and was fed by one
+operation out of four.
+
+**New find — a permission refusal told the model to fix the wrong thing (T062, T065).** The
+RLS repair hint had one answer — "add academy_id and the same statement will pass" — and the
+month's two money-shaped refusals were the other kind: a parent's session failing
+`is_admin()`. No rewording can ever pass, and the hint sent the model flailing; both times it
+told the person "the owner will confirm" while the owner heard nothing (rule 15's exact
+failure). The hint now detects a role-shaped policy on a non-admin session and names the
+working route: reply to the ADMIN with the exact change as a steps button — their tap runs it
+under their own permission — and only then tell the asker it is routed. The same mechanism is
+stated as a fact in DOMAIN_FACTS ("routing means the admin actually hears").
+
+**New find — receipts counted messages as people (T075), and credits as charges (T066).**
+"2 people have been told" went to an admin when one mother had been told twice; the receipt
+now counts distinct recipients, and misses stay in message terms because a message that did
+not go out is the unit an admin acts on. `plural()` mapped `tally_line` blind to sign —
+"Added 2 charges." for two ₹1,000 credits — and now reads the sign off the diff rows it
+already holds.
+
+**Rule 7, structurally (T060, T075, and the reminder pairs).** A plan's staged messages merge
+per recipient-and-moment at the one chokepoint that sees them together (`mergePerRecipient`,
+preview and execute both), so moving a two-slot class tells each family once, and ending a
+child's two enrollments tells the mother once. Sibling reminders merge where the first job
+fires — the sibling's pending job is cancelled in the same transaction — with the multi-child
+[Can't make it] deliberately handing disambiguation back to the model rather than guessing.
+
+**Rule 9's residue (judge-found).** `register_expiry` fired at 22:30 inside the product's own
+declared quiet window. A new forward-deferring clamp (`deferPastQuietHours`) holds the ALERT
+until morning — never pulled back, which would fire it before the grace it grants — and the
+run-time precondition recheck means a register marked overnight simply skips.
+
+**The conversion moment got its operation (T047–T051).** A trial is free until converted on
+purpose (7fa4bcf), and nothing existed to convert one — the drive's single conversion was
+improvised raw SQL over 120 seconds and ₹1.06, and F-M's worst instance rode a model-composed
+conversion. `convert_trial` makes the decision explicit (start date, rate, the family told
+what they are signed up for), and the trial-conversion fact joins DOMAIN_FACTS so "she loved
+it, how do we continue?" stops being answered with "nothing to set up" (T047's wrong answer).
+
+**Copy and seams.** The out-of-window fallback header stops claiming events the runtime does
+not know happened — "a change to your schedule" on a first contact (T014/T015) becomes a
+neutral "an update about your classes"; a catalog moment still gets its specific phrase.
+Template params flatten newlines to " · " instead of erasing a list's structure (the digest's
+bullets, F-G). `decline_coach` no longer promises "the owner's been told" when the decliner IS
+the only admin, and no longer stages the self-escalation the send path was guaranteed to
+suppress. `mark_attendance`'s declaration says where a coach's comment goes — the entry note
+the parent reads, not memory (T046). The go-live tap receipt reads the fresh
+`onboarding_state` off its own diff instead of offering `[Set up the business]` to a business
+that went live one second earlier (T012).
+
+**The adversarial pass over the fixes themselves (same day).** Twenty-four review agents were
+run against this entry's own diff before it shipped, five slices, every surviving claim
+re-verified by an independent refuter. What they caught, and what changed because of it —
+kept here because a fix pass that does not audit itself is the F-P lesson unlearned:
+
+- *The route the hint named did not exist for the sessions that need it.* "Send the admin a
+  reply" assumed the model could resolve the admin's contact, and a parent's session cannot —
+  `academy_admin` shows a non-admin only their own row, and the f-q probe reproduced T065
+  exactly: five reads of an "empty" admin table, then "no admin on record" about a business
+  with an owner. `reply` now accepts `to_contact_id: 'admin'`, resolved by the runtime the way
+  `handoff` always has; the schema doc says an empty read of that table means "not yours to
+  see", never "no admin exists".
+- *The F-M mint-time preview had live side effects on failure* — a CHANGED_NOTHING inside the
+  annotation check walked into `escalateRefusal` and paged every admin with an internal intent
+  string. `previewPlan` grew a `noHints` mode; the mint-time check changes nothing and pages
+  nobody, whatever the steps turn out to be.
+- *A staged plan read as done in the next turn's context.* `recentActions` detected staging by
+  a field no staged result carries; a never-tapped payment request rendered as "done — wrote
+  1 row(s)" under a heading forbidding redos. All three staging spellings are read now.
+- *`convert_trial` could never bill the conversion month* — the period's `monthly_lines` job
+  had already run and skipped while the row was a trial, and job dedupe keys are permanent.
+  The operation now mints the current period's line itself, same dedupe key as the billing
+  job so whichever runs second is a no-op; and `started_on` only ever moves backward, so a
+  future billing start stops hiding a still-attending child from every roster.
+- *`add_family`'s reuse path could resurrect a child invisibly* (an inactive player reused
+  without reactivation) *and no-op silently onto a live trial* (the not-exists guard). Reuse
+  reactivates; a live trial in the entry's class is upgraded with the entry's own rate.
+- *The sibling-reminder merge never fired in the common case* — the runner claims the whole
+  due batch as 'running' before any handler runs, and the cancel targeted 'pending' only.
+  It cancels 'running' too, and every reminder rechecks its own row first (§13 rule 2).
+- Smaller: `mergePerRecipient` no longer discards a second message's buttons, subjects or
+  gate flags (differing buttons stay separate messages; subjects union; a merge never pushes
+  a body past the wire cap); the RLS route hint keys on write-command policies that ALL
+  demand the role, instead of firing on every table whose policy text mentions `is_admin()`;
+  the shadowed `remember` OPERATION now passes the same placement gate and `business` alias
+  as the primitive; reflection re-offers `remember` after a gate refusal so the legitimate
+  half of a fact still gets stored; the dunning sentence says what the ladder does (spaced
+  nudges, then the admin) instead of overclaiming persistence; a mixed charge+credit diff
+  says "tally lines" rather than picking the charge side; `sanitizeParam` stops eating
+  non-bullet hyphens; and `decline_coach` distinguishes "the others will be asked to cover"
+  (assigned, unconfirmed) from "nobody else is on it".
+
+**Two behavioural data points from the verification runs, recorded rather than fixed.**
+One f-q arm HELD an explicit "switch it on": *"I'm not flipping the switch yet — Arjun hasn't
+confirmed his invite, Advanced has no coach"* — staged the UPI write, drafted the invite, and
+asked for the gaps to be resolved first. Defensible judgement over a direct instruction, and a
+different reading of doctrine's "the admin decided" than the drive's other arms took; if the
+next drive shows it again, the question is whether the concern should ride the confirmation
+button (state the gaps, offer [Go live anyway]) rather than replace it. And the same arm shipped
+*"I've set a watch for end of month"* as trailing prose with no `schedule` call behind it — the
+trailing path only substitutes when a plan is pending (a read-only turn describing past work
+must not be overwritten), so this is the F-K residue the R10 shadow gate exists for; the
+probe's UNBACKED CLAIM marker caught it, which is that marker earning its keep.
+
+**Open, still.** F-C's normalized subject key on `schedule`'s mint path (the fact now guards
+both decode points; nothing structural refuses a duplicate watch). F-E/rule 5's R10
+shadow-mode traceability gate (specified in DRIVING.md, unbuilt). Reflection's remaining
+un-gated shapes: parentage restatements and self-authored policies with no figure in them.
+Mid-month joins still bill in full until an adjustment (F-I carried; `convert_trial` names the
+partial month as the admin's separate decision rather than promising it). Pre-deploy
+`register_expiry` jobs keep their old in-quiet-hours times (dedupe keys are permanent; the
+clamp applies from the next mint). A `steps` button that fails its mint-time preview still
+ships and fails politely at the tap — mint-time refusal with a reason is the next step if it
+recurs. And the one-confirmation guard silences a second, unrelated answer in the same turn
+by design — the documented tension, unchanged.
