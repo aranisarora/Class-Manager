@@ -19,7 +19,6 @@ import { LIMITS, type SendOutcome } from '@/lib/messaging/types'
 import {
   ADD_CLASS,
   BUSINESS_SETUP,
-  formFor,
   FORM_INTRO,
   parseFlowResponse,
   REGISTER,
@@ -28,6 +27,7 @@ import {
   type FormId,
   type RegisterValues,
 } from '@/lib/messaging/flows'
+import { formFor } from '@/lib/messaging/forms'
 import { buildSetupSteps, summariseSetup } from '@/lib/setup-plan'
 import type { Identity, Job, Role } from '@/lib/types'
 import { generate, generateJson, type Msg } from './deepseek'
