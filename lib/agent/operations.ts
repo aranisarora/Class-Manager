@@ -41,6 +41,7 @@ import { newId } from '@/lib/ids'
 import type { Identity } from '@/lib/types'
 import { DateTime } from 'luxon'
 import { z } from 'zod'
+import { rowShapedFact } from './memory'
 import type { PlanStep } from './plan'
 
 /* ------------------------------------------------------------------------- *
@@ -439,6 +440,7 @@ export type OperationName =
   | 'decline_coach'
   | 'claim_cover'
   | 'client_cancel'
+  | 'convert_trial'
   | 'record_payment'
   | 'request_payment'
   | 'confirm_payment'
@@ -1583,6 +1585,150 @@ const bookTrial: OperationDef = {
 }
 
 /* =========================================================================== *
+ * convert_trial — the decision a trial cannot make for itself.
+ *
+ * A trial is free and unbilled until somebody converts it on purpose (7fa4bcf),
+ * and there was no operation that converted one — so the happiest moment in the
+ * funnel ("she loved it, how do we continue?") was improvised as raw enrollment
+ * writes every time. The month drive priced that in: the one conversion it
+ * contains took 120 seconds, ₹1.06 and a recovery round, and the biggest design
+ * finding of the drive (F-M — ₹1,600 of charges behind "free, nothing to pay")
+ * happened on a model-composed conversion. A known-good plan makes the decision
+ * explicit — the start date, the rate — and puts the read-back in front of
+ * whoever approves it.
+ * =========================================================================== */
+
+const convertTrial: OperationDef = {
+  name: 'convert_trial',
+  description:
+    'A trial continues as a regular enrollment. Nothing converts by itself — this is the decision, made explicit: sets when billing starts and at what rate (defaults to the class rate), and the family hears what they are signed up for. A partial first month is an adjustment the admin chooses separately, never automatic.',
+  params: z.object({
+    player_id: uuid.nullish(),
+    enrollment_id: uuid.nullish(),
+    /** When the regular enrollment (and so its billing period) starts. Defaults to today. */
+    start_on: z.string().nullish(),
+    rate_amount: z.number().nullish(),
+    rate_unit: z.enum(['per_session', 'per_month', 'per_term', 'per_package']).nullish(),
+    rate_count: z.number().int().positive().nullish(),
+    notify: z.boolean().optional().default(true),
+  }),
+  async build(ctx, args, id) {
+    const a = await academyOf(ctx)
+    if (!args.player_id && !args.enrollment_id) {
+      throw new Error('convert_trial needs the player or the trial enrollment')
+    }
+    const [t] = await q<{
+      enrollment_id: string
+      player_id: string
+      account_id: string
+      class_id: string
+      player_name: string
+      class_name: string
+      holder_person_id: string
+      rate_amount: string | null
+      rate_unit: string | null
+      class_rate: string | null
+      class_unit: string | null
+      started_on: string
+    }>(
+      svc(ctx),
+      `select e.id as enrollment_id, e.player_id, pl.account_id, e.class_id, e.started_on::text,
+              per.full_name as player_name, c.name as class_name,
+              ac.holder_person_id, e.rate_amount, e.rate_unit, c.rate_amount as class_rate, c.rate_unit as class_unit
+         from enrollment e
+         join class c on c.id = e.class_id
+         join player pl on pl.id = e.player_id
+         join person per on per.id = pl.person_id
+         join account ac on ac.id = pl.account_id
+        where e.academy_id = ${uid(ctx.academyId)} and e.is_trial and e.ended_on is null
+          and (${args.enrollment_id ? `e.id = ${uid(args.enrollment_id)}` : 'true'})
+          and (${args.player_id ? `e.player_id = ${uid(args.player_id)}` : 'true'})
+        order by e.started_on desc, e.created_at desc
+        limit 1`,
+    )
+    if (!t) throw new Error('there is no live trial for them — nothing to convert')
+
+    const today = zoned(await now(ctx.academyId), a.timezone).toFormat('yyyy-MM-dd')
+    const startOn = args.start_on ? isoDate(args.start_on, a.timezone) : today
+    const amount = args.rate_amount ?? (num(t.rate_amount) || num(t.class_rate))
+    const unit = args.rate_unit ?? t.rate_unit ?? t.class_unit ?? 'per_month'
+    const rateLabel = amount ? `${formatINR(num(amount))} ${String(unit).replace('_', ' ')}` : 'the class rate'
+    const startPeriod = periodOf(startOn, a.timezone)
+    const currentPeriod = periodOf(today, a.timezone)
+
+    /**
+     * `started_on` anchors two different things — roster membership and the
+     * billing gate — and the conversion must not trade one for the other.
+     * A future start date written into `started_on` would silently drop a
+     * child who keeps attending off every roster, reminder and register until
+     * it arrives (review find), so the column only ever moves BACKWARD or to
+     * today; a future billing start is expressed by which periods get a line,
+     * below, not by hiding the child from the schedule.
+     */
+    const newStartedOn = startOn <= today ? startOn : t.started_on
+
+    const steps: PlanStep[] = [
+      {
+        note: `${t.player_name} continues in ${t.class_name} — ${rateLabel}, billed from ${monthLabel(startPeriod, a.timezone)}`,
+      },
+      {
+        write: `update enrollment
+                   set is_trial = false,
+                       started_on = date ${lit(newStartedOn)}
+                       ${args.rate_amount !== null && args.rate_amount !== undefined ? `, rate_amount = ${moneyLit(args.rate_amount)}` : ''}
+                       ${args.rate_unit ? `, rate_unit = ${lit(args.rate_unit)}` : ''}
+                       ${args.rate_count ? `, rate_count = ${lit(args.rate_count)}` : ''}
+                 where id = ${uid(t.enrollment_id)} and is_trial and ended_on is null`,
+        requireRows: 1,
+      },
+    ]
+
+    /**
+     * The conversion month has to bill HERE or it never bills at all: the
+     * `monthly_lines` job for (enrollment, current period) already ran on the
+     * boundary and skipped — "a trial is free" — and job dedupe keys are
+     * permanent, so nothing re-raises the period (review find; the receipt
+     * would say "billed from September" over a September nothing mints).
+     * Same dedupe key and description the billing job writes, so whichever
+     * runs second is a no-op, and only per_month is minted here — future
+     * periods (and term/package strides) get fresh job keys at the next
+     * boundary and bill through the standing machinery. A billing start in a
+     * FUTURE month stages nothing now, deliberately: the current period's
+     * skipped job IS the free run-up, and the child stays on the roster.
+     */
+    if (startPeriod <= currentPeriod && unit === 'per_month' && num(amount) > 0) {
+      const description = `${t.class_name} — ${monthLabel(currentPeriod, a.timezone)} ${zoned(currentPeriod, a.timezone).toFormat('yyyy')}`
+      steps.push({
+        write: `insert into tally_line (academy_id, account_id, player_id, class_id, period,
+                                        kind, description, amount, dedupe_key)
+                values (${uid(ctx.academyId)}, ${uid(t.account_id)}, ${uid(t.player_id)}, ${uid(t.class_id)},
+                        date ${lit(currentPeriod)}, 'monthly', ${lit(description)}, ${moneyLit(num(amount))},
+                        ${lit(billingKey.monthly(t.player_id, t.class_id, currentPeriod))})
+                on conflict (academy_id, dedupe_key) where dedupe_key is not null
+                do nothing`,
+        service: true,
+        // Zero rows is the boundary job having minted first — the dedupe doing
+        // its job, not a step that failed to land.
+        requireRows: 0,
+      })
+    }
+
+    if (args.notify) {
+      steps.push({
+        message: {
+          to_person_id: t.holder_person_id,
+          body:
+            `${a.name}: ${t.player_name} is confirmed in ${t.class_name} — ${rateLabel}, from ${monthLabel(startPeriod, a.timezone)}. ` +
+            'The trial itself stays free.',
+          buttons: [{ title: 'See the schedule', action: { kind: 'reply', text: `When is ${t.player_name}'s next class?` } }],
+        },
+      })
+    }
+    return steps
+  },
+}
+
+/* =========================================================================== *
  * mark_attendance — the register, and §6.4's billing rules
  * =========================================================================== */
 
@@ -1592,7 +1738,7 @@ const markAttendance: OperationDef = {
   name: 'mark_attendance',
   ownScope: true,
   description:
-    'Mark the register for a session. Writes the billing line §6.4 requires, and asks about absences nobody told us about so one tap makes them timely.',
+    "Mark the register for a session. Writes the billing line §6.4 requires, and asks about absences nobody told us about so one tap makes them timely. An entry's note is what the family reads in the outcome message — a coach's comment on how a player did (\"picked it up fast, good footwork\") belongs there, where the parent sees it, not in memory.",
   params: z.object({
     session_id: uuid,
     all_present: z.boolean().optional().default(false),
@@ -1954,6 +2100,13 @@ const declineCoach: OperationDef = {
     // session to the other coaches, so that is what the copy says.
     const remaining = coaches.filter((c) => c.coach_id !== coachId && !c.declined_at)
     const stillCovered = isCovered(remaining)
+    // The owner who would be told, minus the person declining: an escalation
+    // about a person never reaches that person (§18 rule 2 — the send path
+    // suppresses it as escalation_about_self), so where the declining coach IS
+    // the only admin, "the owner's been told" was a sentence with nothing
+    // behind it (F-P's one open edge on this operation). The copy and the
+    // staging both read this, so neither promises a person who does not exist.
+    const otherAdmins = (await adminPersonIds(ctx)).filter((pid) => pid !== id.person?.id)
 
     // §8.2 — the tap confirms first. Dropping a class is not mis-tappable, and
     // that guarantee belongs in the operation rather than in whoever raised
@@ -1963,8 +2116,24 @@ const declineCoach: OperationDef = {
         {
           message: {
             to_person_id: id.person.id,
+            // The flag is what arms ToolCtx.confirmationAskedTo (db7f1b6): without
+            // it the runtime does not know a confirmation is on this person's
+            // screen, and the model's own re-worded second confirmation goes out
+            // beside this one — driven in the F-O suite, two "Just to be sure"
+            // messages a minute apart, the second with its yes-button refused.
+            is_confirmation_request: true,
             body: `Just to be sure — you can't make ${s.class_name} ${whenLabel(s.starts_at, a.timezone, today)}?${
-              stillCovered ? '' : ' The owner will be told it needs cover.'
+              stillCovered
+                ? ''
+                : otherAdmins.length
+                  ? ' The owner will be told it needs cover.'
+                  : remaining.length
+                    // Coaches remain ASSIGNED, just unconfirmed — and this very
+                    // plan offers them the session, so say that, not "nobody
+                    // else is on it" (review find: stillCovered demands a
+                    // confirmation, not an assignment).
+                    ? ' The other coaches will be asked to cover.'
+                    : ' Nobody else is on it — moving or cancelling it would be the next step.'
             }`,
             buttons: [
               {
@@ -1989,7 +2158,13 @@ const declineCoach: OperationDef = {
         // Said to the coach who just declined. What happens to the session's coverage
         // is the admin's question, not theirs.
         personal: `you're off ${s.class_name} ${when}${
-          stillCovered ? ' — it is still covered' : " — the owner's been told it needs cover"
+          stillCovered
+            ? ' — it is still covered'
+            : otherAdmins.length
+              ? " — the owner's been told it needs cover"
+              : remaining.length
+                ? " — the others have been asked to cover"
+                : ' — nobody else is on it, so moving or cancelling it is the next step'
         }`,
       },
       {
@@ -2025,8 +2200,10 @@ const declineCoach: OperationDef = {
     if (!stillCovered) {
       // §18 — never escalate about a person to that person, and never offer
       // cover to a set of one. A solo operator's drop is a reschedule, so the
-      // admin is told plainly and offered that.
-      for (const adminPerson of await adminPersonIds(ctx)) {
+      // admin is told plainly and offered that. `otherAdmins` already excludes
+      // the decliner — staging a message the send path is guaranteed to
+      // suppress would also inflate the preview's "N people hear about it".
+      for (const adminPerson of otherAdmins) {
         steps.push({
           message: {
             to_person_id: adminPerson,
@@ -2170,6 +2347,10 @@ const clientCancel: OperationDef = {
             to_person_id: r.holder_person_id,
             catalog_id: 'CL-CANCEL-CONFIRM',
             fixed: true,
+            // Arms ToolCtx.confirmationAskedTo — see decline_coach for the trace
+            // this was missing from. One confirmation per action is enforced at
+            // the runtime only when the runtime knows one was asked.
+            is_confirmation_request: true,
             body:
               `Just to be sure — cancel ${r.player_name} for ${s.class_name} ${when}?` +
               (perSession
@@ -2953,8 +3134,10 @@ const addFamily: OperationDef = {
     const accountId = newId()
     const steps: PlanStep[] = [
       {
-        note: `${args.holder_name} and ${args.players.length} player${
-          args.players.length === 1 ? '' : 's'
+        // Distinct children, not array entries: "Aarav in beginners and fitness"
+        // is two entries and one player, and the note is the read-back.
+        note: `${args.holder_name} and ${new Set(args.players.map((p: { name: string }) => normalName(p.name))).size} player${
+          new Set(args.players.map((p: { name: string }) => normalName(p.name))).size === 1 ? '' : 's'
         } — nobody is messaged (§2.6)`,
       },
       ...(existingPersonId
@@ -2984,7 +3167,40 @@ const addFamily: OperationDef = {
                                       and holder_person_id = ${uid(holderPersonId)})`,
       },
     ]
+    /**
+     * One child, one player — however many entries carry their name.
+     *
+     * "Aarav in beginners and fitness" arrives, naturally, as two entries both
+     * called Aarav (one per class), and this loop used to mint a person and a
+     * player PER ENTRY: the month drive's Aarav existed twice, with two person
+     * ids, until his family's leave failed on "needed 2 rows and matched 0"
+     * and the duplicate surfaced in the repair reads. §10.1's one hard rule is
+     * never to create a second person for someone already in the roster —
+     * within a single call, that means grouping by the same `normalName` this
+     * operation already trusts for the holder; across calls, it means reusing
+     * a same-name player already on this household's account rather than
+     * opening a rival copy of the child (same reasoning as the account
+     * subquery below, one row up the tree).
+     */
+    const groups = new Map<string, { name: string; entries: typeof args.players }>()
     for (const p of args.players) {
+      const g = groups.get(normalName(p.name))
+      if (g) g.entries.push(p)
+      else groups.set(normalName(p.name), { name: p.name, entries: [p] })
+    }
+    const existingPlayers = existingPersonId
+      ? await q<{ id: string; full_name: string; active: boolean }>(
+          svc(ctx),
+          `select pl.id, p.full_name, pl.active
+             from player pl
+             join person p on p.id = pl.person_id
+             join account ac on ac.id = pl.account_id
+            where ac.academy_id = ${uid(ctx.academyId)}
+              and ac.holder_person_id = ${uid(holderPersonId)}`,
+        )
+      : []
+
+    for (const g of groups.values()) {
       // The self-paying adult is holder_person_id = player.person_id. Not a
       // second case — the same objects at n=1.
       //
@@ -2993,36 +3209,81 @@ const addFamily: OperationDef = {
       // unnormalised values (R5): "Deepa  Nair" against "Deepa Nair" is two humans by
       // that test and one by any other. The two operations disagreeing about what a
       // person is, in either direction, is the defect — not which rule wins.
-      const samePerson = normalName(p.name) === normalName(args.holder_name)
+      const samePerson = normalName(g.name) === normalName(args.holder_name)
+      const already = existingPlayers.find((e) => normalName(e.full_name) === normalName(g.name))
       const playerPersonId = samePerson ? holderPersonId : newId()
-      const playerId = newId()
-      if (!samePerson) {
+      const playerId = already?.id ?? newId()
+      if (already && !already.active) {
+        // A returning child. Reusing the row without waking it would hang the
+        // new enrollments on a player every roster, reminder and billing read
+        // filters out — the operation reporting success over an invisible
+        // child (review find).
         steps.push({
-          write: `insert into person (id, academy_id, full_name)
-                  values (${uid(playerPersonId)}, ${uid(ctx.academyId)}, ${lit(p.name)})`,
+          write: `update player set active = true
+                   where id = ${uid(playerId)} and not active`,
+          requireRows: 0,
         })
       }
-      steps.push({
-        // The account is read back rather than assumed: when the holder was already
-        // here, the row above inserted nothing and `accountId` names no account. Same
-        // subquery `book_trial` uses, so both paths land in one household.
-        write: `insert into player (id, academy_id, account_id, person_id)
-                select ${uid(playerId)}, ${uid(ctx.academyId)},
-                       (select id from account
-                         where academy_id = ${uid(ctx.academyId)}
-                           and holder_person_id = ${uid(holderPersonId)}
-                         order by created_at limit 1),
-                       ${uid(playerPersonId)}`,
-        requireRows: 1,
-      })
-      if (p.class_id) {
+      if (!already) {
+        if (!samePerson) {
+          steps.push({
+            write: `insert into person (id, academy_id, full_name)
+                    values (${uid(playerPersonId)}, ${uid(ctx.academyId)}, ${lit(g.name)})`,
+          })
+        }
+        steps.push({
+          // The account is read back rather than assumed: when the holder was already
+          // here, the row above inserted nothing and `accountId` names no account. Same
+          // subquery `book_trial` uses, so both paths land in one household.
+          write: `insert into player (id, academy_id, account_id, person_id)
+                  select ${uid(playerId)}, ${uid(ctx.academyId)},
+                         (select id from account
+                           where academy_id = ${uid(ctx.academyId)}
+                             and holder_person_id = ${uid(holderPersonId)}
+                           order by created_at limit 1),
+                         ${uid(playerPersonId)}`,
+          requireRows: 1,
+        })
+      }
+      const seenClasses = new Set<string>()
+      for (const p of g.entries) {
+        if (!p.class_id || seenClasses.has(p.class_id)) continue
+        seenClasses.add(p.class_id)
+        /**
+         * A live TRIAL in this class upgrades instead of blocking. The admin
+         * typing a child into the roster IS the decision a trial waits for —
+         * a not-exists guard alone turned that into a silent no-op: the trial
+         * row stayed `is_trial`, never billed, and the plan reported success
+         * (review find). The update converts it with the entry's own rate
+         * fields; the guarded insert below then correctly sees a live
+         * enrollment and stands down.
+         */
+        steps.push({
+          write: `update enrollment
+                     set is_trial = false
+                         ${p.rate_amount === null || p.rate_amount === undefined ? '' : `, rate_amount = ${moneyLit(p.rate_amount)}`}
+                         ${p.rate_unit ? `, rate_unit = ${lit(p.rate_unit)}` : ''}
+                         ${p.rate_count ? `, rate_count = ${lit(p.rate_count)}` : ''}
+                   where class_id = ${uid(p.class_id)} and player_id = ${uid(playerId)}
+                     and is_trial and ended_on is null`,
+          // Usually matches nothing — there is no trial to upgrade. requireRows 0
+          // keeps a deliberate maybe out of the "matched no rows" warning.
+          requireRows: 0,
+        })
         steps.push({
           write: `insert into enrollment (academy_id, class_id, player_id, rate_amount, rate_unit, rate_count, started_on)
-                  values (${uid(ctx.academyId)}, ${uid(p.class_id)}, ${uid(playerId)},
+                  select ${uid(ctx.academyId)}, ${uid(p.class_id)}, ${uid(playerId)},
                           ${p.rate_amount === null || p.rate_amount === undefined ? 'null' : moneyLit(p.rate_amount)},
                           ${lit(p.rate_unit ?? null)},
                           ${lit(p.rate_count ?? null)},
-                          date ${lit(p.started_on ? isoDate(p.started_on, a.timezone) : today)})`,
+                          date ${lit(p.started_on ? isoDate(p.started_on, a.timezone) : today)}
+                   where not exists (select 1 from enrollment e
+                                      where e.class_id = ${uid(p.class_id)}
+                                        and e.player_id = ${uid(playerId)}
+                                        and e.ended_on is null)`,
+          // Zero rows here means a live enrollment (the upgraded trial included)
+          // already covers this class — the guard standing down, not a miss.
+          requireRows: 0,
         })
       }
     }
@@ -3272,6 +3533,10 @@ const undo: OperationDef = {
           message: {
             to_contact_id: ctx.role === 'service' ? undefined : ctx.contactId,
             to_person_id: ctx.role === 'service' ? id.person?.id : undefined,
+            // Arms ToolCtx.confirmationAskedTo like every self-confirming op:
+            // one confirmation per action holds only when the runtime knows one
+            // was asked.
+            is_confirmation_request: canReverse,
             body: canReverse
               ? `I'll put ${rows} ${rows === 1 ? 'row' : 'rows'} back${willTell}. Messages already sent can't be unsent — the correction is the best I can do.`
               : `I can't safely undo that one: I don't have before-images of what it changed. I can tell you exactly what it did, or you can tell me what to set it back to.`,
@@ -3385,19 +3650,30 @@ const remember: OperationDef = {
   ownScope: true,
   description: 'Write a fact about this academy or this person. Facts are appended, never edited.',
   params: z.object({
-    subject_kind: z.enum(['academy', 'person']),
+    // 'business' is the product's own word for the academy — same alias the
+    // primitive tool accepts, mapped below before anything is written.
+    subject_kind: z.enum(['academy', 'business', 'person']),
     subject_id: uuid.nullish(),
     fact: z.string().min(1),
     supersedes: uuid.nullish(),
     source: z.string().nullish(),
   }),
   async build(ctx, args, id) {
-    const subjectId = args.subject_id ?? (args.subject_kind === 'academy' ? ctx.academyId : id.person.id)
+    // The placement gate holds on EVERY writer of memory_fact. This operation is
+    // shadowed by the primitive tool of the same name but stays reachable as a
+    // plan step and behind a minted button, and its raw insert used to walk
+    // straight past the gate (review find).
+    const rowShaped = rowShapedFact(String(args.fact))
+    if (rowShaped) throw new Error(`not stored: ${rowShaped}`)
+    const subjectKind =
+      args.subject_kind === 'business' || args.subject_id === ctx.academyId ? 'academy' : args.subject_kind
+    const subjectId =
+      subjectKind === 'academy' ? ctx.academyId : (args.subject_id ?? id.person.id)
     return [
       { note: `remembering: ${args.fact}` },
       {
         write: `insert into memory_fact (academy_id, subject_kind, subject_id, fact, source, supersedes)
-                values (${uid(ctx.academyId)}, ${lit(args.subject_kind)}, ${uid(subjectId)}, ${lit(args.fact)},
+                values (${uid(ctx.academyId)}, ${lit(subjectKind)}, ${uid(subjectId)}, ${lit(args.fact)},
                         ${lit(args.source ?? 'told to me')}, ${args.supersedes ? uid(args.supersedes) : 'null'})`,
         service: true,
       },
@@ -3508,6 +3784,7 @@ export const OPERATIONS: Record<OperationName, OperationDef> = {
   reschedule_session: rescheduleSession,
   waive,
   book_trial: bookTrial,
+  convert_trial: convertTrial,
   mark_attendance: markAttendance,
   confirm_coach: confirmCoach,
   onboard_coach: onboardCoach,

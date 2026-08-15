@@ -64,6 +64,10 @@ coach(person_id uuid, pay_amount numeric, pay_unit text 'per_session|per_hour|pe
   status text 'added|invited|active|ended', invited_at tstz, onboarded_at tstz,
   ended_on date)
 academy_admin(person_id uuid)
+  -- a non-admin session sees only its own row here (usually none), by design:
+  -- an empty read means "not yours to see", never "no admin exists". To reach
+  -- the admin you never need this table: reply with to_contact_id 'admin', or
+  -- handoff — the runtime resolves who that is.
 memory_fact(subject_kind text 'academy|person', subject_id uuid, fact text,
   source text, supersedes uuid -> memory_fact, retired_at tstz)
 

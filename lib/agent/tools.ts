@@ -21,7 +21,7 @@ import { AGENT_TASK_CAP, dedupe, enqueue, liveAgentTasks } from '@/lib/jobs'
 import { adminContactIds } from '@/lib/identity'
 import type { Identity } from '@/lib/types'
 import { lint } from './lint'
-import { writeFact } from './memory'
+import { rowShapedFact, writeFact } from './memory'
 import type { ToolDecl } from './deepseek'
 import { audienceFor, executePlan, needsPreview, parseSteps, previewPlan, type PlanStep } from './plan'
 import {
@@ -959,6 +959,62 @@ export function withFollowUps(
   return out.length ? out : buttons
 }
 
+/**
+ * F-M — the runtime's description travels with the model's at the point of
+ * confirmation.
+ *
+ * A steps button does what its steps say, and the person confirms against the
+ * model's prose — which diverged three times in one driven month: go-live
+ * promised intro messages the steps never contained; a trial's [Confirm] minted
+ * ₹1,600 of charges behind "free, nothing to pay"; "all 3 families are told"
+ * sat over steps holding only the session write. The runtime computes the real
+ * blast radius (`previewPlan`), so wherever a message to the acting person
+ * carries a steps button, the runtime's own line — counts of writes and who
+ * hears — is appended under the model's prose. One author for meaning, at the
+ * one moment it matters.
+ *
+ * Steps that match a plan previewed this turn reuse its stored summary; novel
+ * inline steps are previewed here, at mint time, which is also the first time
+ * a broken button can be caught before a person taps it. A body that already
+ * carries the summary verbatim (the `pendingReadBack` substitution does) is
+ * left alone, and a body too near the wire cap is left alone rather than
+ * pushed over it.
+ */
+async function runtimeSummaryFor(steps: PlanStep[], ctx: ToolCtx): Promise<string | null> {
+  try {
+    const key = JSON.stringify(steps)
+    for (const [handle, plan] of ctx.pendingPlans) {
+      if (JSON.stringify(plan) === key) {
+        const s = ctx.pendingMeta?.get(handle)?.summary
+        if (s) return s
+      }
+    }
+    // `noHints` is load-bearing: an ordinary failed preview escalates a
+    // CHANGED_NOTHING to the admins, and a mint-time annotation check must
+    // change nothing and page nobody, whatever the steps turn out to be.
+    const preview = await previewPlan(ctx.session, steps, 'read-back check at mint', { noHints: true })
+    return preview.ok ? preview.summary : null
+  } catch {
+    return null
+  }
+}
+
+export async function withRuntimeDiffLine(
+  body: string,
+  buttons: { title: string; action: any }[] | undefined,
+  ctx: ToolCtx,
+): Promise<string> {
+  const stepsButton = buttons?.find((b) => b?.action?.kind === 'steps' && Array.isArray(b.action.steps))
+  if (!stepsButton || !body.trim()) return body
+  const summary = await runtimeSummaryFor(stepsButton.action.steps as PlanStep[], ctx)
+  if (!summary) return body
+  const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
+  if (norm(body).includes(norm(summary))) return body
+  const line = `Tapping runs exactly this: ${summary.replace(/^that'?ll\s+/i, '')}`
+  if (body.length + line.length + 2 > LIMITS.bodyChars) return body
+  return `${body.trimEnd()}\n\n${line}`
+}
+
 export function pendingConfirmation(ctx: ToolCtx): { steps: PlanStep[]; summary: string } | null {
   const waiting = [...(ctx.pendingMeta?.entries() ?? [])].filter(([, m]) => m.needsConfirm)
   const steps: PlanStep[] = []
@@ -1153,10 +1209,29 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
       required: ['query'],
     },
   },
+  /**
+   * The gate is stated HERE, at the decode point, and there is no `commit` tool
+   * on the surface any more.
+   *
+   * The gate used to live in commit's error text, so the model learned it by
+   * being refused — once per consequential flow, every flow, forever, because
+   * history is rebuilt from message text and the lesson cannot persist. Stating
+   * it on the declaration removed the wasted round (F-O; verified live, commit
+   * called 0 times in 13 turns). What F-P then found is that the tool had no
+   * reachable success path AT ALL: a plan that does not gate executes inside
+   * `plan` and returns no handle, and every handle that IS stored waits on the
+   * person's tap, which `commit` refused every time. A declaration describing a
+   * path that does not exist is a two-author seam — so the declaration is gone,
+   * the truth is stated here where the model decides, and the `commit` CASE in
+   * `runTool` stays as the backstop that answers any stray call with the route
+   * that works. The handle's real consumer is a button:
+   * `{kind:'operation', op:'commit', args:{handle}}` resolves to the plan's own
+   * steps at mint time (`resolveAction`), and the tap commits it.
+   */
   {
     name: 'plan',
     description:
-      'Compose a transaction of steps, run it, capture the diff and roll back. Nothing is committed and nobody is messaged. Returns a handle to commit with, plus the exact blast radius. Use this for anything touching more than one person, money, or anything destructive.',
+      'Compose a transaction of steps: it runs inside one transaction, the diff of every affected row is captured, and messages are staged, not sent. Two outcomes, decided by the runtime. A plan that touches nobody else, no money and nothing destructive has ALREADY RUN when this returns — say what you did, past tense. Anything bigger — money or the business\'s own settings, a message to anyone else, a delete, changing more than one existing row, a destructive operation — comes back as a preview with a handle: NOTHING has run, and no call of yours can run it. Put the read-back on a reply whose button carries the plan ({kind:\'steps\',steps,summary} or {kind:\'operation\',op:\'commit\',args:{handle}}) — the person\'s tap is the commit.',
     parametersJsonSchema: {
       type: 'object',
       properties: {
@@ -1164,31 +1239,6 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
         steps: STEPS_PARAM,
       },
       required: ['intent', 'steps'],
-    },
-  },
-  /**
-   * The gate is stated HERE, not only in the refusal it produces.
-   *
-   * It used to live solely in commit's error text, so the model learned it by
-   * being refused — once per consequential flow, every flow, forever, because
-   * history is rebuilt from message text and the lesson cannot persist. The
-   * month drive priced that in: a wasted round and pre-composed "Committing it
-   * now" prose on six flows, and once the post-refusal re-stage downgraded
-   * `cancel_session` into a raw session write — losing the operation's sends,
-   * which is how "All 3 families are told" shipped over steps that told nobody.
-   * The rule below is `needsPreview` (plan.ts §14.2) in prose, said once at the
-   * decode point; the refusal stays as the backstop.
-   */
-  {
-    name: 'commit',
-    description:
-      'Execute the plan you just previewed, by handle. Only then do its messages go out. You cannot commit a plan you did not preview in this turn. ' +
-      "And know the gate: a plan that reaches past this conversation — money or the business's own settings, a message to anyone else, a delete, changing existing rows in bulk, an operation that declares itself destructive — REFUSES this call every time. For those the person's tap is the commit: put the read-back on a reply with the plan as a steps button, and nothing runs until they tap it. " +
-      'Commit is for plans that stay inward: new rows nobody has been told about, small changes touching nobody else.',
-    parametersJsonSchema: {
-      type: 'object',
-      properties: { handle: { type: 'string' } },
-      required: ['handle'],
     },
   },
   /**
@@ -1212,7 +1262,11 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
     parametersJsonSchema: {
       type: 'object',
       properties: {
-        to_contact_id: { type: 'string', description: 'Defaults to the person you are talking to.' },
+        to_contact_id: {
+          type: 'string',
+          description:
+            "Defaults to the person you are talking to. Pass 'admin' to address whoever runs the business — you never need to look their contact up, and from most sessions you cannot (who the admin is stays out of view by design). A proposal routed to the admin carries the change as a steps button; their tap approves it under their own permission.",
+        },
         body: { type: 'string' },
         header: { type: 'string' },
         footer: { type: 'string', description: `≤ ${LIMITS.footerChars} characters` },
@@ -1254,7 +1308,8 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
   {
     name: 'schedule',
     description:
-      "Schedule yourself to look at something later. It runs as an ordinary turn under this person's own permissions, and deciding to do nothing is the common and correct outcome. Reach for it whenever you say you will check back, whenever you promise to wait, and whenever you route something to somebody else and owe the person who raised it an answer. Then say in one clause what it will actually do — what you look at, how often, against what, until when, and that they will hear nothing if nothing moves. expires_at is REQUIRED: a watch with no expiry is a leak.",
+      "Schedule yourself to look at something later. It runs as an ordinary turn under this person's own permissions, and deciding to do nothing is the common and correct outcome. Reach for it whenever you say you will check back, whenever you promise to wait, and whenever you route something to somebody else and owe the person who raised it an answer. Then say in one clause what it will actually do — what you look at, how often, against what, until when, and that they will hear nothing if nothing moves. expires_at is REQUIRED: a watch with no expiry is a leak. " +
+      'And know what already runs without you: standing jobs remind every family before every session, chase every unmarked register, send each coach their day and the owner their brief and digest, bill the month, and chase every unpaid bill (a dunning ladder: a few spaced nudges, then it puts the bill in front of the admin). A watch duplicating one of those sends somebody the same thing twice — the promise is already kept, so say so instead of minting it.',
     parametersJsonSchema: {
       type: 'object',
       properties: {
@@ -1274,7 +1329,11 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
     parametersJsonSchema: {
       type: 'object',
       properties: {
-        subject_kind: { type: 'string', enum: ['academy', 'person'] },
+        // 'business' is the product's own word for the academy (nothing a user
+        // sees ever says "academy"), so the executor accepts it as the same
+        // thing rather than punishing the vocabulary the rest of the prompt
+        // teaches.
+        subject_kind: { type: 'string', enum: ['academy', 'business', 'person'] },
         subject_id: { type: 'string' },
         fact: { type: 'string' },
         supersedes: { type: 'string', description: 'The id of the fact this corrects.' },
@@ -1627,12 +1686,27 @@ export async function runTool(
     }
 
     /* -------------------------------------------------------------- commit */
+    // Not declared any more (see the note above `plan`'s declaration): a plan
+    // that needs nobody's confirmation has already run, and one that does is
+    // committed by the person's tap. This case is the backstop for a model that
+    // calls it anyway, and its job is to name the route that works.
     case 'commit': {
       const handle = String(args?.handle ?? '')
       const steps = ctx.pendingPlans.get(handle)
       // Commit by handle only: the model cannot commit a plan it did not just
       // preview, which is what keeps §2.3 from being advisory.
-      if (!steps) return { result: { error: 'no such plan handle — preview it again before committing' } }
+      if (!steps) {
+        return {
+          result: {
+            error: 'no plan is waiting under that handle',
+            hint:
+              'A plan that needed no confirmation already ran when you staged it — nothing is left to commit. ' +
+              'A plan that does need confirmation is committed by the person\'s tap, never by you: put the ' +
+              "read-back on a reply whose button carries {kind:'operation', op:'commit', args:{handle}} or the " +
+              "steps themselves, and stop calling this tool.",
+          },
+        }
+      }
 
       // §14.2 — "preview scales with blast radius", and for anything touching more
       // than one person, money, or anything destructive the row reads *preview and
@@ -1745,7 +1819,32 @@ export async function runTool(
 
     /* --------------------------------------------------------------- reply */
     case 'reply': {
-      const to = String(args?.to_contact_id ?? ctx.identity.contact.id)
+      /**
+       * "The admin" is an address, not a lookup.
+       *
+       * A non-admin session cannot resolve the admin's contact — `academy_admin`
+       * shows them only their own row, by design — so "route the proposal to the
+       * admin" was a sentence the model could not act on from exactly the
+       * sessions that need it most. Driven twice: T065's five reads of an
+       * "empty" admin table ended in a promise routed nowhere, and the f-q probe
+       * reproduced it verbatim ("no admin on record" about a business with an
+       * owner). The runtime resolves the address the same way `handoff` always
+       * has; the first admin contact is the recipient, and a business genuinely
+       * without one gets a refusal that names `handoff` as the fallback.
+       */
+      let to = String(args?.to_contact_id ?? ctx.identity.contact.id)
+      if (/^(the )?(admin|owner)$/i.test(to.trim())) {
+        const adminIds = await adminContactIds(ctx.session.academyId).catch(() => [] as string[])
+        if (!adminIds.length) {
+          return {
+            result: {
+              error: 'no admin contact is reachable to route this to',
+              hint: 'Use handoff instead — it records the escalation even when nobody is reachable right now.',
+            },
+          }
+        }
+        to = adminIds[0]
+      }
 
       // One turn, one message per person. The model would compose a good reply,
       // send it, and then keep going with its remaining rounds: the same
@@ -2136,6 +2235,12 @@ export async function runTool(
         list = { buttonText: fitTitle(list.buttonText || 'Choose', EXTRA_LIMITS.listButtonTextChars), sections }
       }
 
+      // F-M — a confirmation to the acting person carries the runtime's own
+      // description of what the tap runs, under the model's prose.
+      if (to === ctx.identity.contact.id) {
+        body = await withRuntimeDiffLine(body, buttons, ctx)
+      }
+
       // §4.5 ran on exactly one path — the loop's own trailing message — and this
       // is the path the model actually uses, so most outbound text was never
       // linted at all. Uuids, table names, ISO timestamps and doctrine references
@@ -2261,10 +2366,40 @@ export async function runTool(
 
     /* ------------------------------------------------------------ remember */
     case 'remember': {
-      const subjectKind = args?.subject_kind === 'academy' ? 'academy' : 'person'
-      const subjectId = String(
-        args?.subject_id ?? (subjectKind === 'academy' ? ctx.session.academyId : ctx.identity.person.id),
-      )
+      /**
+       * "business" means the academy. The reflection prompt says "business = <id>"
+       * — the product's own vocabulary, since "academy" appears nowhere a user
+       * sees — and the model obliged with `subject_kind: "business"`, which the
+       * old two-way coercion mapped to PERSON. The write then failed on "no such
+       * person" (the id was the academy's), the fire-and-forget swallowed it,
+       * and the tool answered ok:true — a fact recorded nowhere, reported as
+       * kept, every time reflection spoke the product's own language. The id is
+       * the tiebreaker of last resort: whatever the kind said, the academy's own
+       * id names the academy.
+       */
+      const kindRaw = String(args?.subject_kind ?? '')
+      const subjectKind =
+        kindRaw === 'academy' || kindRaw === 'business' || args?.subject_id === ctx.session.academyId
+          ? 'academy'
+          : 'person'
+      const subjectId =
+        subjectKind === 'academy'
+          ? ctx.session.academyId
+          : String(args?.subject_id ?? ctx.identity.person.id)
+
+      // The placement gate (§5, F-D), answered in-round so the caller can keep
+      // the preference and drop the figure — a refusal after the turn is a
+      // refusal nobody hears.
+      const rowShaped = rowShapedFact(String(args?.fact ?? ''))
+      if (rowShaped) {
+        return {
+          result: {
+            error: `not stored: ${rowShaped}`,
+            hint: 'Memory holds what the schema cannot. If half the fact is a preference or a habit, store that half alone.',
+          },
+        }
+      }
+
       // §5 — the bot writes facts asynchronously after a turn, never blocking
       // a reply.
       void writeFact(ctx.session, {

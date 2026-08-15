@@ -121,12 +121,22 @@ function capFrom(settings: Record<string, unknown> | null, key: string, fallback
   return Number.isFinite(n) && n >= 0 ? n : fallback
 }
 
+/**
+ * The fallback event phrase, used only when the SENDER named no catalog moment
+ * — which means the runtime does not know what happened, and the header must
+ * not claim it does. `session_change` used to fall back to "a change to your
+ * schedule", and the first message three families ever received — a composed
+ * intro, no catalog id — went out under that heading (F-G, month drive T014/
+ * T015): a claimed event over an unknown one, on the highest-risk send in the
+ * product. A catalog moment still gets its own specific phrase
+ * (`templateEvent`); only the don't-know case is neutral.
+ */
 const GENERIC_EVENT: Record<TemplateName, string> = {
   session_reminder: 'a session coming up',
-  session_change: 'a change to your schedule',
+  session_change: 'an update about your classes',
   session_outcome: 'how the session went',
   payment_due: 'an update on your account',
-  coach_schedule: 'an update to your schedule',
+  coach_schedule: 'an update about your sessions',
   coach_prompt: 'something needs your reply',
   admin_alert: 'something needs your attention',
   admin_digest: 'an update from your academy',
@@ -906,6 +916,12 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
 
   // §2.4: 'sent' is the strongest claim available right now. Delivered and read arrive
   // later through `markStatus`, or they never arrive and the bot never claims them.
+  //
+  // `toContactId` rides on the outcome so a TURN can know who was reached — the
+  // loop's silence ladder is scoped to the person whose turn it is, and without
+  // the recipient on the outcome, a turn that routed a proposal to the admin and
+  // ran out of rounds counted as having "spoken" while the asker heard nothing
+  // (driven: Sunita's credit request reached the owner and Sunita got silence).
   return {
     status: 'sent',
     messageId,
@@ -913,6 +929,7 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     inWindow,
     template: asTemplate,
     costPaise,
+    toContactId: msg.toContactId,
   }
 }
 

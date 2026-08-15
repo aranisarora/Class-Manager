@@ -162,10 +162,21 @@ export function templateParams(name: TemplateName): string[] {
  * changes no meaning.
  */
 export function sanitizeParam(value: string, max = 700): string {
+  // The wire forbids newlines in a parameter, so a multi-line body has to
+  // flatten — but a space erases the structure a list carried ("unpaid: •
+  // Rajesh (₹6000) • Latha (₹2500)" ran together, F-G). A line break becomes a
+  // separator instead, and a bullet that led the next line is dropped rather
+  // than doubled.
+  // The absorption class holds BULLET characters only: a hyphen after a line
+  // break is as often a minus sign or the dash of a wrapped range as it is a
+  // bullet, and eating it changes meaning (review find, verified by execution).
   const flat = String(value ?? '')
-    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s*[\r\n]+\s*(?:[•·▪]\s+)?/g, ' · ')
+    .replace(/\t+/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim()
+    .replace(/^·\s*/, '')
+    .replace(/\s*·$/, '')
   if (flat.length <= max) return flat
   const cut = flat.slice(0, max - 1)
   const lastSpace = cut.lastIndexOf(' ')

@@ -111,6 +111,46 @@ function serviceCtx(academyId: string): SessionCtx {
 // newer row. Superseding is how a correction lands — the old row stays.
 
 // -----------------------------------------------------------------------------
+// The placement gate — §5's test, enforced at the write (F-D).
+//
+// "Memory holds only what the schema cannot" lived in prose for a driven month,
+// and the store ended it poisoned: the full timetable with rates (T004), a coach's
+// phone and pay (T006), the UPI handle (T011), and an invented pro-rata policy
+// priced in rupees (T066) — the judges' only outright fail. The generator is a
+// model; the gate cannot be. What CAN be checked deterministically is the shape
+// no legitimate memory fact in the whole drive ever had: a rupee figure, a phone
+// number, a UPI handle, or a multi-day schedule — every one of those lives in a
+// row, and a memory copy is a future wrong answer waiting for the row to change.
+//
+// Deliberately partial. "Boards in March", "needs three hours' notice", "not
+// before 8am", "asks about money every Monday" all pass — a time or a single day
+// is how preferences are said. What is refused is the copy of the row, and the
+// refusal says what to keep instead.
+// -----------------------------------------------------------------------------
+
+const WEEKDAY_RE = /\b(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(day)?\b/gi
+const CLOCK_RE = /\b\d{1,2}([:.]\d{2})\s*(am|pm)?\b|\b\d{1,2}\s*(am|pm)\b/i
+const DAY_DATE_RE = /\b\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i
+
+export function rowShapedFact(fact: string): string | null {
+  const f = String(fact ?? '')
+  if (/₹\s*\d|\brs\.?\s*\d|\binr\s*\d/i.test(f)) {
+    return 'it carries a rupee figure — rates, balances and charges are rows, and a memory copy goes stale the day the row changes. Keep the preference or the event; drop the amount.'
+  }
+  if (/\+?\d{10,}/.test(f.replace(/[\s-]/g, ''))) {
+    return 'it carries a phone number — contacts are rows. Say who the person is; the tables say how to reach them.'
+  }
+  if (/\b[\w.-]+@[a-z][\w]*\b/i.test(f)) {
+    return 'it carries a payment handle — that is a row on the business. The tables hold where money goes.'
+  }
+  const weekdays = new Set((f.match(WEEKDAY_RE) ?? []).map((w) => w.slice(0, 3).toLowerCase()))
+  if (weekdays.size >= 2 && (CLOCK_RE.test(f) || DAY_DATE_RE.test(f))) {
+    return 'it reads back the timetable — schedules are rows, and this copy is wrong the day a slot moves. Keep what the schema cannot hold (their word for the class, a habit); drop the days and times.'
+  }
+  return null
+}
+
+// -----------------------------------------------------------------------------
 // writeFact — append-only, always
 // -----------------------------------------------------------------------------
 
@@ -126,6 +166,10 @@ export async function writeFact(
 ): Promise<string> {
   const fact = f.fact.trim()
   if (!fact) fail('memory_empty_fact', 'writeFact called with an empty fact')
+  // The placement gate holds at the record, not only at the tool — a future
+  // caller that skips the tool's own check still cannot poison the store.
+  const rowShaped = rowShapedFact(fact)
+  if (rowShaped) fail('memory_row_shaped', `not stored: ${rowShaped}`)
   if (f.subjectKind === 'academy' && f.subjectId !== ctx.academyId) {
     fail('memory_wrong_tenant', 'an academy fact must be about the acting academy')
   }
@@ -274,6 +318,10 @@ worth carrying in every prompt from now on.
 
 Rules:
 - Facts, not transcripts. "Prefers voice notes over typing", never "said on the 4th that…".
+- Facts, not rows. A rate, a balance, a phone number, a payment handle, a schedule,
+  who pays for whom — the database holds those, and a memory copy goes stale the day
+  the row changes. Drop any line that restates one, however confidently it was stored,
+  and keep only the half the schema cannot hold.
 - Keep only facts that change behavior: vocabulary, timing preferences, policies,
   standing constraints, what this person routinely asks for, how they like to be
   contacted. A fact that changes nothing is a diary entry — drop it.

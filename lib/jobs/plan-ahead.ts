@@ -28,8 +28,8 @@ import {
 } from './kinds'
 import { enqueueMany, type JobSpec } from './enqueue'
 import {
-  atTimeOn, isoDate, leadFor, loadAcademy, pullOutOfQuietHours, settingNumber, withAcademy,
-  withInfra, zoned, type AcademyRow,
+  atTimeOn, deferPastQuietHours, isoDate, leadFor, loadAcademy, pullOutOfQuietHours, settingNumber,
+  withAcademy, withInfra, zoned, type AcademyRow,
 } from './util'
 
 /** A job planned more than this far into the past is a moment we missed. */
@@ -230,7 +230,13 @@ export async function planAheadFor(academyId: string): Promise<number> {
       push('client_session_trouble', s.starts_at, dedupe.clientSessionTrouble(s.id), { session_id: s.id })
 
       push('post_class_register', s.ends_at, dedupe.postClassRegister(s.id), { session_id: s.id }, true)
-      push('register_expiry', new Date(s.ends_at.getTime() + expiryHours * 3600_000),
+      // The expiry ALERT waits for morning when the grace period ends inside
+      // quiet hours — an 8:30pm class used to page the admin at 22:30. Deferred
+      // forward (never pulled back: pulling back would fire it before the grace
+      // it grants), and the run-time precondition recheck means a register
+      // marked overnight simply skips.
+      push('register_expiry',
+        deferPastQuietHours(new Date(s.ends_at.getTime() + expiryHours * 3600_000), tz, academy.settings),
         dedupe.registerExpiry(s.id), { session_id: s.id }, true)
 
       for (const e of enrolByClass.get(s.class_id) ?? []) {

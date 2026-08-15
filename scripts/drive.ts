@@ -261,7 +261,7 @@ function affordancesOf(payload: any): Affordance[] {
 
 /** A tap, posted down the same road the emulator's own UI posts one. */
 async function tapActionId(contactId: string, actionId: string, label: string): Promise<void> {
-  const at = cursorNow()
+  const at = await cursorNow()
   console.log(`${c.dim('  →')} ${c.green(`[tap] ${label}`)}`)
   await api('/api/emulator/inbound', { contactId, actionId })
   await showTurn(contactId, at, { full: has('full') })
@@ -745,18 +745,29 @@ async function attach(path: string): Promise<{ dataUri: string; mimeType: string
 }
 
 /**
- * The cursor for "everything that happened from here on" — in WALL time, deliberately.
+ * The cursor for "everything that happened from here on" — in DOMAIN time, again.
  *
- * This read domain time (`lib/clock`), and every read it feeds compares against
- * `created_at`, which the schema defaults to `now()` and `lib/seed.ts` documents as a
- * pure stream cursor precisely because it must stay monotonic while the sim clock moves.
- * So the moment anybody advanced the clock — the emulator's whole purpose — the cursor
- * sat in the future and `created_at > cursor` matched nothing. `say` and `tap` printed
- * the person's own line and then **nothing at all**, which reads as a product that went
- * silent rather than a driver looking past the end of the log. Everything else was fine:
- * the turn ran, the messages were written, and the driver could not see them.
+ * This has flipped twice, and each flip followed `created_at`. Originally it read
+ * domain time against wall-time `created_at`, so the moment anybody advanced the
+ * clock the cursor sat in the future and `say`/`tap` printed nothing. It became
+ * wall time to match the wall-time default. 0027 then moved `created_at` itself
+ * onto the tenant clock (F-N — so the model's own "what went out today?" reads
+ * true in driven worlds), which put THIS cursor on the wrong side of the same
+ * mismatch: a wall cursor against domain stamps re-prints the whole backlog on
+ * every say once the clock is ahead. The rule that survives both flips: the
+ * cursor and the column must be on ONE clock, and the column's clock wins.
+ *
+ * `app.now()` with no tenant GUC resolves to the world clock, which is the clock
+ * this driver moves. Falls back to wall time if the database cannot be asked —
+ * in an unadvanced world the two are identical.
  */
-function cursorNow(): string {
+async function cursorNow(): Promise<string> {
+  try {
+    const rows = await q<{ at: string }>(`select app.now()::text as at`)
+    if (rows[0]?.at) return new Date(rows[0].at).toISOString()
+  } catch {
+    /* fall through */
+  }
   return new Date().toISOString()
 }
 
@@ -1061,7 +1072,7 @@ async function main(): Promise<void> {
       const text = positional.slice(1).join(' ')
       const media = flag('media')
       if (!contactId || (!text && !media)) die(c.red('drive say <contactId> "<what they type>" [--media <file>]'))
-      const at = cursorNow()
+      const at = await cursorNow()
       // `--media` no longer reaches the model — it is text-only (§14.5, repealed) —
       // and that is exactly why this stays: what it drives now is the runtime's
       // answer to an attachment, which is the guarantee that replaced the
@@ -1085,7 +1096,7 @@ async function main(): Promise<void> {
       const media = flag('media')
       if (!phone || (!text && !media)) die(c.red('drive stranger <+91...> "<what they type>" [--media <file>]'))
       const { ingestInbound, SENDER_PHONE } = await import('@/lib/seed')
-      const at = cursorNow()
+      const at = await cursorNow()
       // A stranger's first message being an attachment is the worst case of the
       // text-only trade (§14.5): nobody has told them yet that it cannot be read, and
       // silence here is a lost enquiry. Drivable from here because `say` needs a
@@ -1620,7 +1631,7 @@ async function main(): Promise<void> {
         const text =
           positional.slice(2).join(' ') ||
           `I've paid${amount ? ` ${money(amount)}` : ''}${ref ? `, reference ${ref}` : ''}.`
-        const at = cursorNow()
+        const at = await cursorNow()
         console.log(c.dim(`  ${account.name}`))
         console.log(`${c.dim('  →')} ${text}${attached ? c.dim(`  [${attached.mimeType}, ${attached.bytes} bytes]`) : ''}`)
         await api('/api/emulator/inbound', {
@@ -1985,7 +1996,7 @@ async function main(): Promise<void> {
           c.dim('  `drive clock --next` past a session end so CO-REGISTER fires, or ask them for it in chat.'),
         )
       }
-      const at = cursorNow()
+      const at = await cursorNow()
       // The literal `nfm_reply.response_json`: a JSON string, as the wire sends it, with
       // only the exceptions named — everyone else defaults to present.
       await api('/api/emulator/inbound', {
@@ -2043,7 +2054,7 @@ async function main(): Promise<void> {
       } catch (e) {
         die(c.red(`--json is not valid JSON: ${e instanceof Error ? e.message : String(e)}`))
       }
-      const at = cursorNow()
+      const at = await cursorNow()
       await api('/api/emulator/inbound', {
         contactId,
         flowResponse: JSON.stringify({ ...answers, flow_token: token }),

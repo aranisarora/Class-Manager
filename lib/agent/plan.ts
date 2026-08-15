@@ -806,11 +806,30 @@ function buildSummary(
     return note ? `Done — ${note}.` : 'Done.'
   }
 
+  /**
+   * A tally_line is a "charge" only when it charges. `plural()` maps the table
+   * blind to sign, and a tap that put two ₹1,000 credits on an account was
+   * receipted as "Added 2 charges." — the census-label failure, on money, to
+   * the person who just approved the opposite (F-O, T066). The rows are in the
+   * diff, so the sign is read, never guessed; a mixed set keeps the generic
+   * label rather than picking a side.
+   */
+  const label = (d: TableDiff): string => {
+    if (d.table === 'tally_line') {
+      const rows = d.op === 'delete' ? d.before : d.after
+      const amounts = rows.map((r) => Number(r?.amount)).filter((n) => Number.isFinite(n))
+      if (amounts.length && amounts.every((n) => n < 0)) return d.count === 1 ? 'credit' : 'credits'
+      // A genuinely mixed set gets the neutral word — the fallback below is
+      // "charges", which IS picking a side (review find).
+      if (amounts.some((n) => n < 0)) return d.count === 1 ? 'tally line' : 'tally lines'
+    }
+    return plural(d.table, d.count)
+  }
   const parts = [...diffs]
     .filter((d) => d.count > 0)
     .sort((a, b) => b.count - a.count)
     .slice(0, 3)
-    .map((d) => `${(done ? VERB_DONE : VERB)[d.op]} ${d.count} ${plural(d.table, d.count)}`)
+    .map((d) => `${(done ? VERB_DONE : VERB)[d.op]} ${d.count} ${label(d)}`)
 
   let head: string
   if (parts.length === 0) head = done ? 'Nothing changed' : 'Nothing changes in the data'
@@ -858,11 +877,21 @@ function buildSummary(
    * `outcomes` is only available for a receipt — `flushOutbox` has run by then — so the
    * preview keeps the staged count, which is honest for it.
    */
-  const reached = outcomes
-    ? outcomes.filter((o) => o.status === 'sent' || o.status === 'queued').length
-    : state.staged.length
+  /**
+   * People, not messages. `reached` counted sent MESSAGES and the sentence says
+   * "people": ending Aarav's two enrollments sent Meera two lines and receipted
+   * "2 people have been told" — one person, told twice, reported as a wider
+   * audience (month drive, T075). The recipients are on every staged row and
+   * every outcome, so the distinct count is read, not derived. `missed` stays
+   * in message terms, because a message that did not go out is the unit the
+   * admin acts on.
+   */
+  const sentOutcomes = outcomes?.filter((o) => o.status === 'sent' || o.status === 'queued')
+  const reached = sentOutcomes
+    ? new Set(sentOutcomes.map((o) => ('toContactId' in o && o.toContactId) || '')).size
+    : new Set(state.staged.map((m) => m.toContactId)).size
   if (done) {
-    const missed = state.staged.length - reached
+    const missed = state.staged.length - (sentOutcomes?.length ?? 0)
     if (reached === 1) s += ' 1 person has been told.'
     else if (reached > 1) s += ` ${reached} people have been told.`
     if (missed > 0) {
@@ -871,10 +900,10 @@ function buildSummary(
       s +=
         reached === 0
           ? ` Nobody was told — ${missed === 1 ? 'that message' : `all ${missed} messages`} did not go out.`
-          : ` ${missed} did not go out.`
+          : ` ${missed} message${missed === 1 ? '' : 's'} did not go out.`
     }
-  } else if (state.staged.length === 1) s += ' 1 person hears about it.'
-  else if (state.staged.length > 1) s += ` ${state.staged.length} people hear about it.`
+  } else if (reached === 1) s += ' 1 person hears about it.'
+  else if (reached > 1) s += ` ${reached} people hear about it.`
   if (state.scheduled.length === 1) s += " I'll check back once."
   else if (state.scheduled.length > 1) s += ` ${state.scheduled.length} follow-ups are scheduled.`
   return s
@@ -932,6 +961,70 @@ function assertSomethingChanged(expanded: PlanStep[], diffs: TableDiff[]): void 
   )
 }
 
+/**
+ * Rule 7 at the chokepoint — one event, one person, one message.
+ *
+ * A plan is one event by construction, and its steps stage messages per FACT:
+ * moving Beginners' two weekly slots staged two near-identical lines per family
+ * (four messages for one move, month drive T060), and ending a child's two
+ * enrollments told the same mother twice in one commit (T075). The ideal's own
+ * sentence — "you'll get one message, not two" — is dedupe by fact-and-
+ * recipient, and the plan's outbox is the one place every staged message of the
+ * event is visible together.
+ *
+ * Same recipient + same catalog moment (or both none) merge into one body,
+ * bodies joined line by line, byte-identical bodies kept once. The first
+ * message's buttons stand: a per-fact duplicate button offers nothing new. A
+ * confirmation request never merges (it is its own event, answered by a tap),
+ * and neither does the opt-out acknowledgement.
+ */
+function mergePerRecipient(staged: Staged[]): Staged[] {
+  const out: Staged[] = []
+  const byKey = new Map<string, Staged>()
+  const keep = (m: Staged): void => {
+    const mergeable = !m.is_confirmation_request && !m.opt_out_ack
+    const copy = { ...m }
+    out.push(copy)
+    if (mergeable) byKey.set(`${m.toContactId}|${m.catalog_id ?? ''}`, copy)
+  }
+  for (const m of staged) {
+    const mergeable = !m.is_confirmation_request && !m.opt_out_ack
+    const prior = mergeable ? byKey.get(`${m.toContactId}|${m.catalog_id ?? ''}`) : undefined
+    if (!prior) {
+      keep(m)
+      continue
+    }
+    /**
+     * A merge must lose nothing load-bearing (review find: the first draft kept
+     * only the first message's buttons and flags, so a second fact's own button
+     * vanished and its subject fell out of the §18 gates). So: a message whose
+     * buttons differ from the survivor's stays its own message; subjects union;
+     * `fixed` and `is_escalation` strengthen (either message demanding them
+     * demands them of the merge); `pre_launch_ok` weakens (both must be exempt
+     * for the merge to be). And a merge that would push a buttoned body past
+     * the wire cap stays separate — two messages beat one truncated one.
+     */
+    const buttonsDiffer =
+      (m.buttons?.length ?? 0) > 0 &&
+      JSON.stringify(prior.buttons ?? []) !== JSON.stringify(m.buttons ?? [])
+    const joined = prior.body === m.body || prior.body.includes(m.body) ? prior.body : `${prior.body}\n${m.body}`
+    const wouldOverflow =
+      joined.length > ((prior.buttons?.length ?? 0) + (m.buttons?.length ?? 0) > 0 ? LIMITS.bodyChars : LIMITS.textChars)
+    if (buttonsDiffer || wouldOverflow) {
+      keep(m)
+      continue
+    }
+    prior.body = joined
+    if (m.subject_person_ids?.length) {
+      prior.subject_person_ids = [...new Set([...(prior.subject_person_ids ?? []), ...m.subject_person_ids])]
+    }
+    prior.fixed = Boolean(prior.fixed || m.fixed)
+    prior.is_escalation = Boolean(prior.is_escalation || m.is_escalation)
+    prior.pre_launch_ok = Boolean(prior.pre_launch_ok && m.pre_launch_ok)
+  }
+  return out
+}
+
 /** BEGIN → run every step → capture the diff → ROLLBACK. Messages never leave the outbox. */
 export async function previewPlan(
   ctx: SessionCtx,
@@ -944,6 +1037,17 @@ export async function previewPlan(
    * somebody tried.
    */
   intent?: string,
+  /**
+   * `noHints` makes a failed preview truly side-effect free. The ordinary
+   * failure path computes the best hint it can, and for CHANGED_NOTHING that
+   * includes `refusalHint` → `escalateRefusal`, which SENDS to the admins and
+   * writes a memory fact — right for a model-initiated preview whose failure
+   * is the turn's news, and wrong for a mint-time annotation check
+   * (`withRuntimeDiffLine`), where a failed preview must change nothing and
+   * page nobody. Found adversarially: the mint-time call escalated with its
+   * own internal intent string spliced into the owner's message.
+   */
+  opts?: { noHints?: boolean },
 ): Promise<PlanResult> {
   const state = emptyState()
   // Hoisted so the catch can tell a refusal from a missing row — that diagnosis
@@ -958,6 +1062,9 @@ export async function previewPlan(
     })
     const merged = diffs.length ? diffs : synthDiffs(state.exec)
     assertSomethingChanged(expanded, merged)
+    // Rule 7 — merged here too, so the preview the person confirms against
+    // describes the messages that will actually go.
+    state.staged = mergePerRecipient(state.staged)
     return {
       ok: true,
       diffs: merged,
@@ -967,7 +1074,7 @@ export async function previewPlan(
       summary: buildSummary(merged, state),
     }
   } catch (e) {
-    return failed(state, e, await hintFor(ctx, e, expanded, state.notes, intent))
+    return failed(state, e, opts?.noHints ? null : await hintFor(ctx, e, expanded, state.notes, intent))
   }
 }
 
@@ -1195,6 +1302,10 @@ export async function executePlan(
     // ---- committed. Only now does anything reach the wire. ----
     const merged = diffs.length ? diffs : synthDiffs(state.exec)
     assertSomethingChanged(expanded, merged)
+    // Rule 7 — one event, one person, one message. Assigned back onto the state
+    // so the receipt's staged-vs-sent arithmetic counts the messages that were
+    // actually attempted.
+    state.staged = mergePerRecipient(state.staged)
     const outcomes = await flushOutbox(ctx, state.staged, auditId)
     await recordAudit(ctx, auditId, intent, steps, merged, state, outcomes)
     const receipt = buildSummary(merged, state, 'done', audience, outcomes)
@@ -1328,6 +1439,56 @@ async function repairHint(ctx: SessionCtx, e: unknown): Promise<string | null> {
     if (rls) {
       const table = rls[1] as string
       const checks = await policyExpressions(ctx, table)
+      /**
+       * Two different refusals share this error, and the old hint answered only
+       * one of them. A missing `academy_id` is repairable in place; a policy
+       * demanding `is_admin()` or `sees_money()` of a session that is neither is
+       * not — no rewording will ever pass, and telling the model to "add it and
+       * the same statement will pass" sent it flailing. Driven twice in the month
+       * on money: a parent's payment attestation (T062) and her pro-rata credit
+       * (T065) both died here, the person was told "the owner will confirm" /
+       * "it's a one-tap fix on their side", and the owner heard nothing until she
+       * asked — rule 15's exact failure, caused by an error that named no route.
+       * The route exists: a reply to the ADMIN carrying the change as a steps
+       * button is minted for them, and their tap runs it under their own
+       * permission. Say so where the model is deciding what to do next.
+       */
+      /**
+       * Role-gated means EVERY write policy demands the role, not any policy
+       * mentioning it: nearly every policy in this schema is written
+       * "is_admin() OR <role clause>", and `checks` also folds in SELECT quals,
+       * so a presence test fired on practically every table and sent coaches
+       * with a fixable academy_id mistake down the routed-proposal path
+       * (review find). Policies OR together — if one write policy passes
+       * without the role, the writer can pass through it, and the repairable
+       * advice is the right one.
+       */
+      const writeChecks = await writePolicyExpressions(ctx, table)
+      const needsRole =
+        writeChecks.length > 0 && writeChecks.every((e) => /\bis_admin\s*\(\)|\bsees_money\s*\(\)/.test(e))
+      const actorIsAdmin =
+        ctx.role !== 'user' ||
+        (await withSession(serviceFrom(ctx), async (tx) => {
+          const r = (await tx.unsafe(
+            `select 1 from academy_admin where person_id = ${uid(String(ctx.personId ?? ''))}
+              and academy_id = ${uid(ctx.academyId)}`,
+          )) as unknown as unknown[]
+          return r.length > 0
+        // An unanswerable lookup defaults to ADMIN: the repairable-in-place
+        // advice is recoverable (the model tries, fails, comes back); telling
+        // an actual admin to route their own approval to themselves is not.
+        }).catch(() => true))
+      if (needsRole && !actorIsAdmin) {
+        return (
+          `writing to "${table}" is the admin's alone (the policy demands it), and this person is not the ` +
+          `admin — no retry or rewording from this session can ever pass. Do not stop at telling them so: ` +
+          `route the proposal. Send the ADMIN a reply — address it with to_contact_id 'admin'; you never ` +
+          `need their contact row, and from this session you cannot see it — stating the exact change and ` +
+          `carrying it as a steps button: their tap runs it under their own permission. (handoff also ` +
+          `reaches them, without a button.) Then tell this person it is with the admin — only after that ` +
+          `message actually sent.`
+        )
+      }
       return (
         `every row written to "${table}" must satisfy the policy: ${checks || 'academy_id = app.academy_id()'}. ` +
         `The usual cause is a missing academy_id: reads never need a tenant filter, but every INSERT must set ` +
@@ -1375,6 +1536,26 @@ async function repairHint(ctx: SessionCtx, e: unknown): Promise<string | null> {
     /* a hint is an improvement on the error, never a precondition for reporting it */
   }
   return null
+}
+
+/**
+ * The write-command policies alone, one expression per policy. `INSERT`,
+ * `UPDATE`, `DELETE` and `ALL` — a SELECT qual says who may look, which is a
+ * different question from who may write, and folding the two together is what
+ * made the role test above fire on every table.
+ */
+async function writePolicyExpressions(ctx: SessionCtx, table: string): Promise<string[]> {
+  const rows = await withSession(serviceFrom(ctx), async (tx) => {
+    return (await tx.unsafe(
+      `select distinct coalesce(with_check, qual) as expr
+         from pg_policies
+        where schemaname = 'public' and tablename = ${lit(table)}
+          and cmd in ('INSERT', 'UPDATE', 'DELETE', 'ALL')
+          and coalesce(with_check, qual) is not null
+          and 'cm_user' = any (roles)`,
+    )) as unknown as { expr: string }[]
+  }).catch(() => [] as { expr: string }[])
+  return rows.map((r) => r.expr)
 }
 
 /** The WITH CHECK (or USING) expressions a write to this table has to satisfy. */
@@ -1602,6 +1783,10 @@ const MONEY_OPS = new Set<OperationName>([
   'waive',
   'record_payment',
   'request_payment',
+  // Converting a trial is the decision that STARTS billing — a money decision
+  // wearing an enrollment update's clothes, so it reads back before it runs
+  // whoever asked and however quietly.
+  'convert_trial',
   // A tap never re-previews (the preview already happened at mint), so this only
   // binds when the model reaches for it directly — which is exactly when a money
   // state transition should be read back before it commits.
@@ -1702,12 +1887,24 @@ export function needsPreview(
     }
   }
 
-  if (result.diffs.some((d) => MONEY_TABLES.has(d.table) || CONTROL_TABLES.has(d.table))) return true
+  if (result.diffs.some((d) => CONTROL_TABLES.has(d.table))) return true
 
-  // Row 1: a single own-scope named operation executes directly.
-  const singleOwnScope =
+  /**
+   * Judgement call 1, enforced in the order the comment above always claimed:
+   * a single own-scope operation is exempt BEFORE the money-tables test runs,
+   * because a `tally_line` minted mechanically by marking attendance is not a
+   * money decision — §14.2 puts the register in the execute-directly row, and
+   * §6.4 makes the line an automatic consequence of the mark. F-P found the
+   * old order tested money tables first, so a register at a per_session rate
+   * put a diff in front of a coach standing on a court — the exact friction
+   * row 1 exists to remove. Explicit money operations and adjustments still
+   * gate above; a plan that messages anyone else still gates at `toOthers`.
+   */
+  const earlyOwnScope =
     steps.length === 1 && 'operation' in steps[0] && Boolean(OPERATIONS[steps[0].operation.name]?.ownScope)
-  if (singleOwnScope) return false
+  if (earlyOwnScope) return false
+
+  if (result.diffs.some((d) => MONEY_TABLES.has(d.table))) return true
 
   // Removing anything, or changing more than one row that already existed.
   const changed = result.diffs

@@ -433,6 +433,38 @@ export function pullOutOfQuietHours(
   return base.set({ hour: h, minute: m, second: 0, millisecond: 0 }).minus({ minutes: 1 }).toJSDate()
 }
 
+/**
+ * The forward-going half of the quiet-hours pair.
+ *
+ * `pullOutOfQuietHours` moves a REMINDER back to the evening before, because a
+ * reminder after its subject is worthless. An ALERT is the opposite shape: the
+ * register-expiry escalation for an 8:30pm class lands at 22:30 — inside the
+ * product's own declared quiet window (judged against rule 9, month drive) —
+ * and pulling it back would fire it before the grace period it exists to
+ * grant. So it waits for morning: the job re-checks its precondition at run
+ * time (§13), so a register marked overnight simply skips.
+ */
+export function deferPastQuietHours(
+  at: Date,
+  tz: string,
+  settings: Record<string, unknown> | null,
+): Date {
+  const read = (k: string, fallback: string): string => {
+    const v = settings?.[k]
+    return typeof v === 'string' && /^\d{2}:\d{2}$/.test(v) ? v : fallback
+  }
+  const quietStart = read('quiet_start', '21:00')
+  const quietEnd = read('quiet_end', '07:00')
+  const local = DateTime.fromJSDate(at, { zone: tz })
+  const hm = local.toFormat('HH:mm')
+  const overnight = quietStart > quietEnd
+  const inQuiet = overnight ? hm >= quietStart || hm < quietEnd : hm >= quietStart && hm < quietEnd
+  if (!inQuiet) return at
+  const [h, m] = quietEnd.split(':').map(Number)
+  const base = overnight && hm >= quietStart ? local.plus({ days: 1 }) : local
+  return base.set({ hour: h, minute: m, second: 0, millisecond: 0 }).toJSDate()
+}
+
 /** `timestamptz` comes back as a Date; be tolerant of a string anyway. */
 export function msOf(v: Date | string | number): number {
   if (v instanceof Date) return v.getTime()

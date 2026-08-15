@@ -42,6 +42,19 @@ export async function clientReminder(job: Job): Promise<void> {
   const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
+    /**
+     * §13 rule 2, applied to this job's OWN row: a sibling's reminder may have
+     * merged this one away after the runner claimed the whole due batch — the
+     * claim marks every due job 'running' in one update before any handler
+     * runs, so the merge below cancels 'running' rows as well as 'pending'
+     * ones, and the cancelled handler finds out here rather than sending the
+     * duplicate the merge exists to prevent (review find: with pending-only
+     * targeting, same-batch siblings — the COMMON case, identical run_at —
+     * never merged at all).
+     */
+    const [self] = await tx<{ status: string }[]>`select status from job where id = ${job.id}`
+    if (self?.status === 'cancelled') skip('merged into a sibling reminder')
+
     const academy = await loadAcademy(tx, academyId)
     if (!academy) skip('academy gone')
     if (academy.onboarding_state !== 'live') skip('not live yet')
@@ -64,38 +77,74 @@ export async function clientReminder(job: Job): Promise<void> {
     if (!player) skip('player is no longer enrolled in this class')
     if (!player.contact_id) skip('no reachable number for this family')
 
-    return { academy, session, player }
+    /**
+     * Rule 7 — siblings in one class are one message, not one per child. The
+     * ideal's own sentence is "you'll get one message, not two", and the month
+     * drive shipped the opposite: "Kabir has a class coming up" / "Ishaan has a
+     * class coming up" to the same mother, two seconds apart, twice a week.
+     * The jobs are per (session, player) for idempotency's sake, so the merge
+     * happens where the first one fires: any sibling of this class whose own
+     * reminder is still pending rides this message, and their job is cancelled
+     * in the same transaction — a sibling whose job already ran (or whose
+     * attendance is marked) is left alone.
+     */
+    const together = [player]
+    for (const s of roster) {
+      if (s.player_id === playerId || s.contact_id !== player.contact_id) continue
+      const [smarked] = await tx<{ n: number }[]>`
+        select count(*)::int as n from attendance
+         where session_id = ${sessionId} and player_id = ${s.player_id}`
+      if ((smarked?.n ?? 0) > 0) continue
+      const cancelled = await tx<{ id: string }[]>`
+        update job set status = 'cancelled'
+         where status in ('pending', 'running') and kind = 'client_reminder'
+           and dedupe_key = ${dedupe.clientReminder(sessionId, s.player_id)}
+           and id <> ${job.id}
+         returning id`
+      if (cancelled.length) together.push(s)
+    }
+
+    return { academy, session, player, together }
   })
 
-  const { academy, session, player } = plan
+  const { academy, session, player, together } = plan
   const tz = academy.timezone
   const venue = session.venue_name ? `, ${session.venue_name}` : ''
+  const names = together.map((k) => firstName(k.player_name))
+  const who = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 
   await composeAndSend(serviceCtx(academy.id), {
     toContactId: player.contact_id as string,
     header: clamp(academy.name, LIMITS.headerChars),
     body: clamp(
-      `${firstName(player.player_name)} has ${session.class_name} `
+      `${who} ${names.length === 1 ? 'has' : 'have'} ${session.class_name} `
       + `${whenLabel(session.starts_at, tz, nowAt)}${venue}.`,
       LIMITS.bodyChars,
     ),
     buttons: [
-      { title: buttonTitle("I'll be there"), action: { kind: 'noop', ack: 'Noted — see you there.' } },
+      {
+        title: buttonTitle(names.length === 1 ? "I'll be there" : "We'll be there"),
+        action: { kind: 'noop', ack: 'Noted — see you there.' },
+      },
       {
         // Confirms before it acts: a pocket mis-tap must never give away a seat
-        // (§9.2). The agent raises CL-CANCEL-CONFIRM on the way through.
+        // (§9.2). The agent raises CL-CANCEL-CONFIRM on the way through — and
+        // with more than one child on the message, deciding which one is the
+        // model's disambiguation job (§8.2), not a guess minted here.
         title: buttonTitle("Can't make it"),
         action: {
           kind: 'reply',
-          text: `${firstName(player.player_name)} can't make ${session.class_name} `
-            + `${dayLabel(session.starts_at, tz, nowAt)} at ${timeLabel(session.starts_at, tz)}`,
+          text: names.length === 1
+            ? `${names[0]} can't make ${session.class_name} `
+              + `${dayLabel(session.starts_at, tz, nowAt)} at ${timeLabel(session.starts_at, tz)}`
+            : `About ${session.class_name} ${dayLabel(session.starts_at, tz, nowAt)} at ${timeLabel(session.starts_at, tz)} — one of them can't make it`,
         },
       },
     ],
     catalogId: 'CL-REMINDER',
-    subjectPersonIds: [player.player_person_id],
+    subjectPersonIds: together.map((k) => k.player_person_id),
   })
-  note(`reminded ${player.holder_name} about ${firstName(player.player_name)}'s ${session.class_name}`)
+  note(`reminded ${player.holder_name} about ${who}'s ${session.class_name}`)
 }
 
 /**

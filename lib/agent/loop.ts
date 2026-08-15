@@ -45,6 +45,7 @@ import {
   runTool,
   toolDecls,
   withFollowUps,
+  withRuntimeDiffLine,
   backstopButtons,
   type ToolCtx,
 } from './tools'
@@ -800,6 +801,19 @@ async function executeAction(
             res.diffs.map((d) => ({ table: d.table, op: d.op, after: d.after })),
           ) ?? [])
         : []
+    /**
+     * The tap may have just changed the very state the backstop reads. Going
+     * live is the canonical case: `identity` was resolved before the tap wrote
+     * the row, so the [Switch it on] receipt offered `[Set up the business]` —
+     * the onboarding steps, to an admin whose business had gone live one second
+     * earlier (month drive, T012). The diff holds what is now true; the
+     * backstop reads that instead of the snapshot.
+     */
+    const flipped = res.diffs.find((d) => d.table === 'academy')?.after?.[0]?.onboarding_state
+    const freshIdentity: Identity =
+      typeof flipped === 'string'
+        ? { ...identity, academy: { ...identity.academy, onboarding_state: flipped as Identity['academy']['onboarding_state'] } }
+        : identity
     outcomes.push(
       await composeAndSend(session, {
         toContactId: identity.contact.id,
@@ -807,7 +821,7 @@ async function executeAction(
         // table names and operation notes, and both leak — "2 persons", "(§2.6)".
         // Everything user-facing goes through the same lint, whoever wrote it.
         body: lint(res.summary, identity),
-        buttons: follow.length ? follow.slice(0, LIMITS.buttons) : backstopButtons(identity, res.summary),
+        buttons: follow.length ? follow.slice(0, LIMITS.buttons) : backstopButtons(freshIdentity, res.summary),
       }),
     )
   }
@@ -1035,7 +1049,7 @@ async function modelTurn(
   // stable prefix is still earning its keep.
   let cachedTokens = 0
   /**
-   * Whether anything actually reached this person's phone.
+   * Whether anything actually reached THIS person's phone.
    *
    * This used to be "did the model call `reply`", set before the call was even
    * run — so a `reply` the runtime *refused* still counted as having spoken, and
@@ -1044,9 +1058,23 @@ async function modelTurn(
    * one failure a person cannot tell apart from being ignored, and it was being
    * caused by the check that exists to prevent it.
    *
-   * The honest question is not what the model tried. It is what arrived.
+   * Scoped to the asker, not to the wire: a turn that spends its rounds routing
+   * a proposal to the ADMIN has genuinely sent something — and the person who
+   * asked has still heard nothing. Driven the day the routed-proposal path
+   * landed: Sunita's credit request reached the owner, `spoke()` counted the
+   * owner's message, every ladder below stood down, and Sunita got silence. An
+   * outcome with no recipient on it (older shapes) counts as hers, which is the
+   * conservative reading — it can only make the ladder quieter, never louder.
+   *
+   * The honest question is not what the model tried, nor what left the building.
+   * It is what arrived where the question came from.
    */
-  const spoke = (): boolean => outcomes.some((o) => o.status === 'sent' || o.status === 'queued')
+  const spoke = (): boolean =>
+    outcomes.some(
+      (o) =>
+        (o.status === 'sent' || o.status === 'queued') &&
+        (!('toContactId' in o) || !o.toContactId || o.toContactId === identity.contact.id),
+    )
   const trace: ToolTrace[] = []
   let rounds = 0
   let forcedError: string | undefined
@@ -1231,7 +1259,17 @@ async function modelTurn(
         ms: Date.now() - calledAt,
         args: traceValue(call.args, 4000),
         result: traceValue(out.result, 4000),
-        ...(threw ? { error: threw.slice(0, 2000) } : {}),
+        // `error` marks a call that did not happen, and refusals in this product
+        // RETURN rather than throw — the commit gate, RLS denials, every tool's
+        // `{error}` result. The fuller notion is computed as `failed` above; the
+        // trace used to carry only `threw`, so all 21 of the month drive's 21
+        // refused calls reached reflection looking like things that happened
+        // (F-P). The thrown text wins when both exist: a stack names the site.
+        ...(threw
+          ? { error: threw.slice(0, 2000) }
+          : failed
+            ? { error: String((out.result as any)?.error ?? 'refused').slice(0, 300) }
+            : {}),
       })
       responses.push({ role: 'tool', tool_call_id: call.id, content: toolContent(out.result) })
     }
@@ -1527,6 +1565,10 @@ async function modelTurn(
       text = pendingReadBack(pending.summary)
     }
 
+    // F-M — same guarantee as the `reply` path: a confirmation carrying a steps
+    // button also carries the runtime's own line about what the tap runs.
+    text = await withRuntimeDiffLine(text.trim(), buttons, toolCtx)
+
     const trailingBody = lint(text.trim(), identity)
     const trailing = await composeAndSend(session, {
       toContactId: identity.contact.id,
@@ -1716,7 +1758,16 @@ async function recentActions(identity: Identity): Promise<string | undefined> {
     if (r && typeof r === 'object') {
       if (r.ok === false)
         return `refused: ${String(r.error ?? 'no reason recorded').split('\n')[0].slice(0, 180)} — nothing was written`
-      if (r.needs_confirmation) return 'staged behind a confirmation button — NOT committed'
+      // A staged preview says so in three spellings and none of them was read:
+      // gated `plan` returns needs_preview:true, gated `act` returns
+      // executed:false, and only commit's refusal (already caught above by its
+      // error) carries needs_confirmation. So a plan waiting on a tap was
+      // rendered "done — wrote N row(s)" in the next turn's context, under a
+      // heading that forbids redoing done work — the model would truthfully
+      // report a payment request as sent that nobody ever tapped (review find).
+      if (r.needs_confirmation || r.needs_preview === true || r.executed === false) {
+        return 'staged behind a confirmation button — NOT committed'
+      }
       if (r.ok === true) {
         const changes = Array.isArray(r.changes)
           ? (r.changes as { count?: unknown }[]).reduce((a, c) => a + Number(c?.count ?? 0), 0)
@@ -1805,7 +1856,12 @@ async function reflect(
    * to fix. `dedupe_key` stops two *identical* watches; nothing stopped two differently
    * named watches for one intent, and nothing at the schema layer could.
    */
-  const already = new Set(turn.trace.map((t) => t.name))
+  // A call that was REFUSED did not do the thing, so it does not fill the slot:
+  // a remember bounced by the placement gate ("keep the preference, drop the
+  // figure") leaves the legitimate half of the fact unstored, and reflection is
+  // exactly where the cleaned version gets its chance (review find — the old
+  // set counted refused calls as done).
+  const already = new Set(turn.trace.filter((t) => !t.error).map((t) => t.name))
   const decls = toolDecls().filter(
     (t) => (t.name === 'remember' || t.name === 'schedule') && !already.has(t.name),
   )
@@ -1827,7 +1883,7 @@ Below are the only questions left open — anything not listed here was already 
 "Neither" is the common and correct answer:
 
 1. **Is there a fact worth carrying?** Vocabulary they use, a habit, a preference, something about how this person works. Facts, not transcripts — "prefers voice notes" is a fact, "asked about fees" is a log line. And facts, not rows: a rate, a schedule, a venue, a phone number, who pays for whom, a balance — the database holds those, and a memory copy of a row is a future wrong answer, so if a table holds it, do not write it. One instance is never a policy: store what happened and for whom, never a rule you inferred from it. A fact that changes no future behaviour was not worth storing. Correct an existing fact by superseding it, never by writing a contradiction.
-2. **Did they ask you to look at something later, or is there something you said you would come back to?** "Check if she's paid by Friday", "keep an eye on Saturday", "remind me Thursday", or a promise you made in the reply. That is a \`schedule\` — it runs later as an ordinary turn under this person's own permissions, and deciding to do nothing then is fine. \`expires_at\` is required. Know what already runs without you: standing jobs remind every family before every session, chase every unmarked register, send each coach their day and the owner their brief and digest, and bill the month. A promise the standing machinery already keeps is not a schedule call — a watch duplicating one sends somebody the same thing twice.
+2. **Did they ask you to look at something later, or is there something you said you would come back to?** "Check if she's paid by Friday", "keep an eye on Saturday", "remind me Thursday", or a promise you made in the reply. That is a \`schedule\` — it runs later as an ordinary turn under this person's own permissions, and deciding to do nothing then is fine. \`expires_at\` is required. Know what already runs without you: standing jobs remind every family before every session, chase every unmarked register, send each coach their day and the owner their brief and digest, bill the month, and chase every unpaid bill (a dunning ladder: a few spaced nudges, then it puts the bill in front of the admin — so "make sure they get a nudge about the bill" is already kept). A promise the standing machinery already keeps is not a schedule call — a watch duplicating one sends somebody the same thing twice.
 
 Do not invent work. Do not schedule a watch nobody asked for and you did not promise. If neither applies, call nothing at all and say nothing — that is the system working.
 
