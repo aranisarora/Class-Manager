@@ -921,7 +921,9 @@ const endEnrollment: OperationDef = {
       }
       steps.push({
         message: {
-          to_contact_id: ctx.role === 'service' ? undefined : ctx.contactId,
+          // Inside the routed branch the caller is always a person ('user'),
+          // so this is their own chat.
+          to_contact_id: ctx.contactId,
           body:
             `Noted — ${name} stops after ${when}. I've sent it to the owner to make official, ` +
             `and I'll confirm here once it's done. Classes and billing carry on as normal until then.`,
