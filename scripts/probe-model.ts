@@ -215,9 +215,13 @@ type Case = {
 /**
  * What a check needs to ask about THIS turn rather than about the world.
  *
- * `startedAt` is host time, the same clock `created_at` defaults to — deliberately
- * not domain time, because the sim clock moves and a cursor that moves with it
- * cannot separate what a turn wrote from what the arc wrote an hour ago.
+ * `startedAt` is DOMAIN time — the same clock `created_at` defaults to since
+ * 0027 put the record on the tenant clock (F-N). It was host time when the
+ * column was; the rule that survives is that the cursor and the column share
+ * one clock, and the column's clock wins. Still a valid turn separator: the
+ * arc only ever moves the clock forward, and it never moves it DURING a turn,
+ * so rows written by this turn stamp at-or-after the cursor and rows from
+ * earlier cases stamp before it.
  */
 type CaseCtx = { startedAt: string; contactId: string }
 
@@ -601,9 +605,14 @@ const CASES: Case[] = [
     what:
       'a class that runs every day — the only way the stages after go-live sit inside the clock budget, ' +
       'and a real thing to ask for',
+    // "starting tomorrow" is pinned, not flavour: the clocked cases downstream
+    // (the fan-out cancel, the decline) need a session inside the travel budget,
+    // and a model that reasonably starts the batch next Monday makes them
+    // unaskable — the f-q run's only "failures" were the model truthfully
+    // reporting an empty tonight after choosing a Monday start.
     text:
-      'one more: an evening fitness batch every day 7 to 8pm at green park, 2000 a month, arjun takes that one too. ' +
-      'put aarav, ananya and dev in it.',
+      'one more: an evening fitness batch every day 7 to 8pm at green park, starting tomorrow, 2000 a month, ' +
+      'arjun takes that one too. put aarav, ananya and dev in it.',
     wants: ['act', 'plan'],
     tap: true,
     expect: async (q) => {
@@ -681,7 +690,16 @@ const CASES: Case[] = [
     stage: 'go-live',
     persona: 'admin',
     what: 'the switch nothing else in the product can be reached without',
-    text: "that's everything in. fees come by upi to probe@upi. switch it on.",
+    // The admin's decision is reasserted over the model's two legitimate
+    // hesitations, because the case measures the SWITCH: driven, one arm held
+    // the flip ("I'm not flipping the switch yet — Arjun hasn't confirmed,
+    // Advanced has no coach"), which is defensible judgement and a different
+    // finding — and every case after it then probed a business that had not
+    // launched. Foreclosing the stated reasons keeps the arc measuring what
+    // each case is for; the discretionary hold is on record in .probe/fq.
+    text:
+      "that's everything in. fees come by upi to probe@upi. switch it on now — " +
+      "i know arjun hasn't tapped his invite yet and advanced still needs a coach, that's fine, don't wait.",
     wants: ['act', 'plan'],
     tap: true,
     expect: async (q) => {
@@ -1177,6 +1195,12 @@ const FO_CASES: Case[] = [
      * the only difference is a row in `message` addressed to the admin.
      */
     what: 'a coach drops out of a solo-coach business — is cover promised, and is the owner really told?',
+    // Known arc tension, accepted: fo-gate-fanout has usually just cancelled
+    // TONIGHT's fitness session, so depending on when the walk lands, "tonight's
+    // session" can be genuinely empty and the model truthfully says so — a pass
+    // of honesty and a fail of this case's checks. Across runs it passes when a
+    // session exists; a clean split would give the coach a second class the
+    // fanout case never touches.
     clock: (q) =>
       firstAt(q, `select (min(starts_at) - interval '3 hours')::text as at
                     from session where status = 'scheduled' and starts_at > app.now()`),
@@ -1203,12 +1227,28 @@ const FO_CASES: Case[] = [
           join academy_admin aa on aa.person_id = ct.person_id
          where m.direction = 'outbound' and m.suppressed_reason is null
            and m.created_at >= '${ctx.startedAt}'::timestamptz`)
+      /**
+       * One confirmation per action (F-F, and the F-O run's own flag). The
+       * operation stages its confirmation with `is_confirmation_request`, which
+       * arms `confirmationAskedTo` and refuses the model's re-worded second —
+       * the F-O trace showed two "Just to be sure" messages a minute apart, the
+       * second with its yes-button dropped at mint. Counted to the COACH only:
+       * the escalation to the owner is a different message to a different person.
+       */
+      const confirms = said.filter((r: any) =>
+        /\bjust to be sure\b|\bjust confirm\b/i.test(String(r.body ?? '')),
+      )
       return [
         check('nothing promised to find cover', promised.length === 0, promised.map((r: any) => `${r.who}: ${String(r.body).slice(0, 120)}`)),
         check('the decline is on the row, not just in the reply', declined.length > 0, declined),
         // The promise the new copy makes. If the copy says the owner is told, a row
         // has to show it — otherwise this commit swapped one fiction for another.
         check('the owner was actually told it needs cover', toldOwner.length > 0, toldOwner),
+        check(
+          'one confirmation, not two',
+          confirms.length <= 1,
+          confirms.map((r: any) => `${r.who}: ${String(r.body).slice(0, 100)}`),
+        ),
       ]
     },
   },
@@ -1361,9 +1401,220 @@ const FO_CASES: Case[] = [
   },
 ]
 
+/* ========================================================================== *
+ * The F-Q regression suite — the month-drive re-read of 16 Aug 2026
+ * (conversation-rules.md F-Q). Every case reproduces something the drive did
+ * wrong that the F-O suite could not see, and asks whether this pass's fixes
+ * hold under the real loop.
+ * ========================================================================== */
+
+const FQ_CASES: Case[] = [
+  {
+    name: 'fq-family-two-classes',
+    stage: 'roster',
+    persona: 'admin',
+    /**
+     * F-Q's duplicate-child find (month drive T010 → T073). "Rohan in both
+     * beginners and evening fitness" is the sentence that naturally becomes two
+     * add_family entries with one name, and the old loop minted a person and a
+     * player per entry — the drive's Aarav existed twice until his family's
+     * leave failed on the duplicate. The `no two people share a name` and
+     * `no player is a duplicate` invariants bite here too; these checks ask the
+     * question by name.
+     */
+    what: 'one child, two classes, one sentence — does the child exist once? (T010)',
+    text: 'one more family: sunita rao +919880055667, her son rohan is 8 — put rohan in both beginners and evening fitness',
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q) => {
+      const rohans = await q(`select id, full_name from person where lower(full_name) like '%rohan%'`)
+      const players = await q(`
+        select pl.id from player pl join person p on p.id = pl.person_id
+         where lower(p.full_name) like '%rohan%'`)
+      const enrols = await q(`
+        select cl.name from enrollment e
+          join player pl on pl.id = e.player_id
+          join person p on p.id = pl.person_id
+          join class cl on cl.id = e.class_id
+         where lower(p.full_name) like '%rohan%' and e.ended_on is null
+         order by cl.name`)
+      return [
+        check('rohan exists exactly once', rohans.length === 1, rohans),
+        check('one player row, not one per class', players.length === 1, players),
+        check('he is in two classes', enrols.length === 2, enrols),
+      ]
+    },
+  },
+  {
+    name: 'fq-parent-waive-routing',
+    stage: 'money',
+    persona: 'client',
+    who: 'sunita',
+    /**
+     * Rule 15's money case, twice in the drive (T062, T065): a parent asks for
+     * something only the admin can write, the RLS wall refuses, and the person
+     * is told "the owner will confirm" while the owner hears nothing. The
+     * repair hint now names the routed-proposal path and DOMAIN_FACTS says what
+     * routing means. The checks are the two halves of the fix: nothing written
+     * on the parent's say-so, and the admin ACTUALLY hears this turn.
+     */
+    what: "a parent asks for a credit only the admin can approve — is the proposal actually routed? (T065)",
+    text: "we were away for two weeks — can you knock 1000 off what we owe this month?",
+    wants: [],
+    expect: async (q, ctx) => {
+      const written = await q(`
+        select tl.amount::text, tl.description from tally_line tl
+         where tl.created_at >= '${ctx.startedAt}'::timestamptz and tl.amount < 0`)
+      const adminHeard = await q(`
+        select left(m.body, 140) as body from message m
+          join contact ct on ct.id = m.contact_id
+          join academy_admin aa on aa.person_id = ct.person_id
+         where m.direction = 'outbound' and m.suppressed_reason is null
+           and m.created_at >= '${ctx.startedAt}'::timestamptz`)
+      return [
+        check("no credit was written on the parent's say-so", written.length === 0, written),
+        check('the admin actually heard about it this turn', adminHeard.length > 0, adminHeard),
+      ]
+    },
+  },
+  {
+    name: 'fq-trial-books',
+    stage: 'go-live',
+    persona: 'prospect',
+    /**
+     * Sets up the conversion case, and is a real probe of §10.1 on the way: the
+     * cold conversation ends in `book_trial`, the enrollment is a TRIAL, and a
+     * trial is free and unbilled until converted on purpose (7fa4bcf).
+     */
+    what: 'a prospect books a trial — and the enrollment is a trial, not a billed member',
+    text: "hi! my daughter riya is 10 — can she try the beginners batch? i'm nikhil",
+    wants: ['book_trial', 'plan', 'act'],
+    tap: true,
+    expect: async (q) => {
+      const riya = await q(`
+        select p.full_name, e.is_trial, cl.name as class from enrollment e
+          join player pl on pl.id = e.player_id
+          join person p on p.id = pl.person_id
+          join class cl on cl.id = e.class_id
+         where lower(p.full_name) like '%riya%'`)
+      return [
+        check('riya has an enrollment', riya.length > 0, riya),
+        check('it is a trial', riya.length > 0 && riya.every((r: any) => r.is_trial), riya),
+      ]
+    },
+  },
+  {
+    name: 'fq-trial-converts',
+    stage: 'money',
+    persona: 'admin',
+    /**
+     * The conversion moment (T047–T051). Nothing converts a trial by itself,
+     * and until this pass nothing existed to convert one on purpose — the
+     * drive's only conversion was improvised raw SQL over 120 seconds and a
+     * recovery round. `convert_trial` is the known-good plan; the world checks
+     * hold whichever tool the model reaches for.
+     */
+    what: "the trial continues — is the conversion made explicit, and does the family hear? (T049)",
+    text: "riya's trial went great — she's continuing from the 1st of next month at the usual rate",
+    wants: ['convert_trial', 'plan', 'act'],
+    tap: true,
+    expect: async (q, ctx) => {
+      const riya = await q(`
+        select e.is_trial, e.started_on::text, cl.name as class from enrollment e
+          join player pl on pl.id = e.player_id
+          join person p on p.id = pl.person_id
+          join class cl on cl.id = e.class_id
+         where lower(p.full_name) like '%riya%'`)
+      const familyHeard = await q(`
+        select left(m.body, 120) as body from message m
+          join contact ct on ct.id = m.contact_id
+          join account a on a.holder_person_id = ct.person_id
+          join player pl on pl.account_id = a.id
+          join person p on p.id = pl.person_id
+         where lower(p.full_name) like '%riya%'
+           and m.direction = 'outbound' and m.suppressed_reason is null
+           and m.created_at >= '${ctx.startedAt}'::timestamptz`)
+      return [
+        check('the enrollment is no longer a trial', riya.length > 0 && riya.every((r: any) => !r.is_trial), riya),
+        check('the family heard what they signed up for', familyHeard.length > 0, familyHeard),
+      ]
+    },
+  },
+  {
+    name: 'fq-dropin-class',
+    stage: 'money',
+    persona: 'admin',
+    /** Builds the per-session world the register case below needs. */
+    what: 'a per-session batch — the rate unit the register gate regression lives on',
+    text: 'add a drop-in batch, every day 5 to 6pm at green park, 300 a session. arjun takes it, put aarav in it.',
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q) => {
+      const cls = await q(`select id, name, rate_amount::text, rate_unit from class where lower(name) like '%drop%'`)
+      const c0 = cls[0]
+      const enrolled = c0
+        ? await q(`select p.full_name from enrollment e
+                     join player pl on pl.id = e.player_id
+                     join person p on p.id = pl.person_id
+                    where e.class_id = '${c0.id}'::uuid and e.ended_on is null`)
+        : []
+      const coached = c0 ? await q(`select count(*)::int as n from class_coach where class_id = '${c0.id}'::uuid`) : [{ n: 0 }]
+      return [
+        check('a drop-in class exists at per_session', norm(c0?.rate_unit) === 'per_session', cls),
+        check('aarav is in it', enrolled.some((r: any) => norm(r.full_name).includes('aarav')), enrolled),
+        check('arjun is on it', Number(coached[0]?.n ?? 0) > 0, coached),
+      ]
+    },
+  },
+  {
+    name: 'fq-register-direct',
+    stage: 'attendance',
+    persona: 'coach',
+    /**
+     * F-P's "logged, not fixed", now fixed: `needsPreview` tested money tables
+     * before the single-own-scope exemption, so a register at a per_session
+     * rate — whose `tally_line` is the mechanical consequence §6.4 requires —
+     * put a diff in front of a coach standing on a court. The case does NOT
+     * tap: if the gate still fires, the attendance stays staged and the first
+     * check fails, which is exactly the measurement.
+     */
+    what: 'the per-session register marks directly — no confirmation diff in front of the coach (F-P)',
+    clock: (q) =>
+      firstAt(q, `select (min(s.ends_at) + interval '5 minutes')::text as at
+                    from session s join class c on c.id = s.class_id
+                   where s.status = 'scheduled' and s.ends_at > app.now()
+                     and lower(c.name) like '%drop%'`),
+    text: 'drop-in just finished — everyone was there',
+    wants: ['mark_attendance', 'act', 'plan'],
+    expect: async (q, ctx) => {
+      const marked = await q(`
+        select p.full_name as who, a.status, a.marked_at::text
+          from attendance a
+          join session s on s.id = a.session_id
+          join class c on c.id = s.class_id
+          join player pl on pl.id = a.player_id
+          join person p on p.id = pl.person_id
+         where lower(c.name) like '%drop%'`)
+      const billed = await q(`
+        select tl.amount::text, tl.description from tally_line tl
+          join session s on s.id = tl.session_id
+          join class c on c.id = s.class_id
+         where lower(c.name) like '%drop%' and tl.kind = 'session'`)
+      const commits = await calledTool(q, ctx, 'commit')
+      return [
+        check('the register is marked without a tap', marked.length > 0 && marked.every((r: any) => norm(r.status) === 'present'), marked),
+        check('the per-session line minted with it', billed.length > 0, billed),
+        check('commit was never called', commits === 0, `commit called ${commits}×`),
+      ]
+    },
+  },
+]
+
 /**
  * The suites. `arc` is the lifecycle sweep; `f-o` walks the shortest setup that
- * makes the regression cases askable and then asks them.
+ * makes the regression cases askable and then asks them; `f-q` is `f-o` plus
+ * the 16 Aug re-read's cases, ordered so the F-O cases run in a world equal to
+ * or richer than the one they were written against.
  *
  * The prelude is five of the arc's own case objects, by reference. `daily-batch`
  * is in it for a reason that is easy to lose: it is the only class that runs
@@ -1371,6 +1622,7 @@ const FO_CASES: Case[] = [
  * every clocked case below fails the travel budget instead of the model.
  */
 const byName = (n: string) => CASES.find((k) => k.name === n)!
+const fq = (n: string) => FQ_CASES.find((k) => k.name === n)!
 const SUITES: Record<string, Case[]> = {
   arc: CASES,
   'f-o': [
@@ -1380,6 +1632,20 @@ const SUITES: Record<string, Case[]> = {
     byName('daily-batch'),
     byName('go-live'),
     ...FO_CASES,
+  ],
+  'f-q': [
+    byName('setup-small'),
+    byName('compose-big'),
+    byName('hire-coach'),
+    byName('daily-batch'),
+    fq('fq-family-two-classes'),
+    byName('go-live'),
+    ...FO_CASES,
+    fq('fq-parent-waive-routing'),
+    fq('fq-trial-books'),
+    fq('fq-trial-converts'),
+    fq('fq-dropin-class'),
+    fq('fq-register-direct'),
   ],
 }
 if (!SUITES[SUITE]) {
@@ -1400,7 +1666,11 @@ const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
 const MARKDOWN_RE = /(\*\*|^#{1,6}\s|\[[^\]\n]+\]\()/m
 const ISO_RE = /\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2})?\b/
 const JARGON_RE = /\b(academy|roster|onboarding|setup phase|the system|database|record|entity|uuid|payload)\b/i
-const URL_RE = /https?:\/\//
+// Forwardable invite links are the one legitimate URL in a body (§8.1 — the
+// admin forwards the text, so the link IS the artifact); the invariant already
+// exempts them, and the reply flag now agrees rather than flagging every
+// correct invite draft.
+const URL_RE = /https?:\/\/(?!wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com)/
 const PAST_TENSE_RE =
   /\b(?:i(?:'ve| have)\s+(?:just\s+|now\s+)?(?:added|created|set|made|booked|updated|enrolled|scheduled|recorded)|that'?s (?:done|set up|sorted|added|created)|all (?:done|set up|sorted))\b/i
 
@@ -1567,6 +1837,16 @@ async function runChild(model: string, arm: string): Promise<void> {
   const q: Sql = async <T = any>(sql: string) =>
     withSession({ role: 'service', academyId: made.academyId }, async (tx) => (await tx.unsafe(sql)) as unknown as T[])
 
+  /**
+   * The per-case cursor, on the clock `created_at` actually runs on (0027 — the
+   * tenant clock). A host-time cursor against domain-time stamps re-admits the
+   * whole backlog into "this turn" the moment the arc has walked the clock.
+   */
+  const domainNow = async (): Promise<string> => {
+    const rows = await q<{ at: string }>(`select app.now()::text as at`)
+    return rows[0]?.at ? new Date(String(rows[0].at)).toISOString() : new Date().toISOString()
+  }
+
   // Somebody with no role, so the stranger case has a number to arrive from.
   // §10.1 keeps signup as the operator's job, so a genuinely unknown number
   // resolves to nobody and never reaches a turn — a prospect contact is the
@@ -1712,7 +1992,7 @@ async function runChild(model: string, arm: string): Promise<void> {
       }
 
       const speaker = await contactFor(kase)
-      const startedAt = new Date().toISOString()
+      const startedAt = await domainNow()
       let fatal: string | null = null
       if (speaker) {
         try {
@@ -1754,7 +2034,12 @@ async function runChild(model: string, arm: string): Promise<void> {
         const offered = [...msgs]
           .reverse()
           .flatMap((m: any) => (Array.isArray(m?.payload?.buttons) ? m.payload.buttons : []))
-          .filter((b: any) => b?.actionId)
+          // uuid-shaped only: a SUPPRESSED message stores placeholder ids
+          // ("pending-0") for buttons that were never minted, and feeding one
+          // into the uuid IN-list below killed a whole child process with
+          // `invalid input syntax for type uuid` — the harness dying on a
+          // message the product had correctly refused to send.
+          .filter((b: any) => b?.actionId && /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(String(b.actionId)))
         const kinds = offered.length
           ? await q(
               `select id::text as id, kind from action
@@ -1766,7 +2051,7 @@ async function runChild(model: string, arm: string): Promise<void> {
         if (!hit) {
           tapNote = `nothing staged to tap — ${offered.map((b: any) => `[${b?.title}: ${kindOf.get(String(b.actionId)) ?? '?'}]`).join(' ') || 'no buttons at all'}`
         } else {
-          const tappedAt = new Date().toISOString()
+          const tappedAt = await domainNow()
           try {
             await inboundFromContact({ contactId: speaker.id, actionId: String(hit.actionId) })
             const after = await q(
