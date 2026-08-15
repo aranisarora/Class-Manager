@@ -765,6 +765,8 @@ type LiveEnrollment = {
   player_id: string
   player_name: string
   account_id: string
+  holder_person_id: string
+  holder_name: string
   class_id: string
   class_name: string
   upcoming: string
@@ -780,13 +782,16 @@ async function liveEnrollments(
   return q<LiveEnrollment>(
     ctx,
     `select e.id as enrollment_id, e.player_id, pe.full_name as player_name,
-            pl.account_id, e.class_id, c.name as class_name,
+            pl.account_id, ac.holder_person_id, hp.full_name as holder_name,
+            e.class_id, c.name as class_name,
             (select count(*) from session s
               where s.class_id = e.class_id and s.status = 'scheduled'
                 and (s.starts_at at time zone ${lit(tz)})::date > date ${lit(endIso)}) as upcoming
        from enrollment e
        join player pl on pl.id = e.player_id
        join person pe on pe.id = pl.person_id
+       join account ac on ac.id = pl.account_id
+       join person hp on hp.id = ac.holder_person_id
        join class c on c.id = e.class_id
       where e.academy_id = ${uid(ctx.academyId)}
         and ${stillRunning('e', tz)}
@@ -875,12 +880,61 @@ const endEnrollment: OperationDef = {
     const classes = [...new Set(live.map((l) => l.class_name))]
     const missed = live.reduce((n, l) => n + num(l.upcoming), 0)
     const owed = await accountBalance(ctx, live[0].account_id)
+    const when = zoned(endIso, a.timezone).toFormat('d LLL')
+
+    /**
+     * A family can always leave — but the WRITE is the admin's. RLS lets no
+     * holder update `enrollment`, so a family-initiated end used to die as
+     * `PRECONDITION_FAILED: the world moved` — the world had not moved; the
+     * writer was not allowed, and the misdiagnosis sent every probe and the
+     * month drive into byte-identical retries (F-K #1/#5). Same shape as a
+     * waiver: propose the exact change and ROUTE it. The admin's tap replays
+     * this operation under a session that can write; the family hears the
+     * honest state now and the outcome when it lands (rule 15).
+     */
+    // Route only for a real non-admin person. `service` is the runtime's own
+    // hand (the driver, a tap replay, a job) — is_admin() is false there by
+    // exemption, not by authority, and routing the runtime to itself would
+    // strand every programmatic end.
+    const [actorIsAdmin] = await q<{ ok: boolean }>(ctx, `select app.is_admin() as ok`)
+    if (ctx.role === 'user' && !actorIsAdmin?.ok) {
+      const stopping =
+        `${name} stops ${classes.length === 1 ? classes[0] : `all ${classes.length} classes`} after ${when}` +
+        (owed > 0 ? ` — ${formatINR(owed)} still open on the account` : '')
+      const steps: PlanStep[] = [{ note: `${name}'s leave, routed to the admin to make official` }]
+      for (const adminPerson of await adminPersonIds(ctx)) {
+        steps.push({
+          message: {
+            to_person_id: adminPerson,
+            is_escalation: true,
+            body:
+              `${live[0].holder_name ?? 'The family'} says ${stopping}. ` +
+              `One tap makes it official — their spot runs as normal until then.`,
+            buttons: [
+              {
+                title: `End on ${when}`,
+                action: { kind: 'operation', op: 'end_enrollment', args: { ...args } },
+              },
+            ],
+          },
+        })
+      }
+      steps.push({
+        message: {
+          to_contact_id: ctx.role === 'service' ? undefined : ctx.contactId,
+          body:
+            `Noted — ${name} stops after ${when}. I've sent it to the owner to make official, ` +
+            `and I'll confirm here once it's done. Classes and billing carry on as normal until then.`,
+        },
+      })
+      return steps
+    }
 
     const steps: PlanStep[] = [
       {
         note:
           `${name} stops ${classes.length === 1 ? `${classes[0]}` : `all ${classes.length} classes`} on ` +
-          `${zoned(endIso, a.timezone).toFormat('d LLL')}` +
+          `${when}` +
           (missed ? `, coming off ${missed} scheduled session${missed === 1 ? '' : 's'}` : '') +
           (owed > 0 ? `, with ${formatINR(owed)} still open on the account` : ''),
       },
@@ -889,6 +943,20 @@ const endEnrollment: OperationDef = {
                  where id in (${live.map((l) => uid(l.enrollment_id)).join(',')})
                    and academy_id = ${uid(ctx.academyId)} and ended_on is null`,
         requireRows: live.length,
+      },
+      // The family asked to leave (or is being ended); either way an ended
+      // enrolment is a change FOR THEM, and the one message that closes the
+      // loop is the one that says it is done (rule 15 — a handoff with no
+      // return trip is indistinguishable from being ignored).
+      {
+        message: {
+          to_person_id: live[0].holder_person_id,
+          body:
+            `${a.name}: ${name} is out of ${classes.length === 1 ? classes[0] : `all ${classes.length} classes`} ` +
+            `after ${when} — done and confirmed. ` +
+            (owed > 0 ? `${formatINR(owed)} is still open on the account. ` : '') +
+            `Attendance and progress stay on record if you ever want them.`,
+        },
       },
     ]
     steps.push(...deactivateStrandedPlayers(ctx, [args.player_id], a.timezone))
