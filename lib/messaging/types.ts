@@ -192,6 +192,15 @@ export type SendOutcome =
       inWindow: boolean
       template: TemplateName | null
       costPaise: number
+      /**
+       * Who this landed with, and whether it was a confirmation question —
+       * threaded from the staged spec so a turn can know a confirmation is
+       * already on someone's screen and not stage a second one (F-F: a family
+       * got the operation's "Just to be sure —?" and the model's own richer
+       * confirmation one minute apart, for one cancellation).
+       */
+      toContactId?: string
+      confirmationRequest?: boolean
     }
   | { status: 'suppressed'; reason: SuppressReason; messageId: string | null }
   | { status: 'failed'; reason: string; messageId: string | null }

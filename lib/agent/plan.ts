@@ -1532,7 +1532,11 @@ async function flushOutbox(
       // and a button that was never printed belongs to no message. It keeps a null
       // `message_id` and simply lapses at its TTL, as every action did before 0016.
       await attachActionsToMessage(svc, outcome.messageId, (msg.buttons ?? []).map((b) => b.actionId))
-      outcomes.push(outcome)
+      outcomes.push(
+        outcome.status === 'queued' || outcome.status === 'sent'
+          ? { ...outcome, toContactId: m.toContactId, confirmationRequest: Boolean(m.is_confirmation_request) }
+          : outcome,
+      )
     } catch (e) {
       outcomes.push({
         status: 'failed',

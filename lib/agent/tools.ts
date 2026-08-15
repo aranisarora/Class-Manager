@@ -52,6 +52,16 @@ export type ToolCtx = {
   /** Who this turn has already put a message in front of, and it landed. */
   repliedTo?: Set<string>
   /**
+   * Who has a confirmation question from THIS turn sitting on their screen —
+   * put there by an operation that confirms itself (`client_cancel`,
+   * `opt_out`…). One tap answers it; anything further this turn teaches them
+   * to ignore it. Driven: a family received the operation's "Just to be sure —
+   * cancel Aarav…?" and, one minute later, the model's own re-worded
+   * confirmation of the same cancellation (F-F). `repliedTo` could not catch
+   * it because the operation's send never went through `reply`.
+   */
+  confirmationAskedTo?: Set<string>
+  /**
    * What this turn actually said to the person whose turn it is.
    *
    * The loop treated the model's *trailing prose* as the reply, which is right only
@@ -247,6 +257,15 @@ const CLAIM_PATTERNS: [verb: string, patterns: RegExp[]][] = Object.keys(CLAIM_T
     new RegExp(`\\band\\s+${verb}\\s+(?=[A-Z₹\\d])`),
   ],
 ])
+
+/** Which contacts an execute path just asked to confirm (ToolCtx.confirmationAskedTo). */
+function noteConfirmations(ctx: ToolCtx, outcomes: SendOutcome[]): void {
+  for (const o of outcomes) {
+    if ((o.status === 'sent' || o.status === 'queued') && o.confirmationRequest && o.toContactId) {
+      ctx.confirmationAskedTo?.add(o.toContactId)
+    }
+  }
+}
 
 /** Record what a plan wrote, so a claim can be checked against it. */
 export function recordExecuted(
@@ -1498,6 +1517,7 @@ export async function runTool(
       if (!gate) {
         const res = await executePlan(ctx.session, steps, String(args?.intent ?? 'a plan that needed no confirmation'), audienceFor(ctx.identity))
         ctx.outcomes?.push(...res.outcomes)
+      noteConfirmations(ctx, res.outcomes)
         if (!res.ok) return { result: { ok: false, executed: false, error: res.error } }
         ctx.worked = true
         ctx.committed = true
@@ -1586,6 +1606,7 @@ export async function runTool(
       ctx.pendingPlans.delete(handle)
       ctx.pendingMeta?.delete(handle)
       ctx.outcomes?.push(...res.outcomes)
+      noteConfirmations(ctx, res.outcomes)
       if (!res.ok) return { result: { ok: false, error: res.error, sent: 0 } }
       ctx.worked = true
       ctx.committed = true
@@ -1639,6 +1660,7 @@ export async function runTool(
       }
       const res = await executePlan(ctx.session, steps, String(args?.intent ?? opName), audienceFor(ctx.identity))
       ctx.outcomes?.push(...res.outcomes)
+      noteConfirmations(ctx, res.outcomes)
       if (!res.ok) return { result: { ok: false, executed: false, error: res.error } }
       // The rows, not just the arguments: a follow-up that has to re-derive the id of
       // the thing just created is a follow-up that will one day invent one.
@@ -1656,6 +1678,11 @@ export async function runTool(
           audit_id: res.auditId,
           ...compactDiff(res),
           sent: res.outcomes.map((o) => o.status),
+          // Said at the moment it becomes true, not discovered at the refusal:
+          // the operation's own confirmation is the whole conversation now.
+          ...(res.outcomes.some((o) => (o.status === 'sent' || o.status === 'queued') && o.confirmationRequest)
+            ? { asked: 'A confirmation question is on their screen now — their tap answers it. Nothing further from you this turn.' }
+            : {}),
           ...ignored,
         },
         note: res.summary,
@@ -1673,6 +1700,22 @@ export async function runTool(
       // near-identical messages asking them to confirm it. The `repeat` gate
       // catches identical text; nothing caught a paraphrase.
       //
+      // A confirmation question from an operation this turn is already on their
+      // screen. One tap answers it; a second confirmation — reworded, warmer,
+      // better-buttoned — teaches them to ignore the first (F-F, driven: the
+      // operation's "Just to be sure — cancel Aarav…?" and the model's own
+      // version of the same question, one minute apart).
+      if (ctx.confirmationAskedTo?.has(to)) {
+        return {
+          result: {
+            error: 'a confirmation question from this turn is already on their screen',
+            hint:
+              'The operation asked them itself — one tap answers it. Say nothing more to this person this turn: ' +
+              'a second confirmation, however worded, teaches them to ignore the first. Their tap is the next event.',
+          },
+        }
+      }
+
       // Doctrine rule 1 is quiet by default, and a turn is the unit: whatever
       // else this turn discovers goes in the NEXT message, when they have said
       // something. A first attempt that was suppressed or failed does not count —

@@ -979,6 +979,7 @@ async function modelTurn(
     outcomes,
     executed: [],
     repliedTo: new Set<string>(),
+    confirmationAskedTo: new Set<string>(),
     saidToUser: [],
   }
 
@@ -1412,6 +1413,24 @@ async function modelTurn(
    */
   if (text.trim() && !spoke() && input.source === 'job') {
     trace.push({ round: rounds, name: '(job turn: trailing prose discarded, tools are how a job speaks)', ms: 0, args: traceValue(text, 2000) })
+    text = ''
+  }
+
+  /**
+   * An operation this turn already put a confirmation question on this person's
+   * screen (`client_cancel`, `opt_out`… — see ToolCtx.confirmationAskedTo). One
+   * tap answers it; trailing prose after it is at best noise and at worst a
+   * second confirmation the `reply` gate just refused, re-entering as text.
+   * Same shape as the job-turn discard above: dropped, traced, visible to a
+   * drive.
+   */
+  if (text.trim() && !spoke() && toolCtx.confirmationAskedTo?.has(identity.contact.id)) {
+    trace.push({
+      round: rounds,
+      name: '(trailing prose discarded: a confirmation from this turn is already on their screen)',
+      ms: 0,
+      args: traceValue(text, 2000),
+    })
     text = ''
   }
 
