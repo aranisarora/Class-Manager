@@ -224,8 +224,11 @@ otherwise. Probe `deepseek-v4-pro` only for the judge/reflection tier and
   `GOOGLE_APPLICATION_CREDENTIALS_JSON` from env and schema.
 - Run probes and initial traffic **off-peak** where possible: peak
   (06:30–09:30 and 11:30–15:00 IST) bills double for zero information.
-- The API key lives in `.env` only. It has already been pasted in one chat;
-  rotate it on the platform before production cutover.
+- The API key lives in `.env.local` only, which is gitignored. It has been
+  pasted in chat more than once and **the decision is not to rotate it**
+  (15 Aug 2026) — so the mitigation that remains is the one that always
+  mattered: it never enters the repo, and a balance cap on the platform bounds
+  what a leak can spend.
 
 ## Rollback
 
