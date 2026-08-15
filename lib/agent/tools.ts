@@ -1270,7 +1270,7 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
   {
     name: 'remember',
     description:
-      "Write down a fact worth carrying: vocabulary, a policy, a habit, a preference, a stated boundary. Facts, not transcripts — short, about a person or the business, true beyond today. A fact that changes no behaviour was not worth storing, so be able to name what it changes. The obvious ones are the valuable ones: the word they use for a class, the day they always ask about money, that this parent never taps a button, that this coach wants three hours' notice. Corrections never edit — pass `supersedes` and keep both, so \"why does it think that?\" stays answerable.",
+      "Write down a fact worth carrying: vocabulary, a habit, a preference, a stated boundary. Facts, not transcripts — short, about a person or the business, true beyond today. And facts, not rows: a rate, a schedule, a venue, a phone number, who pays for whom, a balance — the tables hold those, and a memory copy is a future wrong answer waiting for the row to change, so if a table holds it, do not write it. One instance is never a policy: store what happened and for whom, not a rule you inferred from it. A fact that changes no behaviour was not worth storing, so be able to name what it changes. The obvious ones are the valuable ones: the word they use for a class, the day they always ask about money, that this parent never taps a button, that this coach wants three hours' notice. Corrections never edit — pass `supersedes` and keep both, so \"why does it think that?\" stays answerable.",
     parametersJsonSchema: {
       type: 'object',
       properties: {

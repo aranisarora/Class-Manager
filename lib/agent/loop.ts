@@ -1811,9 +1811,13 @@ async function reflect(
   )
   if (!decls.length) return null
 
+  // Names alone cannot tell an attempt from an outcome, so a refused call
+  // reached reflection looking exactly like a thing that happened. Whether each
+  // one actually ran travels with it — the same distinction the tail's actions
+  // block makes for the main loop (F-K).
   const did = turn.trace
     .filter((t) => !t.name.startsWith('(') && t.name !== 'read')
-    .map((t) => t.name)
+    .map((t) => (t.error ? `${t.name} (refused — it did not happen)` : t.name))
   const at = await now(identity.academyId)
 
   const system = `You have just finished a turn as Class Manager, the manager for ${identity.academy.name}. It is already sent; you are not talking to anybody now.
@@ -1822,8 +1826,8 @@ Below are the only questions left open — anything not listed here was already 
 
 "Neither" is the common and correct answer:
 
-1. **Is there a fact worth carrying?** Vocabulary they use, a policy that came up, a habit, a preference, something about how this person works. Facts, not transcripts — "prefers voice notes" is a fact, "asked about fees" is a log line. A fact that changes no future behaviour was not worth storing. Correct an existing fact by superseding it, never by writing a contradiction.
-2. **Did they ask you to look at something later, or is there something you said you would come back to?** "Check if she's paid by Friday", "keep an eye on Saturday", "remind me Thursday", or a promise you made in the reply. That is a \`schedule\` — it runs later as an ordinary turn under this person's own permissions, and deciding to do nothing then is fine. \`expires_at\` is required.
+1. **Is there a fact worth carrying?** Vocabulary they use, a habit, a preference, something about how this person works. Facts, not transcripts — "prefers voice notes" is a fact, "asked about fees" is a log line. And facts, not rows: a rate, a schedule, a venue, a phone number, who pays for whom, a balance — the database holds those, and a memory copy of a row is a future wrong answer, so if a table holds it, do not write it. One instance is never a policy: store what happened and for whom, never a rule you inferred from it. A fact that changes no future behaviour was not worth storing. Correct an existing fact by superseding it, never by writing a contradiction.
+2. **Did they ask you to look at something later, or is there something you said you would come back to?** "Check if she's paid by Friday", "keep an eye on Saturday", "remind me Thursday", or a promise you made in the reply. That is a \`schedule\` — it runs later as an ordinary turn under this person's own permissions, and deciding to do nothing then is fine. \`expires_at\` is required. Know what already runs without you: standing jobs remind every family before every session, chase every unmarked register, send each coach their day and the owner their brief and digest, and bill the month. A promise the standing machinery already keeps is not a schedule call — a watch duplicating one sends somebody the same thing twice.
 
 Do not invent work. Do not schedule a watch nobody asked for and you did not promise. If neither applies, call nothing at all and say nothing — that is the system working.
 
