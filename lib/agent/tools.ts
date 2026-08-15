@@ -815,11 +815,14 @@ function resolveAction(raw: unknown, ctx: ToolCtx): { ok: true; action: any } | 
     // strip that covered only the tool paths would leave a `{confirmed:true}` button
     // mintable — and a button is executed with NO model in the loop, which is the one
     // place a bad payload cannot be recovered from.
+    const stepsStripped: string[] = []
+    const cleanSteps = stripHumanAssertions(checked.steps, stepsStripped) as PlanStep[]
+    if (stepsStripped.length) return { ok: false, error: defangedButton(stepsStripped) }
     return {
       ok: true,
       action: {
         kind: 'steps',
-        steps: stripHumanAssertions(checked.steps),
+        steps: cleanSteps,
         summary: String(a.summary ?? 'that change'),
       },
     }
@@ -827,7 +830,25 @@ function resolveAction(raw: unknown, ctx: ToolCtx): { ok: true; action: any } | 
 
   const checked = checkActionPayload(a)
   if (!checked.ok) return { ok: false, error: checked.error }
-  return { ok: true, action: stripHumanAssertionsFromPayload(checked.payload).payload }
+  const strippedPayload = stripHumanAssertionsFromPayload(checked.payload)
+  if (strippedPayload.stripped.length) return { ok: false, error: defangedButton(strippedPayload.stripped) }
+  return { ok: true, action: strippedPayload.payload }
+}
+
+/**
+ * A stripped confirmation on a BUTTON is worse than on a call: the tap replays
+ * with no model in the loop, so the silently-defanged button re-asks instead of
+ * acting — driven, a parent tapped "Yes, cancel" and was asked "Just to be
+ * sure?" a third time (F-F). Refused at mint, where a model still exists to
+ * take the working route.
+ */
+function defangedButton(stripped: string[]): string {
+  return (
+    `this button carries ${[...new Set(stripped)].join(', ')}, which only that person's own tap can set — ` +
+    `minted here it would be stripped, and their tap would re-ask instead of acting. ` +
+    `Do not compose your own confirmation for an operation that confirms itself: call the operation ` +
+    `directly, and it puts the right question, with working buttons, on their screen.`
+  )
 }
 
 /**
