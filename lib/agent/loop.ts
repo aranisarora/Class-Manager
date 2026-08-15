@@ -1407,7 +1407,10 @@ async function modelTurn(
         + "and they'll come back to you."
       : rounds >= MAX_TOOL_ROUNDS
         ? "I went round in circles on that one and didn't get to an answer. Can you tell me the short version of what you need?"
-        : "Something broke on my side working that out — it isn't you, and repeating it won't help. I've flagged it."
+        : // "I've flagged it" used to end this sentence, and nothing here flags
+          // anything — the runtime's own fixed copy making exactly the unbacked
+          // claim the whole F-K campaign is against. Say what is true instead.
+          "Something broke on my side working that out — it isn't you, and repeating it won't help. Try me again in a moment."
   }
 
   /**

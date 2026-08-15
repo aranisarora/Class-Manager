@@ -226,7 +226,13 @@ somewhere in `renderTemplate`/`buildTemplateParams` (`lib/messaging/send.ts`).
 **Blast radius:** every templated message reads machine-written; the digest's structure —
 its whole value — is flattened.
 
-### F-H · Reminders land at 4:30 am
+### F-H · Reminders land at 4:30 am — **FIXED 15 Aug 2026 (month drive)**
+
+**Status:** `pullOutOfQuietHours` (`lib/jobs/util.ts`) clamps a `client_reminder`
+falling inside the academy's quiet hours (settings `quiet_start`/`quiet_end`,
+default 21:00–07:00) back to the last waking minute before them — the evening
+before, for an early-morning time; never later. Verified live: the Tue 5:00am
+reminder re-minted at Mon 20:59 and delivered. The record below is the evidence.
 
 **Root:** R6 (a commercial default applied without ever being chosen).
 **Saw:** three `client_reminder` jobs fired at 23:00Z = **4:30 am IST** — the 14-hour
@@ -368,6 +374,59 @@ one-variable:** routing verbs into `DONE_VERBS`/`CLAIM_TABLES` (a message-to-tha
 or handoff footprint makes them true); bare-word jargon in lint; an actions block beside
 `recentLookups` so prior turns' attempted ops travel with their status ("refused twice,
 nothing written") and "did I actually do it?" is answerable without querying audit_entry.
+
+### F-L · Mid-round prose is a surface the model believes in and the runtime drops — **ADDRESSED 15 Aug 2026**
+
+**Root:** R2 (a surface that half-exists: final-round prose ships on interactive
+turns, everything else is a notebook — and the inconsistency teaches the wrong
+lesson). Three instances in one driven week: a roster read-back composed and
+lost; the "No" to "did the intros go out?" composed beside a `schedule` call and
+lost; a Friday watch that kept its promise in prose, which the F-B job-turn
+guard rightly discarded — the promise broke silently.
+**Fix (interface documentation, doctrine-17 class — a fact about the harness,
+not a behavior rule):** the `reply` declaration and the job-turn situation line
+state the channel contract. Verified: the re-fired watch called `reply` and the
+report landed.
+
+### F-M · A model-authored steps button does what its prose never said
+
+**Root:** R10's tap-shaped corner. The runtime computes the diff (`previewPlan`)
+but a model-minted `steps` button carries only the model's own summary, so what
+the person confirms and what the tap writes can diverge in either direction.
+Driven, three times in one month: go-live promised intro messages the steps
+never contained; a trial's [Confirm] converted it and minted ₹1,600 of charges
+behind "free, nothing to pay"; a cancellation's read-back said "all 3 families
+are told" over steps holding only the session write. **Where the fix lives:**
+the tap read-back for money- or message-carrying steps should carry the
+runtime's own diff line (counts of writes and sends), not only the model's
+prose — same chokepoint that already gates commits. Partial mitigations landed:
+staged previews now say NOTHING HAS RUN in their own voice, and bare "Done" is
+a claim (`986939f`); a trial is free until converted on purpose (`7fa4bcf`).
+
+### F-N · The model lives on the tenant clock; `created_at` lives on the wall
+
+**Root:** F-A's ghost, one table over. In a driven world the tenant clock moves
+and `message.created_at` (and `turn`, `audit_entry`…) stays wall time, so any
+model query filtering "today's messages" by tenant date returns a confident
+empty — driven: the model retracted a TRUE "the cancellations went out" on the
+strength of exactly that read, then diagnosed its own wrong-column error when
+challenged and corrected itself. No production impact (the clocks agree); every
+driven "what went out today?" is corrupted. **Where the fix lives:** timestamp
+defaults on model-queried tables should follow `app.now()` (needs its own pass —
+ordering around clock jumps, and the turn/message pairing in DRIVING.md, both
+depend on created_at monotonicity).
+
+### The month drive, 15 Aug 2026 — what else it found and fixed (post-`049f28b` brain)
+
+Structural fixes landed from live evidence, each its own commit: F-F all three
+layers (`db7f1b6` one confirmation per action; `84b1544` no defanged buttons);
+F-H quiet hours (`1b8a2c0`); F-I register universe (`748f93f`); family-notice
+absences not reported back (`f23435d`); one family, one outcome (`a0cba07`);
+`book_trial` session lookup as svc (`16ada1a`); trials never bill unconverted
+(`7fa4bcf`); mute keys give "just the bill" a structural home (`e4f93e3`);
+family-initiated leave routes to the admin instead of dying as "the world
+moved", and the executed end closes rule 15's return trip (`4320558`).
+Full narrative: `.probe/drive-month/` (journal.md, score.md, transcript/).
 
 ### What is now known-good (null results, worth not re-driving)
 
