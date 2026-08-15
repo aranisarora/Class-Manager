@@ -2592,7 +2592,7 @@ function buildStageHistory(o: {
       role_acted: o2.role,
       input: JSON.stringify({ said: o2.said, source: 'inbound' }),
       output: JSON.stringify({ reply: o2.reply }),
-      model: 'gemini-3-pro-preview', prompt_tokens: 8200 + o2.rounds * 900,
+      model: 'deepseek-v4-flash', prompt_tokens: 8200 + o2.rounds * 900,
       cached_tokens: 6100, output_tokens: 120 + o2.rounds * 40,
       latency_ms: 1800 + o2.rounds * 700, rounds: o2.rounds,
       tool_calls: JSON.stringify(o2.tools), error: null,
@@ -2964,11 +2964,18 @@ export type InboundResult =
     }
   | { ok: false; unresolved: true; candidates: { academyId: string; name: string }[] }
 
+/**
+ * The declared type of an attachment.
+ *
+ * It no longer decides what the model is handed — the model client is text-only
+ * and media never reaches it (§14.5 repealed). It decides what the person is
+ * TOLD: `mediaRefusal` picks a different sentence for a voice note than for a
+ * photo, and a voice note misfiled as `application/octet-stream` gets answered
+ * with the wrong one. A `data:` URI states its own type and has no extension to
+ * fall back on, which is why that branch comes first.
+ */
 function guessMime(url: string, given?: string): string {
   if (given) return given
-  // A `data:` URI states its own type, and it has no extension to fall back on — without
-  // this, every attachment from the emulator reached the model as octet-stream, which is
-  // the one type Gemini cannot read (§14.5 wants audio to arrive AS audio).
   const data = /^data:([^;,]+)[;,]/i.exec(url)
   if (data) return data[1] as string
   const u = url.toLowerCase()

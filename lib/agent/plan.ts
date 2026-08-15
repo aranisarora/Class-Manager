@@ -1662,16 +1662,16 @@ const BULK_ROWS = 40
 export function needsPreview(
   result: PlanResult,
   steps: PlanStep[],
-  o?: { actorContactId?: string; fromParsedInput?: boolean },
+  o?: { actorContactId?: string },
 ): boolean {
-  // §2.7 is an invariant, not a preference: "parsed input is a proposal, never a
-  // write. Anything read from an image, voice note or document is read back
-  // before it is acted on." A photo of a whiteboard misread by one row is a
-  // wrong timetable for a whole business, and the person who sent it is the only
-  // one who can see that. The runtime knows a turn carried media; leaving this
-  // to the model means it holds most of the time, which is the same as not
-  // holding.
-  if (o?.fromParsedInput && result.totalRows > 0) return true
+  // §2.7's media clause — "anything read from an image, voice note or document
+  // is read back before it is acted on" — used to be enforced here, from a
+  // runtime flag set whenever a turn carried an attachment. The model is
+  // text-only now: no turn carries one, the flag was always false, and a
+  // condition that cannot fire is worse than no condition, because it reads as
+  // cover that is not there. The invariant itself survives in the rules below —
+  // every multi-row write is still previewed, and a timetable typed in one messy
+  // sentence is exactly as misreadable as a photographed one was.
 
   const hasAdjust = steps.some((s) => 'adjust' in s)
 

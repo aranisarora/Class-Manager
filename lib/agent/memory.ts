@@ -20,7 +20,7 @@ import type { SubjectKind } from '@/lib/types'
 import { withSession, type SessionCtx } from '@/lib/db'
 import { env } from '@/lib/env'
 import { AppError } from '@/lib/errors'
-import { generate } from '@/lib/agent/gemini'
+import { generateJson } from '@/lib/agent/deepseek'
 
 /** §5/§13 — curation runs when a subject's store crosses this, never per turn. */
 export const CURATE_THRESHOLD = 12
@@ -321,30 +321,39 @@ export async function curate(
     .map((f, i) => `${i + 1}. [${isoDay(f.created_at)}] ${f.fact}`)
     .join('\n')
 
-  const res = await generate({
+  // Asked for as json rather than constrained to it — this API has no stable
+  // schema enforcement — so the shape is stated in the prompt and `generateJson`
+  // validates it and retries once. The old prose fallback — split whatever came
+  // back on newlines and hope — is gone with it: a retry that asks again is a
+  // better answer than a paragraph reinterpreted as a list, and this is a batch
+  // path where the retry costs nobody anything.
+  const res = await generateJson<string[]>({
     system: CURATE_SYSTEM,
-    contents: [
+    messages: [
       {
         role: 'user',
-        parts: [
-          {
-            text: `Subject: ${subjectKind === 'academy' ? 'the business' : 'one person'}\nLive facts, oldest first:\n\n${listing}`,
-          },
-        ],
+        content:
+          `Subject: ${subjectKind === 'academy' ? 'the business' : 'one person'}\n` +
+          `Live facts, oldest first:\n\n${listing}\n\n` +
+          'Answer as one json object and nothing else, in exactly this shape:\n' +
+          '{"lines": ["one kept fact per string", "another"]}',
       },
     ],
     model: env.MODEL_SYNTH,
     temperature: 0.2,
     maxOutputTokens: 2048,
-    responseJsonSchema: {
-      type: 'object',
-      properties: { lines: { type: 'array', items: { type: 'string' } } },
-      required: ['lines'],
+    validate: (v) => {
+      const o = v as { lines?: unknown }
+      if (!o || typeof o !== 'object' || !Array.isArray(o.lines)) return null
+      return o.lines.filter((l): l is string => typeof l === 'string')
     },
   })
 
-  const lines = parseLines(res.text)
-  const memo = bound(lines)
+  // Nothing usable came back twice running. The existing hot set is the better
+  // answer than an empty one: curation improves a memory, it does not own it.
+  if (!res.value) return
+
+  const memo = bound(res.value)
   await writeHotSet(tenant, subjectKind, subjectId, memo)
 }
 
@@ -361,25 +370,6 @@ async function writeHotSet(
       await tx`update person set memory = ${memo} where id = ${subjectId}`
     }
   })
-}
-
-function parseLines(text: string): string[] {
-  const raw = text.trim()
-  if (!raw) return []
-  try {
-    const parsed = JSON.parse(raw.replace(/^```(?:json)?|```$/g, '').trim()) as {
-      lines?: unknown
-    }
-    if (Array.isArray(parsed.lines)) {
-      return parsed.lines.filter((l): l is string => typeof l === 'string')
-    }
-  } catch {
-    // The model answered in prose. Its lines are still lines.
-  }
-  return raw
-    .split('\n')
-    .map((l) => l.replace(/^\s*[-*\d.)\]]+\s*/, '').trim())
-    .filter((l) => l.length > 0)
 }
 
 function bound(lines: string[]): string | null {

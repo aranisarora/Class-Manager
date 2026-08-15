@@ -7,8 +7,10 @@
  *   who this is · academy · memory hot sets · today · situation · query results
  *
  * The discipline is the whole point: no dates, no ids, no per-academy anything
- * above the boundary, or implicit caching stops working and every turn pays full
- * price for ~8k tokens (§4.4). Audio and media always sit in the tail.
+ * above the boundary, or the provider's automatic prefix cache stops matching and
+ * every turn pays full price for ~8k tokens (§4.4). A cache hit costs 3.2% of a
+ * miss, so the discipline is worth more here than it ever was on Vertex — and it
+ * is now the entire mechanism, there being no handle to hold.
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'

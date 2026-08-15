@@ -2,7 +2,7 @@
 
 > Build document. Everything needed to implement the product: setup, invariants, architecture, data model, behavior, message catalog, scheduled work, and build order.
 >
-> **Stack:** Next.js (API, webhook, emulator) · Supabase (Postgres, RLS, Storage) · WhatsApp Cloud API (Meta, direct) · WhatsApp Flows for everything form-shaped (§14.6) · Gemini (multimodal, native audio) · a durable job scheduler, which is required, not optional (§13).
+> **Stack:** Next.js (API, webhook, emulator) · Supabase (Postgres, RLS, Storage) · WhatsApp Cloud API (Meta, direct) · WhatsApp Flows for everything form-shaped (§14.6) · DeepSeek, text only (§14.5) · a durable job scheduler, which is required, not optional (§13).
 >
 > **Read §2 before writing any code.** Those rules are broken by omission, not by intent.
 
@@ -43,7 +43,7 @@ Non-negotiable. Each is a rule a plausible-looking implementation breaks silentl
 4. **Sending is not receiving.** `queued ≠ sent ≠ delivered ≠ read`, enforced in schema, code and copy. The bot never claims what it cannot see. **`read` is an optional signal** — a recipient with read receipts switched off never generates one, so absence of `read` is *no information*, never evidence of not-read, and the copy must never imply otherwise.
 5. **Multi-step consequences live in transactions, not in the model's memory.** A cancel that credits and notifies is one operation that cannot half-complete — and **messages inside it are staged until commit**, so a rollback has messaged nobody (§14.2.1).
 6. **Nothing is sent during onboarding until the admin says go.** Building the roster messages nobody.
-7. **Parsed input is a proposal, never a write.** Anything read from an image, voice note or document is read back before it is acted on (§14.5).
+7. **Parsed input is a proposal, never a write.** Anything read *out of* what somebody typed — rather than stated outright — is read back before it is acted on (§14.5).
 8. **Every proactive message must pass one test, at runtime:** would this recipient have asked for it? This is not a review checklist — the bot composes its own messages (§14.4), so it applies the test itself, before sending.
 
 ---
@@ -104,7 +104,7 @@ The five below were added after reading a month of the product's own transcripts
 13. **Say what will stop, not only what will happen.** People model this thing by what reaches their phone, so the absence of a message is information you owe them. *"One tap, and I don't ask again."* *"You're out of it — I won't chase you about tonight."* A promise to be quiet is the most valuable thing you can say and the one nobody thinks to.
 14. **The cost goes before the tap, never after.** Anything that charges someone or gives up their place says so *in the confirmation*, with the number. Discovering a charge afterwards is how a fee becomes a dispute, and the sentence costs nothing to move.
 15. **Close what you opened.** Whoever raised a thing hears its outcome, not just its acknowledgement. A handoff with no return trip is indistinguishable from being ignored.
-16. **Teach the surface once, where it is useful.** Nobody guesses they can photograph a whiteboard at you, forward a spreadsheet, send a voice note, share thirty contact cards, or use a broadcast list instead of a group. Say it at the moment it saves them the work — never as a tour.
+16. **Teach the surface once, where it is useful.** Nobody guesses they can type a whole week in one messy sentence and have it read back, or use a broadcast list instead of a group. Say it at the moment it saves them the work — never as a tour.
 
 ### 4.2 Layer 3 — behavior modules
 
@@ -158,12 +158,14 @@ STABLE PREFIX  (byte-identical across turns; changes only with schema or modules
 VARIABLE TAIL  (never cached)
 ├─ memory hot set         ~400
 ├─ conversation
-└─ query results, media
+└─ query results
 ```
 
-~8k stable tokens. Audio (§14.5) sits in the variable tail regardless, so native audio never touches the cacheable prefix.
+~8k stable tokens.
 
-**Keeping the prefix byte-identical is the discipline; explicit cache handles are deferred.** Gemini supports explicit context caching — create the cache, hold the handle on `academy.prompt_cache_handle`, refresh on schema change — and it is worth doing once volume justifies it. Until then implicit caching does the same work with no stale-handle failure mode, where the bot would run against last week's schema and look merely confused. The column exists and stays null until phase 8's instrumentation shows the spend.
+**Keeping the prefix byte-identical is the whole discipline, and it is now the whole mechanism.** The provider caches automatically: the server reuses the KV cache of any request whose tokens begin with a byte-identical prefix, a cache-hit token costs 3.2% of a miss, and there is no handle, no TTL and no storage fee. Nothing has to be decided — the prefix simply has to stay stable and academy-independent, with everything variable below it. `academy.prompt_cache_handle` stays null permanently: it assumed a per-academy prefix, and one cache serves every tenant. Two things throw the hit away, and both are avoidable — a changed tool description (one miss-priced call, not a failure), and a per-tenant `user_id`, which buys KVCache isolation and would partition the shared prefix, so it is never sent.
+
+The measured history is worth keeping: Gemini's *implicit* cache never bit at all (0 cached tokens cross-turn), which is why that client grew 140 lines of explicit-cache machinery, and why this design's reward only arrived with the provider that pays it.
 
 ### 4.5 Layer 5 — lint
 
@@ -531,7 +533,7 @@ Every policy carries a regression test asserting cross-tenant and cross-role rea
 The unavoidable cost of adoption is **data entry**. Reducing it is the highest-leverage work in the product.
 
 1. **Setup Flow** (§14.6) — the form-shaped part in one screen, because a dozen chat round-trips is a dozen small waits. Business name, category, venues, operating pattern, cancellation window. **It opens inside WhatsApp; the admin never leaves the chat.** Once, ever.
-2. **Bring the timetable however it already exists** (§14.5). A photo of the whiteboard. A photo of the paper register. A forwarded spreadsheet. A voice note describing the week. The bot parses, reads back, creates on a tap. **This is the single biggest friction reducer in the product.**
+2. **Bring the timetable in one message, however messy** (§14.5). "Mon & Wed 6:30 beginners at Green Park, Sat 8am juniors" — no punctuation needed, every class at once. The bot parses, reads back, creates on a tap. **This is the single biggest friction reducer in the product**, and since §14.5 was repealed it is the only one: a photo of the whiteboard is answered with an apology and this sentence.
 3. **Coaches** — §8.1. Three facts each, then invites.
 4. **Families** — §9.1. Contacts shared, roster built, nobody messaged.
 5. **Payments** — one UPI handle. Rail 1, under a minute.
@@ -559,7 +561,7 @@ End state: a working academy, and **no parent messaged yet** (§2.6).
 
 Three constraints: the coach is a **warm contact** (the admin employs them), **turnover is high**, and the admin therefore runs this **several times a year**. Target: **under a minute for the admin, one tap for the coach.**
 
-**Step 1 — the admin supplies three facts.** Contact (vCard, or name and number), which classes, pay rate. Nothing else. No availability grid — the admin assigns the coaching, so there is nothing to declare. `status='added'`. **Messages nobody.**
+**Step 1 — the admin supplies three facts.** Contact (name and number, typed), which classes, pay rate. Nothing else. No availability grid — the admin assigns the coaching, so there is nothing to declare. `status='added'`. **Messages nobody.**
 
 **Step 2 — the invite, self-initiated.** The bot drafts a short plain message; the admin forwards it from their own number. It carries a `wa.me` deep link with prefilled text. The coach taps, sends, and **the window opens from their side** — free, no template, no block risk, no tier consumption. `status='invited'`.
 
@@ -633,7 +635,7 @@ Coaches leave often and new ones arrive. Routine operations, not exceptional one
 
 **Don't import — get invited.** Every path where the parent sends the first message is strictly better: free, no template, no block risk, no tier consumption, and the window opens itself.
 
-**Step 1 — the admin shares contacts.** Multi-contact share from the address book (vCards), or a photographed register (§14.5). The bot builds `person`, `contact`, `account`, `player`, `enrollment` — **while messaging nobody.**
+**Step 1 — the admin types the families in.** One line per family, children's names with them; several families in one message is normal and expected. (Shared contact cards and a photographed register were the intended route; neither reaches the model — §14.5.) The bot builds `person`, `contact`, `account`, `player`, `enrollment` — **while messaging nobody.**
 
 **Step 2 — parents invite themselves.** The bot drafts the invite; the admin sends it from their own number. It carries a deep link; the parent taps, sends the prefilled text, and the bot introduces itself [`CL-INTRO`] — whose manager it is, the three things it does, then **proof instead of promises**: their child's actual schedule, with a useful next tap.
 
@@ -1018,17 +1020,21 @@ Two constraints, both cheap:
 - **It applies §2.8 before sending** — would this person have wanted this?
 - **It goes through the one send path.** Throttle, cap, staging. Not a restriction on what it can say; a guarantee about how it goes out. **No unthrottled send function exists in the codebase** (§16.3)
 
-### 14.5 Multimodal in, text out
+### 14.5 Text in, text out — and what that cost
 
-Inbound is multimodal, and this is **the answer to the data-entry problem** (§7.1), not a nicety.
+**This section used to promise multimodal input. It is repealed, deliberately, on 2026-08-15.**
 
-- **Images.** Photographed timetable → the week's classes. Paper register → a roster. Fee sheet → rates. **GPay screenshot → a payment record** (amount, UTR, timestamp), offered to the admin as a one-tap confirm, which turns Rail 1 reconciliation from blind attestation into confirming something already read.
-- **Audio, natively.** Voice notes go to the model as audio — no separate transcription step. The model holds the roster and the conversation, so it resolves "Aarav/Arav" against players who actually exist, which a standalone ASR cannot do. This matters because Bangalore speech is Hinglish and Kannada/Tamil–English code-mixed. Audio tokenizes cheaply and sits in the variable tail, so it never touches the cache prefix (§4.4).
-- **Documents.** Forwarded spreadsheets and PDFs, same pipeline.
+The model client is DeepSeek's API, which has no image, audio or document input at all: a non-text content part is rejected at schema validation before auth is even checked. That was accepted knowingly, in exchange for 2–5× lower cost per turn and a provider whose automatic prefix cache actually pays for the §4.4 design (`deepseek-migration.md` carries the whole trade). What it cost is written here rather than quietly deleted, because it was the largest single claim in this document:
 
-**Mechanics:** Meta returns a media ID; fetch bytes with the app token promptly (URLs expire in minutes), store in Supabase Storage, then process.
+- **A photographed timetable is no longer a week.** §7.1's biggest friction reducer is now "type the week in one messy sentence and have it read back" — much worse for a whiteboard, about the same for somebody who was going to type anyway.
+- **Voice notes are how half of India types**, and they cannot be read. This is the sharpest loss and it lands hardest on exactly the people this product is for.
+- **A GPay screenshot is not a payment record.** Rail 1 reconciliation stays attestation.
 
-**Two rules.** Parsed content is **read back before action** — recognition errors land on names, times and amounts, exactly where damage happens, and with audio there is no transcript for the human to check, so **the read-back is the only verification surface.** And parsing produces a **proposal**, never a silent write.
+**Media still arrives, and silence is not an acceptable answer to it.** An inbound photo, voice note or file gets a designed reply from the runtime — naming what cannot be done, and the road that still works ("type the classes in any rough form and I'll read them back") — before the model is asked anything. Going quiet is the one failure a person cannot tell apart from being ignored, and it must never be caused by a capability the product removed. That reply is a runtime send, not a line in the prompt: an instruction the model follows four times in five is not a guarantee.
+
+**What survives unchanged.** Parsed content is **read back before action** — recognition errors land on names, times and amounts, exactly where the damage is — and parsing produces a **proposal**, never a silent write. A week read out of one typed sentence is exactly as misreadable as one read off a photo was.
+
+**Outbound media is untouched.** Rendered timetables, documents and links the product *sends* have nothing to do with this.
 
 Read-back examples:
 
@@ -1042,7 +1048,7 @@ Read-back examples:
 > 2. Meera — moves to 6:30 Beginners from next week
 > `[Do both]` `[Just #1]` `[Just #2]` `[Neither]`
 
-If the audio is unclear the bot says so plainly rather than guessing — §2.4 applied to input.
+If a sentence is ambiguous the bot says so plainly rather than guessing — §2.4 applied to input.
 
 ### 14.6 UI kit
 
@@ -1078,7 +1084,7 @@ flow('register', {
 | Flow | Takes | Used for |
 |---|---|---|
 | `business_setup` | every field, prefilled from the row | §7.1 step 1, and every later edit of the business shape |
-| `add_class` | whatever was read off the photo, however partial | §7.1 step 2, the timetable and its corrections |
+| `add_class` | whatever was read off their sentence, however partial | §7.1 step 2, the timetable and its corrections |
 | `register` | session, roster as a dynamic option list, note | §8.2 step 5, the inverted register |
 
 **Three, not five.** `coach_confirm` and `client_details` were specified here and are deliberately not built. Both are *one question*, and a form is the wrong shape for one question: §8.1's *"is this right?"* is two reply buttons and a list of the four things that are ever actually wrong, and §9.1's missing details arrive during the conversation that is already happening (§10.1's rule — answer first, ask never). A form for a yes/no costs a tap to open, a tap to answer and a tap to submit, to collect what one button already collects. `roster_repair` is not built for a different and harder reason, below.
@@ -1278,7 +1284,7 @@ Each phase has an acceptance criterion. Do not start a phase before its predeces
 | 7 | **Money** | Rates, tally lines, adjustments, Rail 1 links, reconciliation, dunning | A month of mixed per-session and per-month enrollments produces a correct line-by-line tally with a waiver applied |
 | 8 | **Admin day** | Brief and digest as synthesis (§10.2), NL CLI, follow-up buttons, delivery-status answers, audit and undo | *"Did Meera get the reminder?"* answers from real status. Undoing a messaging operation sends corrections to exactly the people who were told. Every number in a generated digest traces to a query result in its payload |
 | 9 | **Flows & images** | Flow JSON artifacts, `flow_send`, response validation, publish/version handling, the image renderer (timetable, month grid, trend line) | A Flow response writes with no model call and a stale `flow_token` refuses. A Flow that would fail Meta's publish rules fails locally first. A week's timetable renders to an image that is legible on a phone |
-| 10 | **Multimodal** | Media pipeline, image parsing, native audio, read-back | A photographed timetable becomes a proposed week the admin confirms. A Hinglish voice note resolves a player name against the roster |
+| 10 | ~~**Multimodal**~~ — **repealed** (§14.5) | The client is text-only. What remains: media *arrives* and is answered in words by the runtime, never dropped | A voice note gets a designed reply naming what cannot be done and the road that works. A Hinglish sentence *typed* resolves a player name against the roster — the same test, minus the microphone |
 | 11 | **Prospect funnel** | Cold inbound (§10.1), auto-confirmed trials, admin undo | A stranger with a QR link books a trial end to end; the admin can undo it |
 | 12 | **Agent simulation** | Personas, goals, judge agent, diffable runs (§17) | Ten seeded persona runs complete and produce a judge report. The same seed replays identically. A deliberately introduced regression shows up in a run diff |
 | 13 | **Rail 2** | Partner onboarding, mandates, in-chat checkout, webhooks | A mandate collects a tally with no admin action |

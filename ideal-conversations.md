@@ -54,13 +54,14 @@ Hi
 
 > Got it. **Ace TT Academy**, Green Park, 24 hours' notice, brief at 7.
 >
-> Now the part that usually takes an hour — your timetable. Send it however it already exists: a photo of the whiteboard or the register, a forwarded sheet, or a voice note telling me the week.
+> Now the part that usually takes an hour — your timetable. Type the whole week in one go, however messy: "Mon & Wed 6:30 beginners at Green Park, Sat 8am juniors".
 >
 > `[ Add classes one by one ]`
 
-**SHARWIN** 📷 *photo of the whiteboard, taken at an angle*
+**SHARWIN**
+mon wed fri 6.30 beginners then 7.30 intermediate, sat 8-10 advanced, all green park. theres a sub jr sat morning too, 10ish
 
-> I read this off your board — check it before I create anything:
+> I read this off your message — check it before I create anything:
 >
 > • **Mon, Wed, Fri · 6:30–7:30 pm** · Beginners · Green Park
 > • **Mon, Wed, Fri · 7:30–8:30 pm** · Intermediate · Green Park
@@ -68,13 +69,13 @@ Hi
 >
 > All ₹2,500/month unless you say otherwise.
 >
-> **The fourth row is cut off** — I can see a Saturday 10–11 slot and something like "sub jr", but I won't guess a class into existence.
+> **I didn't get the fourth one** — a Saturday morning "sub jr", around 10, but I won't guess a class into existence.
 >
 > `[ Create the 3 ]`  `[ Fix the 4th ]`
 
 **Taps `[ Fix the 4th ]`**
 
-▤ **Flow · Add a class** — *already filled in with what I could read*
+▤ **Flow · Add a class** — *already filled in with what I could get*
 
 Class name → **Sub Jr** · Days → **Sat** ☑ · Starts → **10:00 am** · Ends → **11:00 am** · Venue → **Green Park** · Rate → **2500** · Per → **Month**
 
@@ -87,9 +88,11 @@ advanced is 3500
 
 > Fixed. Beginners, Intermediate, Sub Junior ₹2,500 · Advanced ₹3,500. All per month.
 >
-> Coaches next. **Share their contact cards** — the ⊕ button, Contact, pick as many as you like.
+> Coaches next. **Names and numbers in one message** is fine — I'll sort them out.
 
-> **◇ Instead —** had he sent no photo and typed *"I'll type it instead"*, the bot would have offered the same **Add a class** Flow with nothing prefilled, four times over. A voice note describing the week, or last term's forwarded spreadsheet, would have been read back exactly as above. Every route ends at the same read-back.
+> **◇ Instead —** had he typed the week as four separate messages, or asked for a form, the bot would have offered the same **Add a class** Flow, prefilled with whatever it had. Every route ends at the same read-back.
+>
+> **◇ Changed 15 Aug 2026 —** this scene used to open with a photograph of the whiteboard, and the read-back was of a cut-off fourth row. The model is text-only now (§14.5), so what arrives is one messy sentence instead. Everything after it — the partial read named exactly, the prefilled Flow, the tap — is unchanged, which is the point: the read-back was always the load-bearing part. Had he sent the photo anyway, he would have been told plainly that it cannot be read, and asked for this sentence.
 
 ---
 
@@ -123,11 +126,11 @@ intermediate and sub junior, same 500
 
 > Both in, neither contacted.
 >
-> Families now — share the contacts, or photograph the register.
+> Families now — one line per family is fine, children's names with them. Several in one message, as many as you like.
 
-**SHARWIN** 📇 *34 contact cards* — then 📷 *the paper register*
+**SHARWIN** *pastes 34 lines from his phone's notes app*
 
-> **34 contacts, 38 players.** Three things I can't resolve alone:
+> **34 families, 38 players.** Three things I can't resolve alone:
 >
 > 1. **Two Meeras** in Beginners — one register line, two numbers
 > 2. **Kiran S** in Beginners *and* Advanced — two children, or one in two classes?

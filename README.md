@@ -24,9 +24,9 @@ npm run dev
 
 Then open **http://localhost:3000/emulator**.
 
-`.env.local` and `.secrets/` are required and both are gitignored — eleven keys, validated
-by `lib/env.ts`, covering the database, Vertex credentials, the two model names, the link
-signing secret and the transport. Without them nothing runs, and in a fresh worktree the
+`.env.local` and `.secrets/` are required and both are gitignored — twelve keys, validated
+by `lib/env.ts`, covering the database, `DEEPSEEK_API_KEY`, the Vertex credentials the
+rollback road still needs, the two model names, the link signing secret and the transport. Without them nothing runs, and in a fresh worktree the
 failure looks like model errors rather than a missing file: every turn comes back with an
 error, no tools and an empty reply. Copy `.env.local`, `.secrets/` and `node_modules`
 (a junction is fine) into any worktree before driving it.
@@ -84,7 +84,9 @@ Open a pane per contact from the tray, then:
 7. **Turn on a fault** — `send_fail`, `number_blocked`, `media_timeout`, `link_expired`,
    `model_error`.
 8. **Send a file.** `📎 attach` takes anything on your disk — drop it on the composer or paste a
-   screenshot. Audio reaches the model as audio (§14.5); there is no transcription step.
+   screenshot. **The model cannot read any of it** (§14.5, repealed): the runtime answers the
+   attachment in words and the turn carries on from whatever was typed. Worth sending one to see
+   which sentence comes back — a voice note and a photo get different ones.
 9. **Ask what it knows.** The 🧠 button on a pane shows §5 both ways: the bounded hot set the
    prompt actually carries, and the append-only fact record behind it, with corrections marked as
    supersessions rather than edits.
@@ -195,10 +197,10 @@ scripts/drive.ts          the harness — talk to it, then read the tables back
   `validateFlowJson` re-checks what Meta checks at publish, and nothing here has ever called
   the Flows API — creating and publishing a Flow is an account operation, and it belongs with
   the other Meta calls when this connects to a real number.
-- **Inbound media is never fetched in production.** A Meta media id becomes a placeholder
-  string handed to Vertex as a file URI it cannot resolve, so the spec's "bring the timetable
-  however it exists" is broken on the real transport. The emulator's data-URI path works,
-  which is exactly why driving does not find it.
+- **Inbound media is never fetched, and no longer needs to be.** A Meta media id becomes a
+  placeholder string; nothing downstream resolves it, because the model is text-only (§14.5).
+  What matters now is that an attachment is *answered* rather than dropped, and that path is
+  the same on both transports.
 - **Rail 2** (payment gateway, mandates, in-chat checkout) is deferred per §19 phase 13. Rail 1 —
   UPI handle, admin attestation, reconciliation, dunning — is built and the **front half has now
   run once**: a register was marked from chat, both families were told the outcome, both players
@@ -207,14 +209,14 @@ scripts/drive.ts          the harness — talk to it, then read the tables back
   The back half has since run once too — `requested → confirmed` without double credit, and the
   dunning ladder to escalation — but `per_package` exhaustion, `per_term`, a waiver through the
   model and a disputed charge remain undriven. Treat those as unverified, not as working.
-- **`academy.prompt_cache_handle` stays null, deliberately.** Implicit caching turned out *not* to
-  do the work — measured across turns it served 0 cached tokens, hitting only between hops inside
-  one turn — so `lib/agent/gemini.ts` now takes an explicit `CachedContent` for the stable prefix
-  and a warm turn serves ~93% of its prompt from cache. The handle lives in the process, not on the
-  academy: the prefix is deliberately academy-independent, so one cache serves every tenant and
-  per-tenant rows would buy N copies of the same thing. It is created only when a second call
-  arrives within five minutes, because cache storage costs more per hour than a quiet academy
-  saves. The event log's `cached` chip is the check — amber at 0%.
+- **`academy.prompt_cache_handle` stays null, permanently.** It assumed a per-academy prefix, and
+  the prefix is deliberately academy-independent — one cache serves every tenant. On Vertex this
+  column's absence was covered by 140 lines of explicit-cache machinery in `gemini.ts`, built
+  because implicit caching measurably never bit (0 cached tokens across turns). The DeepSeek
+  client deletes all of it: the server caches any byte-identical prefix automatically, a hit costs
+  3.2% of a miss, and there is nothing to create, hold or expire. The event log's `cached` chip is
+  still the check — amber at 0%, and now it is measuring something the provider promises rather
+  than something we were buying.
 - **There is no agent-simulation harness**, and the README used to claim one. Personas, a judge
   agent and diffable runs (§17, phase 12) were built and removed as over-engineered; `npm run
   drive` is the harness now, and a person driving it is the eval. `drive score` and

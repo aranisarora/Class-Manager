@@ -21,7 +21,7 @@ import { adminContactIds } from '@/lib/identity'
 import type { Identity } from '@/lib/types'
 import { lint } from './lint'
 import { writeFact } from './memory'
-import type { ToolDecl } from './gemini'
+import type { ToolDecl } from './deepseek'
 import { audienceFor, executePlan, needsPreview, parseSteps, previewPlan, type PlanStep } from './plan'
 import {
   checkActionPayload, checkSteps, humanAssertionNote,
@@ -43,12 +43,6 @@ export type ToolCtx = {
   pendingMeta?: Map<string, { intent: string; summary: string; totalRows: number; needsConfirm: boolean }>
   /** Everything this turn put on the wire, so the loop can report it. */
   outcomes?: SendOutcome[]
-  /**
-   * This turn carried an image, a voice note or a document. §2.7 makes anything
-   * derived from one a proposal rather than a write, and that has to be a
-   * property of the runtime rather than a thing the model remembers.
-   */
-  fromParsedInput?: boolean
   /**
    * Operations that executed directly this turn (no preview, no tap), with the
    * arguments they ran with — so §4.3's follow-up can be offered on the path the
@@ -1136,7 +1130,7 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
           type: 'string',
           enum: [...FORM_IDS],
           description:
-            "Attach a form the person fills in without leaving the chat. 'business_setup' is the shape of the business in one screen — name, what they teach, where, how they charge, the cancellation notice, when they want their brief and their summary, where money goes; the owner's, and it is how onboarding starts rather than six questions in a row. 'add_class' is one class — name, days, times, venue, rate; pass form_prefill with whatever you already read off a photo or heard in a voice note, so they are correcting rather than typing. 'register' is one session's attendance and needs form_session_id: it asks who was NOT there, so a normal night is nought taps. A message with a form carries no other buttons and no list — say the alternative in words instead, because a form is always an offer and never a toll.",
+            "Attach a form the person fills in without leaving the chat. 'business_setup' is the shape of the business in one screen — name, what they teach, where, how they charge, the cancellation notice, when they want their brief and their summary, where money goes; the owner's, and it is how onboarding starts rather than six questions in a row. 'add_class' is one class — name, days, times, venue, rate; pass form_prefill with whatever they have already told you, so they are correcting rather than typing. 'register' is one session's attendance and needs form_session_id: it asks who was NOT there, so a normal night is nought taps. A message with a form carries no other buttons and no list — say the alternative in words instead, because a form is always an offer and never a toll.",
         },
         form_session_id: { type: 'string', description: "Which session, for form:'register'." },
         form_prefill: {
@@ -1456,7 +1450,6 @@ export async function runTool(
       const handle = newId()
       const gate = needsPreview(preview, steps, {
         actorContactId: ctx.identity.contact.id,
-        fromParsedInput: ctx.fromParsedInput,
       })
       /**
        * A plan nobody needs to confirm is a plan, not a proposal — so it runs.
@@ -1598,7 +1591,7 @@ export async function runTool(
       const steps: PlanStep[] = [{ operation: { name: opName as any, args: (args?.args ?? {}) as any } }]
       const preview = await previewPlan(ctx.session, steps, String(args?.intent ?? ''))
       if (!preview.ok) return { result: { ok: false, error: preview.error } }
-      if (needsPreview(preview, steps, { actorContactId: ctx.identity.contact.id, fromParsedInput: ctx.fromParsedInput })) {
+      if (needsPreview(preview, steps, { actorContactId: ctx.identity.contact.id })) {
         const handle = newId()
         ctx.pendingPlans.set(handle, steps)
         ctx.worked = true

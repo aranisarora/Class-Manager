@@ -56,7 +56,7 @@ const show = (msgs, n = 4) => {
   }
 }
 
-// 2 — an admin asks a real question. Exercises identity -> prompt -> Gemini -> read tool -> lint -> send.
+// 2 — an admin asks a real question. Exercises identity -> prompt -> model -> read tool -> lint -> send.
 line('2 · POST /api/emulator/inbound  (admin, natural language read)')
 let t0 = Date.now()
 let r = await j('/api/emulator/inbound', {

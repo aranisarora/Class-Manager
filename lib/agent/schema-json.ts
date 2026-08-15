@@ -1,14 +1,24 @@
 /**
- * lib/agent/schema-json.ts — an operation's zod schema, as the JSON Schema
- * Gemini constrains decoding with.
+ * lib/agent/schema-json.ts — an operation's zod schema, as the JSON Schema the
+ * tool declaration carries.
  *
  * WHY THIS EXISTS
  * -----------------------------------------------------------------------------
- * The declared schema is not documentation. Gemini applies it as a hard
- * constraint *while it generates the call*, so a property the declaration names
- * is a property the model cannot misspell, and an `enum` is a set it cannot
- * leave. Everything this module produces is therefore worth more than the same
- * information written as prose.
+ * The declared schema is not documentation. It travels WITH the call, at the
+ * decode point, in the form a decoder can use — a property the declaration names
+ * is a property the model has in front of it as it writes the arguments, and an
+ * `enum` is a set it can see the whole of. Everything this module produces is
+ * therefore worth more than the same information written as prose.
+ *
+ * **What changed with the provider, and it matters here.** On Vertex this was a
+ * hard constraint: the decoder physically could not emit a property the schema
+ * did not name. DeepSeek applies tool schemas as guidance outside `/beta`'s
+ * `strict` mode, so a misspelled property is now *possible* where it used to be
+ * impossible. Nothing in this file changes because of that — a schema at the
+ * decode point is still the strongest instrument available, and it is now the
+ * only one — but the runtime is what catches a bad call rather than the wire,
+ * which is why `runTool` validates and why a parse failure has a designed path
+ * through the loop instead of being unreachable.
  *
  * And that is exactly how the same information was being carried. `act` declared
  * `args: { type: 'object' }` — no properties, nothing required, nothing typed —
@@ -19,19 +29,24 @@
  * where the schema says `name`, twice in a row, wrote nothing, and told the admin
  * it was having trouble with SQL syntax.
  *
- * WHAT GOOGLE SUPPORTS, AND WHAT IT DOES NOT
+ * WHAT THE DECLARATION MAY CONTAIN
  * -----------------------------------------------------------------------------
- * FunctionDeclaration parameters take an OpenAPI subset: `type`, `nullable`,
- * `required`, `format`, `description`, `properties`, `items`, `enum`. It does NOT
- * take `default`, `optional`, `maximum`, or — the one that shapes this file —
- * **`oneOf`**. A discriminated union cannot be declared at all, which is why
- * `plan`'s five-way step union was never a schema this API could express, and why
- * shipping it as a JSON string was the right call rather than a lazy one.
+ * This was written to Vertex's OpenAPI subset — `type`, `nullable`, `required`,
+ * `format`, `description`, `properties`, `items`, `enum`, and NOT `default`,
+ * `optional`, `maximum` or, the one that shaped this file, **`oneOf`**. A
+ * discriminated union could not be declared at all, which is why `plan`'s
+ * five-way step union was never a schema that API could express, and why shipping
+ * it as a JSON string was the right call rather than a lazy one.
  *
- * So a union here is *collapsed*, never expressed, and the collapse is lossy on
- * purpose: a slightly loose declaration that decodes is worth more than a precise
- * one the API rejects. Deep nesting is also a documented rejection cause, so
- * depth is capped rather than trusted.
+ * DeepSeek takes standard JSON Schema and its beta strict mode supports `anyOf`,
+ * so that union could finally become a real declaration. **It has not been
+ * changed here**, deliberately: that is schema work, not migration work, and it
+ * would move the one thing every arc case depends on in the same change that
+ * moved the provider. It is the first thing to do afterwards.
+ *
+ * Until then a union is *collapsed*, never expressed, and the collapse is lossy
+ * on purpose: a slightly loose declaration that decodes is worth more than a
+ * precise one the API rejects. Depth stays capped for the same reason.
  */
 import type { z } from 'zod'
 

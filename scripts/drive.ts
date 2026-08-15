@@ -1062,10 +1062,11 @@ async function main(): Promise<void> {
       const media = flag('media')
       if (!contactId || (!text && !media)) die(c.red('drive say <contactId> "<what they type>" [--media <file>]'))
       const at = cursorNow()
-      // §7.1 step 2 is "bring the timetable however it already exists" — a photo,
-      // a forwarded sheet, a voice note — and it is called the single biggest
-      // friction reducer in the product. There was no way to send one of those
-      // from here, so it had never been driven.
+      // `--media` no longer reaches the model — it is text-only (§14.5, repealed) —
+      // and that is exactly why this stays: what it drives now is the runtime's
+      // answer to an attachment, which is the guarantee that replaced the
+      // capability. A voice note and a photo should come back with different
+      // sentences, and anything typed alongside should still be answered.
       const attached = media ? await attach(media) : null
       console.log(`${c.dim('  →')} ${text}${attached ? c.dim(`  [${attached.mimeType}, ${attached.bytes} bytes]`) : ''}`)
       await api('/api/emulator/inbound', {
@@ -1085,10 +1086,10 @@ async function main(): Promise<void> {
       if (!phone || (!text && !media)) die(c.red('drive stranger <+91...> "<what they type>" [--media <file>]'))
       const { ingestInbound, SENDER_PHONE } = await import('@/lib/seed')
       const at = cursorNow()
-      // A cold number arriving with a photo of a timetable, or a voice note, is the §7.1
-      // shape the spec calls the single biggest friction reducer — and it could not be
-      // driven at all, because only `say` (which needs a contact row that a stranger by
-      // definition does not have) could attach anything.
+      // A stranger's first message being an attachment is the worst case of the
+      // text-only trade (§14.5): nobody has told them yet that it cannot be read, and
+      // silence here is a lost enquiry. Drivable from here because `say` needs a
+      // contact row a stranger by definition does not have.
       const attached = media ? await attach(media) : null
       console.log(
         `${c.dim('  →')} ${text}${attached ? c.dim(`  [${attached.mimeType}, ${attached.bytes} bytes]`) : ''}  ` +

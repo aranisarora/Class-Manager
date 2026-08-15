@@ -1,11 +1,20 @@
 /**
- * lib/agent/gemini.ts — the model client. CONTRACTS §6.
+ * lib/agent/gemini.ts — **the previous model client, kept as the rollback road.**
  *
- * Vertex AI through @google/genai. Text and inlineData parts both go in the same
- * request: images, documents and — §14.5 — audio, which reaches the model AS
- * AUDIO. There is no transcription step anywhere in this product; the model holds
- * the roster and the conversation, which is what lets it resolve "Aarav/Arav"
- * against players who actually exist.
+ * Nothing calls this any more: `lib/agent/deepseek.ts` is the client, and `loop.ts`,
+ * `memory.ts` and both probes import that. It stays until the migration's phase 7
+ * says otherwise (`deepseek-migration.md`) — N clean days of production traffic —
+ * because until then flipping `MODEL_MAIN` back and re-pointing two imports is a
+ * rollback that takes minutes, and deleting this file is what would make it a
+ * rewrite. When phase 7 lands, this file, `@google/genai`, `VERTEX_*` and
+ * `GOOGLE_APPLICATION_CREDENTIALS_JSON` all go together.
+ *
+ * **Its multimodal claim is repealed, not merely unused.** This file used to say
+ * audio reached the model AS AUDIO with no transcription step anywhere in the
+ * product. That was true of Vertex and is no longer true of anything: §14.5 is
+ * repealed and the runtime answers media in words (`mediaRefusal`). If this road
+ * is ever taken again, the media path does NOT come back with it — it was removed
+ * from `loop.ts`, deliberately, as a product decision rather than a client limit.
  *
  * This module records NOTHING to the database. loop.ts owns the `turn` row.
  */

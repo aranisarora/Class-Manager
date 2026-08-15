@@ -584,9 +584,9 @@ export function normalizeMessage(raw: Raw, index: ActionIndex, fallbackContactId
   const mediaRaw = (pick(raw, 'media') as Raw) ?? (pick(payload, 'media') as Raw) ?? null
   const resolvedMediaUrl = str(pick(mediaRaw, 'url')) ?? mediaUrl
   // An inbound row keeps the declared mime type on the payload and the bytes in `media_url`.
-  // Its top-level type is the better answer than sniffing an extension, because §14.5 turns
-  // on the kind being right — audio has to arrive as audio, and a URL with no extension is
-  // otherwise indistinguishable from a document.
+  // Its top-level type is the better answer than sniffing an extension: the kind is what
+  // the emulator labels the bubble with, and what decides which refusal the sender reads
+  // back, and a URL with no extension is otherwise indistinguishable from a document.
   const mediaMime = str(pick(payload, 'mediaMimeType', 'media_mime_type', 'mimeType'))
   const media: EmuMedia | null = resolvedMediaUrl
     ? {
@@ -1859,8 +1859,9 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
 
       sendMedia: (contactId, media, caption) =>
         withBusy(`send:${contactId}`, async () => {
-          // The mime type travels with the bytes. A data URI has no extension for the server
-          // to sniff, and §14.5 turns on the type being right — audio must arrive as audio.
+          // The mime type travels with the bytes. A data URI has no extension for the
+          // server to sniff, and the type still decides which sentence the person gets
+          // back now that the model cannot read attachments at all (`mediaRefusal`).
           await post('/api/emulator/inbound', {
             contactId,
             mediaUrl: media.url,

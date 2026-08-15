@@ -82,6 +82,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadEnvFiles, c } from './_env'
+import { costUsd, isPeak, USD_INR } from '../lib/pricing'
 
 const argv = process.argv.slice(2)
 function flag(name: string, fallback = ''): string {
@@ -92,10 +93,33 @@ function flag(name: string, fallback = ''): string {
 }
 const has = (name: string) => argv.includes(`--${name}`)
 
-const MODELS = flag('models', 'gemini-2.5-flash,gemini-3-flash-preview')
+const MODELS = flag('models', 'deepseek-v4-flash,deepseek-v4-pro')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean)
+/**
+ * The thinking sweep — `--thinking default,off,low,high`.
+ *
+ * `default` is the loop deciding for itself (`TURN_THINKING`, chosen per turn
+ * from the academy's state), which is the arm production actually runs. The
+ * others pin every turn to one tier, which is the only way to ask the question
+ * the migration is open on: whether deliberation in a SEPARATE channel recovers
+ * the discretionary judgement C29's zero-thinking amputated — `schedule`,
+ * `remember` and `view` fired 0, 3 and 1 times across 93 turns.
+ *
+ * One variable at a time: an arm is a whole child process with a fresh academy,
+ * so a thinking arm never shares rows or a warm cache with another.
+ */
+const THINKING_ARMS = flag('thinking', 'default')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+/**
+ * When this run happened, in UTC, and therefore which of DeepSeek's two rate
+ * cards applied to it. Read once so every record in a run is priced the same way
+ * and the header can say which it was.
+ */
+const RUN_AT = new Date()
 const ONLY = flag('case')
 const ONLY_STAGE = flag('stage')
 const ONLY_PERSONA = flag('persona')
@@ -720,6 +744,59 @@ const CASES: Case[] = [
     },
   },
 
+  {
+    name: 'hinglish-cancel',
+    stage: 'session-day',
+    persona: 'admin',
+    /**
+     * **The one capability regression this migration risks, and the arc never
+     * asked about it.**
+     *
+     * Bangalore admins do not type textbook English. "kal 6 baje wali beginners
+     * class cancel kar do" is Hinglish in Latin script with the verb at the end,
+     * a Hindi time word ("6 baje"), a relative day ("kal") that has to be
+     * resolved against the tenant's clock, and the English class name embedded in
+     * the middle of it. Gemini is strong here; DeepSeek is unproven, and an arc
+     * made entirely of well-formed English sentences would report a clean pass
+     * on a model that cannot read half of what this product is actually sent.
+     *
+     * The checks are deliberately about the ROW, not the reply: a warm
+     * acknowledgement over an uncancelled session is precisely the failure this
+     * case exists to catch, and it is the one a reader of the transcript would
+     * miss.
+     */
+    what: 'Hinglish, in Latin script — the way an admin in Bangalore actually types',
+    // Positioned the day BEFORE a scheduled session, so "kal" has an unambiguous
+    // referent and resolving it wrongly is visible rather than lucky.
+    clock: (q) =>
+      firstAt(q, `select (min(starts_at) - interval '20 hours')::text as at
+                    from session where status = 'scheduled' and starts_at > app.now()`),
+    text: 'kal 6 baje wali beginners class cancel kar do',
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q) => {
+      const cancelled = await q(
+        `select s.starts_at::text, s.status, cl.name
+           from session s join class cl on cl.id = s.class_id
+          where s.status = 'cancelled' and s.starts_at > app.now()`,
+      )
+      const still = await q(
+        `select s.starts_at::text, s.status, cl.name
+           from session s join class cl on cl.id = s.class_id
+          where s.status = 'scheduled' and s.starts_at > app.now()
+          order by s.starts_at limit 3`,
+      )
+      const beginners = cancelled.filter((r: any) => norm(r.name).includes('beginner'))
+      return [
+        check('a beginners session was cancelled', beginners.length > 0, { cancelled, still }),
+        // "kal" is tomorrow, not "every beginners session from here on". A model
+        // that cancels the class rather than the sitting is a worse failure than
+        // one that does nothing, because it is silent and it is retrospective.
+        check('exactly one session was cancelled, not the run of them', cancelled.length === 1, cancelled),
+      ]
+    },
+  },
+
   /* ---- attendance -------------------------------------------------------- */
   {
     name: 'coach-marks-register',
@@ -971,32 +1048,24 @@ function readReply(msgs: any[]): ReplyReport {
 /* -------------------------------------------------------------------------- *
  * Cost. Reported, never ranked on.
  *
- * These are LIST PRICES PER 1M TOKENS AND THEY ARE AN ASSUMPTION, not something
- * this script can measure. Cached input is billed at 25% of input. Edit them
- * when the price list moves; every figure downstream is derived from this table
- * and nothing else, so it is one place to be wrong.
+ * The table used to live here TOO, a second copy of `lib/pricing.ts` with the
+ * same "one place to be wrong" comment on top of it — which made it two places,
+ * and they had already drifted apart on the one number this migration turns on
+ * (the cached-input rate). It is imported now.
+ *
+ * The UTC hour and the rate that was applied are recorded per run, because
+ * DeepSeek bills peak hours at double: two identical runs at different times of
+ * day bill differently, and an unexplained cost delta between them is a probe
+ * defect rather than a finding.
  * -------------------------------------------------------------------------- */
-const PRICES: Record<string, { in: number; out: number }> = {
-  'gemini-2.5-flash': { in: 0.3, out: 2.5 },
-  'gemini-2.5-pro': { in: 1.25, out: 10 },
-  'gemini-3-flash-preview': { in: 0.3, out: 2.5 },
-  'gemini-3-pro-preview': { in: 1.25, out: 10 },
-}
-const USD_INR = 88
-
-function costOf(model: string, inTok: number, cachedTok: number, outTok: number): number | null {
-  const p = PRICES[model] ?? PRICES[Object.keys(PRICES).find((k) => model.startsWith(k)) ?? '']
-  if (!p) return null
-  const fresh = Math.max(0, inTok - cachedTok)
-  return (fresh * p.in + cachedTok * p.in * 0.25 + outTok * p.out) / 1e6
-}
-
 /* -------------------------------------------------------------------------- *
  * Record shape shared between child and parent.
  * -------------------------------------------------------------------------- */
 
 type TurnRecord = {
   model: string
+  /** Which arm of the thinking sweep produced this turn. `default` is the loop deciding. */
+  thinking: string
   modelReported: string | null
   case: string
   stage: Stage
@@ -1055,7 +1124,7 @@ const MAX_CLOCK_STEPS = 120
  * CHILD — one model, one fresh academy, the whole arc.
  * ========================================================================== */
 
-async function runChild(model: string): Promise<void> {
+async function runChild(model: string, arm: string): Promise<void> {
   loadEnvFiles()
   const { createAcademy, createTestContact, dropAcademy, inboundFromContact, worldAcademyIds } =
     await import('@/lib/seed')
@@ -1346,6 +1415,7 @@ async function runChild(model: string): Promise<void> {
 
       records.push({
         model,
+        thinking: arm,
         modelReported: t.model ?? null,
         case: kase.name,
         stage: kase.stage,
@@ -1371,7 +1441,7 @@ async function runChild(model: string): Promise<void> {
         inTok: Number(t.prompt_tokens ?? 0),
         cachedTok: Number(t.cached_tokens ?? 0),
         outTok: Number(t.output_tokens ?? 0),
-        usd: costOf(model, Number(t.prompt_tokens ?? 0), Number(t.cached_tokens ?? 0), Number(t.output_tokens ?? 0)),
+        usd: costUsd(model, Number(t.prompt_tokens ?? 0), Number(t.cached_tokens ?? 0), Number(t.output_tokens ?? 0), RUN_AT),
         error: fatal ?? (t.error ? String(t.error) : null),
         checks,
         claimedDone,
@@ -1380,7 +1450,7 @@ async function runChild(model: string): Promise<void> {
     }
   } finally {
     mkdirSync(OUT_DIR, { recursive: true })
-    writeFileSync(join(OUT_DIR, `${model.replace(/[^\w.-]/g, '_')}.json`), JSON.stringify(records, null, 2))
+    writeFileSync(join(OUT_DIR, `${armFile(model, arm)}.json`), JSON.stringify(records, null, 2))
 
     // Relative, so an advance by another process between then and now survives.
     if (clockMovedMs !== 0) {
@@ -1402,20 +1472,40 @@ async function runChild(model: string): Promise<void> {
  * PARENT — spawn a child per model, then report.
  * ========================================================================== */
 
-function spawnChild(model: string): Promise<number> {
+/** One file per arm, so two thinking arms of one model never overwrite each other. */
+function armFile(model: string, thinking: string): string {
+  return `${model}${thinking === 'default' ? '' : `--thinking-${thinking}`}`.replace(/[^\w.-]/g, '_')
+}
+
+/** How an arm is named everywhere a person reads it. */
+function armLabel(model: string, thinking: string): string {
+  return thinking === 'default' ? model : `${model} · thinking=${thinking}`
+}
+
+function spawnChild(model: string, thinking: string): Promise<number> {
   return new Promise((resolve) => {
     const child = spawn(
       process.execPath,
       [
         join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs'),
         join(process.cwd(), 'scripts', 'probe-model.ts'),
-        '--child', '--model', model, '--out', OUT_DIR,
+        '--child', '--model', model, '--arm', thinking, '--out', OUT_DIR,
         ...(ONLY ? ['--case', ONLY] : []),
         ...(ONLY_STAGE ? ['--stage', ONLY_STAGE] : []),
         ...(ONLY_PERSONA ? ['--persona', ONLY_PERSONA] : []),
         ...(has('keep') ? ['--keep'] : []),
       ],
-      { env: { ...process.env, MODEL_MAIN: model }, stdio: ['ignore', 'inherit', 'inherit'] },
+      {
+        // `PROBE_THINKING` is read at the client boundary (`lib/agent/deepseek.ts`)
+        // and is absent in production: pinning a tier is a probe instrument, not a
+        // setting. `default` leaves the loop to choose per turn, as it ships.
+        env: {
+          ...process.env,
+          MODEL_MAIN: model,
+          ...(thinking === 'default' ? {} : { PROBE_THINKING: thinking }),
+        },
+        stdio: ['ignore', 'inherit', 'inherit'],
+      },
     )
     child.on('exit', (code) => resolve(code ?? 1))
   })
@@ -1426,11 +1516,27 @@ function selected(k: Case): boolean {
 }
 
 function report(all: TurnRecord[]): void {
-  const lines: string[] = ['# probe-model — full evidence', '']
-  for (const model of MODELS) {
-    const mine = all.filter((r) => r.model === model)
+  // An arm — one model at one thinking tier — is the unit everything groups by.
+  // Grouping by model alone would average the two arms of a sweep into one row
+  // and hide the only comparison the sweep exists to make.
+  const arms = [...new Set(all.map((r) => `${r.model} ${r.thinking ?? 'default'}`))].map((k) => {
+    const [model, thinking] = k.split(' ') as [string, string]
+    return { model, thinking, label: armLabel(model, thinking) }
+  })
+  const forArm = (a: { model: string; thinking: string }) =>
+    all.filter((r) => r.model === a.model && (r.thinking ?? 'default') === a.thinking)
+
+  const lines: string[] = [
+    '# probe-model — full evidence',
+    '',
+    `Run at ${RUN_AT.toISOString()} — ${isPeak(RUN_AT) ? 'PEAK' : 'off-peak'} rates. Two runs at different`,
+    'times of day bill differently; that is the rate card, not a finding.',
+    '',
+  ]
+  for (const arm of arms) {
+    const mine = forArm(arm)
     if (!mine.length) continue
-    lines.push(`## ${model}`, '')
+    lines.push(`## ${arm.label}`, '')
     let stage = ''
     for (const r of mine) {
       if (r.stage !== stage) {
@@ -1493,7 +1599,7 @@ function report(all: TurnRecord[]): void {
     const cell = r.checks.length === 0 ? c.dim('  —  ') : good ? c.green(t.padEnd(6)) : c.red(t.padEnd(6))
     const aff = r.reply.buttons.length ? `${r.reply.buttons.length}b` : r.reply.link ? 'link' : r.reply.list ? 'list' : '—'
     console.log(
-      `${r.model.padEnd(24)} ${r.stage.padEnd(12)} ${r.case.padEnd(22)} ${(r.spokeAs ? r.persona : c.red(r.persona)).padEnd(9)} ${cell} ` +
+      `${armLabel(r.model, r.thinking ?? 'default').padEnd(30)} ${r.stage.padEnd(12)} ${r.case.padEnd(22)} ${(r.spokeAs ? r.persona : c.red(r.persona)).padEnd(9)} ${cell} ` +
         `${(r.toolNames.join(',') || '-').slice(0, 25).padEnd(26)} ` +
         `${String(r.reply.words).padStart(4)}w  ${aff.padStart(4)} ${String(r.rounds).padStart(3)} ` +
         `${(r.latencyMs / 1000).toFixed(1).padStart(5)} ${(r.usd === null ? '?' : (r.usd * USD_INR).toFixed(2)).padStart(6)}` +
@@ -1503,15 +1609,15 @@ function report(all: TurnRecord[]): void {
     )
   }
 
-  console.log(`\n${c.bold('totals')}`)
-  for (const model of MODELS) {
-    const mine = all.filter((r) => r.model === model)
+  console.log(`\n${c.bold('totals')} ${c.dim(isPeak(RUN_AT) ? '(peak rates)' : '(off-peak rates)')}`)
+  for (const arm of arms) {
+    const mine = forArm(arm)
     if (!mine.length) continue
     const checks = mine.flatMap((r) => r.checks)
     const wanted = mine.filter((r) => r.wants.length)
     const usd = mine.reduce((a, r) => a + (r.usd ?? 0), 0)
     console.log(
-      `  ${model.padEnd(24)} truth ${checks.filter((k) => k.ok).length}/${checks.length} · ` +
+      `  ${arm.label.padEnd(30)} truth ${checks.filter((k) => k.ok).length}/${checks.length} · ` +
         `right tool ${wanted.filter((r) => r.wanted).length}/${wanted.length} · ` +
         `${mine.filter((r) => r.reply.flags.length).length} turns with reply flags · ` +
         `${mine.filter((r) => r.claimedDone && !r.backedByWrite).length} unbacked · ` +
@@ -1535,7 +1641,7 @@ function report(all: TurnRecord[]): void {
 /* ========================================================================== */
 
 if (has('child')) {
-  await runChild(flag('model'))
+  await runChild(flag('model'), flag('arm', 'default'))
 } else {
   const chosen = CASES.filter(selected)
   // `--persona coach --case lookup` is an empty intersection, and running it built
@@ -1545,20 +1651,28 @@ if (has('child')) {
     console.error(c.red('no case matches those filters — nothing would be probed.'))
     process.exit(2)
   }
+  const ARMS = MODELS.flatMap((model) => THINKING_ARMS.map((thinking) => ({ model, thinking })))
   console.log(
     c.dim(
-      `${MODELS.length} model(s) × ${chosen.length} case(s) across ` +
+      `${MODELS.length} model(s) × ${THINKING_ARMS.length} thinking arm(s) × ${chosen.length} case(s) across ` +
         `${new Set(chosen.map((k) => k.stage)).size} stage(s), one fresh academy each`,
     ),
   )
-  for (const model of MODELS) {
-    console.log(c.bold(`\n${model}`))
-    const code = await spawnChild(model)
+  // Which rate card this run is billed at, said before it starts rather than
+  // worked out afterwards from a total that looks wrong.
+  console.log(
+    c.dim(
+      `started ${RUN_AT.toISOString()} — ${isPeak(RUN_AT) ? 'PEAK rates (double — consider waiting)' : 'off-peak rates'}`,
+    ),
+  )
+  for (const arm of ARMS) {
+    console.log(c.bold(`\n${armLabel(arm.model, arm.thinking)}`))
+    const code = await spawnChild(arm.model, arm.thinking)
     if (code !== 0) console.log(c.red(`  child exited ${code}`))
   }
   const all: TurnRecord[] = []
-  for (const model of MODELS) {
-    const path = join(OUT_DIR, `${model.replace(/[^\w.-]/g, '_')}.json`)
+  for (const arm of ARMS) {
+    const path = join(OUT_DIR, `${armFile(arm.model, arm.thinking)}.json`)
     if (existsSync(path)) all.push(...(JSON.parse(readFileSync(path, 'utf8')) as TurnRecord[]))
   }
   if (!all.length) console.log(c.red('no records — every child failed'))

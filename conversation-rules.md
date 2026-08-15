@@ -296,6 +296,35 @@ Two items carried forward from the retired `NEXT.md`, still open and still verif
   in 464 turns and 0 again this pass. The refusal path already performs its own
   escalation — that mechanism, extended, is the fix direction; another prompt line is R8.
 
+### F-J · The model went text-only, and media had nowhere to land — **FIXED this pass, 15 Aug 2026**
+
+**Status:** fixed as part of the DeepSeek migration. Media that arrives is answered by the
+runtime, in words, before the model is asked anything (`mediaRefusal` in
+`lib/agent/loop.ts`), and everything that *invited* media — the post-setup timetable
+message, `onboarding.md`, doctrine 16, §14.5, §7.1 step 2 — now offers the road that
+works instead: type the week in one messy sentence, read back before anything is created.
+
+**Root:** R2 (a capability removed upstream leaves the surfaces that promised it intact).
+The new model client is text-only: an image or audio part is rejected at schema validation
+before auth is even checked. Left alone, three things follow, and only the first is
+obvious — the request fails; the turn produces nothing; **the person hears nothing at
+all**, having just been told by the product itself to send a photo of their whiteboard.
+
+**Why it is not a prompt fix.** The obvious version is a line in the prefix — "you cannot
+read attachments, say so". That is an instruction the model follows four times in five,
+and the fifth is somebody sitting in front of a chat that never answered. Going quiet is
+the one failure a person cannot tell apart from being ignored, so it gets a runtime send,
+on the inbound path, unconditionally. The sentence differs by kind: a voice note is
+somebody whose English is faster spoken than typed and the reply admits the cost; a photo
+is usually the timetable and the reply names the route that still works.
+
+**What it takes away, stated plainly:** voice notes are how half of India types, and this
+product can no longer read one. §14.5 records the whole trade rather than deleting it.
+
+**Also fixed alongside it:** an inbound carrying *neither* text nor media — a shared
+contact card, a sticker, a location — used to fall through every branch of `runTurn` and
+send nothing. Same guarantee, same place.
+
 ### What is now known-good (null results, worth not re-driving)
 
 - **Coach onboarding is fixed.** [Looks right] / [Something's wrong] both appear, the

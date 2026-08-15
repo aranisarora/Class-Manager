@@ -30,7 +30,7 @@ import {
 } from '@/lib/messaging/flows'
 import { buildSetupSteps, summariseSetup } from '@/lib/setup-plan'
 import type { Identity, Job, Role } from '@/lib/types'
-import { generate, TURN_THINKING, type GenContent } from './gemini'
+import { generate, generateJson, TURN_THINKING, type Msg } from './deepseek'
 import { lint, mixInstruction, stablePrefix, synthesisDoctrine, variableTail } from './context'
 import { hotSet } from './memory'
 import { audienceFor, executePlan, type PlanStep } from './plan'
@@ -183,7 +183,56 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       }
     }
 
-    if (goToModel && (text || input.media?.length || input.task)) {
+    /**
+     * Media still arrives; the model can no longer read it.
+     *
+     * The model client is text-only (`deepseek.ts`) — an image or audio part is
+     * rejected at schema validation before auth is even checked — so §14.5's
+     * "audio arrives as audio" is repealed. What must NOT follow is the failure
+     * mode of letting the request fail: voice notes are how half of India types,
+     * and going quiet is the one failure a person cannot tell apart from being
+     * ignored.
+     *
+     * So the answer is a runtime send, not an instruction in the prompt. A line
+     * in the prefix asking the model to mention the attachment is exactly the
+     * kind of behavioural fix that works four times in five; this is the fifth.
+     * The person is told, in their own terms, by the runtime, every time — and
+     * anything they typed alongside is still answered on its own merits below.
+     */
+    if (input.media?.length) {
+      const said = mediaRefusal(input.media)
+      outcomes.push(await composeAndSend(session, { toContactId: identity.contact.id, body: said }))
+      // So the turn row and reflection both see what this person was actually
+      // told. A turn that answered only about an attachment is not a silent one,
+      // and reflection scheduling a follow-up "because nothing was said" is the
+      // bug that reads back as the bot talking to itself.
+      replyText = said
+      trace.push({
+        round: 0,
+        name: '(media: text-only model, answered in words)',
+        ms: 0,
+        args: traceValue(input.media.map((m) => m.mimeType), 500),
+      })
+    }
+
+    /**
+     * Something arrived carrying nothing anybody can read.
+     *
+     * A shared contact card, a sticker, a location pin: the ingest path has no
+     * text and no media for those, so the turn used to fall through every branch
+     * below and end having sent nothing — the exact silence the rest of this
+     * function is built to prevent, reached by the one route with no guard on it.
+     * It was rare while the brain was telling people to share contact cards; it
+     * is rarer now that it does not. It is still a person who tapped send and
+     * heard nothing back.
+     */
+    if (goToModel && !text && !input.task && !input.media?.length) {
+      const said = "That came through as something I can't read. Could you type it instead?"
+      outcomes.push(await composeAndSend(session, { toContactId: identity.contact.id, body: said }))
+      replyText = said
+    }
+
+    if (goToModel && (text || input.task)) {
       const m = await modelTurn(session, identity, turnId, { ...input, text })
       outcomes.push(...m.outcomes)
       toolCalls = m.toolCalls
@@ -204,7 +253,11 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
        * than once (a read-back, then the answer) and a reader of either surface wants
        * both. Falls back to `m.text` so nothing regresses on the prose-only path.
        */
-      replyText = m.said.length ? m.said.join('\n\n') : m.text
+      // `replyText` may already hold the attachment line the runtime sent above,
+      // and that was said to this person too.
+      replyText = [replyText, m.said.length ? m.said.join('\n\n') : m.text]
+        .filter((s) => s.trim())
+        .join('\n\n')
       trace = [...trace, ...m.trace]
       rounds = m.rounds
       if (m.error) error = m.error
@@ -280,6 +333,34 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
   }
 
   return { turnId, sent: outcomes, toolCalls, error }
+}
+
+/**
+ * What somebody is told when they send something the model cannot read.
+ *
+ * Three sentences rather than one, because the three attachments are not the
+ * same event to the person who sent them. A voice note is somebody who was
+ * driving, or whose English is faster spoken than typed — "send it as text" is a
+ * real cost to them and the sentence should admit it. A photo of a whiteboard is
+ * the timetable, which §7.1 calls the single biggest friction in the product, so
+ * that one has to offer the road that still works. A document is usually a
+ * forward and the useful half of it is small.
+ *
+ * Each one names what it cannot do, says it plainly once, and asks for exactly
+ * one thing back. None of them apologises twice.
+ */
+function mediaRefusal(media: { mimeType: string }[]): string {
+  const kinds = new Set(media.map((m) => (m.mimeType || '').split('/')[0].toLowerCase()))
+  if (kinds.has('audio')) {
+    return "I can't listen to voice notes — that's on me, not you. Could you type the short version? "
+      + "A line is enough and I'll take it from there."
+  }
+  if (kinds.has('image')) {
+    return "I can't read photos yet, so I've not seen that one. If it's your timetable, type the classes "
+      + "in any rough form — \"Mon & Wed 6:30 beginners, Sat 8am juniors\" — and I'll set them up and read them "
+      + 'back before anything is created.'
+  }
+  return "I can't open files yet, so I've not read that. Type the part that matters and I'll work from it."
 }
 
 /**
@@ -410,13 +491,18 @@ async function executeAction(
 
       const summary = summariseSetup(setup)
       /**
-       * Straight into the timetable, naming every way it can arrive.
+       * Straight into the timetable, naming the way it can arrive.
        *
        * This is the one message in the product where saying what is possible is worth
-       * more than saying what happened: nobody guesses that a photograph of a
-       * whiteboard is an accepted input, and `onboarding.md` calls the timetable the
-       * biggest single saving here. A person who does not know they can send a photo
-       * types four classes by hand, or stops.
+       * more than saying what happened: what people expect is one form per class, and
+       * `onboarding.md` calls the timetable the biggest single saving here. A person
+       * who does not know they can type the whole week in one messy sentence fills in
+       * four forms by hand, or stops.
+       *
+       * It used to offer a photo of the whiteboard and a voice note. The model is
+       * text-only now (`deepseek.ts`), so that would be an invitation to send
+       * something that comes back apologised for — the worst possible first
+       * impression, caused by the message meant to save them the most work.
        */
       outcomes.push(
         await composeAndSend(session, {
@@ -425,8 +511,8 @@ async function executeAction(
           body:
             `${summary}\n\n`
             + 'Now the part that usually takes an hour — your timetable. '
-            + 'Send it however it already exists: a photo of the whiteboard or the register, '
-            + 'a forwarded sheet, or a voice note telling me the week. I\'ll read it back before I create anything.',
+            + 'Type the whole week in one go, however messy: "Mon & Wed 6:30 beginners at Green Park, '
+            + 'Sat 8am juniors". I\'ll read it back before I create anything.',
           buttons: [
             // 19 chars. "Add classes one by one" is 22, and `fitTitle` cut it at the word
             // boundary to "Add classes one by" — a dangling preposition that shipped.
@@ -891,7 +977,6 @@ async function modelTurn(
     pendingPlans: new Map<string, PlanStep[]>(),
     pendingMeta: new Map<string, { intent: string; summary: string; totalRows: number; needsConfirm: boolean }>(),
     outcomes,
-    fromParsedInput: Boolean(input.media?.length),
     executed: [],
     repliedTo: new Set<string>(),
     saidToUser: [],
@@ -921,17 +1006,13 @@ async function modelTurn(
   }
 
   const history = await recentHistory(session, identity)
-  const parts: any[] = [{ text: `${situation.join('\n\n')}\n\n---\n\n${input.text ?? ''}`.trim() }]
-  for (const m of input.media ?? []) {
-    // §14.5 — multimodal in, text out. Audio and images ride in the variable
-    // tail, so they never touch the cacheable prefix. The media pipeline hands
-    // over data URIs (the same shape a fetched Meta media id produces), and
-    // `GenPart` carries those as inlineData base64, never as a file uri.
-    const data = dataUriPayload(m.url)
-    if (data) parts.push({ inlineData: { mimeType: data.mimeType || m.mimeType, data: data.base64 } })
-    else parts.push({ fileData: { fileUri: m.url, mimeType: m.mimeType } })
-  }
-  const contents: GenContent[] = [...history, { role: 'user', parts }]
+  // Text only, and the attachment has already been answered by the runtime
+  // (`mediaRefusal`) before this call is made. There is no media part on this
+  // wire to carry it with: the request schema rejects one outright.
+  const messages: Msg[] = [
+    ...history,
+    { role: 'user', content: `${situation.join('\n\n')}\n\n---\n\n${input.text ?? ''}`.trim() },
+  ]
 
   const system = stablePrefix()
   let toolCalls = 0
@@ -991,7 +1072,7 @@ async function modelTurn(
     rounds = round + 1
     const res = await generate({
       system,
-      contents,
+      messages,
       tools: toolDecls(),
       model: env.MODEL_MAIN,
       temperature: 0.4,
@@ -1009,17 +1090,17 @@ async function modelTurn(
     // turn back reads as the turn happened rather than as a list of tool calls
     // with the reasoning removed.
     //
-    // `modelParts` is carried only when there is no text to carry, because that
-    // is the case it diagnoses: on MALFORMED_FUNCTION_CALL the parts sometimes
-    // hold the fragment the model was trying to emit, which is the only clue to
-    // WHICH tool it was reaching for — the call itself never arrives.
+    // The raw assistant message is carried only when there is no text to carry,
+    // because that is the case it diagnoses: a turn that returned nothing has
+    // its reasoning and its half-formed tool calls in there, and that is the
+    // only clue to WHAT it was reaching for.
     trace.push({
       round: round + 1,
       name: TRACE_MARKER,
       ms: res.ms,
       args: text.trim()
         ? traceValue(text, 4000)
-        : { returnedNothing: true, parts: traceValue(res.modelParts, 2000) },
+        : { returnedNothing: true, message: traceValue(res.assistant, 2000) },
       result: {
         in: res.usage.promptTokens,
         cached: res.usage.cachedTokens,
@@ -1035,13 +1116,48 @@ async function modelTurn(
 
     if (!res.functionCalls.length) break
 
-    // Echo the model's own parts back verbatim so Gemini 3 thought signatures
-    // survive the round trip.
-    contents.push({ role: 'model', parts: res.modelParts })
+    // Echo the assistant message back verbatim — `reasoning_content` included.
+    // The same discipline as carrying Gemini 3's thought signatures, under a new
+    // field name and with sharper teeth: with tools in play, dropping the
+    // reasoning from history is a 400, not a quiet degradation.
+    messages.push(res.assistant)
 
-    const responses: any[] = []
+    // One `{role:'tool'}` message per call, carrying the id of the call it
+    // answers. Matching is BY ID here, not by position, which is the whole
+    // difference from the parts-array this loop used to build.
+    const responses: Msg[] = []
     for (const call of res.functionCalls) {
       toolCalls++
+
+      /**
+       * The arguments did not parse.
+       *
+       * This is what used to arrive as `MALFORMED_FUNCTION_CALL` — an empty
+       * candidate with nothing attached and no way to tell which tool was
+       * meant. Here the raw string is right there, so the turn records what was
+       * attempted AND the model gets told what was wrong with it, which is a
+       * round it can actually recover in. The call is never executed: `args` is
+       * empty and running a write with empty arguments is how a parse failure
+       * becomes a database row.
+       */
+      if (call.parseError) {
+        trace.push({
+          round: round + 1,
+          name: call.name,
+          ms: 0,
+          args: { malformed: true, raw: traceValue(call.raw ?? '', 2000) },
+          error: `MALFORMED_FUNCTION_CALL: ${call.parseError}`,
+        })
+        responses.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify({
+            error: `the arguments you sent for ${call.name} were not valid JSON (${call.parseError})`,
+            hint: 'Send the call again with well-formed JSON arguments, or answer them in words instead.',
+          }),
+        })
+        continue
+      }
       let out: { result: unknown; note?: string }
       const calledAt = Date.now()
       let threw: string | undefined
@@ -1072,7 +1188,7 @@ async function modelTurn(
           args: traceValue(call.args, 500),
           error: `blocked: identical call already failed ${priorFailures}x this turn`,
         })
-        responses.push({ functionResponse: { name: call.name, response: { result: out.result } } })
+        responses.push({ role: 'tool', tool_call_id: call.id, content: toolContent(out.result) })
         if (priorFailures >= 2) {
           stalled = true
           break
@@ -1115,9 +1231,9 @@ async function modelTurn(
         result: traceValue(out.result, 4000),
         ...(threw ? { error: threw.slice(0, 2000) } : {}),
       })
-      responses.push({ functionResponse: { name: call.name, response: { result: out.result } } })
+      responses.push({ role: 'tool', tool_call_id: call.id, content: toolContent(out.result) })
     }
-    contents.push({ role: 'user', parts: responses })
+    messages.push(...responses)
 
     // Out of the loop, not out of the turn: the recovery round below still gets to
     // put what was learned into words, which beats an apology that explains nothing.
@@ -1216,21 +1332,17 @@ async function modelTurn(
     try {
       const forced = await generate({
         system,
-        contents: [
-          ...flattenToolTurns(contents),
+        messages: [
+          ...flattenToolTurns(messages),
           {
             role: 'user',
-            parts: [
-              {
-                text:
-                  'Answer them now, in plain words, using only what those results actually say. ' +
-                  'No tools left to call. If the results do not answer it, say so plainly (§4.1 rule 10).\n\n' +
-                  'You have no tools in this round, so nothing you describe can happen. Do not say what ' +
-                  'you are about to do, are going to do, or will now set up — this is the last thing sent, ' +
-                  'and a promise here is a promise nothing keeps. State what you found, or say plainly ' +
-                  'that you have not done it yet and ask for the one thing you need to.',
-              },
-            ],
+            content:
+              'Answer them now, in plain words, using only what those results actually say. ' +
+              'No tools left to call. If the results do not answer it, say so plainly (§4.1 rule 10).\n\n' +
+              'You have no tools in this round, so nothing you describe can happen. Do not say what ' +
+              'you are about to do, are going to do, or will now set up — this is the last thing sent, ' +
+              'and a promise here is a promise nothing keeps. State what you found, or say plainly ' +
+              'that you have not done it yet and ask for the one thing you need to.',
           },
         ],
         model: env.MODEL_MAIN,
@@ -1425,10 +1537,11 @@ async function modelTurn(
  * The turn's history, with every tool call and result turned into plain text.
  *
  * The recovery round declares no tools on purpose — its whole job is to put what the
- * turn already learned into words. But a history containing `functionCall` and
- * `functionResponse` parts is only legal alongside a tool declaration: Vertex answers
- * a request that carries one without the other with `UNEXPECTED_TOOL_CALL` and an
- * empty candidate.
+ * turn already learned into words. But a history containing `tool_calls` and the
+ * `{role:'tool'}` messages that answer them is only coherent alongside a tool
+ * declaration: Vertex used to answer such a request with `UNEXPECTED_TOOL_CALL` and an
+ * empty candidate, and an OpenAI-dialect API is entitled to 400 it. The reason for
+ * flattening is unchanged by the migration; only the shape being flattened is.
  *
  * So the round designed to guarantee the person hears *something* was the one round
  * that could never run. Watched live: seven rounds, sixty seconds, 153k tokens, a
@@ -1439,38 +1552,49 @@ async function modelTurn(
  * Flattening keeps every fact and loses only the encoding. "Everything the turn learned
  * is already sitting in `contents`" is the comment above; this is what makes it true.
  */
-function flattenToolTurns(contents: GenContent[]): GenContent[] {
-  return contents.map((c) => {
-    if (!Array.isArray(c.parts)) return c
-    if (!c.parts.some((p: any) => p?.functionCall || p?.functionResponse)) return c
-    const parts = c.parts.map((p: any) => {
-      if (p?.functionCall) {
-        return { text: `[you called ${p.functionCall.name} with ${traceValue(JSON.stringify(p.functionCall.args ?? {}), 1500)}]` }
-      }
-      if (p?.functionResponse) {
-        const r = (p.functionResponse.response as any)?.result ?? p.functionResponse.response
-        return { text: `[${p.functionResponse.name} came back: ${traceValue(typeof r === 'string' ? r : JSON.stringify(r ?? null), 3000)}]` }
-      }
-      // A thought signature belongs to the call it was emitted with, and the call is
-      // gone — carrying it into a round with no tools is the same error again.
-      return p?.thoughtSignature ? { text: String(p.text ?? '') } : p
-    })
-    return { role: c.role, parts: parts.filter((p: any) => typeof p?.text !== 'string' || p.text.length > 0) }
-  })
+function flattenToolTurns(messages: Msg[]): Msg[] {
+  const names = new Map<string, string>()
+  const out: Msg[] = []
+  for (const m of messages) {
+    if (m.role === 'assistant' && m.tool_calls?.length) {
+      for (const c of m.tool_calls) names.set(c.id, c.function.name)
+      const lines = m.tool_calls.map(
+        (c) => `[you called ${c.function.name} with ${traceValue(c.function.arguments ?? '{}', 1500)}]`,
+      )
+      const said = (m.content ?? '').trim()
+      // The reasoning is deliberately dropped rather than flattened. It belongs to
+      // the call it was emitted with, the call is gone, and it was never something
+      // to answer from — the results below are.
+      out.push({ role: 'assistant', content: [said, ...lines].filter(Boolean).join('\n') })
+      continue
+    }
+    if (m.role === 'tool') {
+      const name = names.get(m.tool_call_id) ?? 'that'
+      out.push({ role: 'user', content: `[${name} came back: ${traceValue(m.content, 3000)}]` })
+      continue
+    }
+    if (m.role === 'assistant') {
+      // `reasoning_content` is only legal to echo alongside the calls it came
+      // with; without them it is noise the API is entitled to reject.
+      out.push({ role: 'assistant', content: m.content ?? '' })
+      continue
+    }
+    out.push(m)
+  }
+  return out
 }
 
-/** `data:<mime>;base64,<payload>` → the two halves Gemini's inlineData wants. */
-function dataUriPayload(url: string): { mimeType: string; base64: string } | null {
-  const m = /^data:([^;,]*)(;[^,]*)?,(.*)$/s.exec(url)
-  if (!m) return null
-  const isBase64 = (m[2] ?? '').includes('base64')
-  return {
-    mimeType: m[1] || 'application/octet-stream',
-    base64: isBase64 ? m[3] : Buffer.from(decodeURIComponent(m[3]), 'utf8').toString('base64'),
+/** A tool result on this wire is a string, and `undefined` is not JSON. */
+function toolContent(result: unknown): string {
+  if (typeof result === 'string') return result
+  try {
+    return JSON.stringify(result ?? null)
+  } catch {
+    return String(result)
   }
 }
 
-async function recentHistory(session: SessionCtx, identity: Identity): Promise<GenContent[]> {
+async function recentHistory(session: SessionCtx, identity: Identity): Promise<Msg[]> {
   try {
     const rows = await withSession({ role: 'service', academyId: identity.academyId }, async (tx) => {
       return (await tx.unsafe(
@@ -1482,7 +1606,11 @@ async function recentHistory(session: SessionCtx, identity: Identity): Promise<G
     })
     return rows
       .reverse()
-      .map((r) => ({ role: r.direction === 'inbound' ? ('user' as const) : ('model' as const), parts: [{ text: r.body }] }))
+      .map((r): Msg =>
+        r.direction === 'inbound'
+          ? { role: 'user', content: r.body }
+          : { role: 'assistant', content: r.body },
+      )
   } catch {
     return []
   }
@@ -1621,17 +1749,13 @@ Their id, for \`subject_id\`: person = ${identity.person.id}, business = ${ident
 
   const res = await generate({
     system,
-    contents: [
+    messages: [
       {
         role: 'user',
-        parts: [
-          {
-            text:
-              `They said: ${turn.said || '(nothing — a tap)'}\n\n` +
-              `You replied: ${turn.replied || '(nothing)'}\n\n` +
-              `What you ran this turn: ${did.length ? did.join(', ') : 'nothing'}`,
-          },
-        ],
+        content:
+          `They said: ${turn.said || '(nothing — a tap)'}\n\n` +
+          `You replied: ${turn.replied || '(nothing)'}\n\n` +
+          `What you ran this turn: ${did.length ? did.join(', ') : 'nothing'}`,
       },
     ],
     tools: decls,
@@ -1661,6 +1785,12 @@ Their id, for \`subject_id\`: person = ${identity.person.id}, business = ${ident
   const out: ToolTrace[] = []
   for (const call of res.functionCalls.slice(0, 4)) {
     if (call.name !== 'remember' && call.name !== 'schedule') continue
+    // Nobody is waiting on a reflection, and there is no round in which to ask
+    // again — a call whose arguments did not parse is simply not made.
+    if (call.parseError) {
+      out.push({ round: 0, name: `reflect:${call.name}`, ms: 0, error: `MALFORMED_FUNCTION_CALL: ${call.parseError}` })
+      continue
+    }
     const startedAt = Date.now()
     try {
       const r = await runTool(call.name, call.args, ctx)
@@ -1870,42 +2000,59 @@ will never think to ask whether the reminders went out. Then who is unpaid.`
     // What the digest actually needs is doctrine (how to sound), the grounding rules
     // (how to stay honest), and the payload — which it is handed in full below. The
     // model choice is unchanged; only the bill is.
-    const res = await generate({
+    //
+    // **The shape is asked for, not enforced.** There is no constrained decoding
+    // on this API outside beta, so the schema moved into the prompt and the
+    // guarantee moved into `generateJson`: validate, and retry exactly once.
+    // DeepSeek's own docs admit JSON mode occasionally returns empty content, and
+    // this is a batch path where nobody is waiting on the retry.
+    const res = await generateJson<{ send: boolean; body: string }>({
       system: `${synthesisDoctrine()}\n\n${GROUNDING}\n\n${mix}`,
-      contents: [
+      messages: [
         {
           role: 'user',
-          parts: [
-            {
-              text:
-                `${instruction}\n\n` +
-                `What this academy calls things, and what I know about them:\n${memory.academy || '(nothing yet)'}\n` +
-                `About this admin:\n${memory.admin || '(nothing yet)'}\n\n` +
-                `THE DATA — every number you use must come from here:\n${JSON.stringify(payload, null, 1)}`,
-            },
-          ],
+          content:
+            `${instruction}\n\n` +
+            `What this academy calls things, and what I know about them:\n${memory.academy || '(nothing yet)'}\n` +
+            `About this admin:\n${memory.admin || '(nothing yet)'}\n\n` +
+            `THE DATA — every number you use must come from here:\n${JSON.stringify(payload, null, 1)}\n\n` +
+            // The literal word "json" has to appear or the request is rejected
+            // outright — a requirement of the mode, not a style choice.
+            'Answer as one json object and nothing else, in exactly this shape:\n' +
+            '{"send": true, "body": "the message, in plain WhatsApp prose"}\n' +
+            'Set "send" to false — with "body" an empty string — when there is genuinely nothing worth saying.',
         },
       ],
       model: env.MODEL_SYNTH,
       temperature: 0.6,
-      responseJsonSchema: {
-        type: 'object',
-        properties: {
-          send: { type: 'boolean', description: 'False when there is genuinely nothing worth saying.' },
-          body: { type: 'string' },
-        },
-        required: ['send', 'body'],
+      validate: (v) => {
+        const o = v as { send?: unknown; body?: unknown }
+        if (!o || typeof o !== 'object') return null
+        if (typeof o.send !== 'boolean') return null
+        if (o.body !== undefined && typeof o.body !== 'string') return null
+        return { send: o.send, body: String(o.body ?? '') }
       },
     })
     model = res.model
 
-    let parsed: { send?: boolean; body?: string } = {}
-    try {
-      parsed = JSON.parse(res.text)
-    } catch {
-      parsed = { send: Boolean(res.text.trim()), body: res.text.trim() }
+    // A digest that could not be composed is silence, which is a legal outcome
+    // here (§13.1) — but it is a DIFFERENT silence from "nothing worth saying",
+    // so it is recorded as the failure it is rather than as a quiet evening.
+    if (!res.value) {
+      await writeSynthTurn(
+        academyId,
+        turnId,
+        kind,
+        admins[0],
+        { sent: false, error: res.error ?? 'no json' },
+        model,
+        Date.now() - startedMs,
+        res.usage,
+      )
+      return { turnId, sent: [], toolCalls: 0, error: `synthesis produced no usable json: ${res.error ?? 'unknown'}` }
     }
-    body = String(parsed.body ?? '').trim()
+    const parsed = res.value
+    body = parsed.body.trim()
 
     // The morning brief is silent when there is nothing.
     if (!parsed.send || !body) {

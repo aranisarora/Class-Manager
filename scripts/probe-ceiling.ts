@@ -29,7 +29,14 @@
  * any new model.
  *
  * A run is BROKEN if the model returns no candidate and no text — the signature
- * of MALFORMED_FUNCTION_CALL — or if the request is rejected outright.
+ * of MALFORMED_FUNCTION_CALL — or if the request is rejected outright, and now
+ * also if a tool call arrives whose `arguments` do not parse, which is the shape
+ * the same failure takes on this wire.
+ *
+ * **Re-run it after the DeepSeek migration.** The documented limit is the same
+ * 128, but the failure mode of an over-limit or malformed declaration is a
+ * different provider's, and a misdiagnosed ceiling shaped this architecture once
+ * already.
  */
 import { loadEnvFiles, c } from './_env'
 
@@ -43,11 +50,11 @@ function flag(name: string, fallback: string): string {
   return a.includes('=') ? a.slice(a.indexOf('=') + 1) : (argv[i + 1] ?? fallback)
 }
 
-const MODELS = flag('models', 'gemini-2.5-flash,gemini-3-flash-preview').split(',').map((s) => s.trim())
+const MODELS = flag('models', 'deepseek-v4-flash,deepseek-v4-pro').split(',').map((s) => s.trim())
 const RUNS = Number(flag('runs', '2'))
 const EXTRAS = flag('extras', '0,1,5,20,50').split(',').map((s) => Number(s.trim()))
 
-const { generate } = await import('@/lib/agent/gemini')
+const { generate } = await import('@/lib/agent/deepseek')
 const { stablePrefix } = await import('@/lib/agent/context')
 const { toolDecls } = await import('@/lib/agent/tools')
 
@@ -98,13 +105,14 @@ for (const model of MODELS) {
       try {
         const res = await generate({
           system,
-          contents: [{ role: 'user', parts: [{ text: TAIL }] }],
+          messages: [{ role: 'user' as const, content: TAIL }],
           tools,
           model,
           temperature: 0.4,
         })
         if (res.finishReason) finishes.push(res.finishReason)
-        if (!res.functionCalls.length && !res.text.trim()) broken++
+        if (res.functionCalls.some((f) => f.parseError)) broken++
+        else if (!res.functionCalls.length && !res.text.trim()) broken++
         else if (res.functionCalls.length) called++
       } catch (e) {
         rejected = (e as Error)?.message?.slice(0, 160) ?? String(e)

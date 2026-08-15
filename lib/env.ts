@@ -21,6 +21,15 @@ const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
   SUPABASE_URL: z.string().min(1),
   SUPABASE_PUBLISHABLE_KEY: z.string().min(1),
+  /**
+   * The model client's only credential. Lives in `.env.local` and nowhere else —
+   * not in a settings row, not in the repo, not in a chat window.
+   *
+   * Vertex's three keys below are kept, and kept REQUIRED, until the migration's
+   * phase 7 says otherwise: `gemini.ts` is the rollback road, and an env schema
+   * that has already forgotten how to describe it is not a road anybody can take.
+   */
+  DEEPSEEK_API_KEY: z.string().min(1),
   GOOGLE_APPLICATION_CREDENTIALS_JSON: z.string().min(1),
   VERTEX_PROJECT_ID: z.string().min(1),
   VERTEX_LOCATION: z.string().min(1),
@@ -120,6 +129,7 @@ export const env: Env = {
   get DATABASE_URL() { return load().DATABASE_URL },
   get SUPABASE_URL() { return load().SUPABASE_URL },
   get SUPABASE_PUBLISHABLE_KEY() { return load().SUPABASE_PUBLISHABLE_KEY },
+  get DEEPSEEK_API_KEY() { return load().DEEPSEEK_API_KEY },
   get GOOGLE_APPLICATION_CREDENTIALS_JSON() { return load().GOOGLE_APPLICATION_CREDENTIALS_JSON },
   get VERTEX_PROJECT_ID() { return load().VERTEX_PROJECT_ID },
   get VERTEX_LOCATION() { return load().VERTEX_LOCATION },
