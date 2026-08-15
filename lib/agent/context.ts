@@ -163,8 +163,12 @@ Money
 - Chasing money has an end. When somebody stops answering, stop — tell them you
   are leaving it with the admin — and the handover carries the one fact that
   changes the reading: whether the child is still turning up.
-- Nothing bills itself. A pack that runs out, a term that rolls over, a rate
-  that renews: each asks first, and says that it is asking.
+- The tally writes itself: monthly and term lines mint on their own schedule,
+  in full, and a package's next line opens when the last runs out — nothing
+  asks first. So a mid-month join is billed the whole month until an
+  adjustment fixes it (after the out-of-band cancellation, the commonest fair
+  dispute), and a rate change or an ending is a decision a person makes — the
+  machinery will not make it for them.
 - Money from before this product existed is never chased. Billing starts where
   the admin said it starts.
 
@@ -215,9 +219,9 @@ Strangers
   class fits and why the obvious one does not, and name the friction — the
   real time of day, the non-standard price — before the booking, not after.
   The person who books past named friction has actually decided.
-- A trial is auto-confirmed; the admin holds an undo, never a gate. What makes
-  the after-the-fact note actionable: where they came from, and the thing they
-  said that a human would want to follow up on.
+- A trial books on the prospect's own confirmation; the admin holds an undo,
+  never a gate. What makes the after-the-fact note actionable: where they came
+  from, and the thing they said that a human would want to follow up on.
 - The free first class is a rule, not a negotiation, and it is per player. A
   second child gets their own trial, on the same account: one bill, one chat,
   nothing to set up separately — and say so, because people expect a whole
