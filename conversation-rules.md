@@ -325,6 +325,50 @@ product can no longer read one. §14.5 records the whole trade rather than delet
 contact card, a sticker, a location — used to fall through every branch of `runTurn` and
 send nothing. Same guarantee, same place.
 
+### F-K · Outcomes are asserted, never read back — driven 15 Aug 2026, arc-slim flash thinking-low
+
+**Root:** R10's other half. Events have no traceability rule the way numbers do: the tail
+demands every number trace to a row, and the model obeys it — every fabricated thing in
+this run is an *event*. Eleven findings, one habit: the model describes an outcome
+instead of checking one, **with the evidence in context every time** (rounds share all
+calls and results; the lie about escalation was composed with five rounds of
+contradicting results in view).
+**Saw** (`.probe/arc-slim/deepseek-v4-flash--thinking-low.json`):
+1. *"I've flagged it to the owner"* — no handoff, no send; the false claim was then
+   written into the watch instruction and stored. Composed in the tool-less recovery
+   round, whose guard named only the future tense; `handoff` was callable for all five
+   prior rounds and never called.
+2. Admin asked "has anyone left this month?" → *"Nobody's left"* — read `ended_on` only;
+   the announced departure and the stuck removal from (1) went unmentioned.
+3. `opt_out` called with `confirmed: true` — a claim the person had tapped; runtime ignored it.
+4. The same confirmation sent twice — the first result's `sent` was in context, unread.
+5. `end_enrollment` retried with byte-identical args after an identical failure.
+6. `request_payment` minted for a parent who only asked their balance (RLS refused).
+7. The discretionary watch messages on both outcomes while the reply promises "you'll
+   hear nothing otherwise" — prose and watch disagree in both directions.
+8. "yes I'm coming" over a two-row result → one session confirmed silently, *"I won't
+   ask about it again"*, second unconfirmed session never mentioned.
+9. "Roster" to the owner ×3, "on the backend" to a parent — `lint.ts:279` catches
+   state-machine words only in quotes, so bare jargon ships.
+10. 87–112-word bulleted status dumps three turns running (rule 4/12).
+11. Deixis to the invisible: "everything above", "That's the figure" — openings that
+    point at things the recipient cannot see.
+**Why the claims checker missed the worst one:** `DONE_VERBS` (`tools.ts:122`) holds
+doing-verbs only — *flagged/escalated/told/raised/notified* are not in it, so the
+escalation lie scored `claimedDone: false`. Same seam as (9): every enumeration leaks at
+the instance nobody listed.
+**The tested exception:** doctrine rule 6 was rewritten (said-is-not-done, events trace
+to results the way numbers trace to rows) and the recovery round's tense guard completed —
+a deliberate, measured exception to this file's no-prompt-fix rule. Pre-registered: the
+edit should move 1/3/4/7/8 (and 2 only via 1); it gets no credit or blame for 5/6/9/10/11.
+Kept only if the re-probe of the same arm improves those cases without regression;
+reverted and recorded here otherwise.
+**Structural fixes, landed separately after the re-probe so the measurement stays
+one-variable:** routing verbs into `DONE_VERBS`/`CLAIM_TABLES` (a message-to-that-person
+or handoff footprint makes them true); bare-word jargon in lint; an actions block beside
+`recentLookups` so prior turns' attempted ops travel with their status ("refused twice,
+nothing written") and "did I actually do it?" is answerable without querying audit_entry.
+
 ### What is now known-good (null results, worth not re-driving)
 
 - **Coach onboarding is fixed.** [Looks right] / [Something's wrong] both appear, the
