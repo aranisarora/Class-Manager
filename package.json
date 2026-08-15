@@ -15,8 +15,6 @@
     "verify:static": "node scripts/verify-static.mjs"
   },
   "dependencies": {
-    "@google/genai": "^1.30.0",
-    "google-auth-library": "^10.5.0",
     "jose": "^6.1.0",
     "luxon": "^3.7.2",
     "next": "15.5.4",

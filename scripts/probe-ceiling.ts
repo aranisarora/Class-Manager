@@ -4,22 +4,22 @@
  *   npx tsx scripts/probe-ceiling.ts [--models a,b] [--runs 2]
  *
  * **The ten-tool ceiling this script was written to test does not exist.** It was
- * a real observation and a wrong diagnosis: on `gemini-2.5-flash`, adding an
+ * a real observation and a wrong diagnosis: on the previous provider, adding an
  * eleventh declaration — any eleventh, including one whose whole schema is a
- * single optional string — made EVERY turn come back MALFORMED_FUNCTION_CALL, and
- * the count was blamed. The cause was an empty enum. `act`'s schema was
+ * single optional string — made EVERY turn come back malformed, and the count was
+ * blamed. The cause was an empty enum. `act`'s schema was
  * `enum: Object.keys(OPERATIONS)`, those declarations were built at module load,
  * and one extra import edge made that list empty; an empty enum is a declaration
- * Vertex rejects, and its symptom is precisely "every turn returns
- * MALFORMED_FUNCTION_CALL with zero output tokens". An eleventh tool perturbed the
- * import graph, so the ceiling looked real every time it was tested. The lazy
- * build in `lib/agent/tools.ts` fixed the cause.
+ * a provider may refuse, and its symptom is precisely "every turn returns
+ * malformed with zero output tokens". An eleventh tool perturbed the import
+ * graph, so the ceiling looked real every time it was tested. The lazy build in
+ * `lib/agent/tools.ts` fixed the cause.
  *
  * This script is what settled it — the real declarations plus K trivial ones,
- * against the real prefix: 10 / 11 / 15 / 30 / 60 all clean, 2/2, on
- * `gemini-2.5-flash` and `gemini-3-flash-preview` alike. `MAX_TOOL_DECLS` now sits
- * at Google's documented limit of 128 per request, and the operations are declared
- * as real functions instead of hiding behind one untyped `act`.
+ * against the real prefix: 10 / 11 / 15 / 30 / 60 all clean, 2/2. Re-verified on
+ * DeepSeek in phase 6: 36 / 56 / 86 declarations, 2/2 clean each, real prefix.
+ * The operations are declared as real functions instead of hiding behind one
+ * untyped `act`.
  *
  * Keep it because the belief was expensive while it stood: 20-odd operations
  * behind one `act` with `args: {type:'object'}` and no properties, their signatures
@@ -28,15 +28,9 @@
  * eleventh tool. Re-run it before believing any new declaration-count folklore, on
  * any new model.
  *
- * A run is BROKEN if the model returns no candidate and no text — the signature
- * of MALFORMED_FUNCTION_CALL — or if the request is rejected outright, and now
- * also if a tool call arrives whose `arguments` do not parse, which is the shape
- * the same failure takes on this wire.
- *
- * **Re-run it after the DeepSeek migration.** The documented limit is the same
- * 128, but the failure mode of an over-limit or malformed declaration is a
- * different provider's, and a misdiagnosed ceiling shaped this architecture once
- * already.
+ * A run is BROKEN if the model returns no candidate and no text, or if the
+ * request is rejected outright, or if a tool call arrives whose `arguments` do
+ * not parse, which is the shape the same failure takes on this wire.
  */
 import { loadEnvFiles, c } from './_env'
 

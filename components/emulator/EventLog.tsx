@@ -42,10 +42,10 @@ function fmtTokens(n: number): string {
 }
 
 /**
- * §4.4 made observable. The stable prefix — doctrine, schema, the nine behavior modules,
- * the operation signatures, the catalog — is ~50k tokens on the front of every call, and
- * cached input bills at a quarter of the rate. So the ratio here is the whole economics of
- * the layering: a turn showing 0% either paid four times over for that prefix, or the prefix
+ * §4.4 made observable. The stable prefix — doctrine, schema, the domain facts,
+ * the operation signatures, the catalog — rides on the front of every call, and
+ * a cache-hit token bills at 3.2% of a miss. So the ratio here is the whole economics of
+ * the layering: a turn showing 0% either paid full price for that prefix, or the prefix
  * stopped being byte-identical and nobody noticed.
  *
  * Which is why 0% is rendered loudly rather than hidden. Below the provider's minimum

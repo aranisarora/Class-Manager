@@ -119,7 +119,7 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
     id: 'CL-CANCEL-CONFIRM',
     audience: 'client',
     trigger:
-      "Tap of [Can't make it]. The cancel is confirmed before it acts — a pocket mis-tap must never give away a seat (§9.2).",
+      'A tap of the reminder\'s can\'t-make-it button. The cancel is confirmed before it acts — a pocket mis-tap must never give away a seat (§9.2).',
     defaultButtons: ['Yes, cancel', 'Never mind'],
     onSilence: 'Expires 1h. Nothing is cancelled.',
     fixed: true,
@@ -287,7 +287,7 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
     audience: 'coach',
     trigger:
       '`ends_at` of a session this coach took. The register is the meter and the coaching record — kept unchanged even for a solo academy (§18). '
-      + '[All present] marks the whole roster in one tap and is the normal night; [Take register] opens form:"register", which asks who was NOT there rather than asking about all twelve. '
+      + 'The all-present button marks the whole roster in one tap and is the normal night; the take-register button opens form:"register", which asks who was NOT there rather than asking about all twelve. '
       + 'An absence with no cancellation on record gets one follow-up question before it is billed — that question is worth more than the rest of the exchange.',
     defaultButtons: ['All present', 'Take register'],
     onSilence: 'Expires 2h → admin (AD-REGISTER-MISSING).',
@@ -476,7 +476,7 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
     trigger:
       'An outbound send failed, or the number is blocked or unreachable. These are three different sentences and only one of them is fixable: '
       + 'a wrong number is a typo the owner can correct, a number not on WhatsApp needs a different contact for that family, '
-      + 'and a block is never retried at all (see going-quiet). Say which, by name, and only offer [Fix number] for the ones a digit would fix.',
+      + 'and a block is never retried at all — a block is stronger than an opt-out. Say which, by name, and only offer the fix-number button for the ones a digit would fix.',
     defaultButtons: ['Fix number', 'Ignore'],
     onSilence: 'Nothing further.',
     fixed: false,
@@ -544,6 +544,12 @@ export function catalogDigest(): string {
     'And everything goes through the one send path, so caps, windows and staging apply no',
     'matter who decided to send.',
     '',
+    'A button exists only when your reply stages it. The quoted labels below are button',
+    'titles you pass in reply(buttons: […]) — they are data in this table, never text for a',
+    'message. A label typed into a message body, bracketed or quoted, produces a sentence',
+    'that looks tappable and is not: a claim of an affordance that does not exist. Offer a',
+    'choice by staging real buttons on the reply call, and keep the body clean of them.',
+    '',
     'This is not the complete set of what you send. You compose messages nobody specified.',
     '',
     'ID | TRIGGER | DEFAULT BUTTONS | ON SILENCE | FIXED',
@@ -554,7 +560,9 @@ export function catalogDigest(): string {
     for (const id of CATALOG_IDS) {
       const e = CATALOG[id]
       if (e.audience !== audience) continue
-      const buttons = e.defaultButtons.length ? e.defaultButtons.map((b) => `[${b}]`).join(' ') : '—'
+      // Quoted, never bracketed: the phase-6 arc showed bracket-formatted rows in
+      // prefix prose being imitated into live message bodies as pseudo-buttons.
+      const buttons = e.defaultButtons.length ? e.defaultButtons.map((b) => `"${b}"`).join(' · ') : '—'
       out.push(`${e.id} | ${e.trigger} | ${buttons} | ${e.onSilence} | ${e.fixed ? 'FIXED' : '—'}`)
     }
   }

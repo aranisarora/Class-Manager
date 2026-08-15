@@ -22,12 +22,10 @@ import { withSession } from '@/lib/db'
 import { AppError } from '@/lib/errors'
 
 /* -------------------------------------------------------------------------- *
- * The wire's message shapes, which are now also the loop's history shapes.
+ * The wire's message shapes, which are also the loop's history shapes.
  *
- * Gemini's `{role, parts[]}` is gone. A tool result is no longer a part inside a
- * user turn; it is its own message carrying the id of the call it answers, and
- * matching is BY ID, not by position — which is the one thing about this format
- * the loop had to learn.
+ * A tool result is its own message carrying the id of the call it answers, and
+ * matching is BY ID, not by position.
  * -------------------------------------------------------------------------- */
 
 export type RawToolCall = {
@@ -45,15 +43,16 @@ export type Msg =
       content?: string | null
       /**
        * The separate reasoning channel. Echoed back verbatim with the message it
-       * came on: with tools in play, dropping it from history is a 400. This is
-       * the thought-signature discipline of the Gemini client under a new name.
+       * came on: the docs say dropping it from a tool-calling history is a 400
+       * (measured live, omission got a 200 — the echo is kept anyway; it is
+       * free and the documented behaviour may return).
        */
       reasoning_content?: string | null
       tool_calls?: RawToolCall[]
     }
   | { role: 'tool'; tool_call_id: string; content: string }
 
-/** Unchanged from the Gemini client on purpose — `tools.ts` declares tools once. */
+/** The one shape `tools.ts` declares tools in. */
 export type ToolDecl = { name: string; description: string; parametersJsonSchema: object }
 
 export type ModelCall = {
@@ -134,21 +133,15 @@ async function modelFaultRate(): Promise<number> {
 /* -------------------------------------------------------------------------- *
  * Caching — automatic, and therefore absent from this file.
  *
- * The Gemini client carried ~140 lines of explicit-cache machinery: handles, a
- * TTL, a burst heuristic, a cooldown, a stale-handle retry path. All of it
- * existed because Gemini's implicit cache measurably never bit — turns logged 0
- * cached tokens across the board — and its explicit cache was billed per hour of
- * storage, so caching had to be *decided* rather than simply had.
- *
- * Here the server keeps the KV cache of recent requests on disk and reuses it for
+ * The server keeps the KV cache of recent requests on disk and reuses it for
  * any request whose token sequence starts with a byte-identical prefix. No
- * handle, no TTL, no storage fee, nothing to decide. A cache-hit token costs 3.2%
- * of a miss.
+ * handle, no TTL, no storage fee, nothing to decide. A cache-hit token costs
+ * 3.2% of a miss — measured live at 91–98% hit across the phase-6 arcs.
  *
- * So the §4.4 discipline is the ONLY thing that still matters, and it now pays:
- * the stable prefix stays byte-stable and academy-independent, everything
- * variable stays after it. A changed tool description invalidates the prefix —
- * one miss-priced call, not a failure. `usage` reports what happened; there is
+ * So the §4.4 discipline is the ONLY thing that matters, and it pays: the
+ * stable prefix stays byte-stable and academy-independent, everything variable
+ * stays after it. A changed tool description invalidates the prefix — one
+ * miss-priced call, not a failure. `usage` reports what happened; there is
  * nothing to configure and nothing to fix up afterwards.
  *
  * One rule survives as a prohibition: **never send `user_id`**. It buys per-user
@@ -163,90 +156,36 @@ const BASE_URL = 'https://api.deepseek.com'
  * Thinking
  * -------------------------------------------------------------------------- */
 
-/** Ceiling on thinking for a structured-output call, so the JSON still fits. */
-const THINKING_BUDGET_STRUCTURED = 2048
 /**
- * **Thinking is off on the tool path, and it was measured, not guessed.**
+ * **One thinking level for the whole model path: `low`. Measured, not guessed.**
  *
- * This was 4096 on the theory that a turn composing a real plan needs room to
- * deliberate. `scripts/probe-model.ts` put that theory against the live prompt and the
- * live tool surface, one variable changed at a time, eight runs per condition, on the
- * exact turn FINDINGS says goes wrong — two classes and two families in one sentence:
+ * Phase 6 of the migration ran the same 18-case lifecycle arc at every level,
+ * one variable at a time, against the live prompt and the live tool surface
+ * (`.probe/deepseek-live-test.html` is the full report):
  *
- *   gemini-2.5-flash · thinking 0      8/8 reached for a tool ·  3.5s ·   575 output tokens
- *   gemini-2.5-flash · thinking 4096   6/8                     · 16.9s ·  3606 output tokens
- *   gemini-3-flash   · thinking 0      8/8                     ·  7.0s ·   912 output tokens
- *   gemini-3-flash   · thinking 4096   7/8                     · 42.9s ·  7136 output tokens
+ *  - **off** was fastest (p50 8.1s) and composed perfectly — and its failure
+ *    mode is disqualifying: fluent, present-tense false claims of state. A
+ *    coach "hired" with zero tool calls; a fabricated Sunday session with named
+ *    children in it; a promised opt-out with no row behind it. On the pillar
+ *    that matters most, it lies.
+ *  - **low** grounds referents before speaking (it caught that "kal" had no
+ *    session to cancel), acts instead of narrating, fires the discretionary
+ *    tools inline — and holds p50 around 17s at ~₹0.3/turn peak.
+ *  - **high** bought two truth checks for 2.6× the median wait, and once spent
+ *    its entire output allowance deliberating (`finish: length`, an empty
+ *    reply after 152 seconds). A probe instrument, not a setting.
  *
- * Nearly five times the latency and six times the output tokens, to be *less* likely to
- * do the thing. Across a wider sweep the 4096 arm also produced every
- * MALFORMED_FUNCTION_CALL observed (2 in 20 on 2.5-flash, zero at 0).
- *
- * The reason it hurt rather than helped: on Gemini the thinking and the function call
- * were drawn from ONE stream, and a long deliberation before a deeply-nested call is
- * exactly the shape the decoder gets wrong.
- *
- * **That premise may not hold here, and that is the interesting part of this
- * migration.** DeepSeek reasons in a separate channel (`reasoning_content`), so
- * deliberation cannot corrupt the call the way it demonstrably did on Gemini. The
- * default stays at C29's measured zero — porting a finding by deleting it is how a
- * migration loses two years of measurement — but the arc in `deepseek-migration.md`
- * phase 6 exists to overturn it, and it is the one arm most likely to.
+ * Reasoning runs in a separate channel (`reasoning_content`), so deliberation
+ * cannot corrupt a function call: 0 malformed in 625 calls across every arm.
+ * Plain prose calls with no tools and no JSON stay at `disabled` — nothing to
+ * deliberate about, and the latency is somebody's silence.
  */
-const THINKING_BUDGET_TOOLS = 0
-const MAX_OUTPUT_TOOLS = 16384
+export type ThinkingLevel = 'off' | 'low' | 'high'
 
-/**
- * **What zero thinking bought, and what it cost.**
- *
- * The measurement above is sound and stands: on Gemini's tool path, deliberation made
- * the model *less* likely to act and produced every malformed call. But look at which
- * decisions survived it. `read`, `reply` and `act` are first-order — the person asked
- * a question, you answer it — and those are reliably reached. The tools that need a
- * *second* judgement on top of answering are `schedule` ("is this worth watching?"),
- * `remember` ("is this worth keeping?") and `view` ("does this deserve a page?"), and
- * across 93 driven turns those were called 0, 3 and 1 times respectively.
- *
- * C29 and that silence are the same fact recorded twice. A model with no deliberation
- * budget does the obvious thing, and every one of those is a non-obvious thing.
- *
- * So the budget stops being a constant. It is zero for the composition-shaped turns
- * C29 measured, and non-zero where the turn is a judgement call and the tool schemas
- * involved are flat. `TURN_THINKING` names the tiers; `loop.ts` chooses one per turn.
- * The tiers stay NUMERIC even though this provider has no numeric budget, because the
- * numbers are what C29 and C50 measured and what the loop reasons about; `thinkingFor`
- * translates at the boundary, exactly as `applyThinking` did for Gemini 3.
- */
-export const TURN_THINKING = {
-  /** Composing a plan, parsing a request into rows: C29's measured arm. */
-  compose: 0,
-  /** Guiding somebody through something — sequencing, not composing (§7.1, onboarding). */
-  guide: 1024,
-  /** A judgement with flat schemas and no plan to build (the §5 reflection pass). */
-  judge: 512,
-} as const
+const MAX_OUTPUT_TOOLS = 16384
 
 type Thinking = { thinking: { type: 'disabled' } } | { thinking: { type: 'enabled' }; reasoning_effort: 'low' | 'high' }
 
-/**
- * A numeric tier as this provider's two knobs.
- *
- * **Thinking is ENABLED BY DEFAULT here, at `high` effort.** A port that forgets
- * to send anything runs C29's measured bad arm on every single turn, which is
- * the most expensive way this migration could go quietly wrong — so `disabled`
- * is sent explicitly and the default is never relied on.
- *
- * The ladder is `disabled` / `low` / `high` / `max`: `medium` and `high` both
- * resolve to the same actual effort, so a three-way mapping would be a lie in the
- * middle. `guide` and `judge` both land on `low` deliberately — 512 and 1024 were
- * always "a little, not a lot", and inventing a distinction the provider does not
- * have would be reading precision into two numbers that never carried it.
- *
- * Provisional, and phase 6 of `deepseek-migration.md` is what settles it. The
- * Gemini history here is the warning: the naive level mapping cost 5.6× the output
- * tokens and took `compose-big` follow-through to zero, and only measurement
- * caught it.
- */
 /**
  * The probe's pin, and the only reason this file reads `process.env` directly.
  *
@@ -255,9 +194,9 @@ type Thinking = { thinking: { type: 'disabled' } } | { thinking: { type: 'enable
  * set — because the alternative is threading a sweep parameter through `runTurn`,
  * where it would live forever as a production code path that only a probe ever
  * takes. It is absent in production, and `lib/env.ts` does not know it exists:
- * pinning a tier is an instrument, not a setting.
+ * pinning a level is an instrument, not a setting.
  */
-function pinnedTier(): Thinking | null {
+function pinnedLevel(): Thinking | null {
   switch ((process.env.PROBE_THINKING ?? '').trim().toLowerCase()) {
     case 'off':
     case 'disabled':
@@ -271,12 +210,17 @@ function pinnedTier(): Thinking | null {
   }
 }
 
-function thinkingFor(budget: number): Thinking {
-  const pinned = pinnedTier()
+/**
+ * **Thinking is ENABLED BY DEFAULT on this API, at `high` effort**, so a call
+ * that forgets to send the field runs the most expensive level on every turn.
+ * `disabled` is therefore sent explicitly and the provider default is never
+ * relied on.
+ */
+function thinkingFor(level: ThinkingLevel): Thinking {
+  const pinned = pinnedLevel()
   if (pinned) return pinned
-  if (budget <= 0) return { thinking: { type: 'disabled' } }
-  if (budget <= 2048) return { thinking: { type: 'enabled' }, reasoning_effort: 'low' }
-  return { thinking: { type: 'enabled' }, reasoning_effort: 'high' }
+  if (level === 'off') return { thinking: { type: 'disabled' } }
+  return { thinking: { type: 'enabled' }, reasoning_effort: level }
 }
 
 /* -------------------------------------------------------------------------- *
@@ -388,12 +332,11 @@ export async function generate(o: {
    */
   json?: boolean
   /**
-   * Override the thinking allowance for this call. Exists because "how much thinking
-   * does a clean function call need?" is a question whose answer changes with the model
-   * and can only be settled by measurement — `scripts/probe-model.ts` varies exactly
-   * this. Omitted, the constants above decide.
+   * Override the thinking level for this one call. Omitted, the default is the
+   * shipped configuration: `low` wherever the model acts or answers in a
+   * structure (tools or JSON), `off` for plain prose.
    */
-  thinkingBudget?: number
+  thinking?: ThinkingLevel
 }): Promise<GenResult> {
   if (!o.messages || o.messages.length === 0) {
     fail('model_bad_request', 'generate() called with no messages')
@@ -404,8 +347,7 @@ export async function generate(o: {
 
   const model = o.model ?? env.MODEL_MAIN
   const hasTools = Boolean(o.tools?.length)
-  const budget = o.thinkingBudget ?? (hasTools ? THINKING_BUDGET_TOOLS : o.json ? THINKING_BUDGET_STRUCTURED : 0)
-  const thinking = thinkingFor(budget)
+  const thinking = thinkingFor(o.thinking ?? (hasTools || o.json ? 'low' : 'off'))
 
   const body: Record<string, unknown> = {
     model,
@@ -422,10 +364,9 @@ export async function generate(o: {
   }
 
   // Silently ignored in thinking mode — no error, no effect — so sending it there
-  // would be a value in the request that reads as if it were doing something. The
-  // same discipline as omitting temperature on Gemini 3, for the same reason.
-  // Read off the resolved setting, not the numeric tier: a pinned probe arm can
-  // turn thinking on for a call whose budget says zero, and temperature must
+  // would be a value in the request that reads as if it were doing something.
+  // Read off the resolved setting, not the requested level: a pinned probe arm
+  // can turn thinking on for a call that asked for none, and temperature must
   // follow what was actually sent.
   if (thinking.thinking.type === 'disabled' && o.temperature !== undefined) body.temperature = o.temperature
 
@@ -469,10 +410,10 @@ function shape(res: ChatResponse, fallbackModel: string, ms: number): GenResult 
   const choice = res.choices?.[0]
   const message = choice?.message ?? {}
 
-  // Echoed back into history verbatim, `reasoning_content` included: with tools in
-  // play, dropping it is a 400. Only the keys that were actually present are
-  // carried — an explicit `reasoning_content: null` on a message that never had
-  // one is a difference in the bytes the cache matches on.
+  // Echoed back into history verbatim, `reasoning_content` included — the echo
+  // guard is harmless and the docs demand it. Only the keys that were actually
+  // present are carried: an explicit `reasoning_content: null` on a message that
+  // never had one is a difference in the bytes the cache matches on.
   const assistant: Msg & { role: 'assistant' } = { role: 'assistant', content: message.content ?? '' }
   if (message.reasoning_content) assistant.reasoning_content = message.reasoning_content
   if (message.tool_calls?.length) assistant.tool_calls = message.tool_calls
@@ -521,10 +462,10 @@ function shape(res: ChatResponse, fallbackModel: string, ms: number): GenResult 
 /**
  * A JSON answer, validated, with exactly one retry.
  *
- * Gemini took a `responseJsonSchema` and the decoder could not produce anything
- * else. This API has no stable equivalent — `json_object` mode asks for JSON and
- * DeepSeek's own docs admit it occasionally returns **empty content** — so the
- * schema moves into the prompt and the guarantee moves here.
+ * There is no constrained decoding on this API outside beta — `json_object`
+ * mode asks for JSON and DeepSeek's own docs admit it occasionally returns
+ * **empty content** — so the schema lives in the prompt and the guarantee
+ * lives here.
  *
  * One retry, not three: both call sites are `MODEL_SYNTH` batch paths where a
  * retry costs nothing anybody is waiting on, and a second failure is evidence

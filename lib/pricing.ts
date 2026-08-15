@@ -14,11 +14,9 @@
  * imports this one.
  *
  * **Cached input is its own rate, not a fraction of input.** The old formula
- * hardcoded `× 0.25`, which was Gemini's ratio. DeepSeek bills a cache-hit token
- * at **3.2%** of a miss, so the fraction would overstate cached cost about
- * eightfold — in the direction that makes the cheaper provider look dearer, and
- * on the exact axis this migration was decided on. A rate per row cannot drift
- * like that.
+ * hardcoded a cache discount as a fixed fraction of the input rate. DeepSeek
+ * bills a cache-hit token at **3.2%** of a miss, so any hardcoded fraction
+ * drifts the moment the price card moves — a rate per row cannot.
  */
 export type Price = {
   /** Input, cache miss. */
@@ -28,8 +26,8 @@ export type Price = {
   out: number
   /**
    * What this provider charges at peak, as a multiple of the rates above.
-   * DeepSeek doubles; Google does not, and a `peakMultiplier` of 1 on the Gemini
-   * rows is what keeps `costUsd` from needing to know which provider it prices.
+   * DeepSeek doubles. Carried per row so `costUsd` never has to know which
+   * provider it prices.
    */
   peakMultiplier: number
 }
@@ -37,15 +35,11 @@ export type Price = {
 export const PRICES: Record<string, Price> = {
   // DeepSeek, off-peak, from 2026-08-16 16:00 UTC. Peak doubles every row, which
   // `peakMultiplier` applies rather than a second table doing it.
+  //
+  // Turns recorded on the pre-cutover provider price as null — "we do not
+  // know", which is what it is now that those rates are no longer tracked.
   'deepseek-v4-flash': { in: 0.22, cachedIn: 0.007, out: 0.66, peakMultiplier: 2 },
   'deepseek-v4-pro': { in: 0.66, cachedIn: 0.022, out: 1.98, peakMultiplier: 2 },
-
-  // Gemini, kept for as long as `gemini.ts` is the rollback road, and so that a
-  // turn recorded before the cutover still prices correctly when read back.
-  'gemini-2.5-flash': { in: 0.3, cachedIn: 0.075, out: 2.5, peakMultiplier: 1 },
-  'gemini-2.5-pro': { in: 1.25, cachedIn: 0.3125, out: 10, peakMultiplier: 1 },
-  'gemini-3-flash-preview': { in: 0.3, cachedIn: 0.075, out: 2.5, peakMultiplier: 1 },
-  'gemini-3-pro-preview': { in: 1.25, cachedIn: 0.3125, out: 10, peakMultiplier: 1 },
 }
 
 /** Also an assumption, and also better in one place than in three. */

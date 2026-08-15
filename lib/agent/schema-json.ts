@@ -10,15 +10,15 @@
  * `enum` is a set it can see the whole of. Everything this module produces is
  * therefore worth more than the same information written as prose.
  *
- * **What changed with the provider, and it matters here.** On Vertex this was a
- * hard constraint: the decoder physically could not emit a property the schema
- * did not name. DeepSeek applies tool schemas as guidance outside `/beta`'s
- * `strict` mode, so a misspelled property is now *possible* where it used to be
- * impossible. Nothing in this file changes because of that — a schema at the
- * decode point is still the strongest instrument available, and it is now the
- * only one — but the runtime is what catches a bad call rather than the wire,
- * which is why `runTool` validates and why a parse failure has a designed path
- * through the loop instead of being unreachable.
+ * **How binding the declaration is, and it matters here.** DeepSeek applies
+ * tool schemas as guidance outside `/beta`'s `strict` mode, so a misspelled
+ * property is *possible* rather than impossible. Nothing in this file changes
+ * because of that — a schema at the decode point is still the strongest
+ * instrument available, and it is the only one — but the runtime is what
+ * catches a bad call rather than the wire, which is why `runTool` validates and
+ * why a parse failure has a designed path through the loop instead of being
+ * unreachable. (`strict: true` on `/beta` verified working live; upgrading to
+ * it is open work.)
  *
  * And that is exactly how the same information was being carried. `act` declared
  * `args: { type: 'object' }` — no properties, nothing required, nothing typed —
@@ -31,12 +31,12 @@
  *
  * WHAT THE DECLARATION MAY CONTAIN
  * -----------------------------------------------------------------------------
- * This was written to Vertex's OpenAPI subset — `type`, `nullable`, `required`,
+ * This was written to a narrow OpenAPI subset — `type`, `nullable`, `required`,
  * `format`, `description`, `properties`, `items`, `enum`, and NOT `default`,
  * `optional`, `maximum` or, the one that shaped this file, **`oneOf`**. A
  * discriminated union could not be declared at all, which is why `plan`'s
- * five-way step union was never a schema that API could express, and why shipping
- * it as a JSON string was the right call rather than a lazy one.
+ * five-way step union was never a declared schema, and why shipping it as a
+ * JSON string was the right call rather than a lazy one.
  *
  * DeepSeek takes standard JSON Schema and its beta strict mode supports `anyOf`,
  * so that union could finally become a real declaration. **It has not been
@@ -106,7 +106,7 @@ function fromUnion(options: unknown[], depth: number): Json {
 }
 
 /**
- * A zod schema as Gemini-flavoured JSON Schema.
+ * A zod schema as declaration-safe JSON Schema.
  *
  * Never throws: a declaration that fails to build would take the whole tool
  * surface down at boot, and a loose `{type:'object'}` for one awkward argument is

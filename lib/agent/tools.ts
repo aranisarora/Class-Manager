@@ -364,10 +364,11 @@ function pointsAtMissingAffordance(body: string, hasAffordance: boolean): boolea
  *
  * This is not a style choice. A plan step is a five-way union whose branches nest
  * three and four deep — a message carrying buttons carrying action payloads, a
- * schedule carrying a free-form job payload — and Vertex's function-call decoder
- * returns MALFORMED_FUNCTION_CALL on it more often than not once the model tries
- * to build a real one. Measured against the live prompt: two of three attempts came
- * back malformed, zero output tokens, no candidate, no error anyone could read.
+ * schedule carrying a free-form job payload — and a function-call decoder handed
+ * that as a declared schema malformed it more often than not once the model tried
+ * to build a real one. Measured against the live prompt on the previous provider:
+ * two of three attempts came back malformed, zero output tokens, no candidate, no
+ * error anyone could read.
  *
  * The failure was invisible in a way that mattered: with every tool available the
  * model would quietly fall back to `read` instead, so reads always worked and
@@ -910,10 +911,10 @@ export function pendingConfirmation(ctx: ToolCtx): { steps: PlanStep[]; summary:
  * `act`'s parameter schema is `enum: Object.keys(OPERATIONS)`, and a module-load
  * constant meant that list was whatever `operations.ts` had finished defining at
  * the moment this file happened to be evaluated. Add one import edge anywhere in
- * the graph and the enum is `[]` — a tool declaration Vertex will not accept, so
- * **every** turn came back `MALFORMED_FUNCTION_CALL` with zero output tokens and
- * the person got "something broke on my side". Nothing in the failure names a
- * module cycle, and nothing would.
+ * the graph and the enum is `[]` — a tool declaration a provider may refuse, and
+ * on the previous provider **every** turn came back malformed with zero output
+ * tokens while the person got "something broke on my side". Nothing in the
+ * failure names a module cycle, and nothing would.
  *
  * A declaration that reads another module's exports has to be built lazily. The
  * result is the same string either way, and it stops depending on import order —
@@ -937,21 +938,17 @@ export function toolDecls(): ToolDecl[] {
  *
  * Re-measured with `scripts/probe-ceiling.ts`, against this exact prefix and
  * these exact declarations plus K padding tools, two runs per condition:
- *
- *   gemini-2.5-flash        10 / 11 / 15 / 30 / 60 declarations — clean, 2/2 each
- *   gemini-3-flash-preview  10 / 11 / 15 / 30 / 60 declarations — clean, 2/2 each
- *
- * Sixty works, on the *same model* the ceiling was found on. Google documents the
- * limit as 128 per request and recommends keeping the *active* set to 10-20 for
- * the model's benefit, which is a focus argument, not a decoder one.
+ * 10 / 11 / 15 / 30 / 60 declarations, clean, 2/2 each, on the very model the
+ * ceiling had been "found" on. Re-verified after the DeepSeek migration:
+ * 36 / 56 / 86 declarations, 2/2 clean each, against the real prefix.
  *
  * The likely real cause is documented a few lines above, in `toolDecls`: `act`'s
  * schema is `enum: Object.keys(OPERATIONS)`, and when these were built at module
  * load, one extra import edge made that list empty. An empty enum is a
- * declaration Vertex rejects, and its symptom is precisely "every turn comes back
- * MALFORMED_FUNCTION_CALL with zero output tokens". Adding an eleventh tool
- * perturbs the import graph. The lazy build fixed the cause; this guard outlived
- * it and went on constraining the design for nothing.
+ * declaration a provider may refuse outright, and its symptom is precisely
+ * "every turn comes back malformed with zero output tokens". Adding an eleventh
+ * tool perturbs the import graph. The lazy build fixed the cause; this guard
+ * outlived it and went on constraining the design for nothing.
  *
  * What it cost while it stood: 20-odd operations hidden behind one `act` with
  * `args:{type:'object'}` and no properties, their signatures carried as prose in
@@ -1105,7 +1102,7 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
   /**
    * `act` is NOT declared to the model, and has not been since operations became
    * their own typed declarations. Each of the 28 carries its own zod schema
-   * projected into the constraint Gemini decodes against; `act` took
+   * projected into the declaration the model decodes against; `act` took
    * `args: {type:'object'}`, which gave the decoder nothing to hold onto, and it
    * was measured at 0 calls across 464 tool calls in seven academies because it
    * was not on the list.

@@ -100,12 +100,12 @@ const MODELS = flag('models', 'deepseek-v4-flash,deepseek-v4-pro')
 /**
  * The thinking sweep — `--thinking default,off,low,high`.
  *
- * `default` is the loop deciding for itself (`TURN_THINKING`, chosen per turn
- * from the academy's state), which is the arm production actually runs. The
- * others pin every turn to one tier, which is the only way to ask the question
- * the migration is open on: whether deliberation in a SEPARATE channel recovers
- * the discretionary judgement C29's zero-thinking amputated — `schedule`,
- * `remember` and `view` fired 0, 3 and 1 times across 93 turns.
+ * `default` is what production runs: `low` on the whole model path, settled by
+ * the phase-6 arc. The others pin every turn to one level via `PROBE_THINKING`,
+ * which is how the question was answered in the first place — whether
+ * deliberation in a SEPARATE channel recovers the discretionary judgement that
+ * zero thinking amputates (`schedule`, `remember` and `view` fired 0, 3 and 1
+ * times across 93 driven zero-thinking turns; at low, `schedule` fires inline).
  *
  * One variable at a time: an arm is a whole child process with a fresh academy,
  * so a thinking arm never shares rows or a warm cache with another.
@@ -756,9 +756,10 @@ const CASES: Case[] = [
      * class cancel kar do" is Hinglish in Latin script with the verb at the end,
      * a Hindi time word ("6 baje"), a relative day ("kal") that has to be
      * resolved against the tenant's clock, and the English class name embedded in
-     * the middle of it. Gemini is strong here; DeepSeek is unproven, and an arc
-     * made entirely of well-formed English sentences would report a clean pass
-     * on a model that cannot read half of what this product is actually sent.
+     * the middle of it. An arc made entirely of well-formed English sentences
+     * would report a clean pass on a model that cannot read half of what this
+     * product is actually sent. (Settled live: comprehension was flawless in
+     * every phase-6 arm.)
      *
      * The checks are deliberately about the ROW, not the reply: a warm
      * acknowledgement over an uncancelled session is precisely the failure this

@@ -69,7 +69,7 @@ The bot carries a lot of doctrine. Feeding all of it into every prompt is expens
 | **0 · Schema** | Unique keys, FKs, RLS policies | Zero | No — the database refuses |
 | **1 · Operations** | Transactional writes carrying their own consequences | Zero | No — it's inside the transaction |
 | **2 · Core doctrine** | Rules shaping *every* reply | ~300 tok, cached | Rarely |
-| **3 · Behavior modules** | Situation-specific behavior | ~4.5k tok, cached | Rarely — always in context |
+| **3 · Domain facts** | Facts no derivation produces (§4.2) | Small, cached | Rarely — always in context |
 | **4 · Memory** | This academy, this person (§5) | Small, per-conversation | — |
 | **5 · Lint** | Post-generation repair | Zero | It's a check, not a rule |
 
@@ -100,38 +100,24 @@ Always in context, and they shape every single reply. `lib/doctrine.md` is the f
 
 The five below were added after reading a month of the product's own transcripts against how a competent manager would actually have handled them. Each names a failure that was invisible because every individual message was *correct*.
 
-12. **Answer in proportion.** The reply to a confirmation is an acknowledgement. Somebody who taps `[I'll be there]` has said everything; **"👍" is the whole correct answer**, and restating their child's name, the class, the time and the venue is noise wearing helpfulness as a costume. Length is earned by news, by a decision, or by something going wrong.
+12. **Answer in proportion.** The reply to a confirmation is an acknowledgement. Somebody who taps a button saying they'll be there has said everything; **"👍" is the whole correct answer**, and restating their child's name, the class, the time and the venue is noise wearing helpfulness as a costume. Length is earned by news, by a decision, or by something going wrong.
 13. **Say what will stop, not only what will happen.** People model this thing by what reaches their phone, so the absence of a message is information you owe them. *"One tap, and I don't ask again."* *"You're out of it — I won't chase you about tonight."* A promise to be quiet is the most valuable thing you can say and the one nobody thinks to.
 14. **The cost goes before the tap, never after.** Anything that charges someone or gives up their place says so *in the confirmation*, with the number. Discovering a charge afterwards is how a fee becomes a dispute, and the sentence costs nothing to move.
 15. **Close what you opened.** Whoever raised a thing hears its outcome, not just its acknowledgement. A handoff with no return trip is indistinguishable from being ignored.
 16. **Teach the surface once, where it is useful.** Nobody guesses they can type a whole week in one messy sentence and have it read back, or use a broadcast list instead of a group. Say it at the moment it saves them the work — never as a tour.
 
-### 4.2 Layer 3 — behavior modules
+### 4.2 Layer 3 — domain facts (the behavior modules, retired)
 
-One file per behavior, all of them always in context. Each carries a **trigger condition, not a title** — the condition is what tells the model when the module applies.
+This layer used to be eleven prose behavior modules — one file per situation, each opening with a trigger condition, ~62k characters of scripted move-by-move. **They were retired on 2026-08-15, by measurement, not by taste.** The phase-6 live arc drove the same 18-case lifecycle with and without them, one variable apart: truth tied (253/261 both ways), the module-free arm's replies were plainer (49 words vs 72), its two best moments were *derived* from doctrine rather than prescribed, and the prescriptions were implicated in their own arm's two worst behaviors — a runaway destructive cascade shaped by a module's endings, and pseudo-buttons imitated from module example formatting into live message bodies.
 
-```
-onboarding       — a business, a coach or a family at the beginning of something
-watching         — something is worth coming back to, or worth remembering
-going-quiet      — somebody wants less of you, or none of you
-coach-churn      — a coach is leaving, being replaced, or their sessions need reassigning
-money-dispute    — a charge is disputed, a payment contested, or a waiver requested
-first-contact    — messaging someone who has never messaged us
-bulk-change      — a change affecting more than a handful of people or sessions
-new-intake       — a stranger asking about joining
-schedule-change  — moving, cancelling or rescheduling anything recurring
-escalation       — anger, safety language, or two failed turns
-feedback         — a parent complains or praises, or a coach makes an observation
-reporting        — the admin wants numbers, trends, or a view
-```
+The modules were compensation for a model that decided everything at zero deliberation, because deliberation corrupted the previous provider's function calls. A model that cannot deliberate needs the deliberation done for it, in advance, in prose. That constraint is gone: the current provider reasons in a separate channel, and the interactive path runs with thinking on (§14.5's client).
 
-**The last three added are the three nothing covered**, and each was invisible in the same way: no trigger condition, so the model never reached for the capability behind it. `onboarding` was the situation *every* business is in on its first day, left to improvisation — and what got improvised was a narration of `onboarding_state`. `watching` is not a situation but a *capability*: the two most discretionary tools in the product, `schedule` and `remember`, were named nowhere, and across 93 driven turns produced zero watches and three facts. `going-quiet` is the moment somebody asks you to stop, where the easy answer — switching everything off, silently, including the bill they now have to be chased for by hand — is unrecoverable.
+What replaced them, in the cached prefix:
 
-~16k tokens, always present, inside the cached prefix (§4.4). **Adding a behavior means adding a file, not touching code.**
+- **A derivation instruction.** There is no playbook of situations on purpose; the model reasons from doctrine to what the moment needs — who is affected, who must hear, what must be confirmed, what will stop, who owns what happens next.
+- **A compact facts block** (`lib/agent/context.ts`, `DOMAIN_FACTS`) holding what no principle regenerates: a block is stronger than an opt-out; one block in a batch is a signal about the batch; a broadcast list only delivers to people who saved the admin's number; the commonest true dispute is the out-of-band cancellation; escalations are about sessions, never people; and so on. Facts state; they do not demonstrate — no worked chat examples, because the model imitates an example's surface along with its content.
 
-**Why they are not lazy-loaded.** An earlier design had the model pull modules on demand from a manifest, keeping only the trigger lines in context. That saves tokens of an already-cached prefix — nearly nothing — and buys a failure mode where the bot behaves correctly or not depending on whether it classified the situation right, which is invisible from the outside and nearly undebuggable. **Cached tokens are cheap; unreliable judgment is not.** The trigger conditions stay because they are how the model knows a module applies; they just no longer gate a fetch.
-
-**No count is stated anywhere the model reads.** A number in the prompt is the one thing here that goes stale silently — nothing checks it, and the model cannot tell a miscount from a module it has been told to ignore. `BEHAVIOR_MODULES` in `lib/agent/context.ts` is the only place the set is declared.
+**No count is stated anywhere the model reads.** A number in the prompt is the one thing that goes stale silently — nothing checks it, and the model cannot tell a miscount from something it was told to ignore.
 
 ### 4.3 Follow-up buttons
 
@@ -149,23 +135,22 @@ Costs nothing, is always relevant, and **teaches capability by demonstration rat
 Layering is what makes a clean prompt-cache prefix possible:
 
 ```
-STABLE PREFIX  (byte-identical across turns; changes only with schema or modules)
-├─ core doctrine          ~300 tok
-├─ schema                 ~2k tok
-├─ behavior modules       ~4.5k tok
-└─ operation signatures   ~1k tok
+STABLE PREFIX  (byte-identical across turns; changes only with schema or doctrine)
+├─ core doctrine
+├─ schema
+├─ domain facts
+├─ operations framing + catalog digest
+└─ tool declarations
 
 VARIABLE TAIL  (never cached)
-├─ memory hot set         ~400
+├─ memory hot set
 ├─ conversation
 └─ query results
 ```
 
-~8k stable tokens.
-
 **Keeping the prefix byte-identical is the whole discipline, and it is now the whole mechanism.** The provider caches automatically: the server reuses the KV cache of any request whose tokens begin with a byte-identical prefix, a cache-hit token costs 3.2% of a miss, and there is no handle, no TTL and no storage fee. Nothing has to be decided — the prefix simply has to stay stable and academy-independent, with everything variable below it. `academy.prompt_cache_handle` stays null permanently: it assumed a per-academy prefix, and one cache serves every tenant. Two things throw the hit away, and both are avoidable — a changed tool description (one miss-priced call, not a failure), and a per-tenant `user_id`, which buys KVCache isolation and would partition the shared prefix, so it is never sent.
 
-The measured history is worth keeping: Gemini's *implicit* cache never bit at all (0 cached tokens cross-turn), which is why that client grew 140 lines of explicit-cache machinery, and why this design's reward only arrived with the provider that pays it.
+The measured history is worth keeping: the previous provider's *implicit* cache never bit at all (0 cached tokens cross-turn), which is why that client grew 140 lines of explicit-cache machinery, and why this design's reward only arrived with the provider that pays it — measured live at 91–98% hit.
 
 ### 4.5 Layer 5 — lint
 

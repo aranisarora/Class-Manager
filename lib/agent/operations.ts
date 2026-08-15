@@ -2958,7 +2958,7 @@ const onboardCoach: OperationDef = {
   name: 'onboard_coach',
   ownScope: true,
   description:
-    "A coach confirms their classes are right, on their first run: `invited` → `active`, and they start getting their day. This is what [Looks right] does — the point of that message, not a note that they agreed.",
+    "A coach confirms their classes are right, on their first run: `invited` → `active`, and they start getting their day. This is what their looks-right button does — the point of that message, not a note that they agreed.",
   params: z.object({
     coach_id: uuid.nullish(),
   }),

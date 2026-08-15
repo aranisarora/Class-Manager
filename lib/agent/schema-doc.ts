@@ -12,8 +12,8 @@
  * delivery status, that escalations name a session rather than a person, the six
  * things an adjustment covers, the read tool's timeout and row cap — every line of
  * which was already stated where it actually binds: on the `read` declaration the
- * model decodes against, in doctrine, or in the behavior module whose trigger
- * condition brings it to mind. Restating it here did not make it more true, and the
+ * model decodes against, in doctrine, or in the prefix's domain-facts block.
+ * Restating it here did not make it more true, and the
  * prefix pays for it on every uncached round. What is left is what an SQL author
  * cannot get anywhere else: the tables, the columns, the FK graph, the derived
  * expressions and the billing rules that decide which rows exist.

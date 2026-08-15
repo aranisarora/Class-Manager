@@ -655,9 +655,10 @@ export const FLOWS: Record<string, FlowDefinition> = {
  * The names the model may write, and the only ones.
  *
  * Kept as a literal tuple rather than derived from `FLOWS`, because it is projected
- * into the `reply` tool's JSON schema as an `enum` and a Gemini function-call enum is
- * a hard decode constraint — it has to be a real string union at build time, not a
- * value assembled at import. Adding a form is this line and the definition above it.
+ * into the `reply` tool's JSON schema as an `enum`, and an empty or import-order-
+ * dependent enum is the classic silent way a declaration breaks — it has to be a
+ * real string union at build time, not a value assembled at import. Adding a form
+ * is this line and the definition above it.
  */
 export const FORM_IDS = ['business_setup', 'add_class', 'register'] as const
 export type FormId = (typeof FORM_IDS)[number]

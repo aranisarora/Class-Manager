@@ -258,8 +258,8 @@ export async function hotSet(
 // `memory_fact` is in `SCHEMA_DOC`, including the live-set predicate
 // (`retired_at is null and id not in (select supersedes …)`), so the model reaches
 // past the hot set with `read` like it reaches everything else. One query surface,
-// not two — and `lib/behaviors/feedback.md`'s "search the fact store before saying
-// you don't know" is satisfied by the tool that actually exists.
+// not two — "search the fact store before saying you don't know" is satisfied by
+// the tool that actually exists.
 // -----------------------------------------------------------------------------
 
 // -----------------------------------------------------------------------------

@@ -398,13 +398,6 @@ const WALL_CLOCK_ALLOW = allow([
       'real time, exactly as clock.ts does it. Nothing here decides domain state.',
   },
   {
-    file: 'lib/agent/gemini.ts',
-    match: /Date\.now\(\)/,
-    why:
-      "the prompt cache handle's lifetime is Google's, measured in real seconds on their " +
-      'servers. Advancing sim_clock must not expire or extend it.',
-  },
-  {
     file: 'lib/format.ts',
     match: /DateTime\.now\(\)/,
     why:

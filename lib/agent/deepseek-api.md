@@ -71,24 +71,24 @@ number `MAX_TOOL_DECLS` already guards). `stop` up to 16 sequences.
    **per call**, `content` a string. The `tool_call_id` must match — matching
    is by id, not position.
 4. The assistant message that carried the calls is echoed back into history
-   **verbatim** first — `reasoning_content` included. With tools in play,
-   dropping `reasoning_content` from history is a **400**. (Without tool
-   calls it is optional; the API ignores it.) This is the thought-signature
-   discipline of `loop.ts:1040` with a new field name.
+   **verbatim** first — `reasoning_content` included. The docs claim dropping
+   `reasoning_content` from a tool-calling history is a **400**; measured live
+   (phase 6), omission returned **200** and composed fine. The echo is kept
+   anyway — it is free, and the documented behaviour may return.
 5. One round may carry **several** tool calls — always iterate the array.
 6. `tool_choice`: `auto` / `none` documented. Named forcing
-   (`{"type":"function","function":{"name":…}}`) is OpenAI-conventional but
-   **unverified here** — do not build on it until the phase-6 check passes.
+   (`{"type":"function","function":{"name":…}}`) **works, verified live** —
+   the forced call was produced. This is what unblocks a strict-mode upgrade.
 
 ## Thinking
 
-- **Enabled by default, at `high` effort.** A port that forgets this runs
-  C29's measured bad arm on every turn. The compose path must send
-  `"thinking": {"type": "disabled"}` explicitly.
+- **Enabled by default, at `high` effort.** A call that forgets to send the
+  field runs the most expensive level on every turn. `disabled` is sent
+  explicitly wherever thinking is off.
 - `reasoning_effort`: `low` | `medium` | `high` | `xhigh` | `max` — but
   `medium` and `high` both resolve to actual `high`, so the usable ladder is
-  `disabled` / `low` / `high` / `max`. There is no numeric budget; the
-  `TURN_THINKING` tiers translate at the client boundary.
+  `disabled` / `low` / `high` / `max`. The product ships at `low` on the
+  whole model path (`deepseek.ts`), settled by the phase-6 arc.
 - Reasoning arrives in `reasoning_content`, separate from `content`, and is
   **billed as output tokens** (`completion_tokens_details.reasoning_tokens`)
   — the most expensive tokens we buy. It is also loggable: the trace can
@@ -100,12 +100,10 @@ number `MAX_TOOL_DECLS` already guards). `stop` up to 16 sequences.
 
 The server keeps the KV cache of recent requests on disk and reuses it for
 any request whose token sequence starts with a byte-identical prefix. No
-handles, no TTL to manage, no storage fee — the entire explicit-cache
-machinery `gemini.ts` needed does not exist here.
+handles, no TTL to manage, no storage fee, no explicit-cache machinery.
 
-- Billing: a cache-hit token costs **3.2%** of a miss (NOT the 25% Gemini
-  ratio hardcoded as `× 0.25` in the old cost formulas — using 0.25 for
-  DeepSeek overstates cached cost ~8×).
+- Billing: a cache-hit token costs **3.2%** of a miss. Measured live: 91–98%
+  hit across every phase-6 arm, cross-request from the second call.
 - Read it from `usage`: `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`.
 - Best-effort, exact-prefix, evicted after hours-to-days idle. Two identical
   turns can legitimately bill differently; record the fields, don't fight it.
@@ -128,15 +126,15 @@ machinery `gemini.ts` needed does not exist here.
 - **Strict mode (beta):** base `/beta`, `"strict": true` per function —
   actual constrained decoding. Costs: every property must be in `required`,
   `additionalProperties: false` everywhere, no `minLength`/`maxLength`/
-  `minItems`/`maxItems`. Supports `anyOf` — which Gemini's API never could,
-  and which would let `plan`'s five-way step union become a real declared
-  schema instead of a JSON string. Post-migration.
+  `minItems`/`maxItems`. Supports `anyOf` — which would let `plan`'s five-way
+  step union become a real declared schema instead of a JSON string.
+  Verified accepted live on `/beta`; the upgrade is open work.
 
 ## Errors, finish reasons, retry policy
 
 | HTTP | meaning | policy |
 |---|---|---|
-| 400 | bad request (incl. missing `reasoning_content` echo) | fix, never retry |
+| 400 | bad request | fix, never retry |
 | 401 | bad key | fail loudly |
 | **402** | **out of balance** | **fail loudly with its own code — never retry** (**verified**: this is what an empty account returns) |
 | 422 | invalid params | fix, never retry |

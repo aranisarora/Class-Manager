@@ -218,10 +218,12 @@ otherwise. Probe `deepseek-v4-pro` only for the judge/reflection tier and
 
 - `.env`: `DEEPSEEK_API_KEY` in; `MODEL_MAIN=deepseek-v4-flash`,
   `MODEL_SYNTH` per probe. `env.ts` schema follows.
-- Vertex creds and `@google/genai` stay installed until N clean days of
-  production traffic (pick N when cutting over; 7 is reasonable), then:
-  drop the dependency, delete `gemini.ts`, remove `VERTEX_*` /
-  `GOOGLE_APPLICATION_CREDENTIALS_JSON` from env and schema.
+- ~~Vertex creds and `@google/genai` stay installed until N clean days of
+  production traffic~~ **Done early, by decision, 15 Aug 2026** — after the
+  phase-6 live campaign passed every criterion, the rollback road was closed:
+  dependency dropped, `gemini.ts` deleted, `VERTEX_*` /
+  `GOOGLE_APPLICATION_CREDENTIALS_JSON` removed from env and schema, the
+  service-account file removed from disk.
 - Run probes and initial traffic **off-peak** where possible: peak
   (06:30–09:30 and 11:30–15:00 IST) bills double for zero information.
 - The API key lives in `.env.local` only, which is gitignored. It has been
@@ -233,10 +235,9 @@ otherwise. Probe `deepseek-v4-pro` only for the judge/reflection tier and
 ## Rollback
 
 The client speaks OpenAI dialect, so rollback is a base-URL + model-name
-change to Gemini's OpenAI-compatibility endpoint (thinking knob remapped),
-or — until phase 7 completes — flipping `MODEL_MAIN` back and letting the
-untouched `gemini.ts` path carry traffic again. Nothing in phases 1–6 burns
-the old road.
+change to any OpenAI-compatibility endpoint (thinking knob remapped). The
+`gemini.ts` path was deleted at cutover (15 Aug 2026); rolling back now means
+pointing the one client somewhere else, not resurrecting a second client.
 
 ## Out of scope, on purpose
 

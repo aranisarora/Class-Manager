@@ -24,11 +24,11 @@ npm run dev
 
 Then open **http://localhost:3000/emulator**.
 
-`.env.local` and `.secrets/` are required and both are gitignored — twelve keys, validated
-by `lib/env.ts`, covering the database, `DEEPSEEK_API_KEY`, the Vertex credentials the
-rollback road still needs, the two model names, the link signing secret and the transport. Without them nothing runs, and in a fresh worktree the
+`.env.local` is required and gitignored — validated by `lib/env.ts`, covering the
+database, `DEEPSEEK_API_KEY`, the two model names, the link signing secret and the
+transport. Without it nothing runs, and in a fresh worktree the
 failure looks like model errors rather than a missing file: every turn comes back with an
-error, no tools and an empty reply. Copy `.env.local`, `.secrets/` and `node_modules`
+error, no tools and an empty reply. Copy `.env.local` and `node_modules`
 (a junction is fine) into any worktree before driving it.
 
 The schema lives in `supabase/migrations/`. Applying it and building a world:
@@ -180,7 +180,7 @@ refuses what it can, operations carry their own consequences, and only what's le
 lib/db.ts                 the session boundary — roles, GUCs, model queries
 lib/clock.ts              the drivable clock (app.now())
 lib/agent/                prompt layering, tools, plans, operations, the loop
-lib/behaviors/*.md        eleven behavior modules, all of them always in context
+lib/doctrine.md           the rules every reply is derived from, always in context
 lib/messaging/            the catalog, templates, window, transports, the one send path
 lib/jobs/                 20 job kinds, each re-checking its own precondition
 lib/web/                  signed links, the component registry, view specs
@@ -210,9 +210,9 @@ scripts/drive.ts          the harness — talk to it, then read the tables back
   dunning ladder to escalation — but `per_package` exhaustion, `per_term`, a waiver through the
   model and a disputed charge remain undriven. Treat those as unverified, not as working.
 - **`academy.prompt_cache_handle` stays null, permanently.** It assumed a per-academy prefix, and
-  the prefix is deliberately academy-independent — one cache serves every tenant. On Vertex this
-  column's absence was covered by 140 lines of explicit-cache machinery in `gemini.ts`, built
-  because implicit caching measurably never bit (0 cached tokens across turns). The DeepSeek
+  the prefix is deliberately academy-independent — one cache serves every tenant. The previous
+  provider needed 140 lines of explicit-cache machinery here, built because its implicit caching
+  measurably never bit (0 cached tokens across turns). The DeepSeek
   client deletes all of it: the server caches any byte-identical prefix automatically, a hit costs
   3.2% of a miss, and there is nothing to create, hold or expire. The event log's `cached` chip is
   still the check — amber at 0%, and now it is measuring something the provider promises rather

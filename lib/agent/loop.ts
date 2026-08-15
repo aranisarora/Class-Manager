@@ -30,7 +30,7 @@ import {
 } from '@/lib/messaging/flows'
 import { buildSetupSteps, summariseSetup } from '@/lib/setup-plan'
 import type { Identity, Job, Role } from '@/lib/types'
-import { generate, generateJson, TURN_THINKING, type Msg } from './deepseek'
+import { generate, generateJson, type Msg } from './deepseek'
 import { lint, mixInstruction, stablePrefix, synthesisDoctrine, variableTail } from './context'
 import { hotSet } from './memory'
 import { audienceFor, executePlan, type PlanStep } from './plan'
@@ -269,8 +269,8 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
      * Say something. Anything thrown above lands here, and every fallback that
      * guarantees the person hears back — the tool-less recovery round, the two
      * hard-coded sentences, the trailing send — lives INSIDE `modelTurn`, so a throw
-     * skipped all of them. `generate` throws on a non-transient Vertex failure and
-     * after two attempts on a transient one; `stablePrefix()` throws if a behavior
+     * skipped all of them. `generate` throws on a non-transient provider failure and
+     * after two attempts on a transient one; `stablePrefix()` throws if the doctrine
      * file is missing; `variableTail` awaits the clock and the memory hot set. On
      * any of those the person got NOTHING — no message, no error, no acknowledgement
      * — and the only recovery, `handoffOnRepeatedFailure`, requires the PREVIOUS turn
@@ -1054,20 +1054,15 @@ async function modelTurn(
   let stalled = false
 
   /**
-   * §4.4's prefix is 58k characters and `onboarding.md` is one of ten modules inside
-   * it. At `thinkingBudget: 0` the model does not consult that; it pattern-matches the
-   * sentence in front of it — which is why a business at `setup` gets a competent
-   * answer to the question asked and no sense of the sequence it is in. Three of five
-   * driven academies stalled at `setup` with a good instruction sitting unread.
-   *
-   * A turn that is *guiding* someone is a sequencing judgement, not a plan to compose,
-   * so it gets a budget. Everything else keeps C29's zero.
+   * Every interactive turn thinks at `low` — the shipped configuration, settled
+   * by the phase-6 arc rather than chosen. Thinking-off's failure mode is the
+   * disqualifying one: fluent, present-tense false claims of state (a coach
+   * "hired" with zero tool calls, a fabricated session with named children).
+   * Low grounds referents before speaking and acts instead of narrating, at a
+   * p50 around 17s. There is no per-turn tier to pick any more; `deepseek.ts`
+   * defaults the tool path to `low`, and it is passed explicitly here so the
+   * turn's most consequential setting is visible where the turn runs.
    */
-  const thinkingBudget =
-    identity.academy.onboarding_state !== 'live' || !identity.roles.length
-      ? TURN_THINKING.guide
-      : TURN_THINKING.compose
-
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     rounds = round + 1
     const res = await generate({
@@ -1076,7 +1071,7 @@ async function modelTurn(
       tools: toolDecls(),
       model: env.MODEL_MAIN,
       temperature: 0.4,
-      thinkingBudget,
+      thinking: 'low',
     })
     model = res.model
     promptTokens += res.usage.promptTokens
@@ -1116,15 +1111,12 @@ async function modelTurn(
 
     if (!res.functionCalls.length) break
 
-    // Echo the assistant message back verbatim — `reasoning_content` included.
-    // The same discipline as carrying Gemini 3's thought signatures, under a new
-    // field name and with sharper teeth: with tools in play, dropping the
-    // reasoning from history is a 400, not a quiet degradation.
+    // Echo the assistant message back verbatim — `reasoning_content` included,
+    // as the API's history contract asks.
     messages.push(res.assistant)
 
     // One `{role:'tool'}` message per call, carrying the id of the call it
-    // answers. Matching is BY ID here, not by position, which is the whole
-    // difference from the parts-array this loop used to build.
+    // answers. Matching is BY ID here, not by position.
     const responses: Msg[] = []
     for (const call of res.functionCalls) {
       toolCalls++
@@ -1539,14 +1531,14 @@ async function modelTurn(
  * The recovery round declares no tools on purpose — its whole job is to put what the
  * turn already learned into words. But a history containing `tool_calls` and the
  * `{role:'tool'}` messages that answer them is only coherent alongside a tool
- * declaration: Vertex used to answer such a request with `UNEXPECTED_TOOL_CALL` and an
+ * declaration: the previous provider answered such a request with an error and an
  * empty candidate, and an OpenAI-dialect API is entitled to 400 it. The reason for
  * flattening is unchanged by the migration; only the shape being flattened is.
  *
  * So the round designed to guarantee the person hears *something* was the one round
  * that could never run. Watched live: seven rounds, sixty seconds, 153k tokens, a
- * MALFORMED_FUNCTION_CALL, and then the recovery — the last line of defence against
- * silence — failed with `UNEXPECTED_TOOL_CALL` and the admin was told "something broke
+ * malformed call, and then the recovery — the last line of defence against
+ * silence — failed the same way and the admin was told "something broke
  * on my side". The venue had been created; nothing said so.
  *
  * Flattening keeps every fact and loses only the encoding. "Everything the turn learned
@@ -1678,7 +1670,7 @@ async function recentLookups(identity: Identity): Promise<string | undefined> {
  * variable tail tells the model, in as many words, *"write new facts after replying,
  * never instead of replying"* — a sequence the break makes structurally impossible.
  * The only surviving path was a parallel `remember` emitted in the same breath as
- * `reply`, decided with `thinkingBudget: 0`. Measured over 93 driven turns: **3
+ * `reply`, decided with no deliberation at all. Measured over 93 driven turns: **3
  * memory facts and zero `schedule` calls, ever.**
  *
  * That is not a model that dislikes remembering. It is a slot that does not exist.
@@ -1688,7 +1680,7 @@ async function recentLookups(identity: Identity): Promise<string | undefined> {
  * is waiting. Three properties make it cheap enough to always run:
  *
  *  - **It does not carry the stable prefix.** Deciding "is there a fact here?" needs
- *    the conversation, not the schema, the catalog or ten behavior modules. ~300
+ *    the conversation, not the schema, the catalog or the domain facts. ~300
  *    tokens instead of ~16k, which is why this costs less than the round C30 removed.
  *  - **Two tools, so there is no tool to get wrong.** The declarations are the same
  *    objects the main loop uses, filtered, so they cannot drift.
@@ -1761,10 +1753,9 @@ Their id, for \`subject_id\`: person = ${identity.person.id}, business = ${ident
     tools: decls,
     model: env.MODEL_MAIN,
     temperature: 0.2,
-    // Unlike the tool path, this call is not composing a deeply-nested plan — it is
-    // making a judgement, which is the shape a thinking budget is actually for, and
-    // there is no MALFORMED_FUNCTION_CALL risk to trade against on two flat schemas.
-    thinkingBudget: TURN_THINKING.judge,
+    // A pure judgement over two flat schemas — the same low the rest of the
+    // model path runs at, stated here so nobody has to chase the default.
+    thinking: 'low',
     maxOutputTokens: 2048,
   })
 
@@ -1988,14 +1979,9 @@ will never think to ask whether the reminders went out. Then who is unpaid.`
     // **The digest does not get the stable prefix, and should never have had it.**
     //
     // This sent `stablePrefix()` — the schema it authors no SQL against, 26 operation
-    // signatures it cannot call, the message catalog it is not choosing from, and ten
-    // behavior modules about situations it is not in — to `MODEL_SYNTH`, which is the
-    // most expensive model in the product, twice a day per academy. Measured, that
-    // prefix is ~16k tokens.
-    //
-    // Worse, it was **uncached every time**: `cachedContentFor` requires tools to
-    // create a handle, and synthesis declares none, so the one call that paid the most
-    // for the prefix was the one call that never amortised it.
+    // signatures it cannot call, the message catalog it is not choosing from, and the
+    // domain facts about situations it is not in — to `MODEL_SYNTH`, which is the
+    // most expensive model in the product, twice a day per academy.
     //
     // What the digest actually needs is doctrine (how to sound), the grounding rules
     // (how to stay honest), and the payload — which it is handed in full below. The

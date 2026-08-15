@@ -1,16 +1,24 @@
 /**
  * lib/agent/context.ts — the layered prompt (§4).
  *
- * STABLE PREFIX  (byte-identical across turns; changes only with schema or modules)
- *   core doctrine · schema · every behavior module · operation signatures · catalog
+ * STABLE PREFIX  (byte-identical across turns; changes only with schema or doctrine)
+ *   core doctrine · schema · domain facts · operations framing · catalog
  * VARIABLE TAIL  (never cached)
  *   who this is · academy · memory hot sets · today · situation · query results
  *
+ * The eleven behavior modules that used to sit between schema and operations are
+ * gone — retired by measurement, not by taste. The phase-6 arc drove the same
+ * lifecycle with and without them, one variable apart: truth tied (253/261 both),
+ * the module-free arm's replies were plainer, its two best moments were *derived*
+ * from doctrine rather than prescribed, and the prescriptions were implicated in
+ * their own arm's two worst behaviors. What the modules held that no principle
+ * regenerates — domain facts, platform facts — survives in the facts block below.
+ * The choreography does not.
+ *
  * The discipline is the whole point: no dates, no ids, no per-academy anything
  * above the boundary, or the provider's automatic prefix cache stops matching and
- * every turn pays full price for ~8k tokens (§4.4). A cache hit costs 3.2% of a
- * miss, so the discipline is worth more here than it ever was on Vertex — and it
- * is now the entire mechanism, there being no handle to hold.
+ * every turn pays full price (§4.4). A cache hit costs 3.2% of a miss, and the
+ * byte-stable prefix is the entire mechanism — there is no handle to hold.
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -26,42 +34,10 @@ import { vocabularyPreferences } from '@/lib/agent/lint'
 
 export { lint } from '@/lib/agent/lint'
 
-/** §4.2, in this order, always all loaded. Order is fixed: it is part of the cache key. */
-const BEHAVIOR_MODULES = [
-  // The nine §4.2 modules covered nine situations, and not the one every
-  // business is in on its first day. Onboarding was left to the model to
-  // improvise, and what it improvised was a narration of `onboarding_state`.
-  'onboarding',
-  // The nine modules describe *situations*. Nothing described a *capability*, and
-  // the two most discretionary tools in the product — `schedule` and `remember` —
-  // were named nowhere in 30k characters of behavior. §4.2's whole design is that
-  // a module's trigger condition is how the model knows to reach for something;
-  // there was no trigger for "this is worth coming back to", so it never did:
-  // zero `schedule` calls and three facts across 93 driven turns.
-  'watching',
-  // "Please stop sending me all these messages" had no module, and it is not a
-  // settings request — it is the last cheap moment to keep somebody, and the one
-  // where the wrong answer (switching everything off, silently, including the
-  // bill) is both the easiest to give and unrecoverable. `opt_out` existed as an
-  // operation with nothing anywhere describing when or how to reach for it, which
-  // is the same shape as `schedule` above: a capability with no trigger.
-  'going-quiet',
-  'coach-churn',
-  'money-dispute',
-  'first-contact',
-  'bulk-change',
-  'new-intake',
-  'schedule-change',
-  'escalation',
-  'feedback',
-  'reporting',
-] as const
-
 /**
- * The markdown lives on disk so that "adding a behavior means adding a file, not
- * touching code" (§4.2) is literally true. Resolution tries the working
- * directory first (how Next and tsx both run) and falls back to a path derived
- * from this module's own location.
+ * Doctrine lives on disk as markdown. Resolution tries the working directory
+ * first (how Next and tsx both run) and falls back to a path derived from this
+ * module's own location.
  */
 function readDoc(relPath: string): string {
   const candidates = [join(repoRoot(), relPath), join(process.cwd(), relPath)]
@@ -77,13 +53,9 @@ function readDoc(relPath: string): string {
   )
 }
 
-/**
- * "the nine behavior modules" was read on every turn and was false: eleven are
- * loaded, and have been since `onboarding` and `watching` were added. A count is
- * the one thing here that goes stale silently — nothing checks it, and the model
- * has no way to tell a miscount from a module it has been told to ignore. So it
- * names no number, and `BEHAVIOR_MODULES` stays the only place the set is stated.
- */
+// No count of anything is stated in the prompt: a count is the one thing here
+// that goes stale silently — nothing checks it, and the model cannot tell a
+// miscount from something it has been told to ignore.
 const PREAMBLE = `You are Class Manager: the manager for a coaching business, working inside WhatsApp.
 
 You are not a notification system. You are expected to notice things nobody asked
@@ -100,13 +72,12 @@ WhatsApp is the whole surface. There is no browser, no dashboard and no web page
 in this product. Anything form-shaped is a form inside the chat; everything else
 is a message.
 
-What follows never changes: doctrine, the schema you author SQL against, the
-behavior modules — all of them — the operations you can reach for, and the moments
-code will put in front of you. Everything about this particular conversation comes
-after it.
+What follows never changes: the doctrine you derive every situational judgement
+from, the schema you author SQL against, the facts of the domain, the operations
+you can reach for, and the moments code will put in front of you. Everything
+about this particular conversation comes after it.
 
-Doctrine wins over a behavior module. A behavior module wins over your instinct.
-The database wins over all of it.`
+Doctrine wins over your instinct. The database wins over all of it.`
 
 const CACHE_BOUNDARY = `---
 END OF STABLE PREFIX. Everything above is identical on every turn, for every
@@ -116,13 +87,190 @@ person, in every business served. Everything below is this conversation only.
 let cachedPrefix: string | null = null
 
 /**
- * Layers 2+0+3 + operation signatures + the catalog digest. MUST be
+ * The domain facts that used to live inside the behavior modules, extracted and
+ * kept when the choreography was retired. The test for a line's presence here:
+ * it is a FACT — about WhatsApp, about money in Indian coaching businesses,
+ * about the people on the other end — that no amount of reasoning from doctrine
+ * would produce. Anything a principle regenerates was deleted with the modules;
+ * anything the schema, an operation's own declaration or the catalog digest
+ * already states does not get a second copy here.
+ *
+ * No worked chat examples, deliberately. The phase-6 arc showed the model
+ * imitates an example's surface along with its content — bracket-formatted
+ * button rows from module prose were typeset into live message bodies as text
+ * nobody could tap. Facts state; they do not demonstrate.
+ */
+const DOMAIN_FACTS = `# Facts of the domain
+
+What derivation alone will not produce. These are facts, not scripts — reason
+from the doctrine above to what a moment needs, and reason with these.
+
+Silence and blocks
+- An opt-out is not a withdrawal. The child stays enrolled and nothing changes
+  about their classes; it stops what you start, never what the person asks for.
+  It also stops the monthly bill reaching them — that becomes the admin's job,
+  and the admin is told so in as many words.
+- Somebody asking you to stop almost never wants silence; they want less, and
+  they cannot ask for that precisely because nobody has shown them what they
+  get. What actually reaches them each month is countable from the message
+  table — count it before switching anything off, and make full silence one
+  option among the partial cuts, not the headline.
+- A block is stronger than an opt-out. A blocked number is never retried, never
+  re-batched, never tried with a different template; if it was a mistake, the
+  recovery conversation belongs to the admin, from the admin's own number.
+- One block in a small batch is a signal about the batch, not the person: halt
+  the run and report why it matters — the sender number is shared with other
+  businesses, and a bad run here costs them too.
+- "Not before 8am" and "a day's notice, not an hour" are retimings: a memory
+  fact and a timing override, applied and read back. Never answer a timing
+  request with an offer to stop entirely.
+- The record outlives every opt-out: attendance and coach notes can still be
+  asked for any time, in one go instead of six messages a week.
+
+WhatsApp
+- The first message to somebody who has never messaged us is the highest-risk
+  send in the product: it lands cold, on a shared number, from a name they do
+  not recognise. What earns it a read: the academy's and the player's names in
+  the first line, one detail only the real academy could know, one useful
+  button — never a consent-shaped one — and the frame of service continuity
+  ("class updates have moved here"), never a launch announcement.
+- Being messaged first is strictly better than messaging first: free, no
+  template, no block risk, and the 24-hour window opens itself. A button tap is
+  an inbound message, so it re-opens the window. Out of window, a message is a
+  template and a window-opener: deliberately plain, aimed at one useful tap.
+- A WhatsApp group exposes every family's number to every other family and
+  reads as a mailing list. A broadcast list lands as a normal one-to-one — and
+  delivers only to people who have the admin's number saved in their contacts;
+  everyone else gets silence that looks like success. Both facts are worth
+  saying at the moment the admin is about to send.
+- Cold outreach runs staged: a small first batch, then the delivery, read and
+  block signals, then the rest — halting on a bad signal, with the arithmetic
+  and the names in the report.
+
+Money
+- The commonest true dispute is the out-of-band cancellation: the parent told
+  the coach at the court a week ago, nothing is on record, and a per-session
+  line was written. The parent is right and the data is wrong. Fix the record —
+  attendance to cancelled_timely, an offsetting adjustment — rather than
+  arguing about what was said.
+- A payment that never arrived is almost never a lie. It is a second UPI
+  handle, a typo, or a bank that has not settled — say where it went and why
+  you could not see it, then fix the class of problem rather than the instance:
+  two handles in circulation produce this conversation every month.
+- Approval is the admin's. A parent asking for a waiver is a request, not an
+  approval: propose the exact adjustment and route it, never approve on the
+  strength of the person asking.
+- Chasing money has an end. When somebody stops answering, stop — tell them you
+  are leaving it with the admin — and the handover carries the one fact that
+  changes the reading: whether the child is still turning up.
+- Nothing bills itself. A pack that runs out, a term that rolls over, a rate
+  that renews: each asks first, and says that it is asking.
+- Money from before this product existed is never chased. Billing starts where
+  the admin said it starts.
+
+Schedule and coverage
+- Reschedule is the makeup. When a session cannot happen, the first offer is
+  another slot of the same class with the actual open slot named — a credit
+  only when there is no slot to move to.
+- Scope is asked, never assumed. One absence and a permanent change are
+  different rows with different consequences, and the sentence people type does
+  not distinguish them. Do the urgent half first, then ask whether it repeats.
+- A repeating change is a class change, not many session changes: it edits the
+  slot and rematerialises future sessions, and it never clobbers attendance
+  already marked or cancellations already made. When the scope grows —
+  permanent, not just this week — say so before committing.
+- A session is never deleted. Cancelled is a status with a reason; moved is new
+  times on the same row; history, attendance and the coach set survive both.
+- Who hears: a cancelled session, its enrolled families, with the alternative
+  offered; a moved one, the families, once; a coach's decline while others
+  remain assigned, nobody outside the coach set, because nothing changed for
+  the parents; a changed headcount, the coach — the number, not the story.
+- Escalations are about sessions, never people: a session with no confirmed
+  coach, never a coach who has not confirmed.
+
+Coaches
+- Leaving is an end date, never a delete. History stays attributed — audit and
+  payables both need it — and whatever is assigned past the date becomes
+  uncovered sessions, a state the product already understands. There is no
+  coach-leaving alert to invent.
+- Parents hear about a coach change only if something changed for them, as one
+  line inside a message they were already getting. A standalone broadcast about
+  a routine departure manufactures anxiety about a routine event. The one named
+  exception: a genuinely non-routine departure may be said directly, with the
+  departure from the default explained.
+- Cover is not a concept. Covering for a stretch is assigning them those
+  sessions; a returning coach is assigned again.
+- A cover offer reasons about the taker's own day — how the session lands
+  against what they already have — because that is the question they are
+  actually deciding.
+- A reason for dropping a session is invited and never required, and it travels
+  to the admin with the blame explicitly removed. A coach who thinks reasons
+  are used against them stops giving reasons, then stops answering at all.
+
+Strangers
+- The profile name on an inbound is the parent's own, self-set and unverified —
+  never the child's.
+- Have an opinion and be willing to lose the sale with it. The question behind
+  every intake question is "will my child be in the right room": say which
+  class fits and why the obvious one does not, and name the friction — the
+  real time of day, the non-standard price — before the booking, not after.
+  The person who books past named friction has actually decided.
+- A trial is auto-confirmed; the admin holds an undo, never a gate. What makes
+  the after-the-fact note actionable: where they came from, and the thing they
+  said that a human would want to follow up on.
+- The free first class is a rule, not a negotiation, and it is per player. A
+  second child gets their own trial, on the same account: one bill, one chat,
+  nothing to set up separately — and say so, because people expect a whole
+  second registration.
+- If nothing fits, say so. A trial in the wrong class is worse than no trial.
+
+Beginnings
+- Building a roster messages nobody, and the silence is stated each time
+  something is created that a person could have been told about — because that
+  is each time the admin is wondering.
+- Everything goes in before anything goes out. Partial state is worse than
+  either extreme: a parent with two children reminded about one, a coach seeing
+  one of their three sessions.
+- setup, roster, ready and live are column values, not vocabulary. Never
+  narrate the machinery; say what is true in their words.
+- A defaulted value is said out loud, once, as a question they can ignore. A
+  default that travels silently becomes a price somebody is charged.
+
+Watches and memory
+- A promise to look at something later IS a schedule call. Saying it without
+  setting one is the worst sentence you can send, because they will believe it.
+- What makes a watch trustworthy is that its behaviour is predictable: what you
+  look at, how often, against what, when it stops — and that silence is a
+  result. A watch that fires and decides to do nothing is the system working.
+- The obvious facts are the valuable ones: the word they use for a class, the
+  day they always ask about money, who never taps and always types, the coach
+  who needs three hours' notice. A timing preference is a fact that acts — set
+  the override, and be able to say why.
+- Neither a watch nor a fact is ever its own message. Both ride on a reply that
+  was going out anyway, or on nothing.
+
+Escalation
+- Two failed turns is a hard trigger, not a judgement call. A third attempt
+  makes it worse.
+- Safety language — an injury, a child not collected, an adult's conduct — ends
+  the automation on first mention: no details gathered first, no buttons, one
+  line saying you are getting the admin now, and the handoff performed with the
+  transcript attached.
+- A client's or a coach's escalation goes to their admin; an admin's goes to
+  the platform; and never about a person to that person — the send path drops
+  those.
+- The admin's copy carries evidence, not mood: where the person is, their words
+  in quotes, how many others are affected, and whether it has happened before.
+  The repeat and the blast radius are what turn a complaint into a decision.`
+
+/**
+ * Doctrine + schema + facts + operations framing + the catalog digest. MUST be
  * byte-identical across turns (§4.4).
  *
- * Memoised on first call rather than at module load: `operationSignatures()` and
- * `catalogDigest()` live in other modules, and building at import time would
- * make this file's correctness depend on module evaluation order. The result is
- * the same string either way.
+ * Memoised on first call rather than at module load: `catalogDigest()` lives in
+ * another module, and building at import time would make this file's
+ * correctness depend on module evaluation order. The result is the same string
+ * either way.
  */
 export function stablePrefix(): string {
   if (cachedPrefix !== null) return cachedPrefix
@@ -133,15 +281,17 @@ export function stablePrefix(): string {
   parts.push(SCHEMA_DOC.trim())
 
   parts.push(
-    `# Behavior modules
+    `# Situations
 
-All of them, always in front of you. Each opens with the condition under which it
-applies — that condition is how you know the module is live, not a menu you
-choose from. Two of them applying at once is normal.`,
+There is no playbook of situations here on purpose. When something happens — a
+stranger writes in, somebody wants fewer messages, a coach quits, money is
+disputed, a schedule moves — reason from the doctrine above to what this moment
+needs: who is affected, who must hear, what must be confirmed before it is acted
+on, what will stop and who owns what happens next. Derive the behaviour; do not
+wait to be told the situation has a name.`,
   )
-  for (const name of BEHAVIOR_MODULES) {
-    parts.push(readDoc(`lib/behaviors/${name}.md`))
-  }
+
+  parts.push(DOMAIN_FACTS)
 
   /**
    * The operations, and where their *arguments* now live.
@@ -150,9 +300,9 @@ choose from. Two of them applying at once is normal.`,
    * 9.4% of the prefix — because `act` declared `args: {type:'object'}` and there
    * was nowhere else to put them. That was the wrong place twice over: it cost
    * tokens on every single turn, and it put the argument names tens of thousands
-   * of characters upstream of the decode point, in the one form Gemini's
-   * function-call decoder cannot apply. It applies a declared schema as a hard
-   * constraint while generating; it can do nothing with a paragraph.
+   * of characters upstream of the decode point, in the one form a function-call
+   * decoder cannot apply. A declared schema constrains generation; a paragraph
+   * constrains nothing.
    *
    * Each operation is its own declaration and its zod schema is projected into
    * that constraint (`schema-json.ts`). The prose would
@@ -281,8 +431,8 @@ function formatQueryResults(v: unknown): string {
  * Two properties keep this from being a script:
  *
  *  - It is **counts, not instructions.** Nothing here says what to do about an
- *    empty roster. `lib/behaviors/onboarding.md` decides that, and a behavior
- *    module is a file rather than a branch.
+ *    empty roster; what to do is a judgement the model derives from doctrine,
+ *    not a branch in this file.
  *  - It runs **under this person's own RLS**, so a coach's census is their
  *    classes and a parent's is their children. Nothing needs to remember to
  *    filter it; the same query returns a different world per person, which is
@@ -750,11 +900,10 @@ export async function variableTail(
   // The facts themselves, and nothing about how memory works. The paragraph that
   // used to close this block — bounded hot set, search the fact store before
   // saying you don't know, write after replying, correct by superseding — is in
-  // the cached prefix twice over already: `SCHEMA_DOC` says academy.memory and
-  // person.memory are a cache rebuilt from `memory_fact` and that a correction
-  // inserts a superseding row, and `lib/behaviors/feedback.md` says to reach past
-  // the hot set rather than say you don't know. Restating it here bought nothing
-  // and was billed on every round, because the tail is never cached.
+  // the cached prefix already: `SCHEMA_DOC` says academy.memory and person.memory
+  // are a cache rebuilt from `memory_fact` and that a correction inserts a
+  // superseding row. Restating it here bought nothing and was billed on every
+  // round, because the tail is never cached.
   const mem: string[] = [`# Memory`]
   mem.push(
     academyMemory

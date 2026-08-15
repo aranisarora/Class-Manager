@@ -216,8 +216,8 @@ export const PlanStepSchema: z.ZodTypeAny = z.lazy(() =>
  * A list of steps, however it arrived.
  *
  * `plan` takes its steps as a JSON *string* on purpose: a five-way union nested
- * four deep malformed Vertex's function-call decoder two times in three, and a
- * string has no shape to malform. The cost of that fix is that the model now
+ * four deep malformed the previous provider's function-call decoder two times in
+ * three, and a string has no shape to malform. The cost of that fix is that the model now
  * believes steps are a string — and wrote one into a button payload, where the
  * schema wanted an array and rejected it silently.
  *
