@@ -109,6 +109,14 @@ export async function monthlyLines(job: Job): Promise<void> {
     if (e.started_on > periodEnd) skip('enrollment starts after this period')
     if (e.ended_on && e.ended_on < period) skip('enrollment ended before this period')
 
+    // A trial is free, and stays free until somebody converts it on purpose.
+    // The row rode into this query with a monthly rate inherited from the
+    // class, so a trial that lingered across the 1st was billed in full —
+    // "the first class is free" becoming ₹2,000 by default is exactly the
+    // silently-travelling default the domain facts warn about. Nothing bills
+    // itself; converting the enrollment is what starts billing.
+    if (e.is_trial) skip('a trial is free — converting it is what starts billing')
+
     const unit = e.rate_unit
     const amount = num(e.rate_amount)
     if (!unit) skip('no rate on the enrollment or its class — nothing to bill')
