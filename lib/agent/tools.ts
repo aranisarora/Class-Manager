@@ -151,6 +151,15 @@ const CLAIMED_DONE = new RegExp(
 )
 
 /**
+ * "Done — both of Aarav's classes end 30 Sep" — a bare capitalised "Done"
+ * opening a line or sentence is the receipt shape this model actually writes,
+ * and it matched neither pattern above (month drive: shipped over two rows
+ * still NULL, from a staged plan). Case-sensitive and anchored, like
+ * CLAIMED_DONE_OPENER, so mid-sentence "when you're done" stays English.
+ */
+const CLAIMED_DONE_BARE = /(?:^|[.!\n]\s*)Done\b/
+
+/**
  * The bare past tense, opening a line.
  *
  * "I've marked" was caught and *"Requested ₹1,200 from Meena Krishnan"* was not, and
@@ -180,7 +189,7 @@ const PROMISED_IMMINENT =
 
 /** The sentence this message is making, and whether the turn has anything to back it. */
 export function unbackedClaim(body: string): 'claimed' | 'promised' | null {
-  if (CLAIMED_DONE.test(body) || CLAIMED_DONE_OPENER.test(body)) return 'claimed'
+  if (CLAIMED_DONE.test(body) || CLAIMED_DONE_OPENER.test(body) || CLAIMED_DONE_BARE.test(body)) return 'claimed'
   if (PROMISED_IMMINENT.test(body)) return 'promised'
   return null
 }
@@ -1414,7 +1423,7 @@ function diffRow(row: Record<string, unknown> | null | undefined): Record<string
  * over costs a few hundred tokens on a write turn and is the only thing standing between
  * "what I meant" and "what is now true".
  */
-function compactDiff(r: Awaited<ReturnType<typeof previewPlan>>) {
+function compactDiff(r: Awaited<ReturnType<typeof previewPlan>>, executed = true) {
   const SAMPLE = 4
   return {
     summary: r.summary,
@@ -1431,7 +1440,14 @@ function compactDiff(r: Awaited<ReturnType<typeof previewPlan>>) {
     }),
     messages: r.stagedMessages.map((m) => m.preview),
     scheduled: r.scheduled,
-    check: 'Read `wrote` before you describe this. What is in the row is what is true — if it is not what they meant, fix it now rather than describing what you intended.',
+    // One diff, two truths. An EXECUTED diff is what is now in the rows; a
+    // STAGED one is what a tap WOULD write — and carrying the executed
+    // coaching on both taught a staged "rows: 2" to read as a receipt: the
+    // recovery round told an admin "Done — both of Aarav's classes end
+    // 30 Sep" over two rows still NULL (month drive). Say which truth this is.
+    check: executed
+      ? 'Read `wrote` before you describe this. What is in the row is what is true — if it is not what they meant, fix it now rather than describing what you intended.'
+      : 'NOTHING HAS RUN — this is a preview of what their tap would change. Describing it in the past tense would be false: offer the confirmation button and say what happens when they tap it.',
   }
 }
 
@@ -1586,7 +1602,7 @@ export async function runTool(
           ok: true,
           handle,
           needs_preview: gate,
-          ...compactDiff(preview),
+          ...compactDiff(preview, false),
           intent: String(args?.intent ?? ''),
           ...planIgnored,
         },
@@ -1674,7 +1690,7 @@ export async function runTool(
             executed: false,
             handle,
             reason: 'this one is worth reading back first',
-            ...compactDiff(preview),
+            ...compactDiff(preview, false),
             ...ignored,
           },
           note: preview.summary,
