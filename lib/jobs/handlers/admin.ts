@@ -36,7 +36,7 @@ export async function adminEscalateUncovered(job: Job): Promise<void> {
   const p = payloadOf(job)
   const academyId = need(p, 'academy_id')
   const sessionId = need(p, 'session_id')
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)
@@ -63,6 +63,11 @@ export async function adminEscalateUncovered(job: Job): Promise<void> {
   const tz = academy.timezone
   const when = `${dayLabel(session.starts_at, tz, nowAt)} ${timeLabel(session.starts_at, tz)}`
   const minutes = Math.max(0, Math.round((session.starts_at.getTime() - nowAt.getTime()) / 60_000))
+  // T-15 normally reads "in 15 minutes". But a job that fires early or late — a driven
+  // clock hop, a backlog — must not say "in 3411 minutes" (shipped once); past ~90 the
+  // day-and-time label above already says when, so the countdown adds nothing.
+  const countdown =
+    minutes <= 0 ? '.' : minutes <= 90 ? ` — it starts in ${minutes} minute${minutes === 1 ? '' : 's'}.` : '.'
   const pending = coaches.filter((c) => !c.declined_at)
   const declined = coaches.filter((c) => c.declined_at)
 
@@ -73,8 +78,7 @@ export async function adminEscalateUncovered(job: Job): Promise<void> {
       toContactId: admin.contact_id as string,
       header: clamp(academy.name, LIMITS.headerChars),
       body: clamp(joinLines([
-        `${when}'s ${session.class_name} has no confirmed coach`
-        + (minutes > 0 ? ` — it starts in ${minutes} minute${minutes === 1 ? '' : 's'}.` : '.'),
+        `${when}'s ${session.class_name} has no confirmed coach${countdown}`,
         declined.length > 0 ? `${declined.length} assigned coach has dropped out.` : null,
       ]), LIMITS.bodyChars),
       buttons: [
@@ -118,7 +122,7 @@ export async function coachNotOnboarded(job: Job): Promise<void> {
   const p = payloadOf(job)
   const academyId = need(p, 'academy_id')
   const coachId = need(p, 'coach_id')
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)
@@ -206,7 +210,7 @@ export async function adminEveningDigest(job: Job): Promise<void> {
 async function runSynthesis(job: Job, kind: 'brief' | 'digest'): Promise<void> {
   const p = payloadOf(job)
   const academyId = need(p, 'academy_id')
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const academy = await withAcademy(academyId, async (tx) => {
     const a = await loadAcademy(tx, academyId)

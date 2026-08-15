@@ -42,6 +42,10 @@ export type DeliveryEvidence = { delivered?: boolean; read?: boolean }
  * caller changes.
  */
 export type LintScope = {
+  // Which tenant's clock "today" means. `Identity` already carries it, so the turn
+  // callers pay nothing; without it the date-grounding pass reads the world clock,
+  // which is wrong in any driven world whose tenant clock has been moved (F-A).
+  academyId?: string | null
   academy?: { name?: string | null; timezone?: string | null; memory?: string | null } | null
 }
 
@@ -86,7 +90,7 @@ export function lint(
   out = toWhatsAppMarkup(out)
   out = stripDoctrineRefs(out)
   out = stripIdentifiers(out, id)
-  out = rewriteTimestamps(out, tz)
+  out = rewriteTimestamps(out, tz, id.academyId ?? '')
   if (opts?.deliveryClaims !== false) out = downgradeClaims(out, evidence)
   out = applyVocabulary(out, id.academy?.memory ?? null)
 
@@ -449,8 +453,8 @@ function localiseEnglishDates(text: string): string {
  * than anybody choosing. The chat idiom is still the right one for this pass;
  * only its definition moved.
  */
-function rewriteTimestamps(text: string, tz: string): string {
-  const today = inZone(nowSync(), tz)
+function rewriteTimestamps(text: string, tz: string, academyId = ''): string {
+  const today = inZone(nowSync(academyId), tz)
   return localiseEnglishDates(text).replace(ISO, (whole, y, mo, d, hh, mm, _ss, off) => {
     if (hh === undefined) {
       // A calendar date. Converting a bare date between zones would move the day,

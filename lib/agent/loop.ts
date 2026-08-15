@@ -428,7 +428,9 @@ async function executeAction(
             + 'Send it however it already exists: a photo of the whiteboard or the register, '
             + 'a forwarded sheet, or a voice note telling me the week. I\'ll read it back before I create anything.',
           buttons: [
-            { title: 'Add classes one by one', action: { kind: 'form', form: 'add_class' } },
+            // 19 chars. "Add classes one by one" is 22, and `fitTitle` cut it at the word
+            // boundary to "Add classes one by" — a dangling preposition that shipped.
+            { title: 'Add them one by one', action: { kind: 'form', form: 'add_class' } },
           ],
         }),
       )
@@ -466,7 +468,7 @@ async function executeAction(
               name: 'create_class' as OperationName,
               args: {
                 name: v.name,
-                starts_on: inZone(await now(), identity.academy.timezone || 'Asia/Kolkata').date,
+                starts_on: inZone(await now(identity.academyId), identity.academy.timezone || 'Asia/Kolkata').date,
                 slots: v.days.map((d) => ({ weekday: d, start_time: v.starts, end_time: v.ends })),
                 ...(venueId ? { venue_id: venueId } : {}),
                 ...(v.rate !== undefined ? { rate_amount: v.rate } : {}),
@@ -896,7 +898,11 @@ async function modelTurn(
   }
 
   const [clock, lookups] = await Promise.all([
-    now().then((at) => inZone(at, identity.academy.timezone)),
+    // The tenant's clock, not the world's. This line is the model's entire sense of
+    // "now" — driven with a moved tenant clock, the bare call told a coach
+    // "It is Saturday, 10:52am" on his Wednesday, and every watch the turn
+    // scheduled landed in the past (conversation-rules.md F-A).
+    now(identity.academyId).then((at) => inZone(at, identity.academy.timezone)),
     recentLookups(identity),
   ])
   const tail = await variableTail(identity, {
@@ -1206,7 +1212,7 @@ async function modelTurn(
   // straight to "something broke on my side" without ever asking again. One more
   // round is cheaper than an apology, and it is the difference between a product
   // that stumbles and one that ignores you.
-  if (silent() && told === 0) {
+  if (silent() && told === 0 && input.source !== 'job') {
     try {
       const forced = await generate({
         system,
@@ -1280,13 +1286,26 @@ async function modelTurn(
    * been told something true this turn, and a second message would read as the
    * first being withdrawn.
    */
-  if (silent() && told === 0) {
+  if (silent() && told === 0 && input.source !== 'job') {
     text = raised > 0
       ? "That's not something I can change from here. I've passed it to whoever runs the academy "
         + "and they'll come back to you."
       : rounds >= MAX_TOOL_ROUNDS
         ? "I went round in circles on that one and didn't get to an answer. Can you tell me the short version of what you need?"
         : "Something broke on my side working that out — it isn't you, and repeating it won't help. I've flagged it."
+  }
+
+  /**
+   * A job turn that wants to speak has the tools. On the interactive path a person is
+   * staring at the chat, so trailing prose is a safety net; on `source: 'job'` there is
+   * no one waiting, silence is the expected outcome (§13.1), and this same net delivered
+   * the model's deliberation — "I will stay quiet until Wednesday", watch bookkeeping,
+   * "no follow-up is needed" — as real messages (conversation-rules.md F-B). Discarded,
+   * with a trace entry so a drive can still see what the model was thinking.
+   */
+  if (text.trim() && !spoke() && input.source === 'job') {
+    trace.push({ round: rounds, name: '(job turn: trailing prose discarded, tools are how a job speaks)', ms: 0, args: traceValue(text, 2000) })
+    text = ''
   }
 
   if (text.trim() && !spoke()) {
@@ -1585,7 +1604,7 @@ async function reflect(
   const did = turn.trace
     .filter((t) => !t.name.startsWith('(') && t.name !== 'read')
     .map((t) => t.name)
-  const at = await now()
+  const at = await now(identity.academyId)
 
   const system = `You have just finished a turn as Class Manager, the manager for ${identity.academy.name}. It is already sent; you are not talking to anybody now.
 
@@ -1749,7 +1768,7 @@ export async function runAgentTask(job: Job): Promise<void> {
   if (!academyId) return
 
   // `expires_at` is required, and a task past it simply does not run.
-  const nowD = await now()
+  const nowD = await now(academyId)
   if (!payload.expires_at || new Date(String(payload.expires_at)).getTime() < nowD.getTime()) return
 
   let contactId: string | null = payload.minted_by_contact_id ? String(payload.minted_by_contact_id) : null
@@ -1956,6 +1975,26 @@ async function synthesisPayload(svc: SessionCtx, academyId: string): Promise<Rec
          from academy where id = ${A}`,
     )
 
+    /**
+     * A rendered local time, because this payload is `JSON.stringify`'d straight into
+     * the prompt and a bare `starts_at` reaches the model as `2026-08-17T13:00:00.000Z`.
+     *
+     * Driven: the owner's 6:30pm Beginners class was reported to him as **"Arjun for
+     * Beginners at 1pm"** in two consecutive briefs and an evening digest — 13:00 UTC,
+     * read back as local. `context.ts` has carried `sessionLine` for exactly this since
+     * a raw `06:00:00` was read out as "6pm" and sent a parent to a locked hall, but the
+     * turn path and the synthesis path each built their own payload, so the guarantee
+     * held only on the one that a person was already talking to.
+     *
+     * Rendered through `inZone` rather than in SQL so there is one formatter, and the
+     * brief says a time the same way the chat does. The raw column is dropped, not kept
+     * alongside — a model handed both will sometimes reach for the wrong one.
+     */
+    const tz = String(academy.timezone || 'Asia/Kolkata')
+    const localTimes = (rows: Record<string, any>[]): Record<string, any>[] =>
+      rows.map(({ starts_at, ...rest }) =>
+        starts_at ? { ...rest, when: inZone(new Date(starts_at), tz).label } : rest)
+
     // Sequential on purpose: these all share one transaction, and one
     // connection is not a place to fan out.
     const today_sessions = await many(`select c.name as class_name, s.starts_at, s.status,
@@ -2069,7 +2108,9 @@ async function synthesisPayload(svc: SessionCtx, academyId: string): Promise<Rec
     return {
       academy,
       note: 'Every list here is the complete result of its query, not a sample.',
-      today_sessions,
+      // `when` is the academy's own local time, already rendered — say it verbatim.
+      // See `localTimes` above for the brief that read 6:30pm back as "1pm".
+      today_sessions: localTimes(today_sessions),
       needs_you: {
         // **The key name is prompt, and it is the part nobody reviews.** This was
         // `uncovered_sessions_next_36h`, and "uncovered" became "still need a coach
@@ -2077,14 +2118,14 @@ async function synthesisPayload(svc: SessionCtx, academyId: string): Promise<Rec
         // the only coach he had, on the eve of his first class. The predicate never
         // changed; the name did the damage. Named for what it measures now, with the
         // assignment alongside it so the true sentence is the available one.
-        sessions_without_a_confirmed_coach_next_36h: needs_you_uncovered,
+        sessions_without_a_confirmed_coach_next_36h: localTimes(needs_you_uncovered),
         sessions_note:
           'A row here means nobody has CONFIRMED — not that nobody is assigned. Read ' +
           '`assigned_coaches` on the row: non-empty means they have a coach who simply ' +
           'has not tapped yet, and the true sentence names that person. Only an empty ' +
           '`assigned_coaches` means nobody is on it at all. Never tell an admin a session ' +
           'needs a coach assigned when one is.',
-        registers_unmarked: registers_unmarked,
+        registers_unmarked: localTimes(registers_unmarked),
         coaches_invited_but_not_onboarded: coaches_not_onboarded,
       },
       money: { unpaid_accounts: unpaid },

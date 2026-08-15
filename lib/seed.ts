@@ -238,8 +238,14 @@ export async function resetWorld(): Promise<void> {
     await tx`delete from job`
     await tx`delete from sim_fault`
     await tx`delete from sender`
-    await tx`insert into sim_clock (singleton, offset_ms, frozen_at) values (true, 0, null)
-             on conflict (singleton) do update set offset_ms = 0, frozen_at = null`
+    // 0024 replaced `sim_clock_singleton_key` with two *partial* unique indexes, and
+    // Postgres will not infer a partial index as the arbiter unless the statement
+    // repeats its predicate. Without the `where`, this is a 42P10 and `drive reset`
+    // — the first command in DRIVING.md — dies before it wipes anything.
+    await tx`insert into sim_clock (singleton, offset_ms, frozen_at, academy_id)
+             values (true, 0, null, null)
+             on conflict (singleton) where academy_id is null
+             do update set offset_ms = 0, frozen_at = null`
   })
   academyIdCache = null
   await resetClock() // re-sync lib/clock's cached offset

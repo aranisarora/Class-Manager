@@ -224,3 +224,58 @@ export function formatPhone(e164: string): string {
   if (digits.length === 10) return `${digits.slice(0, 5)} ${digits.slice(5)}`
   return e164
 }
+
+/**
+ * Is this a number a message could actually be sent to?
+ *
+ * `add_coach` and `add_client` validated `phone_e164` as `z.string().min(6)`, which is
+ * not a phone rule — it is a length. Driven live, an admin typed *"arjun and vikram are
+ * my coaches"* with no numbers anywhere in the conversation, and the model filled the
+ * required field with `+910000000001` and `+910000000002`: sequential placeholders that
+ * passed the schema, rode into a staged plan, and sat one tap away from becoming two
+ * `contact` rows the product would then try to invite.
+ *
+ * A model that has not been given a number must be *refused*, not quietly believed. So
+ * the rule lives here, in the one file both writers already reach for, rather than being
+ * spelled out twice and drifting (R5's lesson, applied before it fires).
+ *
+ * What it costs: a real number typed in a format this does not recognise is now rejected
+ * where it used to be accepted. That is the intended trade — the failure is loud, lands
+ * on the model mid-plan, and says what to do about it.
+ */
+export function dialablePhone(raw: unknown): { ok: true; phone: string } | { ok: false; why: string } {
+  const s = String(raw ?? '').trim()
+  const digits = s.replace(/[^0-9]/g, '')
+  if (!digits) return { ok: false, why: 'no digits in it at all' }
+  // E.164: up to 15 digits, and a country code never starts at zero.
+  if (digits.length < 8 || digits.length > 15) {
+    return { ok: false, why: `${digits.length} digits — a real number is 8 to 15` }
+  }
+  if (digits.startsWith('0')) return { ok: false, why: 'starts with 0, so it carries no country code' }
+
+  // Placeholders are the actual failure mode, and they are recognisable: one repeated
+  // digit, or a straight run up or down. `+910000000001` is the run this was written for.
+  const local = digits.startsWith('91') && digits.length === 12 ? digits.slice(2) : digits
+  if (/^(\d)\1+$/.test(local)) return { ok: false, why: 'every digit is the same' }
+  const isRun = (d: string, step: number): boolean =>
+    [...d].every((ch, i) => i === 0 || Number(ch) === (Number(d[i - 1]) + step + 10) % 10)
+  if (local.length >= 6 && (isRun(local, 1) || isRun(local, -1))) {
+    return { ok: false, why: 'the digits just count up or down' }
+  }
+  // A leading run of zeros is the shape a made-up number takes when the model pads to
+  // the right length: 0000000001, 0000012345.
+  if (/^0{4,}/.test(local)) return { ok: false, why: 'it is mostly leading zeros' }
+
+  // India is the only market this product serves today (§1), and its mobiles are ten
+  // digits opening 6–9. Anything else on +91 is not reachable on WhatsApp.
+  if (digits.startsWith('91')) {
+    const mobile = digits.slice(2)
+    if (mobile.length !== 10) {
+      return { ok: false, why: `+91 numbers are 10 digits, this has ${mobile.length}` }
+    }
+    if (!/^[6-9]/.test(mobile)) {
+      return { ok: false, why: 'an Indian mobile starts with 6, 7, 8 or 9' }
+    }
+  }
+  return { ok: true, phone: `+${digits}` }
+}

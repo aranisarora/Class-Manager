@@ -73,7 +73,7 @@ export async function coachDay(job: Job): Promise<void> {
   const p = payloadOf(job)
   const academyId = need(p, 'academy_id')
   const coachId = need(p, 'coach_id')
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)
@@ -192,7 +192,7 @@ export async function coachComing(job: Job): Promise<void> {
   const academyId = need(p, 'academy_id')
   const sessionId = need(p, 'session_id')
   const coachId = need(p, 'coach_id')
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
     const base = await ladderPrecondition(tx, academyId, sessionId, coachId, nowAt)
@@ -255,7 +255,7 @@ export async function coachNudge(job: Job): Promise<void> {
   const academyId = need(p, 'academy_id')
   const sessionId = need(p, 'session_id')
   const coachId = need(p, 'coach_id')
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
     const base = await ladderPrecondition(tx, academyId, sessionId, coachId, nowAt)

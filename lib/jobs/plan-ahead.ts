@@ -100,7 +100,7 @@ export async function planAhead(o?: { academyIds?: string[] }): Promise<number> 
 }
 
 export async function planAheadFor(academyId: string): Promise<number> {
-  const nowAt = await now()
+  const nowAt = await now(academyId)
   const specs = await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)
     if (!academy) return []

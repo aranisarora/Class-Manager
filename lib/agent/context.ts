@@ -640,7 +640,7 @@ export async function variableTail(
   },
 ): Promise<string> {
   const tz = id.academy.timezone || 'Asia/Kolkata'
-  const at = await now()
+  const at = await now(id.academyId)
   const local = inZone(at, tz)
   const [academyMemory, personMemory, whatExists] = await Promise.all([
     hotSet('academy', id.academyId, id.academyId),

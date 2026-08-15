@@ -39,7 +39,7 @@ export async function clientReminder(job: Job): Promise<void> {
   const academyId = need(p, 'academy_id')
   const sessionId = need(p, 'session_id')
   const playerId = need(p, 'player_id')
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)
@@ -111,7 +111,7 @@ export async function clientSessionTrouble(job: Job): Promise<void> {
   const p = payloadOf(job)
   const academyId = need(p, 'academy_id')
   const sessionId = need(p, 'session_id')
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)
@@ -177,7 +177,7 @@ export async function clientOutcome(job: Job): Promise<void> {
   const academyId = need(p, 'academy_id')
   const sessionId = need(p, 'session_id')
   const playerId = need(p, 'player_id')
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)
@@ -261,7 +261,7 @@ export async function firstContactBatch(job: Job): Promise<void> {
   const p = payloadOf(job)
   const academyId = need(p, 'academy_id')
   const batchN = typeof p.batch_n === 'number' ? p.batch_n : Number(p.batch_n ?? 1) || 1
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)
@@ -282,11 +282,11 @@ export async function firstContactBatch(job: Job): Promise<void> {
 
     const batch = await tx<ContactTarget[]>`
       select ct.id as contact_id, ct.person_id, pe.full_name as holder_name,
-             nx.player_name, nx.class_name, nx.starts_at, nx.venue_name
+             nx.player_person_id, nx.player_name, nx.class_name, nx.starts_at, nx.venue_name
         from contact ct
         join person pe on pe.id = ct.person_id
         join lateral (
-          select pp.full_name as player_name, cl.name as class_name,
+          select pp.id as player_person_id, pp.full_name as player_name, cl.name as class_name,
                  s.starts_at, v.name as venue_name
             from account a
             join player pl on pl.account_id = a.id and pl.active
@@ -367,7 +367,8 @@ export async function firstContactBatch(job: Job): Promise<void> {
         },
       ],
       catalogId: 'CL-FIRST-CONTACT',
-      subjectPersonIds: [t.person_id],
+      // The player, not the holder — see `player_person_id` on ContactTarget.
+      subjectPersonIds: [t.player_person_id],
     })
     if (outcome.status === 'queued' || outcome.status === 'sent') sent++
   }
@@ -387,6 +388,15 @@ export async function firstContactBatch(job: Job): Promise<void> {
 type ContactTarget = {
   contact_id: string
   person_id: string
+  /**
+   * The *player's* person, which is who this message is about. `person_id` is the
+   * holder's, and passing that as the subject is the same as passing nothing:
+   * `subjectName` drops any id equal to the recipient and falls back to their own name.
+   * So the first message three parents ever received opened *"Ace TT Academy: Latha has
+   * a session coming up"* — the parent named where the child belongs, which is the exact
+   * render `subjectName` was written to stop.
+   */
+  player_person_id: string
   holder_name: string
   player_name: string
   class_name: string

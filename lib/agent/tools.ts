@@ -569,10 +569,22 @@ export function backstopButtons(
     return /\bwhat (?:can|do) (?:you|i) /i.test(body) ? [] : menu
   }
 
+  /**
+   * The steps have to be a function of the state they are named after. This list was
+   * static, so the turn that *finished* business setup came back offering
+   * `[Set up the business]` again — the one step the person had just completed, sitting
+   * first in the row under a message that read the settings back to them.
+   *
+   * `onboarding_state` is `setup → roster → ready → live`, and `setup` is precisely the
+   * state that means "the business form has not been submitted". Past it, the form is an
+   * edit rather than a step, and an edit is not what a backstop is for.
+   */
   const steps: { title: string; action: ActionPayload }[] = [
+    ...(state === 'setup'
+      ? [{ title: 'Set up the business', action: { kind: 'form', form: 'business_setup' } as ActionPayload }]
+      : []),
     { title: 'Add a class', action: { kind: 'reply', text: 'I want to add a class' } },
     { title: 'Add a coach', action: { kind: 'reply', text: 'I want to add a coach' } },
-    { title: 'Set up the business', action: { kind: 'form', form: 'business_setup' } },
   ]
   return steps.slice(0, LIMITS.buttons)
 }

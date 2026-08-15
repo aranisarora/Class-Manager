@@ -1964,10 +1964,16 @@ async function main(): Promise<void> {
        * `CO-REGISTER` reached the coach at all, instead of hiding that it never did.
        */
       const pending = await q<any>(
-        `select payload->'flow'->>'flow_token' as token from message
+        // The stored payload is camelCase — `flowId`/`flowToken` (lib/messaging/types.ts);
+        // only transport-cloud rewrites them to snake_case for Meta's wire. Reading only
+        // the wire spelling matched nothing, so this command answered "no register form
+        // has been sent" about registers that had been sent. Accept both, the way
+        // `lib/emulator/state.ts` already does.
+        `select coalesce(payload->'flow'->>'flowToken', payload->'flow'->>'flow_token') as token
+           from message
           where contact_id = '${contactId}'::uuid and direction = 'outbound'
             and suppressed_reason is null
-            and payload->'flow'->>'flow_id' = 'register'
+            and coalesce(payload->'flow'->>'flowId', payload->'flow'->>'flow_id') = 'register'
           order by created_at desc limit 1`,
         academyId,
       )
@@ -2018,10 +2024,13 @@ async function main(): Promise<void> {
         )
       }
       const rows = await q<any>(
-        `select payload->'flow'->>'flow_token' as token from message
+        // See the note in `register`: the stored spelling is camelCase, the wire spelling
+        // is snake_case, and this read only ever matched the wire.
+        `select coalesce(payload->'flow'->>'flowToken', payload->'flow'->>'flow_token') as token
+           from message
           where contact_id = '${contactId}'::uuid and direction = 'outbound'
             and suppressed_reason is null
-            and payload->'flow'->>'flow_id' = '${which}'
+            and coalesce(payload->'flow'->>'flowId', payload->'flow'->>'flow_id') = '${which}'
           order by created_at desc limit 1`,
         await academyOfContact(contactId),
       )

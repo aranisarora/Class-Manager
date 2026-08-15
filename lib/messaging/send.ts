@@ -270,9 +270,26 @@ function asTemplateMessage(
   const params = buildTemplateParams(template, msg, row, who)
   const def = TEMPLATES[template]
   const first = msg.buttons?.[0]
+  /**
+   * When the safety rule below drops every button, the body still has to answerable.
+   *
+   * Dropping a lying button is right. Leaving the question behind it unanswerable is
+   * not, and out of window is the NORMAL case for the rung that asks it: driven, a coach
+   * received *"Beginners starts Monday at 6:30pm at Green Park. Coming?"* with
+   * `buttons: null` — the single most important tap in the coach ladder, and no way to
+   * make it. The comment below already names this cost ("the person has to reply") and
+   * nothing told the person that.
+   *
+   * One sentence, only when buttons were actually taken away, and only when the message
+   * was asking for something. Any reply opens the window and the real buttons follow.
+   */
+  const droppedTheirButtons = Boolean(msg.buttons?.length) && (!first || firstCommits)
+  const rendered = renderTemplate(template, params)
   return {
     ...msg,
-    body: renderTemplate(template, params),
+    body: droppedTheirButtons
+      ? `${rendered}\n\nJust reply here — a word is enough.`
+      : rendered,
     header: undefined,
     footer: undefined,
     list: undefined,
@@ -515,6 +532,7 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
      * sent at all — so the only truthful evidence here is none.
      */
     const scope = {
+      academyId: ctx.academyId,
       academy: {
         name: row.academy_name,
         timezone: row.academy_timezone,

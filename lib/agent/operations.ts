@@ -36,7 +36,7 @@ import {
 import { undo as inverseOf } from '@/lib/audit'
 import { dedupe, liveAgentTasks, sessionJobPrefixes, TIMING_KEYS } from '@/lib/jobs'
 import { now } from '@/lib/clock'
-import { formatINR } from '@/lib/format'
+import { dialablePhone, formatINR } from '@/lib/format'
 import { newId } from '@/lib/ids'
 import type { Identity } from '@/lib/types'
 import { DateTime } from 'luxon'
@@ -490,6 +490,32 @@ const uuid = z
       : 'expected an id: a uuid you have actually read, or `(select id from … )` for a row an earlier step in this same plan created',
   }))
 
+/**
+ * A phone number somebody actually gave us.
+ *
+ * This was `z.string().min(6)` on both `add_coach` and `add_family` — a length, not a
+ * phone rule. `min(6)` is satisfied by `+910000000001`, which is what the model wrote
+ * into a staged plan for two coaches whose numbers had never been mentioned; the plan
+ * reached a button and one tap would have created two contacts the product then tries to
+ * invite. The number was required, the model did not have it, and nothing said no.
+ *
+ * The refusal message is the useful half: it tells the model to ask rather than invent,
+ * because a tool error that only says "invalid" gets answered with another guess.
+ */
+const phoneE164 = z.string().refine(
+  (v) => dialablePhone(v).ok,
+  (v) => {
+    const r = dialablePhone(v)
+    return {
+      message:
+        `"${v}" is not a number anyone can be reached on`
+        + (r.ok ? '' : ` — ${r.why}`)
+        + '. Do not invent one or use a placeholder: if you have not been given the number, '
+        + 'ask for it, or ask them to share the contact card.',
+    }
+  },
+)
+
 /* =========================================================================== *
  * end_coach — §8.3. Leaving is an end date, never a delete.
  * =========================================================================== */
@@ -826,7 +852,7 @@ const endEnrollment: OperationDef = {
   }),
   async build(ctx, args) {
     const a = await academyOf(ctx)
-    const endIso = isoDate(args.end_date ?? (await now()).toISOString(), a.timezone)
+    const endIso = isoDate(args.end_date ?? (await now(ctx.academyId)).toISOString(), a.timezone)
 
     const live = await liveEnrollments(
       ctx,
@@ -883,7 +909,7 @@ const endClient: OperationDef = {
   }),
   async build(ctx, args) {
     const a = await academyOf(ctx)
-    const endIso = isoDate(args.end_date ?? (await now()).toISOString(), a.timezone)
+    const endIso = isoDate(args.end_date ?? (await now(ctx.academyId)).toISOString(), a.timezone)
 
     const [account] = await q<{ id: string; display_name: string | null; holder_name: string }>(
       ctx,
@@ -950,7 +976,7 @@ const cancelSession: OperationDef = {
   }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
-    const today = zoned(await now(), a.timezone)
+    const today = zoned(await now(ctx.academyId), a.timezone)
     const s = await sessionOf(ctx, args.session_id)
     if (s.status === 'cancelled') return [{ note: 'that session is already cancelled' }]
 
@@ -1073,7 +1099,7 @@ const moveClass: OperationDef = {
   }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
-    const today = zoned(await now(), a.timezone)
+    const today = zoned(await now(ctx.academyId), a.timezone)
     const from = args.from_date ? isoDate(args.from_date, a.timezone) : today.toFormat('yyyy-MM-dd')
 
     const [cls] = await q<{ id: string; name: string }>(
@@ -1173,7 +1199,7 @@ const rescheduleSession: OperationDef = {
   }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
-    const today = zoned(await now(), a.timezone)
+    const today = zoned(await now(ctx.academyId), a.timezone)
     const s = await sessionOf(ctx, args.session_id)
     const start = new Date(args.new_starts_at)
     if (Number.isNaN(start.getTime())) throw new Error('that new time is not a time I can read')
@@ -1250,7 +1276,7 @@ const waive: OperationDef = {
   }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
-    const period = args.period ? periodOf(args.period, a.timezone) : periodOf(await now(), a.timezone)
+    const period = args.period ? periodOf(args.period, a.timezone) : periodOf(await now(ctx.academyId), a.timezone)
     // Waiving is a credit. A positive number here means "take this much off",
     // which is what an admin says out loud; the line itself is negative.
     const amount = args.amount > 0 ? -Math.abs(args.amount) : args.amount
@@ -1303,7 +1329,7 @@ const bookTrial: OperationDef = {
   }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
-    const today = zoned(await now(), a.timezone)
+    const today = zoned(await now(ctx.academyId), a.timezone)
     const contactId = args.contact_id ?? (ctx.role === 'service' ? null : ctx.contactId)
     if (!contactId) throw new Error('book_trial needs the contact this trial is for')
 
@@ -1493,7 +1519,7 @@ const markAttendance: OperationDef = {
   }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
-    const today = zoned(await now(), a.timezone)
+    const today = zoned(await now(ctx.academyId), a.timezone)
     const s = await sessionOf(ctx, args.session_id)
 
     /**
@@ -1520,7 +1546,7 @@ const markAttendance: OperationDef = {
      * thing that has not occurred. The refusal says when it becomes markable,
      * because a bare "no" costs a round.
      */
-    if (new Date(s.starts_at).getTime() > (await now()).getTime()) {
+    if (new Date(s.starts_at).getTime() > (await now(ctx.academyId)).getTime()) {
       throw new Error(
         `that session hasn't started yet — it begins ${dayLabel(s.starts_at, a.timezone, today)} at ` +
         `${zoned(s.starts_at, a.timezone).toFormat('h:mma').toLowerCase()}. ` +
@@ -1689,7 +1715,7 @@ const markAttendance: OperationDef = {
           // so a job stamped from the host clock is scheduled in a different timeline:
           // whenever the domain clock is behind the host, "run this immediately" becomes
           // "run this at a moment that has not arrived yet", and the job simply waits.
-          run_at: (await now()).toISOString(),
+          run_at: (await now(ctx.academyId)).toISOString(),
           dedupe_key: dedupe.clientOutcome(s.id, e.player_id),
           payload: { session_id: s.id, player_id: e.player_id, status: e.status },
         },
@@ -1831,7 +1857,7 @@ const declineCoach: OperationDef = {
   }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
-    const today = zoned(await now(), a.timezone)
+    const today = zoned(await now(ctx.academyId), a.timezone)
     const coachId = args.coach_id ?? id.coachId
     if (!coachId) throw new Error('I do not know which coach that is')
     const s = await sessionOf(ctx, args.session_id)
@@ -1941,7 +1967,7 @@ const claimCover: OperationDef = {
   params: z.object({ session_id: uuid, coach_id: uuid.nullish() }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
-    const today = zoned(await now(), a.timezone)
+    const today = zoned(await now(ctx.academyId), a.timezone)
     const coachId = args.coach_id ?? id.coachId
     if (!coachId) throw new Error('I do not know which coach that is')
     const s = await sessionOf(ctx, args.session_id)
@@ -2027,7 +2053,7 @@ const clientCancel: OperationDef = {
   }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
-    const nowD = await now()
+    const nowD = await now(ctx.academyId)
     const today = zoned(nowD, a.timezone)
     const s = await sessionOf(ctx, args.session_id)
     const roster = await rosterOf(ctx, s.class_id, isoDate(s.starts_at, a.timezone))
@@ -2241,7 +2267,7 @@ const requestPayment: OperationDef = {
   }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
-    const nowD = await now()
+    const nowD = await now(ctx.academyId)
     const period = args.period ? periodOf(args.period, a.timezone) : periodOf(nowD, a.timezone)
     const [acct] = await q<{ holder_person_id: string }>(
       ctx,
@@ -2585,7 +2611,7 @@ const createClass: OperationDef = {
         // is the worse of the two to get wrong — it is what turns a newly created class
         // into actual sessions, so a class created while the domain clock trails the host
         // gets no sessions at all, and nothing anywhere reports it.
-        run_at: (await now()).toISOString(),
+        run_at: (await now(ctx.academyId)).toISOString(),
         dedupe_key: dedupe.materializeSessions(classId, startsOn),
         payload: { class_id: classId, academy_id: ctx.academyId },
       },
@@ -2638,7 +2664,7 @@ const closeClass: OperationDef = {
   }),
   async build(ctx, args) {
     const a = await academyOf(ctx)
-    const endIso = isoDate(args.end_date ?? (await now()).toISOString(), a.timezone)
+    const endIso = isoDate(args.end_date ?? (await now(ctx.academyId)).toISOString(), a.timezone)
 
     const [cls] = await q<{ id: string; name: string; ends_on: string | null }>(
       ctx,
@@ -2711,7 +2737,7 @@ const addCoach: OperationDef = {
   description: 'Add a coach: contact, classes, pay rate. Three facts, and it messages nobody.',
   params: z.object({
     full_name: z.string().min(1),
-    phone_e164: z.string().min(6),
+    phone_e164: phoneE164,
     pay_amount: z.number().nullish(),
     pay_unit: z.enum(['per_session', 'per_hour', 'per_month']).nullish(),
     class_ids: z.array(uuid).optional().default([]),
@@ -2796,7 +2822,7 @@ const addFamily: OperationDef = {
   description: 'Add a family and their players from shared contacts or a photographed register. Messages nobody.',
   params: z.object({
     holder_name: z.string().min(1),
-    phone_e164: z.string().min(6),
+    phone_e164: phoneE164,
     players: z
       .array(
         z.object({
@@ -2821,7 +2847,7 @@ const addFamily: OperationDef = {
   }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
-    const today = zoned(await now(), a.timezone).toFormat('yyyy-MM-dd')
+    const today = zoned(await now(ctx.academyId), a.timezone).toFormat('yyyy-MM-dd')
     const phone = args.phone_e164.replace(/[^\d+]/g, '')
     // The same question `add_coach` was not asking. A parent added twice — from a
     // photographed register and then by hand, which is the normal way this happens —
@@ -3314,7 +3340,7 @@ const listWatches: OperationDef = {
   params: z.object({}),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
-    const today = zoned(await now(), a.timezone)
+    const today = zoned(await now(ctx.academyId), a.timezone)
     const rows = await liveAgentTasks(ctx.academyId)
     if (!rows.length) {
       return [

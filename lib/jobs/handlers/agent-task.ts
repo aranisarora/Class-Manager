@@ -24,7 +24,7 @@ export async function agentTask(job: Job): Promise<void> {
   const p = payloadOf(job)
   const academyId = need(p, 'academy_id')
   const instruction = need(p, 'instruction')
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   // §13.1 — "expires_at is required. A watch with no expiry is a leak; the
   // runtime rejects a task without one." `enqueue` refuses to mint one without

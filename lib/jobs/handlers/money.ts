@@ -461,7 +461,7 @@ export async function monthEndTally(job: Job): Promise<void> {
   note(`tally sent to ${account.holder_name}: ${lines.length} line(s), ${formatINR(periodTotal)}`)
 
   if (outstanding > 0) {
-    const runAt = new Date((await now()).getTime() + DUNNING_INTERVAL_DAYS * 86_400_000)
+    const runAt = new Date((await now(academyId)).getTime() + DUNNING_INTERVAL_DAYS * 86_400_000)
     await enqueue(
       'dunning', runAt, dedupe.dunning(accountId, period, 1),
       { academy_id: academyId, account_id: accountId, period, n: 1 }, academyId,
@@ -517,7 +517,7 @@ export async function dunningRun(job: Job): Promise<void> {
   const accountId = need(p, 'account_id')
   const period = need(p, 'period')
   const n = numberOf(p, 'n', 1)
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)
@@ -647,7 +647,7 @@ export async function reconcile(job: Job): Promise<void> {
   const academyId = need(p, 'academy_id')
   const paymentId = need(p, 'payment_id')
   const n = numberOf(p, 'n', 1)
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)

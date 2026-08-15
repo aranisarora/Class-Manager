@@ -48,7 +48,7 @@ export async function materializeSessions(job: Job): Promise<void> {
   const p = payloadOf(job)
   const academyId = need(p, 'academy_id')
   const classId = need(p, 'class_id')
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const deleted = await withAcademy(academyId, async (tx) => {
     // ---- precondition, re-checked at run time (§13 rule 2) -------------------
@@ -173,7 +173,7 @@ export async function postClassRegister(job: Job): Promise<void> {
   const p = payloadOf(job)
   const academyId = need(p, 'academy_id')
   const sessionId = need(p, 'session_id')
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)
@@ -265,7 +265,7 @@ export async function registerExpiry(job: Job): Promise<void> {
   const p = payloadOf(job)
   const academyId = need(p, 'academy_id')
   const sessionId = need(p, 'session_id')
-  const nowAt = await now()
+  const nowAt = await now(academyId)
 
   const plan = await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)

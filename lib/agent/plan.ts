@@ -639,7 +639,7 @@ async function periodNow(tx: Tx, ctx: SessionCtx): Promise<string> {
   // The fallback is the billing period a money row lands in, so it has to come from the
   // same clock the row above it would have used. The host clock is a different timeline —
   // it would file an adjustment under whichever month the server happens to be in.
-  return rows[0]?.period ?? (await now()).toISOString().slice(0, 8) + '01'
+  return rows[0]?.period ?? (await now(ctx.academyId)).toISOString().slice(0, 8) + '01'
 }
 
 /* ------------------------------------------------------------------------- *
