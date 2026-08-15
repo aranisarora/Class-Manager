@@ -209,35 +209,75 @@ export async function clientOutcome(job: Job): Promise<void> {
     if (!player) skip('player is no longer on this roster')
     if (!player.contact_id) skip('no reachable number for this family')
 
-    return { academy, session, att, player }
+    // Rule 7 — one event, one family, one message. Two children marked in the
+    // same register produced two "how the session went" messages in the same
+    // minute (driven, month drive day 3). The whole family's marked outcomes
+    // travel in one body, and the idempotency key below makes the sibling's
+    // own job a no-op. The rare loser: a sibling marked in a later pass rides
+    // the next thing this family is told — one message per event wins.
+    const familyIds = roster.filter((r) => r.contact_id === player.contact_id).map((r) => r.player_id)
+    const familyAtt = await tx<
+      { player_id: string; status: string; note: string | null; marked_by_coach_id: string | null }[]
+    >`
+      select player_id, status, note, marked_by_coach_id from attendance
+       where session_id = ${sessionId} and player_id = any(${familyIds})
+    `
+    const members = familyAtt
+      // The same two silences as above, applied per child: a timely cancel and
+      // the family's own out-of-window notice are things they told us.
+      .filter((a) => a.status !== 'cancelled_timely' && !(a.status === 'absent' && !a.marked_by_coach_id))
+      .map((a) => {
+        const r = roster.find((x) => x.player_id === a.player_id)
+        return {
+          name: firstName(r?.player_name ?? 'They'),
+          person_id: r?.player_person_id ?? player.player_person_id,
+          status: a.status,
+          note: a.note,
+        }
+      })
+    if (!members.length) skip('nothing this family was not already told')
+
+    return { academy, session, player, members }
   })
 
-  const { academy, session, att, player } = plan
+  const { academy, session, player, members } = plan
   const tz = academy.timezone
-  const who = firstName(player.player_name)
   const when = dayLabel(session.starts_at, tz, nowAt)
-  const absent = att.status === 'absent'
 
-  const body = absent
-    ? `${who} missed ${session.class_name} ${when}.`
-    : att.status === 'late'
-      ? `${who} made it to ${session.class_name} ${when}, a little late.`
-      : `${who} was at ${session.class_name} ${when}.`
+  const lineFor = (m: (typeof members)[number]): string =>
+    m.status === 'absent'
+      ? `${m.name} missed ${session.class_name} ${when}.`
+      : m.status === 'late'
+        ? `${m.name} made it to ${session.class_name} ${when}, a little late.`
+        : `${m.name} was at ${session.class_name} ${when}.`
 
+  // One register note usually applies to everyone marked; say it once. Distinct
+  // notes are rare enough to name.
+  const notes = [...new Set(members.map((m) => m.note).filter(Boolean))] as string[]
+  const noteLines =
+    notes.length === 1
+      ? [`Coach's note: ${notes[0]}`]
+      : members.filter((m) => m.note).map((m) => `Coach's note for ${m.name}: ${m.note}`)
+
+  const absentees = members.filter((m) => m.status === 'absent')
   await composeAndSend(serviceCtx(academy.id), {
     toContactId: player.contact_id as string,
     header: clamp(academy.name, LIMITS.headerChars),
-    body: clamp(joinLines([body, att.note ? `Coach's note: ${att.note}` : null]), LIMITS.bodyChars),
-    buttons: absent
+    body: clamp(joinLines([...members.map(lineFor), ...noteLines]), LIMITS.bodyChars),
+    buttons: absentees.length
       ? [{
           title: buttonTitle('Rebook'),
-          action: { kind: 'reply', text: `Rebook ${who}'s missed ${session.class_name}` },
+          action: {
+            kind: 'reply',
+            text: `Rebook ${absentees.map((m) => m.name).join(' and ')}'s missed ${session.class_name}`,
+          },
         }]
       : undefined,
     catalogId: 'CL-OUTCOME',
-    subjectPersonIds: [player.player_person_id],
+    subjectPersonIds: [...new Set(members.map((m) => m.person_id))],
+    idempotencyKey: `outcome:${sessionId}:${player.contact_id}`,
   })
-  note(`outcome sent for ${who} — ${att.status}`)
+  note(`outcome sent for ${members.map((m) => m.name).join(', ')} — ${members.map((m) => m.status).join('/')}`)
 }
 
 type FirstContactSignals = { sent_so_far: number; failed: number; landed: number; opted_out: number }
