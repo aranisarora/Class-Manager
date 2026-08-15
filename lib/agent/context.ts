@@ -789,6 +789,7 @@ export async function variableTail(
     taskInstruction?: string
     queryResults?: unknown
     recentLookups?: string
+    recentActions?: string
   },
 ): Promise<string> {
   const tz = id.academy.timezone || 'Asia/Kolkata'
@@ -954,6 +955,23 @@ export async function variableTail(
         `Your own queries and their real results, newest first. Ids here are the only ids you may use — ` +
         `if what you need is not here, run the query again. Never write a uuid you have not read.\n\n` +
         extra.recentLookups,
+    )
+  }
+
+  // Outcomes, labelled as outcomes — the half `recentLookups` deliberately
+  // excludes (a write's result replayed as reference data is how something
+  // happens twice). What each status LICENSES travels with it, because the
+  // motivating failure (F-K) was a refusal described one turn later as a thing
+  // that had been done and escalated.
+  if (extra?.recentActions) {
+    out.push(
+      `# What you did earlier in this conversation\n\n` +
+        `Your own actions and what actually came of each, newest first. ` +
+        `"refused" or "failed" means it did NOT happen — nothing was written, and describing it as done ` +
+        `would be false. Do not blindly redo it either: whatever refused it is usually still true. ` +
+        `"done" means it already happened — doing it again is how somebody is charged or messaged twice. ` +
+        `"staged" means it waits on their tap, not on you.\n\n` +
+        extra.recentActions,
     )
   }
 

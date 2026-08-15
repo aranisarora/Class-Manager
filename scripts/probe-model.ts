@@ -1434,9 +1434,29 @@ async function runChild(model: string, arm: string): Promise<void> {
         // `reflect:schedule` is the discretionary tool being reached, just after the
         // reply rather than during it (see `reflect` in loop.ts). Counting it as a
         // miss would answer the open question with the wrong answer.
+        //
+        // `act` predates the per-operation declarations: there is no tool of that
+        // name any more, and a turn that calls `create_class`/`add_family` directly
+        // is doing exactly what `act` used to mean. Matched by exclusion rather
+        // than importing OPERATIONS: `toolDecls()` is the core tools plus the
+        // operations and nothing else, so any name outside the core set is an
+        // operation by construction. Without this the r6 run scored compose-big
+        // as a miss over a turn whose operations all ran and wrote
+        // (score-vs-baseline.md, "harness staleness").
         wanted:
           kase.wants.length === 0 ||
-          kase.wants.some((w) => toolNames.includes(w) || toolNames.includes(`reflect:${w}`)),
+          kase.wants.some(
+            (w) =>
+              toolNames.includes(w) ||
+              toolNames.includes(`reflect:${w}`) ||
+              (w === 'act' &&
+                toolNames.some(
+                  (n) =>
+                    !['read', 'plan', 'commit', 'reply', 'schedule', 'remember', 'handoff', 'view'].includes(n) &&
+                    !n.startsWith('reflect:') &&
+                    !n.startsWith('('),
+                )),
+          ),
         rounds: Number(t.rounds ?? 0),
         latencyMs: Number(t.latency_ms ?? 0),
         inTok: Number(t.prompt_tokens ?? 0),

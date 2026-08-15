@@ -982,19 +982,21 @@ async function modelTurn(
     saidToUser: [],
   }
 
-  const [clock, lookups] = await Promise.all([
+  const [clock, lookups, actions] = await Promise.all([
     // The tenant's clock, not the world's. This line is the model's entire sense of
     // "now" — driven with a moved tenant clock, the bare call told a coach
     // "It is Saturday, 10:52am" on his Wednesday, and every watch the turn
     // scheduled landed in the past (conversation-rules.md F-A).
     now(identity.academyId).then((at) => inZone(at, identity.academy.timezone)),
     recentLookups(identity),
+    recentActions(identity),
   ])
   const tail = await variableTail(identity, {
     clockNote: `It is ${clock.label} (${clock.date} ${clock.time}) in ${identity.academy.timezone}.`,
     taskInstruction: input.task?.instruction,
     queryResults: input.task?.queryResults,
     recentLookups: lookups,
+    recentActions: actions,
   })
 
   const situation: string[] = [tail]
@@ -1620,18 +1622,22 @@ async function recentHistory(session: SessionCtx, identity: Identity): Promise<M
  * Bounded on purpose: the newest reads, capped, in the uncached tail. Failed calls
  * are included — knowing a query errored is worth more than silence about it.
  */
+async function recentToolTurns(identity: Identity): Promise<{ created_at: Date; tool_calls: ToolTrace[] }[]> {
+  return withSession({ role: 'service', academyId: identity.academyId }, async (tx) => {
+    return (await tx.unsafe(
+      `select created_at, tool_calls from turn
+        where contact_id = ${uid(identity.contact.id)}
+          and academy_id = ${uid(identity.academyId)}
+          and jsonb_array_length(coalesce(tool_calls, '[]'::jsonb)) > 0
+        order by created_at desc limit ${LOOKUP_TURNS}`,
+    )) as unknown as { created_at: Date; tool_calls: ToolTrace[] }[]
+  })
+}
+
 async function recentLookups(identity: Identity): Promise<string | undefined> {
   const BUDGET = 6000
   try {
-    const rows = await withSession({ role: 'service', academyId: identity.academyId }, async (tx) => {
-      return (await tx.unsafe(
-        `select created_at, tool_calls from turn
-          where contact_id = ${uid(identity.contact.id)}
-            and academy_id = ${uid(identity.academyId)}
-            and jsonb_array_length(coalesce(tool_calls, '[]'::jsonb)) > 0
-          order by created_at desc limit ${LOOKUP_TURNS}`,
-      )) as unknown as { created_at: Date; tool_calls: ToolTrace[] }[]
-    })
+    const rows = await recentToolTurns(identity)
 
     const blocks: string[] = []
     let used = 0
@@ -1655,6 +1661,60 @@ async function recentLookups(identity: Identity): Promise<string | undefined> {
     return blocks.length ? blocks.join('\n') : undefined
   } catch {
     // Continuity is an improvement on the turn, never a precondition for it.
+    return undefined
+  }
+}
+
+/**
+ * What the last few turns DID — with each attempt's status, so "did I actually
+ * do that?" is answerable without the model thinking to query `audit_entry`.
+ *
+ * `recentLookups` above excludes writes on purpose: replaying a write's result
+ * as if it were reference data is how a bot does something twice. This block is
+ * the half that exclusion over-removed, made safe by labelling: an outcome
+ * travels WITH its status, so a refusal reads as "this did not happen" rather
+ * than as a row to act on. F-K's worst instance is the motivating case — a
+ * failed enrollment-end described, one turn later, as if it had been escalated;
+ * the turn that composed the false claim could not see that nothing had been
+ * written, and the turn after it could not see the attempt at all.
+ */
+async function recentActions(identity: Identity): Promise<string | undefined> {
+  const BUDGET = 2400
+  const SKIP = new Set(['read', 'reply', 'view', 'remember', 'reflect:remember'])
+  const outcome = (call: ToolTrace): string => {
+    if (call.error) return `failed: ${String(call.error).split('\n')[0].slice(0, 180)} — nothing was written`
+    const r = call.result as Record<string, unknown> | string | undefined
+    if (r && typeof r === 'object') {
+      if (r.ok === false)
+        return `refused: ${String(r.error ?? 'no reason recorded').split('\n')[0].slice(0, 180)} — nothing was written`
+      if (r.needs_confirmation) return 'staged behind a confirmation button — NOT committed'
+      if (r.ok === true) {
+        const changes = Array.isArray(r.changes)
+          ? (r.changes as { count?: unknown }[]).reduce((a, c) => a + Number(c?.count ?? 0), 0)
+          : 0
+        return changes ? `done — wrote ${changes} row(s)` : 'done'
+      }
+    }
+    return 'ran'
+  }
+  try {
+    const rows = await recentToolTurns(identity)
+    const lines: string[] = []
+    let used = 0
+    for (const row of rows) {
+      for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
+        const name = String(call.name ?? '')
+        if (!name || SKIP.has(name) || name.startsWith('(')) continue
+        const args = JSON.stringify(call.args ?? {}).slice(0, 140)
+        const line = `- ${name} ${args} → ${outcome(call)}`
+        if (used + line.length > BUDGET) return lines.length ? lines.join('\n') : undefined
+        lines.push(line)
+        used += line.length
+      }
+    }
+    return lines.length ? lines.join('\n') : undefined
+  } catch {
+    // Same contract as recentLookups: an improvement, never a precondition.
     return undefined
   }
 }

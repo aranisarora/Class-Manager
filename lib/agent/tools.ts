@@ -118,9 +118,19 @@ export type ToolCtx = {
  * guard exists to buy the model one round to make the sentence true — not to argue.
  * ------------------------------------------------------------------------- */
 
-/** The verbs that mean a write happened. Shared by both shapes below. */
+/**
+ * The verbs that mean a write happened. Shared by both shapes below.
+ *
+ * The routing verbs — flagged, escalated, raised, notified, informed — are the
+ * F-K addition (conversation-rules.md): *"I've flagged it to the owner"* shipped
+ * with `claimedDone: false` because every verb here was a doing-verb and none
+ * was a telling-verb, so the checker read the sentence as claiming nothing.
+ * "told" stays out deliberately: "I've told you the price" is ordinary
+ * conversation about a previous turn, and a false positive here costs a real
+ * sentence a re-compose.
+ */
 const DONE_VERBS =
-  'added|created|set|made|booked|cancelled|canceled|moved|sent|recorded|requested|updated|removed|deleted|changed|waived|scheduled|assigned|enrolled|marked|drafted'
+  'added|created|set|made|booked|cancelled|canceled|moved|sent|recorded|requested|updated|removed|deleted|changed|waived|scheduled|assigned|enrolled|marked|drafted|flagged|escalated|raised|notified|informed'
 
 const CLAIMED_DONE = new RegExp(
   [
@@ -209,6 +219,13 @@ const CLAIM_TABLES: Record<string, string[]> = {
   assigned: ['class_coach', 'session_coach'],
   removed: ['enrollment', 'session', 'class_coach', 'session_coach'],
   deleted: ['enrollment', 'session', 'class_coach', 'session_coach'],
+  // The routing verbs are true exactly when somebody was actually told: a
+  // message row this turn (a handoff's send lands there too, via `outcomes`).
+  flagged: ['message'],
+  escalated: ['message'],
+  raised: ['message'],
+  notified: ['message'],
+  informed: ['message'],
 }
 
 /**
@@ -307,7 +324,17 @@ export type ClaimCheck = {
 export function checkClaims(body: string, ctx: ToolCtx): ClaimCheck {
   const claim = unbackedClaim(body)
   const unsupported = unsupportedClaims(body, ctx)
-  const backed = claim === 'claimed' ? Boolean(ctx.committed) && !unsupported.length : Boolean(ctx.worked)
+  // A claim whose every specific verb has its footprint this turn is backed by
+  // that footprint. `ctx.committed` cannot vouch for a send-shaped verb —
+  // "I've flagged it to the owner" over a message row and no table write is
+  // true, and demanding a commit would refuse the one true sentence the
+  // routing verbs were added to allow. For doing-verbs this changes nothing:
+  // their footprint IS a table write, which set `committed` on the way in.
+  const specific = CLAIM_PATTERNS.filter(([, patterns]) => patterns.some((re) => re.test(body)))
+  const backed =
+    claim === 'claimed'
+      ? !unsupported.length && (specific.length > 0 || Boolean(ctx.committed))
+      : Boolean(ctx.worked)
   return { claim, unsupported, unbacked: Boolean(claim || unsupported.length) && !backed }
 }
 

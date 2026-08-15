@@ -305,6 +305,14 @@ const TABLE_WORD_PATTERNS: [RegExp, string][] = Object.entries(TABLE_WORDS).map(
 function stripIdentifiers(text: string, id: LintScope): string {
   let out = text.replace(STATE_WORDS, '$1')
 
+  // "I've flagged it to the owner to sort out on the backend" — said to a
+  // parent (F-K). "backend" is machinery vocabulary the same way a table name
+  // is: nobody on WhatsApp has a backend. Substituted, not flagged, per this
+  // pass's repair-only contract. Bare "roster" is deliberately NOT rewritten:
+  // it is ordinary English in a sports business often enough that a blind
+  // substitution would corrupt more sentences than it saves.
+  out = out.replace(/\bback[- ]?end\b/gi, 'our side')
+
   out = out.replace(UUID_PARENTHETICAL, '')
   out = out.replace(UUID_LABELLED, '')
   out = out.replace(TABLE_COLUMN, (_m, _t: string, col: string) => humanise(col))

@@ -68,6 +68,19 @@ const CASES: [string, string[], string[]][] = [
   // Generic verbs stay turn-scoped on purpose — no table is unambiguously theirs.
   ["I've updated your timetable.", ['class'], []],
   ["I've set your UPI handle.", ['academy'], []],
+
+  // ── F-K: the routing verbs. "I've flagged it to the owner" shipped with
+  // `claimedDone: false` because every verb above was a doing-verb — the
+  // telling-verbs were not in the list at all. True exactly when somebody was
+  // actually told, i.e. a message row exists this turn.
+  ["I couldn't remove him from the batch — I've flagged it to the owner to sort out.", [], ['flagged']],
+  ["I've escalated this to the owner and he'll take it from here.", [], ['escalated']],
+  ["I've notified the coach about tomorrow's change.", [], ['notified']],
+  ["I've flagged it to the owner — you'll hear as soon as it's sorted.", ['message'], []],
+  ["I've raised it with Priya.", ['message'], []],
+  // Ambient past tense of the same verbs is ordinary English, not a receipt.
+  ['The fee was raised in June and applies from August.', [], []],
+  ['Concerns raised at the meeting were shared with the coaches.', [], []],
 ]
 
 for (const [body, tables, want] of CASES) {
