@@ -28,8 +28,8 @@ import {
 } from './kinds'
 import { enqueueMany, type JobSpec } from './enqueue'
 import {
-  atTimeOn, isoDate, leadFor, loadAcademy, settingNumber, withAcademy, withInfra,
-  zoned, type AcademyRow,
+  atTimeOn, isoDate, leadFor, loadAcademy, pullOutOfQuietHours, settingNumber, withAcademy,
+  withInfra, zoned, type AcademyRow,
 } from './util'
 
 /** A job planned more than this far into the past is a moment we missed. */
@@ -241,7 +241,10 @@ export async function planAheadFor(academyId: string): Promise<number> {
         const leadHours = leadFor(
           'clientReminderLeadHours', e.holder_settings, academy, academy.client_reminder_lead_hours,
         )
-        push('client_reminder', new Date(start - leadHours * 3600_000),
+        // F-H: `start − lead` lands at 4:30am for an evening class on the
+        // default 14h lead. Quiet-hours times are pulled back to the evening
+        // before (util.pullOutOfQuietHours).
+        push('client_reminder', pullOutOfQuietHours(new Date(start - leadHours * 3600_000), tz, academy.settings),
           dedupe.clientReminder(s.id, e.player_id), { session_id: s.id, player_id: e.player_id })
       }
     }

@@ -398,6 +398,41 @@ export function atTimeOn(date: string, time: string, tz: string): Date {
   return DateTime.fromISO(`${date}T${t}`, { zone: tz }).toJSDate()
 }
 
+/**
+ * F-H — nothing lands at 4:30 in the morning.
+ *
+ * A send time computed as `start − lead` has no idea what a night is: a 6:30pm
+ * class with the default 14-hour lead put reminders on parents' phones at
+ * 4:30am (driven; conversation-rules.md F-H). A time that falls inside the
+ * academy's quiet hours is pulled BACK to the last waking minute before they
+ * begin — the evening before, for an early-morning time — never pushed later,
+ * because a reminder after the class started is worse than one a little early.
+ *
+ * The pair lives in `academy.settings` (`quiet_start` / `quiet_end`, 'HH:MM'),
+ * defaulted here rather than written into every row: 21:00–07:00 is a sane
+ * household window, and an academy that wants dawn sends can say so.
+ */
+export function pullOutOfQuietHours(
+  at: Date,
+  tz: string,
+  settings: Record<string, unknown> | null,
+): Date {
+  const read = (k: string, fallback: string): string => {
+    const v = settings?.[k]
+    return typeof v === 'string' && /^\d{2}:\d{2}$/.test(v) ? v : fallback
+  }
+  const quietStart = read('quiet_start', '21:00')
+  const quietEnd = read('quiet_end', '07:00')
+  const local = DateTime.fromJSDate(at, { zone: tz })
+  const hm = local.toFormat('HH:mm')
+  const overnight = quietStart > quietEnd
+  const inQuiet = overnight ? hm >= quietStart || hm < quietEnd : hm >= quietStart && hm < quietEnd
+  if (!inQuiet) return at
+  const [h, m] = quietStart.split(':').map(Number)
+  const base = overnight && hm < quietEnd ? local.minus({ days: 1 }) : local
+  return base.set({ hour: h, minute: m, second: 0, millisecond: 0 }).minus({ minutes: 1 }).toJSDate()
+}
+
 /** `timestamptz` comes back as a Date; be tolerant of a string anyway. */
 export function msOf(v: Date | string | number): number {
   if (v instanceof Date) return v.getTime()
