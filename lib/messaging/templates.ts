@@ -14,6 +14,30 @@
  * All eight are **utility**: they follow from a transaction or a relationship the recipient
  * already has. Meta classifies on how the text reads, not on intent — so nothing here is
  * allowed to acquire a promotional sentence, or the whole category re-prices (§16.2).
+ *
+ * THE PARAMETER-TO-WORDS RATIO
+ * -----------------------------------------------------------------------------
+ * These bodies used to be almost nothing but parameters — `{academy}: {who} —
+ * {event}. {detail}`, four variables and one word of fixed text. That is the
+ * purest expression of "structured parameters holding real content", and Meta
+ * rejects it outright. All eight, on the first submission:
+ *
+ *     code=100 subcode=2388293
+ *     "Parameters words ratio exceeds limit — This template has too many
+ *      variables for its length."
+ *
+ * The rule is not documented as a number, so it was measured against the live
+ * endpoint: a body with **16 fixed words around 4 parameters is accepted**. The
+ * shapes below sit at or above that, and a new template must too.
+ *
+ * The fixed text this forces is not filler, and it must not become the vague
+ * clickbait described above — "you have an update" would now pass the ratio and
+ * fail the category. What it buys instead is a **label frame**: `For:`, `Change:`,
+ * `Details:`. A label followed by a colon is the one kind of fixed word that can
+ * precede a parameter without agreeing with it — which is exactly what the
+ * conjugation rule below demands, and the previous dash frame achieved by having
+ * no words at all. So the ratio and the grammar constraint resolve together, and
+ * the parameters still carry every piece of real content.
  */
 
 import { msgError } from './types'
@@ -50,6 +74,21 @@ export type TemplateDef = {
   covers: string
   /** A filled example. Documentation for the approval submission and the emulator. */
   example: string
+  /**
+   * The same example, split per parameter — because Meta will not approve a template
+   * without one.
+   *
+   * `example` above is the rendered sentence, which reads well and proves the body
+   * scans; the Cloud API's `components[].example.body_text` wants the *arguments*
+   * that produce it, in `params` order. Deriving one from the other would mean
+   * parsing the sentence back through the body's own placeholders — so the split is
+   * written down once, here, next to the sentence it must agree with.
+   *
+   * Keyed by parameter name rather than positional, so it cannot silently
+   * disagree with `params` when a template gains or loses one: the submission
+   * builder maps through `params` and throws on a missing key.
+   */
+  exampleParams: Record<string, string>
 }
 
 export const TEMPLATES: Record<TemplateName, TemplateDef> = {
@@ -58,97 +97,173 @@ export const TEMPLATES: Record<TemplateName, TemplateDef> = {
     category: 'utility',
     language: 'en',
     params: ['academy', 'who', 'event', 'detail'],
-    // The dash frame, not `{who} has {event}` — a verb in a FROZEN body agrees
+    // The label frame, not `{who} has {event}` — a verb in a FROZEN body agrees
     // with a parameter it cannot see. `{who}` is one child or two ("Ananya and
     // Dev", the sibling merge working as designed), and the approved text
     // cannot conjugate: "Ananya and Dev has a class coming up" shipped to a
     // real parent. The rule this encodes: no verb, article or preposition in a
     // template body whose correct form depends on what a parameter will carry.
-    // `session_outcome` below has always used this frame; it is the same idiom.
-    body: '{academy}: {who} — {event}. {detail}',
+    //
+    // `For:` is that rule and the ratio rule at once — a label agrees with
+    // nothing, and it is fixed text. The lead and sign-off sentences never touch
+    // a parameter either, so they are free to be ordinary English.
+    body:
+      'Message from {academy} about an upcoming session.\n\n' +
+      'For: {who}\nSession: {event}\nDetails: {detail}\n\n' +
+      'Tap below to continue in this chat.',
     quickReply: 'See the details',
     covers: 'client reminders — CL-REMINDER, CL-FIRST-CONTACT, CL-INTRO, PR-WELCOME',
     example:
-      'Sharwin Academy: Aarav — Beginners Batch tomorrow. 6:30–7:30pm at Green Park, with Coach Vinod.',
+      'Message from Sharwin Academy about an upcoming session.\n\nFor: Aarav\nSession: Beginners Batch tomorrow\nDetails: 6:30–7:30pm at Green Park, with Coach Vinod.\n\nTap below to continue in this chat.',
+    exampleParams: {
+      academy: 'Sharwin Academy',
+      who: 'Aarav',
+      event: 'Beginners Batch tomorrow',
+      detail: '6:30–7:30pm at Green Park, with Coach Vinod.',
+    },
   },
   session_change: {
     name: 'session_change',
     category: 'utility',
     language: 'en',
     params: ['academy', 'who', 'event', 'detail'],
-    body: '{academy}: {event} for {who}. {detail}',
+    body:
+      'Message from {academy} about a change to a session.\n\n' +
+      'For: {who}\nChange: {event}\nDetails: {detail}\n\n' +
+      'Tap below to continue in this chat.',
     quickReply: 'See the details',
     covers:
       'cancelled, moved, coach changed — CL-SESSION-CANCELLED, CL-SESSION-MOVED, CL-SESSION-TROUBLE, CL-CANCEL-CONFIRM, PR-TRIAL-CONFIRMED',
     example:
-      "Sharwin Academy: Saturday's Advanced Batch has moved for Meera. Now 8:30–10:00am at Green Park, from this Saturday.",
+      "Message from Sharwin Academy about a change to a session.\n\nFor: Meera\nChange: Saturday's Advanced Batch has moved\nDetails: Now 8:30–10:00am at Green Park, from this Saturday.\n\nTap below to continue in this chat.",
+    exampleParams: {
+      academy: 'Sharwin Academy',
+      who: 'Meera',
+      event: "Saturday's Advanced Batch has moved",
+      detail: 'Now 8:30–10:00am at Green Park, from this Saturday.',
+    },
   },
   session_outcome: {
     name: 'session_outcome',
     category: 'utility',
     language: 'en',
     params: ['academy', 'who', 'event', 'detail'],
-    body: '{academy}: {who} — {event}. {detail}',
+    body:
+      'Message from {academy} about a session that has finished.\n\n' +
+      'For: {who}\nOutcome: {event}\nDetails: {detail}\n\n' +
+      'Tap below to continue in this chat.',
     quickReply: 'See the details',
     covers: 'attended/missed with note — CL-OUTCOME',
     example:
-      'Sharwin Academy: Aarav — missed Beginners Batch today. Coach Vinod kept his spot for Friday.',
+      'Message from Sharwin Academy about a session that has finished.\n\nFor: Aarav\nOutcome: missed Beginners Batch today\nDetails: Coach Vinod kept his spot for Friday.\n\nTap below to continue in this chat.',
+    exampleParams: {
+      academy: 'Sharwin Academy',
+      who: 'Aarav',
+      event: 'missed Beginners Batch today',
+      detail: 'Coach Vinod kept his spot for Friday.',
+    },
   },
   payment_due: {
     name: 'payment_due',
     category: 'utility',
     language: 'en',
     params: ['academy', 'who', 'event', 'detail'],
-    body: '{academy}: {event} for {who}. {detail}',
+    // "the payments on your account", not "the amount due" — this one covers
+    // receipts as well as dunning (see `covers`), and a FROZEN body that says
+    // money is owed cannot be used to say money was received.
+    body:
+      'Message from {academy} about the payments on your account.\n\n' +
+      'For: {who}\nUpdate: {event}\nDetails: {detail}\n\n' +
+      'Tap below to continue in this chat.',
     quickReply: 'See the lines',
     covers: 'tally, dunning, receipts — CL-TALLY, CL-DUNNING, CL-RECEIPT',
-    example: "Sharwin Academy: October's tally is ready for Aarav. 8 sessions, ₹4,000, due 5 Nov.",
+    example:
+      "Message from Sharwin Academy about the payments on your account.\n\nFor: Aarav\nUpdate: October's tally is ready\nDetails: 8 sessions, ₹4,000, due 5 Nov.\n\nTap below to continue in this chat.",
+    exampleParams: {
+      academy: 'Sharwin Academy',
+      who: 'Aarav',
+      event: "October's tally is ready",
+      detail: '8 sessions, ₹4,000, due 5 Nov.',
+    },
   },
   coach_schedule: {
     name: 'coach_schedule',
     category: 'utility',
     language: 'en',
     params: ['academy', 'event', 'detail'],
-    body: '{academy}: {event}. {detail}',
+    body:
+      'Message from {academy} about your schedule.\n\n' +
+      'Update: {event}\nDetails: {detail}\n\n' +
+      'Tap below to continue in this chat.',
     quickReply: 'Open my day',
     covers:
       'the day, cover offers, statements — CO-DAY, CO-COVER-OFFER, CO-COVER-TAKEN, CO-PAYABLES, CO-FINAL-STATEMENT',
     example:
-      'Sharwin Academy: a session needs cover. Saturday 8:30am, Advanced Batch at Green Park — first to claim it takes it.',
+      'Message from Sharwin Academy about your schedule.\n\nUpdate: a session needs cover\nDetails: Saturday 8:30am, Advanced Batch at Green Park — first to claim it takes it.\n\nTap below to continue in this chat.',
+    exampleParams: {
+      academy: 'Sharwin Academy',
+      event: 'a session needs cover',
+      detail: 'Saturday 8:30am, Advanced Batch at Green Park — first to claim it takes it.',
+    },
   },
   coach_prompt: {
     name: 'coach_prompt',
     category: 'utility',
     language: 'en',
     params: ['academy', 'event', 'detail'],
-    body: '{academy}: {event}. {detail}',
+    body:
+      'Message from {academy} about something that needs you.\n\n' +
+      'Task: {event}\nDetails: {detail}\n\n' +
+      'Tap below to continue in this chat.',
     quickReply: 'Open',
     covers: 'coming, nudge, register, invite check — CO-COMING, CO-NUDGE, CO-REGISTER, CO-INVITE-CONFIRM',
     example:
-      'Sharwin Academy: take the register for Beginners Batch. 6:30pm today at Green Park, 11 players enrolled.',
+      'Message from Sharwin Academy about something that needs you.\n\nTask: take the register for Beginners Batch\nDetails: 6:30pm today at Green Park, 11 players enrolled.\n\nTap below to continue in this chat.',
+    exampleParams: {
+      academy: 'Sharwin Academy',
+      event: 'take the register for Beginners Batch',
+      detail: '6:30pm today at Green Park, 11 players enrolled.',
+    },
   },
   admin_alert: {
     name: 'admin_alert',
     category: 'utility',
     language: 'en',
     params: ['academy', 'event', 'detail'],
-    body: '{academy}: {event}. {detail}',
+    body:
+      'Message from {academy} about something that needs attention.\n\n' +
+      'Issue: {event}\nDetails: {detail}\n\n' +
+      'Tap below to continue in this chat.',
     quickReply: 'Open',
     covers:
       'every escalation — AD-ESCALATE-UNCONFIRMED, AD-COACH-LATE, AD-COACH-NOT-ONBOARDED, AD-REGISTER-MISSING, AD-RECONCILE, AD-NEW-TRIAL, AD-OPT-OUT, AD-DELIVERY-FAILURE',
     example:
-      "Sharwin Academy: a session is uncovered. Saturday 8:30am Advanced — Vinod declined, nobody has claimed it, starts in 15 minutes.",
+      "Message from Sharwin Academy about something that needs attention.\n\nIssue: a session is uncovered\nDetails: Saturday 8:30am Advanced — Vinod declined, nobody has claimed it, starts in 15 minutes.\n\nTap below to continue in this chat.",
+    exampleParams: {
+      academy: 'Sharwin Academy',
+      event: 'a session is uncovered',
+      detail:
+        'Saturday 8:30am Advanced — Vinod declined, nobody has claimed it, starts in 15 minutes.',
+    },
   },
   admin_digest: {
     name: 'admin_digest',
     category: 'utility',
     language: 'en',
     params: ['academy', 'event', 'detail'],
-    body: '{academy}: {event}. {detail}',
+    body:
+      'Message from {academy} with a summary of the day.\n\n' +
+      'Summary: {event}\nDetails: {detail}\n\n' +
+      'Tap below to continue in this chat.',
     quickReply: 'Open',
     covers: 'brief, digest — AD-MORNING-BRIEF, AD-EVENING-DIGEST',
     example:
-      "Sharwin Academy: this evening's digest. 4 sessions ran, 38 of 41 present, ₹12,000 collected, 2 registers still unmarked.",
+      "Message from Sharwin Academy with a summary of the day.\n\nSummary: this evening's digest\nDetails: 4 sessions ran, 38 of 41 present, ₹12,000 collected, 2 registers still unmarked.\n\nTap below to continue in this chat.",
+    exampleParams: {
+      academy: 'Sharwin Academy',
+      event: "this evening's digest",
+      detail: '4 sessions ran, 38 of 41 present, ₹12,000 collected, 2 registers still unmarked.',
+    },
   },
 }
 

@@ -16,7 +16,8 @@
  */
 
 import type { Transport, TransportRequest, TransportResult } from './transport'
-import { TEMPLATES, templateWireParams } from './templates'
+import { TEMPLATES, TEMPLATE_NAMES, templateWireParams } from './templates'
+import type { TemplateDef, TemplateName } from './templates'
 import { msgError } from './types'
 
 export const GRAPH_VERSION = 'v21.0'
@@ -343,4 +344,322 @@ export const cloudTransport: Transport = {
 
     return { ok: true, waMessageId }
   },
+}
+
+// =============================================================================
+// The management API.
+//
+// Everything above is the *messaging* half — the wire a decided message goes out
+// on. Below is the half that has to have happened first: the number's app must be
+// subscribed to the WABA or no inbound webhook ever fires, and the eight §16.2
+// templates must exist and be approved or every out-of-window send fails with a
+// 132001 against a name Meta has never seen.
+//
+// It lives in this file for the reason the send path does (§17: "No Meta API call
+// may exist anywhere outside `transport-cloud.ts`"). Provisioning is a Meta API
+// call, so a setup script that spoke Graph directly would be the second place
+// that knows the host, the version and the error shape — which is the thing the
+// rule exists to prevent. `scripts/wa-cloud.ts` is a CLI over these functions and
+// contains no URL of its own.
+//
+// These take credentials as an argument rather than reading the module cache: the
+// send path is per-sender and looks its own up, but provisioning runs before any
+// sender row necessarily exists.
+// =============================================================================
+
+export type GraphCall<T> = { ok: true; data: T } | { ok: false; error: string; status: number }
+
+async function graph<T>(
+  path: string,
+  accessToken: string,
+  init?: { method?: 'GET' | 'POST' | 'DELETE'; body?: unknown; query?: Record<string, string> },
+): Promise<GraphCall<T>> {
+  const url = new URL(`${GRAPH_HOST}/${GRAPH_VERSION}/${path}`)
+  for (const [k, v] of Object.entries(init?.query ?? {})) url.searchParams.set(k, v)
+
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: init?.method ?? 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(init?.body ? { body: JSON.stringify(init.body) } : {}),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
+  } catch (e) {
+    return { ok: false, error: `transport error: ${(e as Error).message}`, status: 0 }
+  }
+
+  const text = await res.text()
+  let parsed: unknown = null
+  try {
+    parsed = text ? JSON.parse(text) : null
+  } catch {
+    parsed = null
+  }
+  const err = (parsed as { error?: GraphError } | null)?.error ?? null
+  if (!res.ok || err) {
+    return { ok: false, error: describeGraphError(res.status, err, text), status: res.status }
+  }
+  return { ok: true, data: parsed as T }
+}
+
+/**
+ * The body Meta approves, in the shape its create endpoint wants.
+ *
+ * `templates.ts` writes bodies with NAMED placeholders (`{academy}`) because a
+ * name is what makes the frozen text readable to whoever is judging whether it
+ * conjugates correctly. The wire is positional — `{{1}}`, `{{2}}` — and
+ * `templateWireParams` already orders the send-time arguments by `def.params`.
+ * This converts the body by the same ordering, so the approved text and the
+ * arguments it receives cannot drift: both derive from `params`, in one place.
+ *
+ * A placeholder naming something not in `params` throws rather than shipping
+ * `{whoops}` into an approval submission — the frozen text is the one thing that
+ * cannot be fixed after the fact without a re-approval.
+ */
+export function templateSubmission(def: TemplateDef): Record<string, unknown> {
+  const index = new Map(def.params.map((p, i) => [p, i + 1]))
+  const body = def.body.replace(/\{(\w+)\}/g, (_m, key: string) => {
+    const at = index.get(key)
+    if (!at) {
+      throw msgError(
+        'template_param_missing',
+        `template ${def.name} body references {${key}}, which is not in params (${def.params.join(', ')})`,
+      )
+    }
+    return `{{${at}}}`
+  })
+
+  const example = def.params.map((p) => {
+    const v = def.exampleParams[p]
+    if (!v) {
+      throw msgError(
+        'template_param_missing',
+        `template ${def.name} has no exampleParams.${p} — Meta will not approve a template without one`,
+      )
+    }
+    return v
+  })
+
+  return {
+    name: def.name,
+    language: def.language,
+    category: def.category.toUpperCase(),
+    components: [
+      { type: 'BODY', text: body, example: { body_text: [example] } },
+      { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: def.quickReply }] },
+    ],
+  }
+}
+
+export type RemoteTemplate = {
+  id: string
+  name: string
+  status: string
+  category?: string
+  language?: string
+}
+
+export async function listTemplates(
+  wabaId: string,
+  accessToken: string,
+): Promise<GraphCall<RemoteTemplate[]>> {
+  const r = await graph<{ data: RemoteTemplate[] }>(`${wabaId}/message_templates`, accessToken, {
+    query: { limit: '100', fields: 'id,name,status,category,language' },
+  })
+  return r.ok ? { ok: true, data: r.data.data ?? [] } : r
+}
+
+export type TemplateProvisionResult = {
+  template: TemplateName
+  outcome: 'created' | 'exists' | 'failed'
+  status?: string
+  id?: string
+  error?: string
+}
+
+/**
+ * Create the eight, skipping any that already exist under the same name AND
+ * language. Meta treats `(name, language)` as the identity of a template, and
+ * re-posting a name that exists is a 100/2388023 rather than an update — so the
+ * existing list is read first and the call is skipped, which makes this
+ * re-runnable after a partial failure.
+ */
+export async function provisionTemplates(
+  wabaId: string,
+  accessToken: string,
+  only?: TemplateName[],
+): Promise<{ ok: boolean; results: TemplateProvisionResult[]; error?: string }> {
+  const existing = await listTemplates(wabaId, accessToken)
+  if (!existing.ok) return { ok: false, results: [], error: existing.error }
+
+  const have = new Set(existing.data.map((t) => `${t.name}::${t.language}`))
+  const byName = new Map(existing.data.map((t) => [`${t.name}::${t.language}`, t]))
+  const results: TemplateProvisionResult[] = []
+
+  for (const name of only ?? TEMPLATE_NAMES) {
+    const def = TEMPLATES[name]
+    const key = `${def.name}::${def.language}`
+    if (have.has(key)) {
+      const t = byName.get(key)
+      results.push({ template: name, outcome: 'exists', status: t?.status, id: t?.id })
+      continue
+    }
+    let body: Record<string, unknown>
+    try {
+      body = templateSubmission(def)
+    } catch (e) {
+      results.push({ template: name, outcome: 'failed', error: (e as Error).message })
+      continue
+    }
+    const r = await graph<{ id: string; status: string }>(
+      `${wabaId}/message_templates`,
+      accessToken,
+      { method: 'POST', body },
+    )
+    results.push(
+      r.ok
+        ? { template: name, outcome: 'created', id: r.data.id, status: r.data.status }
+        : { template: name, outcome: 'failed', error: r.error },
+    )
+  }
+
+  return { ok: results.every((r) => r.outcome !== 'failed'), results }
+}
+
+/** The number as Meta sees it — display number, quality rating, verified name. */
+export async function describePhoneNumber(
+  phoneNumberId: string,
+  accessToken: string,
+): Promise<GraphCall<{
+  id: string
+  display_phone_number?: string
+  verified_name?: string
+  quality_rating?: string
+  platform_type?: string
+  throughput?: { level?: string }
+}>> {
+  return graph(phoneNumberId, accessToken, {
+    query: {
+      fields: 'id,display_phone_number,verified_name,quality_rating,platform_type,throughput',
+    },
+  })
+}
+
+/**
+ * Which apps receive this WABA's webhooks. An empty list is the single most
+ * common reason a correctly-configured callback URL never fires: the app is
+ * *configured* for webhooks but was never *subscribed* to the account.
+ */
+export async function listSubscribedApps(
+  wabaId: string,
+  accessToken: string,
+): Promise<GraphCall<{ whatsapp_business_api_data?: { id?: string; name?: string } }[]>> {
+  const r = await graph<{ data: { whatsapp_business_api_data?: { id?: string; name?: string } }[] }>(
+    `${wabaId}/subscribed_apps`,
+    accessToken,
+  )
+  return r.ok ? { ok: true, data: r.data.data ?? [] } : r
+}
+
+/** Subscribe the token's own app to this WABA. Idempotent. */
+export async function subscribeApp(
+  wabaId: string,
+  accessToken: string,
+): Promise<GraphCall<{ success?: boolean }>> {
+  return graph(`${wabaId}/subscribed_apps`, accessToken, { method: 'POST' })
+}
+
+/**
+ * What the token is and when it dies. The token pasted out of the App Dashboard
+ * is a ~24-hour user token, and the failure it produces a day later is an opaque
+ * 190 on every send — so the expiry is worth reading out loud during setup rather
+ * than discovering from a silent outage.
+ */
+export async function debugToken(accessToken: string): Promise<GraphCall<{
+  data?: {
+    app_id?: string
+    type?: string
+    application?: string
+    expires_at?: number
+    data_access_expires_at?: number
+    is_valid?: boolean
+    scopes?: string[]
+  }
+}>> {
+  return graph('debug_token', accessToken, { query: { input_token: accessToken } })
+}
+
+/**
+ * Point the app's `whatsapp_business_account` webhook at a URL.
+ *
+ * This is the one Graph call that does NOT take the ordinary access token. Meta
+ * answers `(#190) Application Secret required for this endpoint` to a user token
+ * here, however wide its scopes — the callback URL is app configuration, so it
+ * wants an **app access token**, which is literally `{app_id}|{app_secret}`.
+ * That is why the app secret is not optional for this product and not merely the
+ * thing that verifies inbound signatures: without it there is no way to register
+ * a callback URL at all except by hand in the dashboard.
+ *
+ * Meta calls the URL with the `hub.challenge` handshake before accepting it, so
+ * a failure here usually means the tunnel is down or the verify token disagrees
+ * with `WHATSAPP_VERIFY_TOKEN` — not that the call was malformed.
+ */
+export async function configureWebhook(
+  appId: string,
+  appSecret: string,
+  callbackUrl: string,
+  verifyToken: string,
+): Promise<GraphCall<{ success?: boolean }>> {
+  return graph(`${appId}/subscriptions`, `${appId}|${appSecret}`, {
+    method: 'POST',
+    body: {
+      object: 'whatsapp_business_account',
+      callback_url: callbackUrl,
+      verify_token: verifyToken,
+      // `messages` carries both halves of the transport: inbound messages and
+      // delivery statuses arrive on this one field (see `processChangeValue`).
+      fields: 'messages',
+    },
+  })
+}
+
+/** What the app currently points at, if anything. */
+export async function readWebhookConfig(
+  appId: string,
+  appSecret: string,
+): Promise<GraphCall<{ object?: string; callback_url?: string; active?: boolean; fields?: unknown[] }[]>> {
+  const r = await graph<{ data: { object?: string; callback_url?: string; active?: boolean; fields?: unknown[] }[] }>(
+    `${appId}/subscriptions`,
+    `${appId}|${appSecret}`,
+  )
+  return r.ok ? { ok: true, data: r.data.data ?? [] } : r
+}
+
+/**
+ * Send `hello_world` — Meta's own pre-approved template — to one number.
+ *
+ * This is the setup step's end-to-end proof and deliberately does NOT go through
+ * `send.ts`: it answers "do these credentials reach this handset at all", before
+ * there is a contact row, a window, or an academy to attribute the message to.
+ * Every *product* message still goes through the send path.
+ */
+export async function sendHelloWorld(
+  phoneNumberId: string,
+  accessToken: string,
+  toPhoneE164: string,
+): Promise<GraphCall<{ messages?: { id: string }[] }>> {
+  return graph(`${phoneNumberId}/messages`, accessToken, {
+    method: 'POST',
+    body: {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: normalizePhone(toPhoneE164),
+      type: 'template',
+      template: { name: 'hello_world', language: { code: 'en_US' } },
+    },
+  })
 }
