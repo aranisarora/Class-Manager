@@ -259,11 +259,19 @@ function affordancesOf(payload: any): Affordance[] {
   return out
 }
 
-/** A tap, posted down the same road the emulator's own UI posts one. */
-async function tapActionId(contactId: string, actionId: string, label: string): Promise<void> {
+/**
+ * A tap, posted down the same road the emulator's own UI posts one.
+ *
+ * `label` is for this console and may be annotated (`action <uuid>`, `Yes (list row)`).
+ * `title` is the button's real label and is the only thing allowed onto the wire, because
+ * that is what `button_reply.title` carries and therefore what the message body becomes.
+ * The sites below that mint an action nobody ever rendered pass no title on purpose: there
+ * is no label in that world, and inventing one would put words in a person's mouth.
+ */
+async function tapActionId(contactId: string, actionId: string, label: string, title?: string): Promise<void> {
   const at = await cursorNow()
   console.log(`${c.dim('  →')} ${c.green(`[tap] ${label}`)}`)
-  await api('/api/emulator/inbound', { contactId, actionId })
+  await api('/api/emulator/inbound', { contactId, actionId, ...(title ? { text: title } : {}) })
   await showTurn(contactId, at, { full: has('full') })
 }
 
@@ -1234,7 +1242,12 @@ async function main(): Promise<void> {
       }
 
       console.log(c.dim(`  on: ${clip(fromBody, 90)}`))
-      await tapActionId(contactId, picked.actionId, `${picked.title}${picked.kind === 'row' ? ' (list row)' : ''}`)
+      await tapActionId(
+        contactId,
+        picked.actionId,
+        `${picked.title}${picked.kind === 'row' ? ' (list row)' : ''}`,
+        picked.title,
+      )
       break
     }
 

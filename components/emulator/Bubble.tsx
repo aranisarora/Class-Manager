@@ -26,6 +26,7 @@ import {
   type MessageStatus,
 } from '@/lib/emulator/state'
 import { Chip, Ticks, cx } from './ui'
+import { WaText } from './wa-text'
 
 const SUPPRESS_LABEL: Record<string, string> = {
   opted_out: 'recipient opted out',
@@ -326,7 +327,9 @@ export function Bubble({
             <span className="font-mono text-[10px] text-rose-300/90">{reason}</span>
             <span className="ml-auto font-mono text-[9px] text-zinc-600">{fmtTime(m.at, tz)}</span>
           </div>
-          <p className="mt-1 line-clamp-3 text-[11px] leading-snug text-zinc-500">{m.body || '—'}</p>
+          <p className="mt-1 line-clamp-3 text-[11px] leading-snug text-zinc-500">
+            {m.body ? <WaText text={m.body} /> : '—'}
+          </p>
           <p className="mt-1 text-[10px] text-zinc-600">{SUPPRESS_LABEL[reason] ?? 'never reached the wire'}</p>
         </div>
       </div>
@@ -418,10 +421,13 @@ export function Bubble({
             <MediaBlock media={m.media} dropped={dropped} onOpen={() => setLightbox(true)} />
           ) : null}
 
+          {/* Body text is the one place WhatsApp applies markup, so it is the one place this
+              renders it — see `wa-text.tsx` for why the header, footer and button titles
+              above and below stay literal. */}
           {m.body ? (
-            <p className="text-[13px] leading-snug whitespace-pre-wrap text-zinc-100">{m.body}</p>
+            <WaText text={m.body} className="block text-[13px] leading-snug whitespace-pre-wrap text-zinc-100" />
           ) : m.media ? null : (
-            <p className="text-[13px] text-zinc-500 italic">(empty body)</p>
+            <p className="text-[13px] text-zinc-500 italic">(no body — nothing for a handset to draw)</p>
           )}
 
           {m.footer ? <p className="mt-1 text-[10px] text-zinc-400/80">{m.footer}</p> : null}

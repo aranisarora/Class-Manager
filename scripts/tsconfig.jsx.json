@@ -1,0 +1,5 @@
+{
+  "// why": "The app compiles JSX through Next/SWC, which reads jsx:preserve from the root config. tsx has no SWC and falls back to the classic React.createElement transform, so a component rendered from a check script dies on `React is not defined`. This overrides that one setting for the check scripts and nothing else — the Next build never reads this file.",
+  "extends": "../tsconfig.json",
+  "compilerOptions": { "jsx": "react-jsx" }
+}

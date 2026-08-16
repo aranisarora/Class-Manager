@@ -3262,8 +3262,17 @@ async function processChangeValue(v: MetaChangeValue, part: string): Promise<str
       type?: string
       text?: { body?: string }
       interactive?: {
-        button_reply?: { id?: string }
-        list_reply?: { id?: string }
+        /**
+         * `title` is the button's own label, and it is on the wire — Meta sends
+         * `{id, title}` for a tap and `{id, title, description}` for a list pick. It was
+         * missing from this type, so the text chain below could not reach for it and every
+         * tap landed as a `body is null` row: blank in the pane, and dropped outright by
+         * `recentHistory`, whose `where body is not null` meant the model re-reading the
+         * conversation could not see that anyone had chosen anything. On a handset the tap
+         * IS a message — the label appears in the chat as the person's own words.
+         */
+        button_reply?: { id?: string; title?: string }
+        list_reply?: { id?: string; title?: string; description?: string }
         /**
          * A completed WhatsApp Flow. `response_json` is a JSON **string** on the
          * wire, not an object, and it carries `flow_token` alongside the form's own
@@ -3297,7 +3306,17 @@ async function processChangeValue(v: MetaChangeValue, part: string): Promise<str
       fromPhoneE164: toE164(m.from),
       senderPhoneE164: senderPhone,
       profileName,
-      text: m.text?.body ?? m.image?.caption ?? m.button?.text ?? nfm?.body,
+      // `m.button?.text` — a TEMPLATE quick-reply label — was already here, which is what
+      // made the omission of the two interactive labels a bug rather than a policy: the same
+      // tap arrived with its words attached or without them depending only on which kind of
+      // button carried it.
+      text:
+        m.text?.body ??
+        m.image?.caption ??
+        m.button?.text ??
+        m.interactive?.button_reply?.title ??
+        m.interactive?.list_reply?.title ??
+        nfm?.body,
       actionId: actionId ?? undefined,
       flowData,
       mediaUrl,

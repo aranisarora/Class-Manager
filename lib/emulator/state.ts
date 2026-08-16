@@ -1876,7 +1876,12 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
           const nowIso = stateRef.current.clock.nowIso
           dispatch({ type: 'thread/consume', contactId, actionId, atIso: nowIso })
           if (label) dispatch({ type: 'thread/optimistic', contactId, message: echo(contactId, label, nowIso) })
-          await post('/api/emulator/inbound', { contactId, actionId })
+          // The label goes with the tap, exactly as `button_reply.title` does on the wire.
+          // Without it the optimistic echo above was the only place the chosen words ever
+          // existed: the refresh that followed replaced it with the stored row, which had no
+          // body at all, so the bubble a person had just filled in went blank in front of
+          // them. `submitFlow` below always sent its summary — a tap is the same event.
+          await post('/api/emulator/inbound', { contactId, actionId, ...(label ? { text: label } : {}) })
           await afterMutation(contactId)
         }),
 
