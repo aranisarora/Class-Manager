@@ -191,15 +191,21 @@ export const TEMPLATES: Record<TemplateName, TemplateDef> = {
     category: 'utility',
     language: 'en',
     params: ['academy', 'event', 'detail'],
+    // "a session on your schedule" / "Change:", not "your schedule" / "Update:".
+    // The first wording went up as UTILITY and Meta returned it as MARKETING —
+    // the category is decided by how the text READS, and "an update about your
+    // schedule" reads like a bulletin, while a named session that has changed
+    // reads like the transaction it actually is. That re-pricing is §16.1's whole
+    // concern, so the wording is load-bearing, not cosmetic.
     body:
-      'Message from {academy} about your schedule.\n\n' +
-      'Update: {event}\nDetails: {detail}\n\n' +
+      'Message from {academy} about a session on your schedule.\n\n' +
+      'Change: {event}\nDetails: {detail}\n\n' +
       'Tap below to continue in this chat.',
     quickReply: 'Open my day',
     covers:
       'the day, cover offers, statements — CO-DAY, CO-COVER-OFFER, CO-COVER-TAKEN, CO-PAYABLES, CO-FINAL-STATEMENT',
     example:
-      'Message from Sharwin Academy about your schedule.\n\nUpdate: a session needs cover\nDetails: Saturday 8:30am, Advanced Batch at Green Park — first to claim it takes it.\n\nTap below to continue in this chat.',
+      'Message from Sharwin Academy about a session on your schedule.\n\nChange: a session needs cover\nDetails: Saturday 8:30am, Advanced Batch at Green Park — first to claim it takes it.\n\nTap below to continue in this chat.',
     exampleParams: {
       academy: 'Sharwin Academy',
       event: 'a session needs cover',

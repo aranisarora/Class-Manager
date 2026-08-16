@@ -36,9 +36,11 @@ loadEnvFiles()
 import { closePool, unsafeQuery, withSession } from '@/lib/db'
 import type { SessionCtx } from '@/lib/db'
 import { TEMPLATES, TEMPLATE_NAMES } from '@/lib/messaging/templates'
+import type { TemplateName } from '@/lib/messaging/templates'
 import {
   configureWebhook,
   debugToken,
+  deleteTemplate,
   describePhoneNumber,
   listSubscribedApps,
   listTemplates,
@@ -54,6 +56,18 @@ import {
 // bootstrap context `lib/identity.ts` uses to resolve an inbound before it knows
 // which academy the message belongs to.
 const BOOTSTRAP: SessionCtx = { role: 'service', academyId: '' }
+
+/**
+ * Meta's "try again in less than 1 minute" for subcode 2388025 is not true. The
+ * name→category association outlives the template by considerably longer than
+ * that — a delete that has already vanished from `message_templates` still
+ * refuses a resubmission under a different category. There is nothing to do but
+ * come back later, so say that instead of printing a bare code.
+ */
+function categoryHoldHint(error: string | undefined): string | null {
+  if (!error?.includes('2388025')) return null
+  return 'Meta still holds the old category for this name. It clears on its own — re-run `npm run wa -- templates` later. Do NOT resubmit it as MARKETING (§16.1).'
+}
 
 const ok = (s: string) => `${c.green('✓')} ${s}`
 const bad = (s: string) => `${c.red('✗')} ${s}`
@@ -489,9 +503,20 @@ async function status(config: Config, missing: string[]): Promise<void> {
         console.log(bad(`${name} (${def.language}) — not created`))
         continue
       }
-      if (t.status === 'APPROVED') approved++
       const label = `${name} (${def.language}) — ${t.status}${t.category ? ` · ${t.category}` : ''}`
-      console.log(t.status === 'APPROVED' ? ok(label) : warn(label))
+      // Category is checked separately from status, and an APPROVED template in
+      // the wrong one is worse than a PENDING one. Meta decides the category from
+      // how the text reads and overrules the submission silently — `coach_schedule`
+      // went up UTILITY and came back MARKETING, which re-prices it and raises the
+      // block risk on a shared number (§16.1). Green here must mean both.
+      const wrongCategory = Boolean(t.category && t.category.toUpperCase() !== def.category.toUpperCase())
+      if (t.status === 'APPROVED' && !wrongCategory) approved++
+      if (wrongCategory) {
+        console.log(bad(`${label} — submitted as ${def.category.toUpperCase()}, Meta returned ${t.category}`))
+        console.log(info(`  reword it and: npm run wa -- templates:replace ${name}`))
+      } else {
+        console.log(t.status === 'APPROVED' ? ok(label) : warn(label))
+      }
     }
     console.log(
       approved === TEMPLATE_NAMES.length
@@ -616,8 +641,60 @@ async function main(): Promise<void> {
       for (const t of r.results) {
         const line = `${t.template} — ${t.outcome}${t.status ? ` · ${t.status}` : ''}${t.error ? ` · ${t.error}` : ''}`
         console.log(t.outcome === 'failed' ? bad(line) : t.outcome === 'exists' ? info(line) : ok(line))
+        const hint = categoryHoldHint(t.error)
+        if (hint) console.log(info(`  ${hint}`))
       }
       if (!r.ok) process.exitCode = 1
+      break
+    }
+
+    // `templates:replace <name…>` — delete and resubmit. The only remedy for a
+    // template Meta returned in the wrong category, since approved text is frozen
+    // and no edit changes a category.
+    case 'templates:replace': {
+      const names = argv.slice(1).filter((n): n is TemplateName => TEMPLATE_NAMES.includes(n as TemplateName))
+      if (names.length === 0) {
+        console.log(bad(`usage: npm run wa -- templates:replace ${TEMPLATE_NAMES.join('|')}`))
+        process.exitCode = 1
+        break
+      }
+      for (const name of names) {
+        const d = await deleteTemplate(config.wabaId, config.accessToken, name)
+        console.log(d.ok ? info(`deleted ${name}`) : bad(`delete ${name}: ${d.error}`))
+      }
+
+      // A delete does not take effect immediately, and resubmitting into that
+      // window fails with subcode 2388025: "You can't change the category for this
+      // message template while the existing English content is being deleted. Try
+      // again in less than 1 minute or use MARKETING as the category." Taking the
+      // second suggestion would keep the very category this command exists to get
+      // rid of, so the answer is to wait rather than to accept MARKETING.
+      let results = await provisionTemplates(config.wabaId, config.accessToken, names)
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const stuck = results.results.filter((t) => t.outcome === 'failed' && t.error?.includes('2388025'))
+        if (stuck.length === 0) break
+        console.log(info(`delete still propagating for ${stuck.map((t) => t.template).join(', ')} — retrying in 20s (${attempt}/5)`))
+        await new Promise((r) => setTimeout(r, 20_000))
+        const retry = await provisionTemplates(
+          config.wabaId,
+          config.accessToken,
+          stuck.map((t) => t.template),
+        )
+        results = {
+          ok: retry.ok && results.results.filter((t) => !stuck.some((s) => s.template === t.template)).every((t) => t.outcome !== 'failed'),
+          results: results.results
+            .filter((t) => !stuck.some((s) => s.template === t.template))
+            .concat(retry.results),
+        }
+      }
+
+      for (const t of results.results) {
+        const line = `${t.template} — ${t.outcome}${t.status ? ` · ${t.status}` : ''}${t.error ? ` · ${t.error}` : ''}`
+        console.log(t.outcome === 'failed' ? bad(line) : ok(line))
+        const hint = categoryHoldHint(t.error)
+        if (hint) console.log(info(`  ${hint}`))
+      }
+      if (!results.ok) process.exitCode = 1
       break
     }
 

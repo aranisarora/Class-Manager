@@ -530,6 +530,28 @@ export async function provisionTemplates(
   return { ok: results.every((r) => r.outcome !== 'failed'), results }
 }
 
+/**
+ * Delete a template by name, so a rejected or MIS-CATEGORISED one can be replaced.
+ *
+ * Meta decides the category from how the text reads and will silently overrule the
+ * `category` field on the submission — `coach_schedule` went up as UTILITY and came
+ * back MARKETING, which is the §16.1 re-pricing this product is built to avoid. The
+ * text is frozen once approved, so the only remedy is delete and resubmit; there is
+ * no edit that changes a category.
+ *
+ * Deletes every language variant of the name, which is Meta's own behaviour here.
+ */
+export async function deleteTemplate(
+  wabaId: string,
+  accessToken: string,
+  name: string,
+): Promise<GraphCall<{ success?: boolean }>> {
+  return graph(`${wabaId}/message_templates`, accessToken, {
+    method: 'DELETE',
+    query: { name },
+  })
+}
+
 /** The number as Meta sees it — display number, quality rating, verified name. */
 export async function describePhoneNumber(
   phoneNumberId: string,
