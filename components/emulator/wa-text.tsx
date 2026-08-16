@@ -110,7 +110,13 @@ function renderInline(src: string): ReactNode[] {
 
 const FENCE = '```'
 const BULLET = /^[ \t]*[-*][ \t]+(.*)$/
-const NUMBER = /^[ \t]*(\d{1,3})[.)][ \t]+(.*)$/
+/**
+ * Digit, PERIOD, space. `1)` is not WhatsApp's syntax — it is Markdown's, and accepting it
+ * here would draw a list where a handset draws a line of text, which is §17 broken in the
+ * one direction it may not break: the emulator may show less than production sends, never
+ * more. A reviewer would have signed off a list the parent never saw.
+ */
+const NUMBER = /^[ \t]*(\d{1,3})\.[ \t]+(.*)$/
 const QUOTE = /^[ \t]*>[ \t]?(.*)$/
 
 /** Whether this line opens a block, and therefore ends any run of prose before it. */

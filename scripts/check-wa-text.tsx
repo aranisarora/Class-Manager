@@ -59,6 +59,11 @@ const CASES: Case[] = [
   },
   { input: '1. one\n2. two', contains: '<ol start="1"><li>one</li><li>two</li></ol>' },
   { input: '3. third\n4. fourth', contains: '<ol start="3">', note: 'a list that does not start at 1' },
+  {
+    input: '1) one\n2) two',
+    literal: true,
+    note: "`1)` is Markdown's numbered list, not WhatsApp's — a handset draws plain text here",
+  },
   { input: '> quoted', contains: '<blockquote>quoted</blockquote>' },
   { input: '```\nmono\n```', contains: '<pre>mono</pre>' },
   { input: '```mono```', contains: '<pre>mono</pre>', note: 'opened and closed on one line' },
