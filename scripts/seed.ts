@@ -39,6 +39,16 @@ if (stage !== undefined) {
   await seedOneStage(stage)
 }
 
+// `seedWorld` opens with `resetWorld`, so a scenario is not "add a world" — it is
+// "delete every academy this database has, then add a world". The console's seed
+// button is refused outside a sandbox for exactly this; the CLI reached the same
+// function with nothing in the way.
+const { refuseOnRealData } = await import('./_danger')
+await refuseOnRealData('npm run seed', {
+  force: args.includes('--force-on-real-data'),
+  what: 'It would delete every academy, every conversation, every job, and the sender row holding the Cloud credentials.',
+})
+
 const { seedWorld } = await import('@/lib/seed')
 type SeedResult = Awaited<ReturnType<typeof seedWorld>>
 type AcademySummary = SeedResult['academies'][number]
@@ -117,6 +127,11 @@ function printAcademies(academies: AcademySummary[]): void {
  * imported, because a stage must never truncate the world the way a scenario does.
  */
 async function seedOneStage(wanted: string): Promise<never> {
+  const { refuseOnRealData } = await import('./_danger')
+  await refuseOnRealData('npm run seed -- --stage', {
+    force: args.includes('--force-on-real-data'),
+    what: 'A stage fixture is created on the shared sender, so it joins the candidate list every unknown inbound number is matched against.',
+  })
   const { seedStage, STAGES } = await import('@/lib/seed')
   if (!(STAGES as readonly string[]).includes(wanted)) {
     console.error()

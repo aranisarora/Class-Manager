@@ -871,6 +871,16 @@ async function reportUndocumented(): Promise<void> {
 async function main(): Promise<void> {
   switch (cmd) {
     case 'reset': {
+      // The most destructive command in the repo, and until now the least guarded:
+      // `resetWorld` deletes every academy `app.list_academies()` returns, cascades
+      // every tenant table, then empties `job`, `sim_fault` and `sender` — the last
+      // taking the live Cloud credentials with it. `/api/emulator/seed` refuses this
+      // work in production; this path never asked anyone.
+      const { refuseOnRealData } = await import('./_danger')
+      await refuseOnRealData('drive reset', {
+        force: has('force-on-real-data'),
+        what: 'It would delete every academy, every conversation, every job, and the sender row holding the Cloud credentials.',
+      })
       const { resetWorld } = await import('@/lib/seed')
       await resetWorld()
       console.log(c.green('world wiped — no academies, no people, no jobs, clock at real time.'))
@@ -894,6 +904,18 @@ async function main(): Promise<void> {
         if (!(STAGES as readonly string[]).includes(stage)) {
           die(c.red(`no such stage "${stage}" — one of ${STAGES.join(', ')}`))
         }
+        // `--stage` truncates nothing but its own fixture, so this is not about data
+        // loss. It is about §10.1: a stage academy is born on the SHARED sender, which
+        // in production is the live number, and it joins `app.inbound_candidates` for
+        // every real cold inbound — a stranger who types "bluewave" answered by a
+        // fixture. `seedStage` marks it `is_sandbox` (lib/seed.ts) so the console can
+        // still remove it, but a fixture business does not belong beside a real one at
+        // all, and that is the operator's call rather than this script's.
+        const { refuseOnRealData } = await import('./_danger')
+        await refuseOnRealData('drive seed --stage', {
+          force: has('force-on-real-data'),
+          what: 'A stage fixture is created on the shared sender, so it joins the candidate list every unknown inbound number is matched against.',
+        })
         const out = await seedStage(stage as (typeof STAGES)[number], {
           slug: flag('slug'),
           name: flag('name'),

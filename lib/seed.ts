@@ -2337,10 +2337,27 @@ export async function seedStage(
   // ---- write ---------------------------------------------------------------
   await withSession(svc(A), async (tx) => {
     await tx.unsafe(
+      /**
+       * `is_sandbox` is true because a stage academy IS a fixture — Nandini Rao does
+       * not exist, and her three families were written in this file.
+       *
+       * It was omitted here simply because 0030 arrived after stages did, and the
+       * column defaults to false: "real unless marked". So every stage fixture was
+       * born looking like somebody's business, which is wrong twice over. The console
+       * refuses scoped controls on a non-sandbox tenant, so a fixture created against
+       * a hosted database could be neither driven nor DELETED from the console that
+       * made it — a permanent guest. And `requireSandboxAcademy` would defend it as
+       * though it held real families.
+       *
+       * This does not make a stage safe to create beside a real tenant; it still lands
+       * on the shared sender and §10.1 still weighs it against every unknown inbound.
+       * `scripts/_danger.ts` is what refuses that. This is the honest label on the row,
+       * and the thing that makes the fixture removable once it exists.
+       */
       `insert into academy (id, name, category, timezone, cancellation_window_hours,
          client_reminder_lead_hours, morning_brief_at, evening_digest_at, rail, upi_handle,
-         sender_id, memory, settings, created_on, onboarding_state)
-       values ($1::uuid,$2,$3,$4,24,14,'07:00','21:00','rail1',$5,$6::uuid,$7,'{}'::jsonb,$8::date,$9)`,
+         sender_id, memory, settings, created_on, onboarding_state, is_sandbox)
+       values ($1::uuid,$2,$3,$4,24,14,'07:00','21:00','rail1',$5,$6::uuid,$7,'{}'::jsonb,$8::date,$9,true)`,
       [
         A, name, 'sport', tz,
         hasRoster ? 'nandini@upi' : null,
