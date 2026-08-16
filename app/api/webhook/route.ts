@@ -8,6 +8,18 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 /**
+ * The 200 goes out in milliseconds, so this is not about the response — it is about the
+ * `after()` drain below, which runs a real agent turn inside this same invocation and is
+ * bounded by this same number.
+ *
+ * Stated rather than inherited. The platform default has moved before, and the failure it
+ * would cause here is quiet and expensive: a drain cut short leaves the job row `running`
+ * and locked, where `claim()` will not reclaim it for fifteen minutes (LOCK_STALE_MINUTES),
+ * so a parent waits a quarter of an hour for a reply that every log records as sent.
+ */
+export const maxDuration = 300
+
+/**
  * The real Meta webhook (§1). Not exercised in this build — `TRANSPORT=emulator`
  * — but it is the other half of the transport abstraction and has to be right:
  *
