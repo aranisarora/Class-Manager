@@ -745,3 +745,100 @@ clamp applies from the next mint). A `steps` button that fails its mint-time pre
 ships and fails politely at the tap — mint-time refusal with a reason is the next step if it
 recurs. And the one-confirmation guard silences a second, unrelated answer in the same turn
 by design — the documented tension, unchanged.
+
+---
+
+### F-R · The lifecycle arc re-driven, 16 Aug 2026 — a button deleted on the way out, and nobody told
+
+Eighteen cases, `deepseek-v4-flash` at `thinking=low`, one fresh business, driven end to end
+after the F-Q fixes. No invariant tripped, no unbacked done-claim, no turn errored, and no
+academy or clock was left displaced. Eleven cases held and four broke — but only one of the
+four is a defect, which is the reason this entry exists: a count of failing checks is not a
+count of defects, and reporting them as one number manufactures alarm.
+
+**A person asked to stop being messaged, and the button that would have stopped it was
+deleted between the model and her screen.** Meera typed *"please stop messaging me now"*. The
+model did the right thing and minted two buttons — `Stop all messages` carrying the `opt_out`
+operation, and `Keep just the bill`. The first was refused at mint by the defanged-button gate
+(`tools.ts:830`), correctly: it carried `confirmed:true`, which only that person's own tap may
+set. A refused button is dropped and the message still goes (`tools.ts:1904-1916`), also
+deliberately — taking the whole message down was the worse failure, and the comment there says
+so. The defect is the report back. `tools.ts:2290` guards it with
+`dropped.length && !buttons?.length`, so **the model is told what was dropped only when NO
+button survived**. One survived here, so the `reply` result was a bare `{"status":"sent"}` and
+the model could not repair the message it had just sent.
+
+What reached her names a button that is not on her screen — *Tap "Stop all messages" and I
+won't ping you about reminders, recaps or anything else* — and the only thing she could tap
+was `Keep just the bill`, which keeps billing messages coming. An opt-out request that cannot
+be completed by tapping is the compliance-shaped end of F-O's two-author seam: the prose and
+the runtime describing the same act, and only one of them true. The comment at `tools.ts:1901`
+states the opposite of what the code does: *"What was dropped comes back in the result, so the
+model learns inside the same turn."* It does not, in the commonest case — a partial drop.
+
+**Fix site:** `tools.ts:2290` — report `dropped_buttons` whenever `dropped.length`, not only
+when every button died. The note already written there ("say the missing option in your next
+message") is the right instruction; it is simply unreachable when one button survives. This is
+the F-P lesson again in a third place: a mechanism that fires only in the rare case looks
+exactly like a mechanism that is never needed.
+
+**The other three are not defects, and are recorded so the next drive does not re-litigate
+them.** `client-leaves` — a family's leave routes to the admin (`4320558`), so `ended_on` stays
+null and the check asking "is Aarav out of Fitness" fails by construction; the open question is
+not whether routing is right but whether anything guarantees the admin acts, because until they
+do Fitness keeps billing. `hinglish-cancel` — the clock landed on Saturday 5 Sep, so *kal* is
+Sunday and Beginners runs Mon/Wed/Fri; there was no session to cancel and the model asked which
+class was meant rather than cancelling the wrong one, which is the behaviour we want. The case
+needs a clock precondition. `coach-marks-register` — `walkClockTo` refused (target 21.1h away,
+7.5h of the 30h budget left), so the case never reached a finished class; the model said the
+class had not run yet and the invariant *no register was marked for a class that has not
+happened* held, which is the right refusal to a case that measured nothing.
+
+**Harness note.** The arc drops its academy on the way out, so a finding that needs a follow-up
+query — did the owner actually receive `client-leaves`' routed request? — cannot be settled
+after the fact. Drive with `--keep` when the question is about a message rather than a row.
+
+**Re-driven 16 Aug 2026 after fixing the harness, and the harness was most of what F-R above
+measured.** Three probe fixes, all in `scripts/probe-model.ts`, none in the product:
+
+- *`hinglish-cancel` walked to 20h before the next session of ANY class* and then asked to
+  cancel a **beginners** class. This arc's daily Fitness batch is nearly always next on the
+  calendar, so the clock landed the evening before a Fitness session and the sentence had no
+  referent. The model read the calendar, asked which class was meant — the behaviour we want —
+  and both checks failed it. It now targets the next Beginners session. **Re-driven: HELD.**
+- *The 30h clock budget was mis-sized for the arc it serves.* The distance to the first session
+  is not a property of the arc but of what time of day the probe starts: `daily-batch` asks for
+  a batch "starting tomorrow" at 7pm, so a run beginning after midnight is ~43h from its own
+  first session. Measured worst case is 67h. Budget is now 96h. **Re-driven: all three clock
+  walks reached their targets (7.0h, 38.6h, 21.6h), zero refusals.**
+- *A REFUSED walk used to score the case anyway*, and produced a wrong reading in both
+  directions: `coach-confirms` was refused and then PASSED, because its checks are satisfied by
+  any confirmed future session; `coach-marks-register` was refused and then FAILED four checks
+  about a register for a class that had not run. A refused walk now skips the turn and records
+  DID NOT RUN. The false pass is the more dangerous half and nothing was catching it.
+
+**What the deeper travel then found, which the truncated arc had been hiding.** Held went 11→12
+and failing checks 8→5, but two real defects appeared for the first time:
+
+- **Duplicate sends. `nobody was told the same thing twice` tripped**, first at `hinglish-cancel`
+  and still tripping at the end: three recipient/body pairs at `n:2`, including a parent's
+  session reminder, a merged sibling reminder (*"Ananya and Dev has a class coming up"* — the
+  merge fired, then the merged message went twice) and a coach's *"take the register"*. This is
+  F-C's class arriving through the front door: the pre-fix arc never travelled past the first
+  evening, so it never saw a second reminder cycle. Zero trips in every earlier arc run is not
+  evidence of absence — it is evidence the arc stopped too early.
+- **`app.session_roster` timed out.** With the clock fixed, `coach-marks-register` reached a
+  finished class for the first time and three of its four reads came back `canceling statement
+  due to statement timeout` (5s), twice on the roster view that exists for exactly this moment.
+  The model never reached `mark_attendance` and said so honestly — *"my lookup is timing out, so
+  I couldn't record it yet"* — which is the right failure. **Not diagnosed:** the view returns
+  instantly on a small tenant, so this may be its cost against the larger world a 67h walk
+  builds, or contention from the probe's own draining. One run does not settle it.
+
+**`opt-out` failed both runs by different routes, which makes it a class rather than a bug.**
+Run 1: the model minted `Stop all messages` and `Keep just the bill`; the first was correctly
+refused at mint and silently dropped, leaving prose naming a button that was not there. Run 2:
+the model never called `reply` at all (`read → reflect:remember`) and offered both options as
+prose bullets, 142 words, with only the generic `What can you do?` menu to tap. Both times
+`opt_out` never executed. The gate is right; what is missing is anything that guarantees an
+explicit stop request ends in a working stop affordance.

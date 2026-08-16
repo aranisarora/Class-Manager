@@ -796,11 +796,26 @@ const CASES: Case[] = [
      * miss.
      */
     what: 'Hinglish, in Latin script — the way an admin in Bangalore actually types',
-    // Positioned the day BEFORE a scheduled session, so "kal" has an unambiguous
-    // referent and resolving it wrongly is visible rather than lucky.
+    /**
+     * Positioned the day BEFORE a scheduled BEGINNERS session, so "kal … beginners
+     * class" has an unambiguous referent and resolving it wrongly is visible
+     * rather than lucky.
+     *
+     * It used to walk to 20h before the next session of ANY class, which is a
+     * different moment: this arc's daily Fitness batch is nearly always the next
+     * thing on the calendar, so the clock landed the evening before a *Fitness*
+     * session and the sentence asked to cancel a Beginners class that did not
+     * exist tomorrow. Driven 16 Aug, that is exactly what happened — the model
+     * read the calendar, answered "There's no Beginners class tomorrow… which did
+     * you mean?", which is the behaviour this product wants, and both checks
+     * failed it. A case that cannot be satisfied from the world it is run in
+     * measures the harness, not the model.
+     */
     clock: (q) =>
-      firstAt(q, `select (min(starts_at) - interval '20 hours')::text as at
-                    from session where status = 'scheduled' and starts_at > app.now()`),
+      firstAt(q, `select (min(s.starts_at) - interval '20 hours')::text as at
+                    from session s join class c on c.id = s.class_id
+                   where s.status = 'scheduled' and s.starts_at > app.now()
+                     and lower(c.name) like '%beginner%'`),
     text: 'kal 6 baje wali beginners class cancel kar do',
     wants: ['act', 'plan'],
     tap: true,
@@ -1665,7 +1680,16 @@ const ACTIVE: Case[] = SUITES[SUITE] as Case[]
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
 const MARKDOWN_RE = /(\*\*|^#{1,6}\s|\[[^\]\n]+\]\()/m
 const ISO_RE = /\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2})?\b/
-const JARGON_RE = /\b(academy|roster|onboarding|setup phase|the system|database|record|entity|uuid|payload)\b/i
+// `roster` and `record` were removed after the F-Q arc: they produced six of that
+// run's eighteen issues and not one was a defect. Both are words the spec's own
+// ideal conversations put in outbound messages — ideal-conversations.md:430 is
+// "Beginners, 6:30 — register. 12 on the roster." and line 682 titles a button
+// `[ See the roster ]` — and `record` matched the ordinary verb in "record 1
+// payment". A lint that fires on the vocabulary the ideal prescribes does not
+// measure jargon; it manufactures a finding, which is the one thing this harness
+// must not do. What stays is genuinely internal: system and storage nouns a
+// person outside the build has no reason to read.
+const JARGON_RE = /\b(academy|onboarding|setup phase|the system|database|entity|uuid|payload)\b/i
 // Forwardable invite links are the one legitimate URL in a body (§8.1 — the
 // admin forwards the text, so the link IS the artifact); the invariant already
 // exempts them, and the reply flag now agrees rather than flagging every
@@ -1809,8 +1833,30 @@ type TurnRecord = {
  * ========================================================================== */
 
 const CLOCK_STEP_MS = 60 * 60 * 1000
-/** Total travel one probe run may spend, across every stage. */
-const CLOCK_BUDGET_MS = 30 * 60 * 60 * 1000
+/**
+ * Total travel one probe run may spend, across every stage.
+ *
+ * Sized from measurement rather than chosen. The arc has to reach three moments
+ * that only exist in the future, and the distance to the first of them is not a
+ * property of the arc — it is a property of what time of day the probe happened
+ * to start. `daily-batch` asks for a batch "starting tomorrow" at 7pm, so a run
+ * that begins just after midnight is ~43h from its own first session before it
+ * has done anything at all.
+ *
+ * Driven 16 Aug at 00:30 local, the old 30h budget produced a cascade rather
+ * than one failure: `coach-confirms` was REFUSED at 42.5h and its checks then
+ * PASSED anyway on a session it never travelled to; `hinglish-cancel` spent 22.6h
+ * of what was left; and `coach-marks-register` was REFUSED at 21.1h with 7.5h in
+ * hand and reported four failures about a register for a class that had not run.
+ * Three misleading readings, none of them about the model.
+ *
+ * The measured worst case is ~67h — 42.5h to the first session, then the hops
+ * between the sessions the later stages need. 96h leaves headroom for a slower
+ * calendar without being unbounded. The clock is still shared, still stepped an
+ * hour at a time, and still put back on the way out; this raises what the probe
+ * may borrow, not whether it returns it.
+ */
+const CLOCK_BUDGET_MS = 96 * 60 * 60 * 1000
 /** A guard against a target that keeps receding, not a limit on the budget. */
 const MAX_CLOCK_STEPS = 120
 
@@ -1992,6 +2038,55 @@ async function runChild(model: string, arm: string): Promise<void> {
       }
 
       const speaker = await contactFor(kase)
+
+      /**
+       * A case whose clock was REFUSED is a case whose world never arrived, and
+       * running the turn anyway produces a reading about a moment that does not
+       * exist yet. Both directions are noise, and the 16 Aug drive produced one
+       * of each: `coach-confirms` was refused and then PASSED, because its checks
+       * are satisfied by any confirmed future session; `coach-marks-register` was
+       * refused and then FAILED four checks about a register for a class that had
+       * not finished — while the model, correctly, said so.
+       *
+       * So the turn is not sent and no check is run. The record carries the
+       * refusal and nothing else, which reads as DID NOT RUN rather than as a
+       * pass or a fail. This is DRIVING.md's opening trap in its second form: not
+       * a harness that asks nothing, but one that scores an answer to a question
+       * the world could not pose.
+       */
+      if (clockNote?.startsWith('REFUSED')) {
+        process.stderr.write(c.yellow(`    skipped — ${clockNote}\n`))
+        records.push({
+          model,
+          thinking: arm,
+          modelReported: null,
+          case: kase.name,
+          stage: kase.stage,
+          persona: kase.persona,
+          spokeAs: speaker?.name ?? null,
+          what: kase.what,
+          said: kase.text,
+          clockNote,
+          tapNote: null,
+          jobs,
+          reply: { body: '', words: 0, buttons: [], list: false, link: false, suppressed: null, all: [], flags: [] },
+          tools: [],
+          toolNames: [],
+          wants: kase.wants,
+          wanted: false,
+          rounds: 0,
+          latencyMs: 0,
+          inTok: 0,
+          cachedTok: 0,
+          outTok: 0,
+          usd: null,
+          error: null,
+          checks: [],
+          claimedDone: false,
+          backedByWrite: false,
+        })
+        continue
+      }
       const startedAt = await domainNow()
       let fatal: string | null = null
       if (speaker) {
