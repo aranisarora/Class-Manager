@@ -404,62 +404,70 @@ export function Pane({
       </div>
 
       {/* ---------------- thread ---------------- */}
-      <div
-        ref={scroller}
-        onScroll={(e) => {
-          const el = e.currentTarget
-          const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-          nearBottom.current = near
-          setAtBottom(near)
-        }}
-        className="wa-wallpaper pane-scroll relative min-h-0 flex-1 py-2"
-      >
-        {thread.error ? (
-          <div className="probe mx-3 rounded border border-rose-900 bg-rose-950/40 px-2 py-1.5 text-rose-300">
-            {thread.error}
-          </div>
-        ) : null}
-        {!thread.messages.length && thread.loading ? (
-          <div className="flex justify-center py-6">
-            <Spinner />
-          </div>
-        ) : null}
-        {!thread.messages.length && !thread.loading && !thread.error ? (
-          <Empty>
-            Nothing has been said in this thread yet.
-            <br />
-            Type something, or advance the clock and let a job start it.
-          </Empty>
-        ) : null}
-        {thread.messages.length && !visible.length ? (
-          <Empty>
-            No message in this thread contains “{find}”.
-          </Empty>
-        ) : null}
+      {/* The wallpaper is a layer behind the scroller, not the scroller itself. Its tile
+          sheet rides on an absolutely-positioned pseudo-element, and inside a scroll
+          container that resolves against the visible box — so it covered the first
+          screenful and scrolled off with the messages, leaving bare canvas below. Sitting
+          on a wrapper that never scrolls, it stays put under the thread the way the real
+          wallpaper does. */}
+      <div className="wa-wallpaper relative flex min-h-0 flex-1 flex-col">
+        <div
+          ref={scroller}
+          onScroll={(e) => {
+            const el = e.currentTarget
+            const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+            nearBottom.current = near
+            setAtBottom(near)
+          }}
+          className="pane-scroll relative min-h-0 flex-1 py-2"
+        >
+          {thread.error ? (
+            <div className="probe mx-3 rounded border border-rose-900 bg-rose-950/40 px-2 py-1.5 text-rose-300">
+              {thread.error}
+            </div>
+          ) : null}
+          {!thread.messages.length && thread.loading ? (
+            <div className="flex justify-center py-6">
+              <Spinner />
+            </div>
+          ) : null}
+          {!thread.messages.length && !thread.loading && !thread.error ? (
+            <Empty>
+              Nothing has been said in this thread yet.
+              <br />
+              Type something, or advance the clock and let a job start it.
+            </Empty>
+          ) : null}
+          {thread.messages.length && !visible.length ? (
+            <Empty>
+              No message in this thread contains “{find}”.
+            </Empty>
+          ) : null}
 
-        {grouped.map((g) => (
-          <div key={g.day}>
-            <WaPill>{g.day}</WaPill>
-            {g.items.map((m, i) => (
-              <Bubble
-                key={m.id}
-                m={m}
-                tz={tz}
-                nowIso={nowIso}
-                chrome={chrome}
-                tight={i > 0 && g.items[i - 1].direction === m.direction}
-                meta={eventsByMessage.get(m.id) ?? null}
-                senderFallback={academy?.senderPhone ?? null}
-                busyTap={(actionId) => !!state.busy[`tap:${actionId}`]}
-                busyFlow={(flowToken) => !!state.busy[`flow:${flowToken}`]}
-                onTap={(actionId, label) => void actions.tapAction(contactId, actionId, label)}
-                onOpenList={setSheet}
-                onOpenFlow={setFormSheet}
-                onAdvanceStatus={(messageId, status) => void actions.advanceStatus(contactId, messageId, status)}
-              />
-            ))}
-          </div>
-        ))}
+          {grouped.map((g) => (
+            <div key={g.day}>
+              <WaPill>{g.day}</WaPill>
+              {g.items.map((m, i) => (
+                <Bubble
+                  key={m.id}
+                  m={m}
+                  tz={tz}
+                  nowIso={nowIso}
+                  chrome={chrome}
+                  tight={i > 0 && g.items[i - 1].direction === m.direction}
+                  meta={eventsByMessage.get(m.id) ?? null}
+                  senderFallback={academy?.senderPhone ?? null}
+                  busyTap={(actionId) => !!state.busy[`tap:${actionId}`]}
+                  busyFlow={(flowToken) => !!state.busy[`flow:${flowToken}`]}
+                  onTap={(actionId, label) => void actions.tapAction(contactId, actionId, label)}
+                  onOpenList={setSheet}
+                  onOpenFlow={setFormSheet}
+                  onAdvanceStatus={(messageId, status) => void actions.advanceStatus(contactId, messageId, status)}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* WhatsApp's jump-to-latest. Only drawn when it would do something — a button that is
