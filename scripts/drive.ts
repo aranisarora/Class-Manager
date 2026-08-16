@@ -45,6 +45,7 @@
  * a wrong answer is diagnosable in one command.
  */
 import { c, loadEnvFiles } from './_env'
+import { opsCookie } from './ops-cookie.mjs'
 import { isToolCall } from '@/lib/agent/loop'
 import { costInr } from '@/lib/pricing'
 import type { OperationName } from '@/lib/agent/operations'
@@ -78,9 +79,16 @@ function die(...lines: string[]): never {
 }
 
 async function api<T = any>(path: string, body?: unknown): Promise<T> {
+  // The emulator API sits behind the ops cookie now (`middleware.ts`). One login
+  // is traded for a token on the first call and reused for the rest of the drive;
+  // without it every call here would take a 401 that reads like a broken server.
+  const cookie = await opsCookie(BASE)
   const res = await fetch(`${BASE}${path}`, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    headers: {
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      ...(cookie ? { cookie } : {}),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   }).catch((e) => die(c.red(`cannot reach ${BASE} — is \`npm run dev\` up? (${e.message})`)))
   const text = await res.text()

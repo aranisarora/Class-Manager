@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { requireSandbox } from '@/lib/ops-guard'
 import { inboundFromContact } from '@/lib/seed'
 
 export const runtime = 'nodejs'
@@ -57,8 +58,19 @@ const Body = z
  * the inbound `message` row (which is what stamps `last_inbound_at` and promotes
  * the contact's state, §11.2), then run the turn. A tap posts `actionId` and the
  * turn consumes it with no model call (§2.2).
+ *
+ * Sandbox only, and the reason is the sentence above: same road as a real inbound. There
+ * is no "reply as the academy" control anywhere in this console, so the composer, every
+ * reply-button tap and every Flow submit all arrive here speaking *as the contact*. In
+ * production that puts words in a real parent's mouth in a transcript the business will
+ * later read as evidence, reopens the paid 24-hour window on `last_inbound_at`, promotes
+ * their state, and runs a turn that answers them over the live number. The operator meant
+ * to look; the parent gets a message.
  */
 export async function POST(req: Request): Promise<Response> {
+  const denied = requireSandbox()
+  if (denied) return denied
+
   const raw = await req.json().catch(() => ({}))
   const parsed = Body.safeParse(raw)
   if (!parsed.success) {

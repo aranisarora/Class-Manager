@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { OPERATIONS, type OperationDef, type OperationName } from '@/lib/agent/operations'
 import { executePlan } from '@/lib/agent/plan'
 import { withSession, type SessionCtx, type Tx } from '@/lib/db'
+import { requireSandbox } from '@/lib/ops-guard'
 import { worldAcademyIds } from '@/lib/seed'
 
 export const runtime = 'nodejs'
@@ -266,8 +267,32 @@ function argsFor(def: OperationDef, bag: Record<string, unknown>): Record<string
   return out
 }
 
-/** §11.5 — Rail 1's one transition, driven by the admin who attests it. */
+/**
+ * §11.5 — Rail 1's one transition, driven by the admin who attests it.
+ *
+ * Sandbox only, and unlike the rest of the list this one is not a fabrication of traffic but
+ * a write to a real business's books. The attesting admin is identified by nothing but the
+ * `contactId` in the request body, so whoever holds the ops secret can attest as any admin of
+ * any tenant — and the operator of this console is the vendor, not the academy. §6.4 keeps
+ * `confirmed_by` precisely so a ledger can answer "who said this money arrived"; a confirm
+ * from here writes a real admin's `person_id` into that column for a decision they never made,
+ * which is the one thing the field exists to prevent.
+ *
+ * It does not stop at the ledger. `notify` is hardcoded true below, so a confirm also pushes a
+ * receipt to the account holder's real handset — the parent is told their payment landed on the
+ * strength of a click by someone outside their business. And when a build has no
+ * `confirm_payment`, `attestOperationName` falls back to `record_payment`, which the note below
+ * admits writes a fresh payment row as well: a duplicate credit in real books, sent as a real
+ * receipt, for money nobody paid.
+ *
+ * GET is deliberately left open. It reads through `cm_user` so `app.sees_money()` decides what
+ * comes back, and seeing the balances is exactly the visibility this console is being deployed
+ * for; it is the writing half that has to stay behind the fence.
+ */
 export async function POST(req: Request): Promise<Response> {
+  const denied = requireSandbox()
+  if (denied) return denied
+
   const raw = await req.json().catch(() => ({}))
   const parsed = Body.safeParse(raw)
   if (!parsed.success) {

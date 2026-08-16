@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
 import { withSession, type SessionCtx } from '@/lib/db'
+import { requireSandbox } from '@/lib/ops-guard'
 import { worldAcademyIds } from '@/lib/seed'
 
 export const runtime = 'nodejs'
@@ -29,8 +30,19 @@ const Body = z.object({
  * is stamped Tuesday. `wa_message_id is not null` is the honest gate: a message the transport
  * never accepted cannot be delivered, and claiming otherwise is exactly the §2.4 lie the
  * status ladder exists to prevent.
+ *
+ * Sandbox only, by that same rule read one step further out. The emulator transport never
+ * reports back, so hand-advancing the ladder is the only honest way to exercise it here.
+ * Under `TRANSPORT=cloud` a real one does report back, and then this route is the lie:
+ * it stamps `delivered_at` and `read_at` for messages no handset acknowledged, across
+ * every academy at once with no way for the caller to scope it, and feeds the result to
+ * the §16.3 quality proxies this very comment says it exists to supply. Metrics nobody
+ * can trust are worse than metrics nobody has.
  */
 export async function POST(req: Request): Promise<Response> {
+  const denied = requireSandbox()
+  if (denied) return denied
+
   const raw = await req.json().catch(() => ({}))
   const parsed = Body.safeParse(raw)
   if (!parsed.success) {

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { requireSandbox } from '@/lib/ops-guard'
 import { createTestContact, dropPerson } from '@/lib/seed'
 
 export const runtime = 'nodejs'
@@ -16,8 +17,18 @@ const Body = z.object({
 /**
  * Add one throwaway person to the live world, wired to a real role, without reseeding.
  * The seeded world stays deterministic (§17); these are extra, and a reseed clears them.
+ *
+ * Sandbox only. "Throwaway" is the emulator's word for them, not the database's: the
+ * person is wired into real domain rows, so a fabricated player is enrolled and billed by
+ * `monthly_lines` and gets reminders addressed to a number in the `+9199…` test range
+ * that no handset answers, and a fabricated admin gains money visibility under
+ * `app.is_admin()`. The escape hatch that makes them harmless — a reseed clears them — is
+ * itself the one control production can never run.
  */
 export async function POST(req: Request): Promise<Response> {
+  const denied = requireSandbox()
+  if (denied) return denied
+
   const raw = await req.json().catch(() => ({}))
   const parsed = Body.safeParse(raw)
   if (!parsed.success) {
@@ -42,8 +53,18 @@ export async function POST(req: Request): Promise<Response> {
  * up in rosters, counts and reminders. The delete goes through the same
  * `lib/seed` function the driver calls, so there is no second idea of what
  * removing somebody means.
+ *
+ * Sandbox only. `dropPerson` deliberately works around the product's non-cascading
+ * `person_id` foreign keys by deleting attendance, tally lines, payments, players,
+ * accounts, coach and contact rows by hand — including accounts the person holds, which
+ * takes their children's player rows with them. Those keys do not cascade because §8.3
+ * wants financial history to survive exactly this; against a real family the deletion is
+ * unrecoverable.
  */
 export async function DELETE(req: Request): Promise<Response> {
+  const denied = requireSandbox()
+  if (denied) return denied
+
   const url = new URL(req.url)
   const contactId = url.searchParams.get('contactId') ?? ''
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(contactId)) {

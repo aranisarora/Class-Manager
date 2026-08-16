@@ -13,6 +13,7 @@ import { ClockBar } from '@/components/emulator/ClockBar'
 import { ContactTray } from '@/components/emulator/ContactTray'
 import { EventLog } from '@/components/emulator/EventLog'
 import { FaultPanel } from '@/components/emulator/FaultPanel'
+import { OpsBar, OpsConfigProvider } from '@/components/emulator/OpsBar'
 import { PaneDeck } from '@/components/emulator/PaneDeck'
 import { Toasts } from '@/components/emulator/Toasts'
 import { EmulatorProvider, useEmulator } from '@/lib/emulator/state'
@@ -46,6 +47,14 @@ function Workspace() {
     // told apart by looking, not by remembering which is which.
     <div data-wa={state.waTheme} className="fixed inset-0 flex flex-col overflow-hidden bg-zinc-950 text-zinc-200">
       <ClockBar />
+      {/*
+        Directly under the clock, because the first question an operator opens this page
+        with — "am I looking at a real business or a scratch world?" — has to be answered
+        before they touch anything, and the clock bar is where the eye already goes. The
+        strip also carries the logout, which belongs to the deployment rather than to any
+        pane, and which has nowhere else to live now that the console is behind a door.
+      */}
+      <OpsBar />
       <BootError />
       <div className="flex min-h-0 flex-1">
         {state.showTray ? (
@@ -71,8 +80,18 @@ function Workspace() {
 
 export default function EmulatorPage() {
   return (
-    <EmulatorProvider>
-      <Workspace />
-    </EmulatorProvider>
+    /*
+      `OpsConfigProvider` wraps `EmulatorProvider` rather than sitting inside it, because
+      whether this world is a real business is a fact about the deployment and not about
+      any world the emulator happens to have loaded — it outlives a reseed, a boot error
+      and an empty database. Outside also means every consumer sees one answer: the strip
+      renders the mode, and `useCapability` can hide a destructive control anywhere in the
+      tree without a second fetch disagreeing with the first for a few hundred milliseconds.
+    */
+    <OpsConfigProvider>
+      <EmulatorProvider>
+        <Workspace />
+      </EmulatorProvider>
+    </OpsConfigProvider>
   )
 }

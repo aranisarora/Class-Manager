@@ -1,9 +1,12 @@
 // The one flow that exercises §2.2, §2.3, §2.5 and §14.2.1 at once:
 // ask for a destructive change -> see the diff before commit -> tap -> it commits
 // with no model call, and only then does anybody get messaged.
+import { opsCookie } from './ops-cookie.mjs'
+
 const BASE = 'http://localhost:3000'
 const j = async (p, init) => {
-  const r = await fetch(BASE + p, { ...init, headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) } })
+  // `/api/emulator/*` is behind the ops cookie; one login covers the whole run.
+  const r = await fetch(BASE + p, { ...init, headers: { 'content-type': 'application/json', cookie: await opsCookie(BASE), ...(init?.headers ?? {}) } })
   const t = await r.text()
   try { return JSON.parse(t) } catch { return { raw: t.slice(0, 400) } }
 }

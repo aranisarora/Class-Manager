@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { advance, setTo, reset, nextEventAt, now } from '@/lib/clock'
 import { planAhead } from '@/lib/jobs/plan-ahead'
 import { runDueJobs } from '@/lib/jobs/runner'
+import { requireSandbox } from '@/lib/ops-guard'
 import { clockOffsetMs } from '@/lib/seed'
 
 export const runtime = 'nodejs'
@@ -34,8 +35,18 @@ const Body = z
  * Move the one shared clock, then plan the day and run everything now due.
  * This is what makes §17's "advance the clock and watch the ladder fire" work:
  * the scheduler is a drivable abstraction, not a cron detail.
+ *
+ * Sandbox only. Omitting `academyId` moves the world row, and a real academy has no
+ * `sim_clock` row of its own, so it inherits that offset (0024) — the shared clock is
+ * every live tenant's clock. Worse than the time being wrong is what happens next: this
+ * handler runs `planAhead` and `runDueJobs` immediately after the move, so a jump to
+ * Tuesday fires Tuesday's reminders at real parents on Saturday. "Watch the ladder fire"
+ * is only a demonstration when nobody is on the other end of it.
  */
 export async function POST(req: Request): Promise<Response> {
+  const denied = requireSandbox()
+  if (denied) return denied
+
   const raw = await req.json().catch(() => ({}))
   const parsed = Body.safeParse(raw)
   if (!parsed.success) {

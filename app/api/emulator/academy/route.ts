@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { requireSandbox } from '@/lib/ops-guard'
 import { createAcademy, dropAcademy, worldAcademyIds } from '@/lib/seed'
 
 export const runtime = 'nodejs'
@@ -30,7 +31,19 @@ const Create = z.object({
   category: z.string().min(1).max(80).optional(),
 })
 
+/**
+ * Sandbox only, and not because onboarding a tenant is illegitimate ops — it is that this
+ * particular implementation onboards an *emulator* tenant. It inserts the fixture sender
+ * (`WABA-EMULATOR-0001`, `'{}'` credentials), points the new academy at it, and picks the
+ * admin's number out of the reserved test range when none is given. A business created
+ * this way in production is one whose every send hard-fails at the credential gate, so
+ * the refusal is protecting the operator from a tenant that cannot work rather than from
+ * a tenant they should not have.
+ */
 export async function POST(req: Request): Promise<Response> {
+  const denied = requireSandbox()
+  if (denied) return denied
+
   const raw = await req.json().catch(() => ({}))
   const parsed = Create.safeParse(raw)
   if (!parsed.success) {
@@ -56,8 +69,16 @@ export async function GET(): Promise<Response> {
 /**
  * Delete one business and everything in it. `academy_id … on delete cascade` is
  * on every tenant table, so this is one statement and RI does the rest.
+ *
+ * Sandbox only. That cascade is the whole danger: people, contacts, classes, accounts,
+ * payments and every message ever exchanged go with the row, from a single request with
+ * no confirmation token. `dropAcademy` also resolves case-insensitively by *name*, so a
+ * mistyped `?academy=Ace` finds whichever real business happens to be called that.
  */
 export async function DELETE(req: Request): Promise<Response> {
+  const denied = requireSandbox()
+  if (denied) return denied
+
   const url = new URL(req.url)
   const which = url.searchParams.get('academy') ?? url.searchParams.get('academyId') ?? ''
   if (!which) return Response.json({ ok: false, error: 'academy id or name is required' }, { status: 400 })

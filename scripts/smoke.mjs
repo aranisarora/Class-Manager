@@ -1,10 +1,13 @@
 // End-to-end smoke: the real inbound path -> identity -> agent -> send path -> emulator.
+import { opsCookie } from './ops-cookie.mjs'
+
 const BASE = 'http://localhost:3000'
 
 const j = async (path, init) => {
+  // `/api/emulator/*` is behind the ops cookie; one login covers the whole run.
   const r = await fetch(BASE + path, {
     ...init,
-    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+    headers: { 'content-type': 'application/json', cookie: await opsCookie(BASE), ...(init?.headers ?? {}) },
   })
   const text = await r.text()
   try {

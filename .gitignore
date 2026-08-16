@@ -20,3 +20,9 @@ dev-server.log
 
 # Agent worktrees — throwaway checkouts, never part of the tree
 .claude/worktrees/
+.env*
+
+# ...but the placeholder template is the one .env file that MUST be tracked: it is
+# the only committed record of which variables a deployment needs. The negation
+# has to come after the pattern it exempts, or git never reaches it.
+!.env.example

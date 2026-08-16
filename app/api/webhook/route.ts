@@ -1,5 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
 
+import { after } from 'next/server'
+
 import { queueWebhookEvent, drainWebhookEvents } from '@/lib/seed'
 
 export const runtime = 'nodejs'
@@ -92,7 +94,21 @@ export async function POST(req: Request): Promise<Response> {
 
   // Drain off the response path. The 200 has already been decided; the queue is
   // what guarantees the work survives if this process dies mid-drain.
-  void drainWebhookEvents().catch(() => undefined)
+  //
+  // `after` rather than a bare `void`, because of where this now runs. A floating
+  // promise survives on a long-lived server, which is what localhost is; on a
+  // serverless platform the instance may be frozen the instant the response is
+  // flushed, and an unawaited drain dies with it.
+  //
+  // That failure is silent and expensive. `queueWebhookEvent` inserts the row
+  // already `running` and locked to `webhook-ingress`, so a killed drain strands
+  // it: `claim()` will not reclaim a `running` row until `LOCK_STALE_MINUTES`
+  // (15) has elapsed, and until then no tick can touch it. The parent waits a
+  // quarter of an hour for a reply, and every log reads as though it was sent.
+  //
+  // `after` holds the instance open until the drain settles, which puts the
+  // 15-minute reclaim back where it belongs — a backstop, not the common path.
+  after(() => drainWebhookEvents().catch(() => undefined))
 
   return new Response('ok', { status: 200 })
 }

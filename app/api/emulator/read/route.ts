@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { requireSandbox } from '@/lib/ops-guard'
 import { markMessageRead } from '@/lib/seed'
 
 export const runtime = 'nodejs'
@@ -10,8 +11,20 @@ const Body = z.object({
   status: z.enum(['delivered', 'read']).optional(),
 })
 
-/** Mark delivered/read — proves §2.4: queued != sent != delivered != read. */
+/**
+ * Mark delivered/read — proves §2.4: queued != sent != delivered != read.
+ *
+ * Sandbox only. This is `/delivery` one row at a time, reached by clicking the tick marks
+ * on a bubble, and it calls the very function the real transport callback calls — so
+ * against production it forges a receipt that says a parent opened a message they may
+ * never have seen. Mild next to a reseed, and still a fabrication: the blue ticks in the
+ * pane are the operator's evidence of what reached somebody, and a console that lets them
+ * be clicked into existence cannot be used as evidence of anything.
+ */
 export async function POST(req: Request): Promise<Response> {
+  const denied = requireSandbox()
+  if (denied) return denied
+
   const raw = await req.json().catch(() => ({}))
   const parsed = Body.safeParse(raw)
   if (!parsed.success) {
