@@ -29,8 +29,13 @@ Postgres. You author SQL against these tables directly.
   single most common way a write fails.**
   - READ: never add "where academy_id = ..." as a safety measure. Your queries run
     as the person you are serving and a query reaching past what they may see
-    returns zero rows rather than an error. A zero-row result is never a
-    permissions bug.
+    returns zero rows rather than an error. A zero-row result is nothing to debug
+    and nothing to retry — but it is only proof of absence when the person you
+    are serving could have seen the rows. The admin sees their whole business, so
+    their empty is real. For a coach, a family or a stranger, "empty" and
+    "withheld by policy" arrive as the same zero rows: report what they can see,
+    and where their view ends say "not something I can see from here" — never
+    that the thing does not exist.
   - WRITE: **every INSERT must set academy_id = app.academy_id() explicitly, on
     every row, including rows in a multi-row VALUES list.** Nothing fills it in
     for you: the column is not defaulted, and the policy checks it, so an insert

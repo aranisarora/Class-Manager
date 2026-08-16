@@ -1115,7 +1115,20 @@ async function modelTurn(
     promptTokens += res.usage.promptTokens
     outputTokens += res.usage.outputTokens
     cachedTokens += res.usage.cachedTokens
-    text = res.text ?? ''
+    /**
+     * Prose beside tool calls is the model's notebook — the `reply` declaration
+     * has said so all along, and this assignment used to make that false on one
+     * round in five: `text` was overwritten every round, so whatever the FINAL
+     * round drafted beside its calls became the reply whenever nothing else had
+     * reached the person. Both notes-to-self that shipped in the adversarial
+     * drive left through exactly this line — "Let me retry the plan", as the
+     * answer to "delete everything" (F-AC/F-AI). Only a round that calls nothing
+     * is speaking to the person; a working round's prose stays in the trace, and
+     * a turn that ends mid-work now lands in the recovery ladder below, which
+     * exists for precisely that state.
+     */
+    const prose = res.text ?? ''
+    if (!res.functionCalls.length) text = prose
 
     // Every round leaves a record, not just the ones that went wrong. What the
     // model wrote, what it reached for, what it stopped for and what it spent —
@@ -1131,8 +1144,8 @@ async function modelTurn(
       round: round + 1,
       name: TRACE_MARKER,
       ms: res.ms,
-      args: text.trim()
-        ? traceValue(text, 4000)
+      args: prose.trim()
+        ? traceValue(prose, 4000)
         : { returnedNothing: true, message: traceValue(res.assistant, 2000) },
       result: {
         in: res.usage.promptTokens,
@@ -1142,7 +1155,7 @@ async function modelTurn(
         finish: res.finishReason ?? 'unknown',
       },
       error:
-        !res.functionCalls.length && !text.trim()
+        !res.functionCalls.length && !prose.trim()
           ? `finishReason: ${res.finishReason ?? 'unknown'} · ${res.usage.outputTokens} output tokens`
           : undefined,
     })
@@ -1297,6 +1310,26 @@ async function modelTurn(
      * it" failure introduced by the fix meant to save money.
      */
     if (toolCtx.repliedTo?.has(identity.contact.id) && toolCtx.pendingPlans.size === 0) break
+
+    /**
+     * F-AI — the budget is declared on `read`; the position only the loop knows,
+     * so the loop says it, in the same bracketed runtime voice flattenToolTurns
+     * uses. Only when another round is actually coming — after the last there is
+     * nobody left to tell. The second-to-last round carries the full warning
+     * because it is the last moment a change of course can still act: "your
+     * final round" in the reply declaration used to name a moment the model
+     * could not identify while in it, and this is what makes it identifiable.
+     */
+    if (round < MAX_TOOL_ROUNDS - 1) {
+      const used = round + 1
+      messages.push({
+        role: 'user',
+        content:
+          used === MAX_TOOL_ROUNDS - 1
+            ? `[${used} of ${MAX_TOOL_ROUNDS} tool rounds used — the next is your LAST. If the work will not finish in it, spend it on reply: say plainly what ran, what did not, and what you need. Prose beside tool calls reaches nobody.]`
+            : `[${used} of ${MAX_TOOL_ROUNDS} tool rounds used]`,
+      })
+    }
   }
 
   /**

@@ -38,6 +38,14 @@ export { lint } from '@/lib/agent/lint'
  * Doctrine lives on disk as markdown. Resolution tries the working directory
  * first (how Next and tsx both run) and falls back to a path derived from this
  * module's own location.
+ *
+ * **Anything read here must also be listed in `next.config.ts`.** The path below is
+ * assembled at runtime, so Next's output-file tracing — which works by static analysis
+ * — cannot see it, and the file is left out of the serverless bundle unless
+ * `outputFileTracingIncludes` names it. That is not a theoretical gap: `lib/doctrine.md`
+ * was missing from every deployed lambda, this threw on every hosted turn before the
+ * model was reached, and the only symptom was that everyone got the loop's apology.
+ * It read as a flaky model, not as a missing file, for as long as the deploy was up.
  */
 function readDoc(relPath: string): string {
   const candidates = [join(repoRoot(), relPath), join(process.cwd(), relPath)]
@@ -787,7 +795,19 @@ async function census(id: Identity): Promise<string | null> {
       return bits.join('\n')
     }
 
-    return `- nothing on file for them yet: no player, no enrolment, no class.`
+    // The old line here — "nothing on file for them yet: no player, no enrolment,
+    // no class" — failed this block's own test: read without the SQL, it licenses
+    // "the business has no classes", and that sentence went to a stranger and then
+    // to the owner over a business holding four children in three classes (F-AD).
+    // The predicate this branch actually tests is that the PERSON has no role, so
+    // that is what the label says — and what their session cannot see is named as
+    // not-visible, never as not-there.
+    return (
+      `- no role ties this person to the business yet: no account, no player, no enrolment of theirs. ` +
+      `Their session sees nothing beyond their own contact row — so nothing on this line says what the ` +
+      `business itself holds. Classes, coaches and families may all exist without being visible from ` +
+      `where they stand; never assert the business is new or empty from here.`
+    )
   } catch {
     return null
   }

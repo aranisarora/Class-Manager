@@ -478,6 +478,12 @@ async function suppress(
 export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendOutcome> {
   const svc = serviceCtx(ctx)
 
+  // Every place this pipeline rewrites the message rather than refusing it, said
+  // once, in order, on the outcome — so the caller can know the sent message
+  // without re-deriving what the gates did. Console lines are for the operator;
+  // this is for the author.
+  const altered: string[] = []
+
   const prepared: Prepared = await withSession(svc, async (tx): Promise<Prepared> => {
     const rows = await tx<Row[]>`
       select c.id              as contact_id,
@@ -708,6 +714,10 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
           `[send] body ${[...(msg.body ?? '')].length} chars > interactive cap for contact ` +
             `${msg.toContactId}: sent as text, affordance dropped`,
         )
+        altered.push(
+          `the body was ${[...(msg.body ?? '')].length} characters — over the 1,024 cap an interactive message has — ` +
+            `so it went as plain text and EVERY BUTTON WAS DROPPED. The person has nothing to tap.`,
+        )
         msg = stripped
       }
     }
@@ -801,6 +811,10 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
       }
       asTemplate = wanted
       category = TEMPLATES[wanted].category as ConversationCategory
+      altered.push(
+        `the 24-hour window with this person is closed, so the body was replaced by the "${wanted}" template ` +
+          `rendering — what they read is the template's words, not yours.`,
+      )
     }
 
     const costPaise = COST_PAISE[category]
@@ -942,6 +956,7 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     template: asTemplate,
     costPaise,
     toContactId: msg.toContactId,
+    ...(altered.length ? { altered } : {}),
   }
 }
 

@@ -81,10 +81,11 @@ export async function composeAndSend(ctx: SessionCtx, rawSpec: ComposeSpec): Pro
   // This path can still mint, so labels the model typed into the prose become the buttons
   // it plainly meant — unless the message already carries an affordance, in which case the
   // brackets are simply gone, which is the better of the two remaining outcomes.
-  const spec: ComposeSpec =
-    bracketButtons.length && !repaired.buttons?.length && !repaired.list && !repaired.link
-      ? { ...repaired, buttons: bracketButtons as ComposeSpec['buttons'] }
-      : repaired
+  const promoted =
+    bracketButtons.length > 0 && !repaired.buttons?.length && !repaired.list && !repaired.link
+  const spec: ComposeSpec = promoted
+    ? { ...repaired, buttons: bracketButtons as ComposeSpec['buttons'] }
+    : repaired
   if (repairs.length) {
     // Loud, never silent: a repair firing every time is a compose bug upstream, and the
     // whole reason "reject, never truncate" was the rule is that a silent fix hides one.
@@ -231,13 +232,30 @@ export async function composeAndSend(ctx: SessionCtx, rawSpec: ComposeSpec): Pro
     }
   }
 
-  const outcome = await send(ctx, { ...base, buttons, list, flow })
+  let outcome = await send(ctx, { ...base, buttons, list, flow })
   // Close the family before returning. Until this lands, every button on this message is an
   // independent row live for its own TTL — which is how tapping `[Do it]` and then `[Cancel]`
   // on the same card committed a plan and then said "Left as it was — nothing changed."
   // A suppressed or failed send that never got a row leaves them unstamped, which is exactly
   // right: nothing was printed, so there is no family and nothing to invalidate.
   await attachActionsToMessage(ctx, outcome.messageId, minted)
+
+  // What compose changed rides the outcome beside what send changed, in the order it
+  // happened — repairs are already "returned, never swallowed" to the console; this
+  // returns them to the author, who is the one that can stop causing them.
+  const composeAltered = [
+    ...repairs,
+    ...(bracketButtons.length
+      ? [
+          promoted
+            ? `bracket labels typed into the prose became real buttons: ${bracketButtons.map((b) => `[${b.title}]`).join(' ')}`
+            : `bracket labels typed into the prose were removed — the message already carried its own affordance`,
+        ]
+      : []),
+  ]
+  if ((outcome.status === 'sent' || outcome.status === 'queued') && composeAltered.length) {
+    outcome = { ...outcome, altered: [...composeAltered, ...(outcome.altered ?? [])] }
+  }
   return outcome
 }
 

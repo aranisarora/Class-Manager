@@ -186,12 +186,21 @@ const PROMISED_IMMINENT =
   // nothing created and no round left to create it in. There is no "again": the turn
   // ends when the message goes out, so a retry the model announces is a retry nobody
   // will ever run. It is the commonest wording of this failure after an error.
-  /\b(?:i'?ll|i will|let me|i'?m going to|i am going to)\s+(?:now\s+|just\s+)?(?:try(?:ing)?\s+(?:to|and|again)\s*)?(?:add|create|set|make|book|cancel|move|send|remind|invite|record|update|remove|delete|change|waive|schedule|assign|enrol|enroll|mark|draft|again)\b/i
+  /\b(?:i'?ll|i will|let me|i'?m going to|i am going to)\s+(?:now\s+|just\s+)?(?:try(?:ing)?\s+(?:to|and|again)\s*)?(?:add|create|set|make|book|cancel|move|send|remind|invite|record|update|remove|delete|change|waive|schedule|assign|enrol|enroll|mark|draft|retry|again)\b/i
+
+/**
+ * "Retrying with the right player ids." — the recovery draft's own verb, and the one
+ * the list above did not hold: both notes-to-self that reached a person in the
+ * adversarial drive said "retry", not "try again", and one of them was the reply to
+ * "delete everything". Anchored and capitalised like CLAIMED_DONE_BARE, so "worth
+ * retrying tomorrow" mid-sentence stays English.
+ */
+const PROMISED_BARE = /(?:^|[.!\n]\s*)(?:Retrying|Trying again)\b/
 
 /** The sentence this message is making, and whether the turn has anything to back it. */
 export function unbackedClaim(body: string): 'claimed' | 'promised' | null {
   if (CLAIMED_DONE.test(body) || CLAIMED_DONE_OPENER.test(body) || CLAIMED_DONE_BARE.test(body)) return 'claimed'
-  if (PROMISED_IMMINENT.test(body)) return 'promised'
+  if (PROMISED_IMMINENT.test(body) || PROMISED_BARE.test(body)) return 'promised'
   return null
 }
 
@@ -1196,7 +1205,12 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
       // (`for (const call of res.functionCalls)`), and nothing anywhere said so — so
       // the model asked one question per round and paid a whole prefix for each. A
       // four-step discovery chain is two rounds instead of four for one sentence here.
-      'If you need several unrelated things, ask for them ALL IN THE SAME ROUND — several read calls in one round cost one round between them, while asking one at a time costs a round each.',
+      'If you need several unrelated things, ask for them ALL IN THE SAME ROUND — several read calls in one round cost one round between them, while asking one at a time costs a round each. ' +
+      // The budget was enforced and never stated, so the model paced a resource it
+      // could not see — and learned it existed only by running out, with its notes
+      // to itself shipped as the reply (F-AI). The count is stable; the position
+      // arrives per round from the loop, which is the only thing that knows it.
+      'A turn has AT MOST FIVE TOOL ROUNDS across all tools; the runtime tells you which round you are on as you go.',
     parametersJsonSchema: {
       type: 'object',
       properties: {
@@ -1273,7 +1287,14 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
           description:
             "Defaults to the person you are talking to. Pass 'admin' to address whoever runs the business — you never need to look their contact up, and from most sessions you cannot (who the admin is stays out of view by design). A proposal routed to the admin carries the change as a steps button; their tap approves it under their own permission.",
         },
-        body: { type: 'string' },
+        body: {
+          type: 'string',
+          description:
+            // The one limit whose breach is silent, stated where the model is
+            // writing (F-AH). Every neighbour already declares its cap; this is
+            // the cap that decides whether the buttons survive.
+            `Plain text may run to ${LIMITS.textChars} characters, but a message carrying buttons, a list or a form is capped at ${LIMITS.bodyChars} — attaching anything tappable spends three-quarters of the room. Over ${LIMITS.bodyChars} the words still go out and EVERY BUTTON IS SILENTLY DROPPED, so a long explanation and a tap cannot ride one message: when you attach buttons, keep the body under ${LIMITS.bodyChars} characters, and cut the explanation before you cut the affordance.`,
+        },
         header: { type: 'string' },
         footer: { type: 'string', description: `≤ ${LIMITS.footerChars} characters` },
         form: {
@@ -1560,8 +1581,27 @@ export async function runTool(
       const res = await modelQuery(ctx.session, query)
       if (res.error) return { result: { error: res.error, rows: [], ...(await whereThatColumnLives(ctx, res.error)) } }
       const scope = await scopeLine(ctx.session, res.rows, res.truncated)
+      /**
+       * Empty and withheld arrive as the same zero rows, and only the runtime
+       * knows whose session this is — so the distinction is made here, where the
+       * result is (F-AD). The admin's empty is real: their policy sees their
+       * whole business. Anyone else's empty may be rows that exist and are not
+       * theirs to see, and a reply built on it asserted "no families have been
+       * added yet" to a stranger, then repeated it to the owner, over a business
+       * holding four children in three classes.
+       */
+      const scoped =
+        res.rowCount === 0 && !ctx.identity.roles.includes('admin')
+          ? {
+              note:
+                'Zero rows under a scoped session. This person\'s view is limited by policy, so an empty result can mean ' +
+                '"none exist" OR "not theirs to see" — you cannot tell which from here. Report what they can see; where ' +
+                'their view ends, say it is not something you can see from here. Never assert that a thing does not exist ' +
+                'off an empty read this person\'s permissions could have emptied.',
+            }
+          : null
       return {
-        result: { scope, rowCount: res.rowCount, truncated: res.truncated, ms: res.ms, rows: res.rows.slice(0, 200) },
+        result: { scope, rowCount: res.rowCount, truncated: res.truncated, ms: res.ms, rows: res.rows.slice(0, 200), ...(scoped ?? {}) },
         note: scope,
       }
     }
@@ -2203,8 +2243,13 @@ export async function runTool(
        * enforced on one of the two ways a message leaves a turn, where which one it
        * takes is the model's choice.
        */
+      // Recorded when it fires, because this is one of the ways the message the
+      // person reads stops being the message the model wrote — and the model's
+      // next decision is made from its draft unless told otherwise (F-AL).
+      let attachedByRuntime: string[] = []
       if (to === ctx.identity.contact.id && !form && !buttons?.length && !args?.list) {
         buttons = closingQuestionButtons(body) ?? backstopButtons(ctx.identity, body)
+        attachedByRuntime = (buttons ?? []).map((b) => b.title)
       }
 
       // A list is the primary affordance (§7.2), so its rows get exactly the same
@@ -2296,10 +2341,32 @@ export async function runTool(
           },
         }
       }
+      /**
+       * What the wire changed between this call and the phone (F-AL). The model's
+       * only picture of the sent message is otherwise its own draft — history
+       * replays sent *bodies* but never affordances — so a stripped button or a
+       * bolted-on menu was invisible, and the same over-long body was written
+       * again the next time the moment recurred. `downgraded_buttons` below
+       * already proves the shape works; this is the same shape for the rest.
+       */
+      const altered = [
+        ...(attachedByRuntime.length
+          ? [`you attached no buttons, so the runtime added: ${attachedByRuntime.map((t) => `[${t}]`).join(' ')}`]
+          : []),
+        ...(('altered' in outcome ? outcome.altered : undefined) ?? []),
+      ]
       return {
         result: {
           status: outcome.status,
           ...('reason' in outcome ? { reason: outcome.reason } : {}),
+          ...(altered.length
+            ? {
+                altered,
+                altered_note:
+                  'The message went out, but not exactly as written — the changes above are what the person actually ' +
+                  'received. Reason from that version, not your draft, and do not resend to fix it.',
+              }
+            : {}),
           ...(downgraded.length
             ? {
                 downgraded_buttons: downgraded,

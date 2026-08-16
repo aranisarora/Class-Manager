@@ -201,6 +201,15 @@ export type SendOutcome =
        */
       toContactId?: string
       confirmationRequest?: boolean
+      /**
+       * What the pipeline changed between the caller's spec and the wire — a body
+       * over the interactive cap losing its buttons, an out-of-window body
+       * replaced by a template rendering, a repair firing in compose. One line
+       * per change, in the order they happened. Carried so the caller (the model,
+       * through the `reply` result) reasons from the message the person received
+       * rather than from its own draft; absent means nothing changed.
+       */
+      altered?: string[]
     }
   | { status: 'suppressed'; reason: SuppressReason; messageId: string | null }
   | { status: 'failed'; reason: string; messageId: string | null }
