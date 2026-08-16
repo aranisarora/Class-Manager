@@ -91,6 +91,14 @@ export type FlowDefinition = {
   id: string
   /** What Meta would call it. */
   name: string
+  /**
+   * Meta's own taxonomy, required at creation and drawn from a closed set:
+   * SIGN_UP, SIGN_IN, APPOINTMENT_BOOKING, LEAD_GENERATION, CONTACT_US,
+   * CUSTOMER_SUPPORT, SURVEY, OTHER. It is a label for review, not behaviour —
+   * nothing about the Flow changes with it — so each of these takes the honest
+   * one rather than the flattering one.
+   */
+  categories: string[]
   /** The screen a `navigate` send opens on. */
   entryScreen: string
   /** The CTA on the bubble. <= 20 chars, no emoji. */
@@ -261,11 +269,19 @@ const BUSINESS_SETUP_JSON: FlowJson = {
           },
 
           { type: 'TextSubheading', text: 'Your rhythm' },
+          // One caption for both dropdowns, because `Dropdown` does not accept
+          // `helper-text` — Meta rejects the upload outright with
+          // INVALID_PROPERTY_KEY, and the two explanations still have to land
+          // somewhere. `TextInput` and `TextArea` DO accept it, which is why the
+          // other eight uses in this file are fine and only these two moved.
+          {
+            type: 'TextCaption',
+            text: 'The morning brief is what today looks like. The evening summary is how it went, and the money.',
+          },
           {
             type: 'Dropdown',
             name: 'morning_brief_at',
             label: 'Morning brief at',
-            'helper-text': 'What today looks like, and anything that needs you',
             required: false,
             'init-value': '${data.morning_brief_at}',
             'data-source': [
@@ -280,7 +296,6 @@ const BUSINESS_SETUP_JSON: FlowJson = {
             type: 'Dropdown',
             name: 'evening_digest_at',
             label: 'Evening summary at',
-            'helper-text': 'How the day went, and the money',
             required: false,
             'init-value': '${data.evening_digest_at}',
             'data-source': [
@@ -355,6 +370,9 @@ export type BusinessSetupValues = z.infer<typeof BusinessSetupResponse>
 export const BUSINESS_SETUP: FlowDefinition = {
   id: 'business_setup',
   name: 'Business setup',
+  // The business describing itself to the product it just joined. Not
+  // LEAD_GENERATION: nobody is being captured, the account already exists.
+  categories: ['SIGN_UP'],
   entryScreen: 'SETUP',
   cta: 'Set up',
   json: BUSINESS_SETUP_JSON,
@@ -526,6 +544,9 @@ export type AddClassValues = z.infer<typeof AddClassResponse>
 export const ADD_CLASS: FlowDefinition = {
   id: 'add_class',
   name: 'Add a class',
+  // Timetable data entry by the business itself. None of Meta's consumer-facing
+  // categories fit, and pretending one does invites the wrong review.
+  categories: ['OTHER'],
   entryScreen: 'CLASS',
   cta: 'Add a class',
   json: ADD_CLASS_JSON,
@@ -641,6 +662,8 @@ export type RegisterValues = z.infer<typeof RegisterResponse>
 export const REGISTER: FlowDefinition = {
   id: 'register',
   name: 'Register',
+  // A coach answering a fixed set of questions about a session that happened.
+  categories: ['SURVEY'],
   entryScreen: 'REGISTER',
   cta: 'Take register',
   json: REGISTER_JSON,
@@ -732,6 +755,31 @@ export function validateFlowJson(flow: FlowJson): string[] {
     if (!Array.isArray(children) || children.length === 0) {
       bad.push(`screen ${screen.id} has no children`)
       continue
+    }
+
+    /**
+     * `helper-text` is per-component, not universal.
+     *
+     * `TextInput` and `TextArea` take it; `Dropdown` does not, and Meta refuses
+     * the whole upload with `INVALID_PROPERTY_KEY` naming one property on one
+     * component. This validator's entire purpose is that "a Flow that would fail
+     * publish is a Flow that cannot ship no matter how well it renders locally",
+     * and it let two of them through — `business_setup` was rejected on first
+     * contact with the real API, after `add_class` and `register` had already
+     * gone up, which is exactly the split-brain state the check exists to prevent.
+     *
+     * Written as an allow-list of the components that DO accept it, because the
+     * closed set is the one Meta documents; a deny-list would pass every
+     * component nobody has tried yet.
+     */
+    const HELPER_TEXT_OK = new Set(['TextInput', 'TextArea'])
+    for (const child of children) {
+      if (child['helper-text'] !== undefined && !HELPER_TEXT_OK.has(child.type)) {
+        bad.push(
+          `screen ${screen.id}: ${child.type} "${child.name ?? '?'}" carries helper-text, which only ` +
+            `${[...HELPER_TEXT_OK].join(' and ')} accept — use a TextCaption instead`,
+        )
+      }
     }
 
     const footers = children.filter((c) => c.type === 'Footer')

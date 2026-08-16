@@ -24,6 +24,24 @@ export const GRAPH_VERSION = 'v21.0'
 export const GRAPH_HOST = 'https://graph.facebook.com'
 const REQUEST_TIMEOUT_MS = 15_000
 
+/**
+ * Local form id → the Flow asset Meta actually created.
+ *
+ * `flows.ts` names its three forms `business_setup`, `add_class` and `register`,
+ * and every other layer speaks those names. Meta does not: a Flow is an asset
+ * with a numeric id, minted at creation and unknowable until then. So the wire
+ * needs a translation, and this is it — kept beside the credentials because it is
+ * per-WABA exactly as they are (§16.3), and minted by the same provisioning run.
+ *
+ * `published` is not decoration. Publishing is gated on business verification and
+ * fails "Blocked by Integrity" until that clears, so a real flow id may exist
+ * while the flow is still a draft — and a draft sent as `published` is rejected.
+ * The transport reads this to pick the mode rather than trusting a caller who has
+ * no way to know.
+ */
+export type FlowRegistration = { id: string; published?: boolean }
+export type FlowRegistry = Record<string, FlowRegistration>
+
 export type CloudCredentials = {
   /** The number's id on the WABA. The path segment of every send. */
   phone_number_id: string
@@ -32,6 +50,8 @@ export type CloudCredentials = {
   /** For `X-Hub-Signature-256` on the inbound webhook. */
   app_secret?: string
   waba_id?: string
+  /** Local form id → Meta Flow asset. Written by `wa-cloud.ts flows`. */
+  flows?: FlowRegistry
 }
 
 const credentials = new Map<string, CloudCredentials>()
@@ -50,6 +70,7 @@ export function cacheSenderCredentials(senderPhoneE164: string, raw: unknown): v
     access_token: String(c.access_token),
     app_secret: c.app_secret ? String(c.app_secret) : undefined,
     waba_id: c.waba_id ? String(c.waba_id) : undefined,
+    flows: c.flows && typeof c.flows === 'object' ? (c.flows as FlowRegistry) : undefined,
   })
 }
 
@@ -89,7 +110,10 @@ export function messagesUrl(phoneNumberId: string): string {
  * no model call. Template quick-replies work the same way — the title was fixed at approval,
  * only the payload varies per send.
  */
-export function buildPayload(req: TransportRequest): Record<string, unknown> {
+export function buildPayload(
+  req: TransportRequest,
+  creds?: CloudCredentials,
+): Record<string, unknown> {
   const m = req.message
   const to = req.toWaId ?? normalizePhone(req.toPhoneE164)
   const base = { messaging_product: 'whatsapp', recipient_type: 'individual', to }
@@ -157,6 +181,28 @@ export function buildPayload(req: TransportRequest): Record<string, unknown> {
   // whenever the action is `navigate` — it names the screen to open, and its `data`
   // becomes `${data.key}` on that screen.
   if (m.flow) {
+    // `compose.ts` puts the LOCAL form id here — `business_setup`, not
+    // `1602316304778150` — because every other layer, the emulator included,
+    // speaks that name. Meta only knows the asset id, and it answers a slug with
+    // a generic parameter error that names nothing. So the translation happens
+    // at the wire, where the rest of the Meta vocabulary already lives, and a
+    // missing registration is a loud error rather than a confusing 400.
+    const registered = creds?.flows?.[m.flow.flowId]
+    const alreadyMetaId = /^\d+$/.test(m.flow.flowId)
+    if (!registered && !alreadyMetaId) {
+      throw msgError(
+        'unknown_flow',
+        `flow "${m.flow.flowId}" has no Meta asset id — run \`npm run wa -- flows\` to create and register it`,
+      )
+    }
+    const flowId = registered?.id ?? m.flow.flowId
+
+    // Publishing is gated on business verification, so a created-but-unpublished
+    // flow is the normal state before a business is verified. Sending a draft as
+    // `published` is rejected outright, so the registration decides the mode and
+    // the caller's hint is only a fallback for an id that was already numeric.
+    const mode = registered ? (registered.published ? 'published' : 'draft') : (m.flow.mode ?? 'published')
+
     return {
       ...base,
       type: 'interactive',
@@ -170,14 +216,14 @@ export function buildPayload(req: TransportRequest): Record<string, unknown> {
           parameters: {
             flow_message_version: '3',
             flow_token: m.flow.flowToken,
-            flow_id: m.flow.flowId,
+            flow_id: flowId,
             flow_cta: m.flow.cta,
             flow_action: 'navigate',
             flow_action_payload: {
               screen: m.flow.screen,
               ...(m.flow.data && Object.keys(m.flow.data).length ? { data: m.flow.data } : {}),
             },
-            mode: m.flow.mode ?? 'published',
+            mode,
           },
         },
       },
@@ -298,7 +344,7 @@ export const cloudTransport: Transport = {
 
     let payload: Record<string, unknown>
     try {
-      payload = buildPayload(req)
+      payload = buildPayload(req, creds)
     } catch (e) {
       return { ok: false, error: `could not build payload: ${(e as Error).message}`, permanent: true }
     }
@@ -613,6 +659,124 @@ export async function debugToken(accessToken: string): Promise<GraphCall<{
   }
 }>> {
   return graph('debug_token', accessToken, { query: { input_token: accessToken } })
+}
+
+// -----------------------------------------------------------------------------
+// Flows.
+//
+// A Flow reaches a handset only after three separate calls: create the asset,
+// upload its JSON, publish it. `flows.ts` builds and validates the JSON and says
+// outright that publishing "belongs with the other Meta calls behind
+// `transport-cloud.ts` on the day this connects to a real number". This is it.
+//
+// PUBLISHING IS GATED ON BUSINESS VERIFICATION, and that is not a footnote:
+//
+//     code=139000 subcode=4233020
+//     "Blocked by Integrity" / "Flow publishing failed. Integrity requirements
+//      not met."
+//
+// Create and upload both succeed on an unverified portfolio; only publish fails.
+// A draft Flow is still sendable — with `mode: 'draft'`, to a test number — which
+// is why `FlowRegistration` carries `published` and the send path reads it rather
+// than assuming. `types.ts` already anticipated this ("`draft` sends only work in
+// test mode; anything real is `published`"); provisioning now records which it is.
+// -----------------------------------------------------------------------------
+
+export type RemoteFlow = {
+  id: string
+  name?: string
+  status?: string
+  categories?: string[]
+}
+
+export async function listFlows(
+  wabaId: string,
+  accessToken: string,
+): Promise<GraphCall<RemoteFlow[]>> {
+  const r = await graph<{ data: RemoteFlow[] }>(`${wabaId}/flows`, accessToken, {
+    query: { fields: 'id,name,status,categories' },
+  })
+  return r.ok ? { ok: true, data: r.data.data ?? [] } : r
+}
+
+export async function createFlow(
+  wabaId: string,
+  accessToken: string,
+  name: string,
+  categories: string[],
+): Promise<GraphCall<{ id: string; validation_errors?: unknown[] }>> {
+  return graph(`${wabaId}/flows`, accessToken, {
+    method: 'POST',
+    body: { name, categories },
+  })
+}
+
+/**
+ * Upload the Flow JSON. This one is `multipart/form-data`, not JSON — the only
+ * call in this file that is — so it bypasses `graph()` and builds its own
+ * request. `FormData` + `Blob` are standard in Node 18+, so no dependency and no
+ * hand-rolled boundary.
+ *
+ * `validation_errors` comes back with HTTP 200 and `success: true`. A caller that
+ * only checks the status code will happily report an upload that Meta rejected
+ * field by field, so they are surfaced as a failure here.
+ */
+export async function uploadFlowJson(
+  flowId: string,
+  accessToken: string,
+  json: unknown,
+): Promise<GraphCall<{ success?: boolean; validation_errors?: unknown[] }>> {
+  const form = new FormData()
+  form.append('name', 'flow.json')
+  form.append('asset_type', 'FLOW_JSON')
+  form.append('file', new Blob([JSON.stringify(json)], { type: 'application/json' }), 'flow.json')
+
+  let res: Response
+  try {
+    res = await fetch(`${GRAPH_HOST}/${GRAPH_VERSION}/${flowId}/assets`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: form,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
+  } catch (e) {
+    return { ok: false, error: `transport error: ${(e as Error).message}`, status: 0 }
+  }
+
+  const text = await res.text()
+  let parsed: { error?: GraphError; validation_errors?: unknown[] } | null = null
+  try {
+    parsed = text ? JSON.parse(text) : null
+  } catch {
+    parsed = null
+  }
+  if (!res.ok || parsed?.error) {
+    return { ok: false, error: describeGraphError(res.status, parsed?.error ?? null, text), status: res.status }
+  }
+  if (parsed?.validation_errors?.length) {
+    return {
+      ok: false,
+      error: `flow JSON rejected: ${JSON.stringify(parsed.validation_errors).slice(0, 400)}`,
+      status: res.status,
+    }
+  }
+  return { ok: true, data: parsed ?? {} }
+}
+
+export async function publishFlow(
+  flowId: string,
+  accessToken: string,
+): Promise<GraphCall<{ success?: boolean }>> {
+  return graph(`${flowId}/publish`, accessToken, { method: 'POST' })
+}
+
+export async function deleteFlow(flowId: string, accessToken: string): Promise<GraphCall<{ success?: boolean }>> {
+  return graph(flowId, accessToken, { method: 'DELETE' })
+}
+
+/** True for the specific "your business is not verified yet" publish refusal. */
+export function isIntegrityBlock(error: string): boolean {
+  return error.includes('139000') || error.includes('4233020') || /Integrity/i.test(error)
 }
 
 /**
