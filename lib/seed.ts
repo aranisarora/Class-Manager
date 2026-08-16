@@ -1185,6 +1185,17 @@ export type WorldAcademy = {
   category: string | null
   timezone: string
   onboardingState: string
+  /**
+   * A tenant somebody made to test against, not a business with customers in it.
+   *
+   * Served because the console has to read the *same bit the server refuses on* —
+   * `requireSandboxAcademy` in lib/ops-guard.ts gates the scoped destructive routes on
+   * this column, and a UI that guessed the mode from the name would disagree with it the
+   * first time a real academy was called "Test". It rides the per-academy head query
+   * below, which is a plain RLS-scoped read of `academy`, so nothing about the cross-tenant
+   * doors (`app.list_academies()`, `app.identity()`) has to change to carry it.
+   */
+  isSandbox: boolean
   upiHandle: string | null
   cancellationWindowHours: number
   clientReminderLeadHours: number
@@ -1286,7 +1297,7 @@ export async function worldState(): Promise<WorldState> {
     academyIds.map(async (academyId): Promise<WorldAcademy | null> => {
       const a = await withSession(svc(academyId), async (tx) => {
       const head = await tx`
-        select a.id, a.name, a.category, a.timezone, a.onboarding_state, a.upi_handle, a.rail,
+        select a.id, a.name, a.category, a.timezone, a.onboarding_state, a.is_sandbox, a.upi_handle, a.rail,
                a.cancellation_window_hours, a.client_reminder_lead_hours,
                a.morning_brief_at::text as morning_brief_at,
                a.evening_digest_at::text as evening_digest_at,
@@ -1372,6 +1383,7 @@ export async function worldState(): Promise<WorldState> {
       category: (h.category as string) ?? null,
       timezone: String(h.timezone),
       onboardingState: String(h.onboarding_state),
+      isSandbox: Boolean(h.is_sandbox),
       upiHandle: (h.upi_handle as string) ?? null,
       cancellationWindowHours: Number(h.cancellation_window_hours),
       clientReminderLeadHours: Number(h.client_reminder_lead_hours),

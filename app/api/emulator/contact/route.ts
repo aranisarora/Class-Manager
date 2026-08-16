@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
-import { requireSandbox } from '@/lib/ops-guard'
+import { resolveIdentity } from '@/lib/identity'
+import { requireSandboxAcademy } from '@/lib/ops-guard'
 import { createTestContact, dropPerson } from '@/lib/seed'
 
 export const runtime = 'nodejs'
@@ -18,22 +19,26 @@ const Body = z.object({
  * Add one throwaway person to the live world, wired to a real role, without reseeding.
  * The seeded world stays deterministic (§17); these are extra, and a reseed clears them.
  *
- * Sandbox only. "Throwaway" is the emulator's word for them, not the database's: the
- * person is wired into real domain rows, so a fabricated player is enrolled and billed by
- * `monthly_lines` and gets reminders addressed to a number in the `+9199…` test range
+ * Sandbox academy only. "Throwaway" is the emulator's word for them, not the database's:
+ * the person is wired into real domain rows, so a fabricated player is enrolled and billed
+ * by `monthly_lines` and gets reminders addressed to a number in the `+9199…` test range
  * that no handset answers, and a fabricated admin gains money visibility under
  * `app.is_admin()`. The escape hatch that makes them harmless — a reseed clears them — is
- * itself the one control production can never run.
+ * itself the one control production can never run. Inside a sandbox tenant none of that
+ * matters: the roster is fiction to begin with, and it is the only roster this can reach.
  */
 export async function POST(req: Request): Promise<Response> {
-  const denied = requireSandbox()
-  if (denied) return denied
-
   const raw = await req.json().catch(() => ({}))
   const parsed = Body.safeParse(raw)
   if (!parsed.success) {
     return Response.json({ ok: false, error: 'invalid_body', issues: parsed.error.issues }, { status: 400 })
   }
+
+  // The cleanest of the nine: the body already names the tenant, and `createTestContact`
+  // was going to prove it exists anyway ('no such academy in this world'). Nothing to
+  // resolve, nothing to look up twice.
+  const denied = await requireSandboxAcademy(parsed.data.academyId)
+  if (denied) return denied
 
   try {
     const contact = await createTestContact(parsed.data)
@@ -54,22 +59,28 @@ export async function POST(req: Request): Promise<Response> {
  * `lib/seed` function the driver calls, so there is no second idea of what
  * removing somebody means.
  *
- * Sandbox only. `dropPerson` deliberately works around the product's non-cascading
+ * Sandbox academy only. `dropPerson` deliberately works around the product's non-cascading
  * `person_id` foreign keys by deleting attendance, tally lines, payments, players,
  * accounts, coach and contact rows by hand — including accounts the person holds, which
  * takes their children's player rows with them. Those keys do not cascade because §8.3
  * wants financial history to survive exactly this; against a real family the deletion is
- * unrecoverable.
+ * unrecoverable, which is why the family has to belong to a tenant that is itself fiction.
  */
 export async function DELETE(req: Request): Promise<Response> {
-  const denied = requireSandbox()
-  if (denied) return denied
-
   const url = new URL(req.url)
   const contactId = url.searchParams.get('contactId') ?? ''
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(contactId)) {
     return Response.json({ ok: false, error: 'contactId is required' }, { status: 400 })
   }
+
+  // `dropPerson` finds the tenant itself, and reports it only in its return value — after
+  // the hand-written cascade above has committed. By the time it could answer the guard's
+  // question the family is already gone, so the question is asked here instead, through the
+  // read-only `app.identity` door (0005).
+  const identity = await resolveIdentity(contactId)
+  const denied = await requireSandboxAcademy(identity?.academyId)
+  if (denied) return denied
+
   try {
     const gone = await dropPerson(contactId)
     if (!gone) return Response.json({ ok: false, error: 'contact_not_found' }, { status: 404 })

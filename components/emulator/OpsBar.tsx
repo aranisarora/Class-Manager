@@ -5,10 +5,13 @@
  *
  * The emulator was built as an instrument for a fixture and is now also the ops console for
  * a live business, and those two readings of the same screen want opposite things from the
- * operator. Every fabricating control — seed, the clock, the fault panel, the composer, the
- * delivery ladder — is refused server-side by `requireSandbox()` when `OPS_SANDBOX` is not
- * exactly '1'. That refusal is the boundary. This file is the part that makes the boundary
- * *legible*, and it does that in two halves:
+ * operator. Every fabricating control is refused server-side, and since 0030 by one of two
+ * gates rather than one: seed, the fault panel and the drive touch every tenant at once and
+ * stay on `requireSandbox()` — the whole-deployment switch, `OPS_SANDBOX` exactly '1' — while
+ * the controls that name a tenant moved to `requireSandboxAcademy()`, which allows the act
+ * against an academy carrying `is_sandbox` and refuses it everywhere else, including when no
+ * academy is named at all. That refusal is the boundary. This file is the part that makes the
+ * boundary *legible*, and it does that in two halves:
  *
  *   `OpsConfigProvider` / `useOpsConfig` / `useCapability` — one fetch of `/api/ops/config`
  *     for the whole console, so any component can ask whether a capability may be offered.
@@ -327,8 +330,9 @@ export function OpsBar() {
           config.sandbox
             ? 'OPS_SANDBOX=1 — this deployment is a sandbox. Seeding, the clock, faults and the ' +
               'composer are all live, and the world here is disposable.'
-            : 'OPS_SANDBOX is not set — this is production. Every destructive control is refused ' +
-              'by the server and hidden here: the businesses and conversations on this screen are real.'
+            : 'OPS_SANDBOX is not set — this is production. Seeding, faults and the drive reach every ' +
+              'tenant at once and are refused outright; the scoped controls are refused for any academy ' +
+              'not flagged as a sandbox. The businesses and conversations on this screen are real.'
         }
       >
         {config.sandbox ? 'SANDBOX' : 'PRODUCTION'}
@@ -410,9 +414,38 @@ export function OpsBar() {
           No scenario picker at all in production, rather than a disabled one. A greyed
           control still says "this is a thing you could do here", and the whole point of
           the production reading of this console is that seeding is not.
+
+          "Disabled" alone was only half the sentence, though, and stopping there is what
+          sent the owner back to localhost to try anything at all. Only the world-wide acts
+          are gone — seed and the fault panel have no tenant to scope to, so they stay
+          refused everywhere — while the scoped acts work, against an academy flagged as a
+          sandbox and nothing else. A strip that names the refusal and not the way through
+          it is how a feature ships and then goes unused, so this line carries both and
+          points at the tray control that mints the tenant it is talking about.
+
+          Delivery is named among the refusals and not among the ways through, because the
+          console cannot aim it: `POST /api/emulator/delivery` grew an optional `academyId`
+          and `runDelivery` (lib/emulator/state.ts) still posts only `{ mode }`, so the
+          guard's second branch refuses the omission for every mode and every academy. The
+          honest line is the one that matches what happens when it is clicked — the header
+          above is explicit that a control which renders, is clicked and then 403s teaches
+          the operator the console is broken, and a *sentence* that promises the same thing
+          does it just as well. Move delivery back into the second half of this line once
+          the picker sends the scope the clock already sends.
         */
-        <span className="font-mono text-[10px] text-zinc-500">
-          destructive controls are disabled on production — read and run-jobs only
+        <span
+          className="font-mono text-[10px] text-zinc-500"
+          title={
+            'Seeding, the fault panel and the drive reach every tenant at once and are refused here ' +
+            'regardless. The clock (aimed with the “moves” picker beside it), the composer, the ' +
+            'per-message tick marks and the drop controls are allowed against an academy flagged as ' +
+            'a sandbox and nothing else — make one with “+ business” in the contact tray. Delivery ' +
+            'is the exception: its route takes an academy but nothing in this console sends one, so ' +
+            'it is refused here whichever academy is selected.'
+          }
+        >
+          seeding, faults and delivery stay off — the rest works on a{' '}
+          <span className="font-semibold tracking-widest text-emerald-400">SANDBOX</span> academy, made with “+ business”
         </span>
       )}
 

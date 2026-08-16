@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { OPERATIONS, type OperationDef, type OperationName } from '@/lib/agent/operations'
 import { executePlan } from '@/lib/agent/plan'
 import { withSession, type SessionCtx, type Tx } from '@/lib/db'
-import { requireSandbox } from '@/lib/ops-guard'
+import { requireSandboxAcademy } from '@/lib/ops-guard'
 import { worldAcademyIds } from '@/lib/seed'
 
 export const runtime = 'nodejs'
@@ -270,13 +270,15 @@ function argsFor(def: OperationDef, bag: Record<string, unknown>): Record<string
 /**
  * §11.5 — Rail 1's one transition, driven by the admin who attests it.
  *
- * Sandbox only, and unlike the rest of the list this one is not a fabrication of traffic but
- * a write to a real business's books. The attesting admin is identified by nothing but the
- * `contactId` in the request body, so whoever holds the ops secret can attest as any admin of
- * any tenant — and the operator of this console is the vendor, not the academy. §6.4 keeps
- * `confirmed_by` precisely so a ledger can answer "who said this money arrived"; a confirm
- * from here writes a real admin's `person_id` into that column for a decision they never made,
- * which is the one thing the field exists to prevent.
+ * Sandbox academy only, and unlike the rest of the list this one is not a fabrication of
+ * traffic but a write to a business's books. The attesting admin is identified by nothing but
+ * the `contactId` in the request body, so whoever holds the ops secret could otherwise attest
+ * as any admin of any tenant — and the operator of this console is the vendor, not the
+ * academy. §6.4 keeps `confirmed_by` precisely so a ledger can answer "who said this money
+ * arrived"; a confirm from here writes a real admin's `person_id` into that column for a
+ * decision they never made, which is the one thing the field exists to prevent. Confined to a
+ * sandbox tenant the same write is a demonstration of rail 1 and nothing is misattributed,
+ * because nobody it names exists.
  *
  * It does not stop at the ledger. `notify` is hardcoded true below, so a confirm also pushes a
  * receipt to the account holder's real handset — the parent is told their payment landed on the
@@ -290,9 +292,6 @@ function argsFor(def: OperationDef, bag: Record<string, unknown>): Record<string
  * for; it is the writing half that has to stay behind the fence.
  */
 export async function POST(req: Request): Promise<Response> {
-  const denied = requireSandbox()
-  if (denied) return denied
-
   const raw = await req.json().catch(() => ({}))
   const parsed = Body.safeParse(raw)
   if (!parsed.success) {
@@ -302,7 +301,15 @@ export async function POST(req: Request): Promise<Response> {
 
   try {
     const viewer = await viewerOf(body.contactId)
+
+    // Free: `viewerOf` had to find the owning tenant before any write could be scoped
+    // anyway, and it runs before the ledger is touched. A contact nothing owns leaves the
+    // guard with no academy — refused on a hosted deployment, and on a scratch box waved
+    // through to the same 404 as always.
+    const denied = await requireSandboxAcademy(viewer?.academyId)
+    if (denied) return denied
     if (!viewer) return Response.json({ ok: false, error: 'contact_not_found' }, { status: 404 })
+
     if (!viewer.isAdmin) {
       // Rail 1 is "the admin attests" (§6.4, `confirmed_by`), and the RLS policy on `payment`
       // is `app.is_admin()`. Refusing here with a sentence beats the same refusal arriving as

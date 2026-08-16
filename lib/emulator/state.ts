@@ -174,6 +174,15 @@ export type EmuAcademy = {
   rail: string | null
   /** §6.4 — where a Rail 1 parent is told to pay. Empty is a real state, and worth seeing. */
   upiHandle: string | null
+  /**
+   * Scratch tenant or real business (`academy.is_sandbox`, migration 0030).
+   *
+   * The console is deployed now, so one screen shows both kinds at once and the operator has
+   * to be able to tell them apart before typing anything. The server already refuses a scoped
+   * destructive call against a real tenant — this is what stops the operator finding that out
+   * by aiming one at a customer and reading a 403.
+   */
+  isSandbox: boolean
 }
 
 export type EmuContact = {
@@ -690,6 +699,10 @@ export function normalizeAcademy(raw: Raw): EmuAcademy | null {
     category: str(pick(raw, 'category')),
     rail: str(pick(raw, 'rail')),
     upiHandle: str(pick(raw, 'upi_handle', 'upiHandle')),
+    // `=== true` and not a truthiness test: an absent field, a null, or a payload from a
+    // deployment predating 0030 all mean "not a sandbox", which is the safe reading. The
+    // badge appears only when the server positively says so.
+    isSandbox: pick(raw, 'is_sandbox', 'isSandbox') === true,
   }
 }
 

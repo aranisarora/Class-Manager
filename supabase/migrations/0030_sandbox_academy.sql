@@ -1,0 +1,115 @@
+-- =============================================================================
+-- 0030_sandbox_academy.sql — one column that lets a tenant say "I am not real".
+--
+-- The emulator console is now two things at once. It is still the instrument the
+-- fixture world was built for, and it is also the ops surface pointed at a live
+-- Meta Cloud number with real parents behind it. `OPS_SANDBOX` was the first
+-- answer to that, and it is a whole-deployment switch: either every fabricating
+-- control works everywhere, or none of them work anywhere. Production runs with
+-- it unset, so today the honest description of the live console is "read-only".
+--
+-- That is one setting too coarse for the thing the owner actually needs, which
+-- is not "unlock production" but "let me have ONE pretend business inside it" —
+-- make a test academy, send it messages, push its clock to Tuesday and watch the
+-- reminder ladder fire, all against the real deployment, and never within a
+-- kilometre of a paying tenant. A boolean about the deployment cannot express a
+-- statement about one row. This column can, so it is where the statement goes.
+--
+-- `is_sandbox` means exactly this and nothing wider: **this academy is scratch,
+-- so the emulator's fabricating routes may act on it even in production.** It is
+-- not a feature flag, not a demo mode, and it deliberately grants nothing at all
+-- inside the product — no policy reads it, no send path branches on it, no
+-- reminder behaves differently. It is read by `lib/ops-guard.ts` and by the
+-- console that has to know which buttons to offer, and by nobody else. A tenant
+-- carrying it still runs the ordinary code: that is the whole point of testing
+-- against the live deployment rather than against a fixture.
+--
+-- WHY THE DEFAULT IS `false`, WHICH IS THE ENTIRE SECURITY PROPERTY
+-- ---------------------------------------------------------------------------
+-- A boolean's default is not a convenience here; it is the answer this schema
+-- gives about every row nobody thought about. Two academies already exist in the
+-- live database and neither can be asked, migrations do not get to interview the
+-- data they alter, and — the case that actually matters — the first real customer
+-- signs up months from now through a path that has never heard of this column.
+--
+-- With `default false` all three are the same row: a real business, and every
+-- guard refuses. The flag has to be set deliberately, by something that knows it
+-- is making a toy, and the cost of forgetting is a 403 the owner can read.
+--
+-- Spelled the other way — `is_real boolean not null default false`, or this same
+-- column defaulting true — the identical omission produces the identical row and
+-- opens every destructive route against it. `?academy=Ace` typed at the wrong
+-- moment stops being a refusal and becomes `delete from academy`, cascading a
+-- whole business away, and nothing in the request looked wrong. The safe
+-- direction costs an operator one `update` per sandbox; the unsafe direction
+-- costs a tenant everything, once, silently. So the column is named for the
+-- exceptional state and defaults to the ordinary one.
+--
+-- WHAT THIS FLAG STILL CANNOT SAY
+-- ---------------------------------------------------------------------------
+-- Two emulator operations name no tenant and cannot be taught to, so they stay
+-- behind the deployment-wide `requireSandbox()` and this column does not reach
+-- them. `seed` runs `resetWorld`, which enumerates every academy from
+-- `app.list_academies()`, deletes them all, then empties `job`, `sim_fault` and
+-- `sender` — including the row holding the live Cloud credentials. And
+-- `sim_fault` has no `academy_id` at all (0002, `unique (kind)`) and is read by
+-- the send path with no tenant filter, so one armed fault breaks outbound for
+-- everybody. A per-row flag cannot scope an operation whose scope is the world.
+--
+-- RLS: NOTHING TO ADD, AND THAT IS CHECKED RATHER THAN ASSUMED
+-- ---------------------------------------------------------------------------
+-- `academy` has row level security on since 0002_schema.sql:516, and 0003_rls.sql
+-- gives it `academy_cm_service_all ... using (id = app.academy_id())` at :88-91
+-- plus the cm_user/cm_readonly select policies below it. A column is not a
+-- privilege boundary in Postgres RLS — visibility is decided per row — so this
+-- column is readable by exactly whoever could already read the row it sits on,
+-- which is the session pinned to that academy and nobody else. No new policy, no
+-- new grant, and no new table for `scripts/rls-check.mjs`'s meta-test to catch.
+--
+-- The one thing worth writing down, because getting it wrong is silent: that
+-- policy keys on `id`, not on `academy_id`. A reader of this column must pin its
+-- session to the candidate academy itself. An infra session pinned to the NIL
+-- uuid (`withInfra`, lib/jobs/util.ts:70) or an empty GUC satisfies `id =
+-- app.academy_id()` for no real row, so the select returns zero rows with no
+-- error — a guard written on top of that would refuse every academy forever and
+-- look like a policy bug rather than a session bug.
+--
+-- NO INDEX, DELIBERATELY
+-- ---------------------------------------------------------------------------
+-- Every read of this column is `where id = $1` — the guard already knows which
+-- academy it is asking about and pulls the flag off that one row through the
+-- primary key. The flag is projected, never a predicate. The only query that
+-- would filter on it is "list the sandboxes", which the console gets from
+-- `app.list_academies()` / `worldState()` over a handful of rows it is already
+-- scanning one transaction at a time. A partial index that is never the cheaper
+-- plan is a write cost on every academy insert and one more object to keep true,
+-- bought with nothing, so there is none.
+--
+-- NOT DONE HERE: `app.list_academies()` (0007_emulator.sql:13) does not return
+-- this column and is left alone. Widening a `returns table (...)` signature needs
+-- DROP FUNCTION then CREATE — `create or replace` refuses — and the DROP discards
+-- the `revoke all ... from public` / `grant execute ... to cm_service` pair at
+-- 0007:73-76, so that is a change with a footgun in it and belongs to whoever
+-- actually needs the column there. `worldState()` (lib/seed.ts:1287) needed no
+-- such surgery: it reads the `academy` table directly under a session pinned to
+-- that tenant, so naming `a.is_sandbox` in its head select was the entire change
+-- and the console already has the flag on the wire.
+--
+-- Re-runnable.
+-- =============================================================================
+
+-- `not null default false` on an existing table is metadata-only since Postgres
+-- 11 — the default is recorded in the catalogue and materialised on read, so no
+-- row is rewritten and the ACCESS EXCLUSIVE lock is held for the length of a
+-- catalogue update rather than a table scan. Safe against the live database with
+-- the cron beat still running.
+alter table academy
+  add column if not exists is_sandbox boolean not null default false;
+
+comment on column academy.is_sandbox is
+  'True only for a scratch tenant the emulator may fabricate against in production: '
+  'invent inbound messages, move its clock, forge delivery receipts, delete it. '
+  'Default false, so every academy nobody deliberately marked is a real business and '
+  'every per-academy guard refuses it. Grants nothing inside the product — no policy '
+  'and no send path reads it. Does not cover seed or fault, which are world-wide '
+  '(resetWorld deletes every academy; sim_fault has no academy column).';

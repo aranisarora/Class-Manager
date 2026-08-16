@@ -248,6 +248,14 @@ function NewContactForm({ onDone }: { onDone: () => void }) {
  * you the first. `createAcademy` writes the four rows §7.1 starts from (academy at
  * `setup`, person, contact, academy_admin) and **messages nobody**, which is the whole
  * point: from here the business is built by talking to it.
+ *
+ * What it makes is a *test* tenant, and the copy says so because the route decides it
+ * rather than the operator. `POST /api/emulator/academy` stamps `is_sandbox` on anything
+ * born here whenever the deployment is not itself a scratch box — that is what gives the
+ * per-academy guard something to allow, since the id is minted inside `createAcademy` and
+ * no caller can name a tenant that does not exist yet. The consequence is worth stating on
+ * the form rather than leaving in a route comment: on the live console this button cannot
+ * produce a real business, and onboarding a paying academy is not an act this console has.
  */
 function NewAcademyForm({ onDone }: { onDone: () => void }) {
   const { state, actions } = useEmulator()
@@ -299,7 +307,12 @@ function NewAcademyForm({ onDone }: { onDone: () => void }) {
         <Btn size="xs" tone="ghost" onClick={onDone}>
           cancel
         </Btn>
-        <span className="ml-auto font-mono text-[9px] text-zinc-600">starts at setup · messages nobody</span>
+        <span
+          className="ml-auto font-mono text-[9px] text-zinc-600"
+          title="A test tenant. On a live deployment the route marks the new academy academy.is_sandbox, which is what lets the scoped destructive controls — the clock, the composer, the tick marks, the drop controls — act on it and on nothing else. It starts at `setup` and messages nobody; the business is built from here by talking to it."
+        >
+          test tenant · messages nobody
+        </span>
       </div>
     </div>
   )
@@ -340,6 +353,10 @@ export function ContactTray() {
           onboardingState: 'live',
           senderPhone: null,
           senderLabel: null,
+          // An academy the world state did not return, reconstructed from contacts alone.
+          // Nothing here knows whether it is scratch, and the unbadged reading is the safe
+          // one — the server decides what may be done to it either way.
+          isSandbox: false,
           category: null,
           rail: null,
           upiHandle: null,
@@ -371,7 +388,7 @@ export function ContactTray() {
           <Btn
             size="xs"
             active={addingAcademy}
-            title="create a business — starts at setup, messages nobody"
+            title="create a test business — starts at setup, messages nobody, and on a live deployment is marked a sandbox so the scoped destructive controls will act on it"
             onClick={() => {
               setAddingAcademy((s) => !s)
               setAdding(false)
@@ -422,6 +439,26 @@ export function ContactTray() {
               >
                 <span className="probe" style={{ color: 'var(--wa-ink-dim)' }}>{isCollapsed ? '▸' : '▾'}</span>
                 <span className="truncate text-[13px] font-medium" style={{ color: 'var(--wa-ink)' }}>{academy.name}</span>
+                {/* Beside the name, not out with the counts on the right: the question this
+                    answers — whose data am I about to touch? — is asked while reading the name,
+                    and an answer that arrives after the eye has moved on is not an answer.
+
+                    Only the sandbox is marked. Badging real tenants too would put a chip on
+                    every row in the common case, and the thing worth noticing is the exception.
+                    It carries the same emerald as OpsBar's mode badge so the strip at the top
+                    and the row in the tray are visibly saying the same word.
+
+                    The chip is a courtesy, not the defence: `requireSandboxAcademy` refuses on
+                    the server for the same bit, so an unbadged row is protected whether or not
+                    anybody looked. */}
+                {academy.isSandbox ? (
+                  <Chip
+                    tone="window"
+                    title="Scratch tenant (academy.is_sandbox). Clock moves, invented messages and forged receipts are allowed here and refused everywhere else."
+                  >
+                    sandbox
+                  </Chip>
+                ) : null}
                 <span className="ml-auto flex items-center gap-1">
                   {academy.onboardingState !== 'live' ? (
                     <Chip tone="warn" title="§2.6 — nothing is sent until the admin says go">

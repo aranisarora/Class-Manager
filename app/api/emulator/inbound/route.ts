@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
-import { requireSandbox } from '@/lib/ops-guard'
+import { resolveIdentity } from '@/lib/identity'
+import { requireSandboxAcademy } from '@/lib/ops-guard'
 import { inboundFromContact } from '@/lib/seed'
 
 export const runtime = 'nodejs'
@@ -59,23 +60,39 @@ const Body = z
  * the contact's state, §11.2), then run the turn. A tap posts `actionId` and the
  * turn consumes it with no model call (§2.2).
  *
- * Sandbox only, and the reason is the sentence above: same road as a real inbound. There
- * is no "reply as the academy" control anywhere in this console, so the composer, every
- * reply-button tap and every Flow submit all arrive here speaking *as the contact*. In
- * production that puts words in a real parent's mouth in a transcript the business will
- * later read as evidence, reopens the paid 24-hour window on `last_inbound_at`, promotes
- * their state, and runs a turn that answers them over the live number. The operator meant
- * to look; the parent gets a message.
+ * Sandbox academy only, and the reason is the sentence above: same road as a real inbound.
+ * There is no "reply as the academy" control anywhere in this console, so the composer,
+ * every reply-button tap and every Flow submit all arrive here speaking *as the contact*.
+ * Against a real tenant that puts words in a real parent's mouth in a transcript the
+ * business will later read as evidence, reopens the paid 24-hour window on
+ * `last_inbound_at`, promotes their state, and runs a turn that answers them over the live
+ * number. The operator meant to look; the parent gets a message. Against a tenant the
+ * operator created for themselves, all of that is the point.
  */
 export async function POST(req: Request): Promise<Response> {
-  const denied = requireSandbox()
-  if (denied) return denied
-
   const raw = await req.json().catch(() => ({}))
   const parsed = Body.safeParse(raw)
   if (!parsed.success) {
     return Response.json({ ok: false, error: 'invalid_body', issues: parsed.error.issues }, { status: 400 })
   }
+
+  /**
+   * Whose contact this is, before a single row is written.
+   *
+   * `inboundFromContact` finds the tenant too, by probing each academy in the world — but
+   * the id it finds only surfaces in its result, after `ingestInbound` has stored the
+   * inbound message, stamped `last_inbound_at` and run the whole turn. A guard reading it
+   * from there would be deciding whether the fabrication was allowed after committing it.
+   *
+   * `app.identity` (0005) is `security definer` and read-only, so this is one round trip
+   * that needs no academy of its own, and it answers null for a contact that does not
+   * exist — which the guard reads as "refuse" rather than as "no academy named, carry on".
+   * On a scratch box the guard waves it through and `inboundFromContact` returns the same
+   * 404 it always did.
+   */
+  const identity = await resolveIdentity(parsed.data.contactId)
+  const denied = await requireSandboxAcademy(identity?.academyId)
+  if (denied) return denied
 
   try {
     const result = await inboundFromContact(parsed.data)

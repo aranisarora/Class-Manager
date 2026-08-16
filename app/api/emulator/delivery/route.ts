@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 import { withSession, type SessionCtx } from '@/lib/db'
-import { requireSandbox } from '@/lib/ops-guard'
+import { requireSandboxAcademy } from '@/lib/ops-guard'
 import { worldAcademyIds } from '@/lib/seed'
 
 export const runtime = 'nodejs'
@@ -11,6 +11,20 @@ const Body = z.object({
   /** `delivered` is the network's act. `read` additionally opens the chat, which is a person's. */
   mode: z.enum(['delivered', 'read']),
   limit: z.number().int().min(1).max(1000).optional(),
+  /**
+   * Whose ladder to advance — the field this route was written without.
+   *
+   * It is the only one of the emulator's write handlers that carried no identifier of any
+   * kind, so there was nothing for a per-academy guard to test and the comment below had
+   * already named that as the flaw ('across every academy at once with no way for the
+   * caller to scope it'). Both statements in the loop body already filter on
+   * `academy_id`, so scoping is a change of what the loop iterates and nothing else.
+   *
+   * Optional, matching the clock: omitted still means every academy, which is honest on a
+   * scratch box where forging the whole world's ladder is the point, and refused by the
+   * guard anywhere else.
+   */
+  academyId: z.string().uuid().optional(),
 })
 
 /**
@@ -31,30 +45,35 @@ const Body = z.object({
  * never accepted cannot be delivered, and claiming otherwise is exactly the §2.4 lie the
  * status ladder exists to prevent.
  *
- * Sandbox only, by that same rule read one step further out. The emulator transport never
- * reports back, so hand-advancing the ladder is the only honest way to exercise it here.
- * Under `TRANSPORT=cloud` a real one does report back, and then this route is the lie:
- * it stamps `delivered_at` and `read_at` for messages no handset acknowledged, across
- * every academy at once with no way for the caller to scope it, and feeds the result to
- * the §16.3 quality proxies this very comment says it exists to supply. Metrics nobody
- * can trust are worse than metrics nobody has.
+ * Sandbox academy only, by that same rule read one step further out. The emulator transport
+ * never reports back, so hand-advancing the ladder is the only honest way to exercise it
+ * here. Under `TRANSPORT=cloud` a real one does report back, and then this route is the lie:
+ * it stamps `delivered_at` and `read_at` for messages no handset acknowledged, and feeds the
+ * result to the §16.3 quality proxies this very comment says it exists to supply. Metrics
+ * nobody can trust are worse than metrics nobody has — so the forged rungs are confined to
+ * the tenant that was made to be forged against, and a call that names no tenant is refused
+ * anywhere but a scratch box rather than quietly meaning all of them.
  */
 export async function POST(req: Request): Promise<Response> {
-  const denied = requireSandbox()
-  if (denied) return denied
-
   const raw = await req.json().catch(() => ({}))
   const parsed = Body.safeParse(raw)
   if (!parsed.success) {
     return Response.json({ ok: false, error: 'invalid_body', issues: parsed.error.issues }, { status: 400 })
   }
+
+  const denied = await requireSandboxAcademy(parsed.data.academyId)
+  if (denied) return denied
+
   const { mode } = parsed.data
   const limit = parsed.data.limit ?? 200
 
   try {
     let delivered = 0
     let read = 0
-    for (const academyId of await worldAcademyIds()) {
+    // One academy when the caller named one, the whole world when the guard allowed the
+    // omission — which it only does on a scratch box, where the world is the fixtures.
+    const scope = parsed.data.academyId ? [parsed.data.academyId] : await worldAcademyIds()
+    for (const academyId of scope) {
       const ctx: SessionCtx = { role: 'service', academyId }
       const moved = await withSession(ctx, async (tx) => {
         // `read` first: a row that reached `delivered` on the previous beat moves up now,
