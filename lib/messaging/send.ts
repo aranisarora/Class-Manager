@@ -84,10 +84,14 @@ type Prepared =
 
 /**
  * `markStatus` is handed a wire id with no tenant on it, and every `message` policy is
- * pinned to `app.academy_id()` — there is no cross-tenant read to resolve one with, by
- * design. The send path remembers what it sent, so a transport callback in the same process
- * resolves without one; callers that already know the tenant should pass it, or use
- * `markStatusById`, which takes a session.
+ * pinned to `app.academy_id()`. The send path remembers what it sent, so a transport
+ * callback in the same process resolves without one; callers that already know the tenant
+ * should pass it, or use `markStatusById`, which takes a session.
+ *
+ * This is a per-process cache and nothing more. It was the only resolution path until 0031,
+ * which is complete on one long-lived server and useless across serverless instances — see
+ * the note in `markStatus`, where `app.academy_for_wa_message` is now the fallback that
+ * actually holds in production.
  */
 const waIndex = new Map<string, { academyId: string; messageId: string }>()
 const WA_INDEX_MAX = 5000
@@ -113,6 +117,14 @@ function rememberWaMessage(waMessageId: string, academyId: string, messageId: st
  * `serviceFrom` now because thirteen other places had the identical copy.
  */
 const serviceCtx = serviceFrom
+
+/**
+ * The tenant-free session used for the one cross-tenant lookup in `markStatus`, matching
+ * `lib/agent/deepseek.ts` and `lib/agent/memory.ts`, which read global infrastructure the
+ * same way. The uuid is never a real academy; it exists so `app.academy_id()` resolves to
+ * something and the `security definer` function can do the actual reading.
+ */
+const NIL_ACADEMY = '00000000-0000-0000-0000-000000000000'
 
 function capFrom(settings: Record<string, unknown> | null, key: string, fallback: number): number {
   const caps = (settings?.['send_caps'] ?? null) as Record<string, unknown> | null
@@ -1013,11 +1025,39 @@ export async function markStatus(
   academyId?: string,
 ): Promise<void> {
   const known = waIndex.get(waMessageId)
-  const tenant = academyId ?? known?.academyId
+  /**
+   * Three sources, cheapest first, and the third is the one that makes this work off a
+   * single machine.
+   *
+   * `waIndex` is an in-process Map the send path fills in. It is a complete answer on a
+   * long-lived server — the process that sent the message is the process that later hears
+   * about it — and an empty one on Vercel, where a status webhook almost never lands on the
+   * instance that did the sending. Relying on it alone is why real delivery and read
+   * receipts threw `unknown_wa_message` in production while inbound worked perfectly:
+   * §16.3's quality proxies stayed frozen at `sent`, and nothing surfaced as broken because
+   * a receipt that never arrives looks exactly like a parent who has not opened WhatsApp.
+   *
+   * `app.academy_for_wa_message` (0031) is the durable answer. It is `security definer`
+   * because that is precisely the permission needed — every `message` policy is pinned to
+   * `app.academy_id()`, and a wamid arrives with no tenant on it — and narrow enough to be
+   * worth granting: one uuid, no message content.
+   */
+  const tenant =
+    academyId ??
+    known?.academyId ??
+    (await withSession({ role: 'service', academyId: NIL_ACADEMY }, async (tx) => {
+      const rows = await tx<{ academy_id: string | null }[]>`
+        select app.academy_for_wa_message(${waMessageId}) as academy_id`
+      return rows[0]?.academy_id ?? undefined
+    }))
+
   if (!tenant) {
+    // Unknown after the lookup means the row genuinely is not there — a receipt for a
+    // message this database never sent, or one it has since dropped. That is not ours to
+    // mark, and the throw is what keeps the job from being recorded as done.
     throw msgError(
       'unknown_wa_message',
-      `cannot resolve the tenant for ${waMessageId}: message RLS is pinned to app.academy_id(). ` +
+      `cannot resolve the tenant for ${waMessageId}: no message row carries that wa_message_id. ` +
         `Pass academyId, or use markStatusById with the session that owns the thread.`,
     )
   }
