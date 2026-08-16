@@ -179,11 +179,29 @@ export function toJsonSchema(schema: unknown, depth = 0): Json {
   }
 }
 
-/** The parameters block for one operation, always an object even when it takes nothing. */
-export function parametersFor(params: z.ZodTypeAny | undefined): Json {
+/**
+ * The parameters block for one operation, always an object even when it takes nothing.
+ *
+ * `omit` removes parameters from what the model decodes against — the caller
+ * passes `HUMAN_ASSERTION_PARAMS` (steps.ts), the fields only a human's tap may
+ * set. A declared field is an invited one: `opt_out` advertising
+ * `confirmed: boolean` is how a model that just heard "please stop messaging me
+ * now" came to write `confirmed: true` — a reasonable decode of a field it
+ * should never have been shown (F-Q, run 1). The zod schema keeps the field, so
+ * a tap replay still validates through it; only the advertisement goes.
+ */
+export function parametersFor(params: z.ZodTypeAny | undefined, omit?: readonly string[]): Json {
   if (!params) return { type: 'object', properties: {} }
   const out = toJsonSchema(params)
   if (out.type !== 'object') return { type: 'object', properties: {} }
   if (!out.properties) out.properties = {}
+  if (omit?.length) {
+    const props = out.properties as Json
+    for (const key of omit) delete props[key]
+    if (Array.isArray(out.required)) {
+      out.required = (out.required as string[]).filter((k) => !omit.includes(k))
+      if (!(out.required as string[]).length) delete out.required
+    }
+  }
   return out
 }

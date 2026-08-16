@@ -25,7 +25,7 @@ import { rowShapedFact, writeFact } from './memory'
 import type { ToolDecl } from './deepseek'
 import { audienceFor, executePlan, needsPreview, parseSteps, previewPlan, type PlanStep } from './plan'
 import {
-  checkActionPayload, checkSteps, humanAssertionNote,
+  checkActionPayload, checkSteps, humanAssertionNote, HUMAN_ASSERTION_PARAMS,
   stripHumanAssertions, stripHumanAssertionsFromArgs, stripHumanAssertionsFromPayload,
 } from './steps'
 import { lit, uid, OPERATIONS, operationSignature, type OperationName } from './operations'
@@ -1143,7 +1143,12 @@ function declareOperations(ops: string[]): ToolDecl[] {
       name,
       description:
         `${op.description}${op.destructive ? ' This is destructive, so it always comes back as a preview to read out before it runs.' : ''}`,
-      parametersJsonSchema: parametersFor(op.params),
+      // Parameters only a human's tap may set are not offered to the model at
+      // all. `confirmed: boolean` in the declaration is an invitation — F-Q's
+      // run 1 read "please stop messaging me now" straight into it — and every
+      // model-set value of these is stripped on arrival anyway, so declaring
+      // them advertises exactly the field the runtime forbids.
+      parametersJsonSchema: parametersFor(op.params, HUMAN_ASSERTION_PARAMS),
     }
   })
 }
@@ -1258,7 +1263,8 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
     name: 'reply',
     description:
       'Send a message now, to this person or to someone else, with buttons, a list, or a form. Every button carries an action minted here and replayed verbatim on tap. Offer the natural next step as a button. NEVER write a web address into the body — there is no browser in this product. ' +
-      'And know your channel: prose you write in a round that calls tools reaches NOBODY — it is your notebook, not a message. What a person sees is what you pass here (or, on an interactive turn only, the closing text of your final round).',
+      'And know your channel: prose you write in a round that calls tools reaches NOBODY — it is your notebook, not a message. What a person sees is what you pass here (or, on an interactive turn only, the closing text of your final round — which ships WITHOUT your options: the runtime attaches only a generic menu to it). ' +
+      'So a choice you have worked out is not offered until each option is a button on a reply — options written into the body as prose or bullets cannot be tapped. An option that has no operation behind it is still a button: {kind:\'reply\', text:"…"} just types those words back as their message, is always legal, and needs no arguments you do not have.',
     parametersJsonSchema: {
       type: 'object',
       properties: {
@@ -1888,27 +1894,34 @@ export async function runTool(
       // that cannot be minted used to take the whole message down with it, and
       // the error the model got back named no button and suggested no repair —
       // so it retried the same shape until the turn ran out.
-      // A button that cannot be minted is dropped; the message still goes.
       //
-      // It used to take the whole call down, and the cure was worse than the
-      // disease: the model retried, was refused again, retried a third time with
-      // a *different* button — and the plan it had previewed was orphaned, while
-      // the admin was told their venue and UPI handle were "noted". Nothing had
-      // been written. A message missing one button is a smaller failure than a
-      // person receiving nothing, or receiving a confident sentence about work
-      // that never happened.
+      // A button whose action cannot be minted is DOWNGRADED, never silently
+      // deleted: the tap becomes typing the title — the same privilege the
+      // person already has — so the option the prose points at still exists,
+      // and the working route (their words come back in, the operation stages
+      // its own lawful confirmation) is one tap longer rather than gone.
       //
-      // What was dropped comes back in the result, so the model learns inside
-      // the same turn, and the pending-plan substitution below still attaches
-      // the confirmation it needed.
-      const dropped: { title: string; why: string }[] = []
+      // Both prior shapes were worse. Taking the whole call down orphaned the
+      // previewed plan while the model retried itself out of rounds. Dropping
+      // the button while the message went shipped prose naming a control that
+      // was not on the screen — F-Q, on the one request that cannot be
+      // half-kept: "please stop messaging me now" went out with its
+      // [Stop all messages] deleted, because it carried confirmed:true and the
+      // refusal fired after the model's last word, where no instruction can
+      // reach. Only a button with no title at all has nothing to degrade to.
+      //
+      // What was downgraded comes back in the result — on every send, partial
+      // or not — so the model learns inside the same turn.
+      const downgraded: { title: string; why: string }[] = []
       let buttons: { title: string; action: any }[] | undefined
       if (Array.isArray(args?.buttons)) {
         buttons = []
         for (const b of args.buttons.slice(0, LIMITS.buttons)) {
           const resolved = resolveAction((b as any)?.action, ctx)
           if (!resolved.ok) {
-            dropped.push({ title: String((b as any)?.title ?? ''), why: resolved.error })
+            const title = String((b as any)?.title ?? '').trim()
+            downgraded.push({ title, why: resolved.error })
+            if (title) buttons.push({ title: fitTitle(title), action: { kind: 'reply', text: title } })
             continue
           }
           buttons.push({ title: fitTitle((b as any)?.title), action: resolved.action })
@@ -2287,14 +2300,15 @@ export async function runTool(
         result: {
           status: outcome.status,
           ...('reason' in outcome ? { reason: outcome.reason } : {}),
-          ...(dropped.length && !buttons?.length
+          ...(downgraded.length
             ? {
-                dropped_buttons: dropped,
+                downgraded_buttons: downgraded,
                 note:
-                  'The message went out without those. Do not resend it — say the missing option in your next message, ' +
-                  "or offer it properly: to commit a plan you previewed, pass {kind:'steps', steps:<the steps>, summary:'…'} " +
-                  "or {kind:'operation', op:'commit', args:{handle}} with a handle from THIS turn. Never put a tool name " +
-                  '(plan, commit, act, read) where an operation name belongs.',
+                  'Those actions could not be minted, so each button was downgraded to a plain reply button — tapping it ' +
+                  'sends its title back as their message, and you handle it next turn. The message went out that way; do ' +
+                  "not resend it. To offer the action properly next time: to commit a plan you previewed, pass " +
+                  "{kind:'steps', steps:<the steps>, summary:'…'} or {kind:'operation', op:'commit', args:{handle}} with a " +
+                  'handle from THIS turn. Never put a tool name (plan, commit, act, read) where an operation name belongs.',
               }
             : {}),
         },

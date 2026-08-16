@@ -208,6 +208,24 @@ type Case = {
    * button as `steps` or `operation` (§2.2), and the refusal is always a `noop`.
    */
   tap?: true
+  /**
+   * What must be true of the turn ITSELF, asked before the harness's thumb lands.
+   *
+   * The tap is not a neutral observer. A confirmation button exists to change the
+   * world, so for any case whose subject is the thing the button changes, checks
+   * placed after the tap measure the harness rather than the model. Driven 16 Aug,
+   * `coach-marks-register` marked the register perfectly — Aarav absent, the other
+   * two present — and then the tap chose `[Aarav told me]`, which is that button's
+   * correct behaviour: it converts the absence to `cancelled_timely`. The two
+   * checks that ran afterwards asserted *absent*, and failed a turn that had done
+   * everything right. The test pressed the button that changed the answer it was
+   * about to read.
+   *
+   * So: what the MODEL did goes here, and what the TAP did goes in `expect`. Both
+   * land in one `checks` array on the record — the split is about when they are
+   * asked, not about how they are reported.
+   */
+  expectBeforeTap?: (q: Sql, ctx: CaseCtx) => Promise<Check[]>
   /** What must actually be true afterwards. Empty for pure-conversation turns. */
   expect: (q: Sql, ctx: CaseCtx) => Promise<Check[]>
 }
@@ -222,8 +240,13 @@ type Case = {
  * arc only ever moves the clock forward, and it never moves it DURING a turn,
  * so rows written by this turn stamp at-or-after the cursor and rows from
  * earlier cases stamp before it.
+ *
+ * `tapped` is the title of the button the harness pressed, or null if it pressed
+ * nothing — always null inside `expectBeforeTap`. A check that only holds once a
+ * particular button has been tapped has to be able to say so, or it asserts the
+ * consequence of a tap that may never have happened.
  */
-type CaseCtx = { startedAt: string; contactId: string }
+type CaseCtx = { startedAt: string; contactId: string; tapped: string | null }
 
 const norm = (s: unknown) => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim()
 
@@ -236,6 +259,32 @@ function check(label: string, ok: boolean, detail: unknown): Check {
 async function firstAt(q: Sql, sql: string): Promise<string | null> {
   const rows = await q<{ at: string | null }>(sql)
   return rows[0]?.at ? String(rows[0].at) : null
+}
+
+/**
+ * The register of the class that has most recently finished, with the roster it
+ * should have covered — read twice by `coach-marks-register`, once either side of
+ * the tap, and it must be the same session both times or the two halves are
+ * talking about different classes.
+ */
+async function register(q: Sql) {
+  const ended = await q(`select id, ends_at::text from session where ends_at <= app.now()
+                          order by ends_at desc limit 1`)
+  const s = ended[0]
+  const marked = s
+    ? await q(`select p.full_name as who, a.status from attendance a
+                 join player pl on pl.id = a.player_id
+                 join person p on p.id = pl.person_id
+                where a.session_id = '${s.id}'::uuid order by p.full_name`)
+    : []
+  const roster = s
+    ? await q(`select p.full_name as who from session se
+                 join enrollment e on e.class_id = se.class_id and e.ended_on is null
+                 join player pl on pl.id = e.player_id and pl.active
+                 join person p on p.id = pl.person_id
+                where se.id = '${s.id}'::uuid order by p.full_name`)
+    : []
+  return { s, ended, marked, roster }
 }
 
 /* -------------------------------------------------------------------------- *
@@ -859,24 +908,22 @@ const CASES: Case[] = [
     // fail on which class the model happened to schedule first.
     text: 'the class just finished — everyone was there except aarav',
     wants: ['act', 'plan'],
+    /**
+     * The tap here is not a rubber stamp on what the model did — it is a second
+     * operation with an opinion.
+     *
+     * A register with an unexplained absence ends on `[Aarav told me] [No, just
+     * absent]` (operations.ts:1989), and the first of those is an `operation`
+     * button, so the kind-based tap picks it. Pressing it is correct — it is §8.2's
+     * catch-point, and it rewrites Aarav from `absent` to `cancelled_timely` and
+     * takes the charge off. Which means the register this case is about only exists
+     * before the thumb lands. Hence the split: the model's register is checked in
+     * `expectBeforeTap`, and `expect` asks the separate question of whether the
+     * button did what it offered to do.
+     */
     tap: true,
-    expect: async (q) => {
-      const ended = await q(`select id, ends_at::text from session where ends_at <= app.now()
-                              order by ends_at desc limit 1`)
-      const s = ended[0]
-      const marked = s
-        ? await q(`select p.full_name as who, a.status from attendance a
-                     join player pl on pl.id = a.player_id
-                     join person p on p.id = pl.person_id
-                    where a.session_id = '${s.id}'::uuid order by p.full_name`)
-        : []
-      const roster = s
-        ? await q(`select p.full_name as who from session se
-                     join enrollment e on e.class_id = se.class_id and e.ended_on is null
-                     join player pl on pl.id = e.player_id and pl.active
-                     join person p on p.id = pl.person_id
-                    where se.id = '${s.id}'::uuid order by p.full_name`)
-        : []
+    expectBeforeTap: async (q) => {
+      const { s, ended, marked, roster } = await register(q)
       const aarav = marked.find((r: any) => norm(r.who).includes('aarav'))
       const absent = marked.filter((r: any) => norm(r.status) === 'absent')
       return [
@@ -887,6 +934,43 @@ const CASES: Case[] = [
         check('aarav is down as absent', norm(aarav?.status) === 'absent', marked),
         check('nobody else was marked absent', marked.length > 0 && absent.length === 1, absent),
       ]
+    },
+    expect: async (q, ctx) => {
+      const { s, marked, roster } = await register(q)
+      const aarav = marked.find((r: any) => norm(r.who).includes('aarav'))
+      const present = marked.filter((r: any) => ['present', 'late'].includes(norm(r.status)))
+      const session = s
+        ? await q(`select status from session where id = '${s.id}'::uuid`)
+        : []
+      const out = [
+        // Marking a register is what COMPLETES a session — the coach never writes
+        // that themselves (operations.ts:1971). Independent of any tap, and the
+        // thing everything downstream of "was this class taken" keys on.
+        check('the session is closed off', norm(session[0]?.status) === 'completed', session),
+        // The tap must not have disturbed anybody it was not about. Counted off the
+        // roster rather than written as a number: which class finishes first is up
+        // to the model, and a literal 2 here would be a second harness assumption
+        // about a world the model builds.
+        check(
+          'everybody else is still marked in',
+          roster.length > 1 && present.length === roster.length - 1,
+          { marked, roster },
+        ),
+      ]
+      // Only askable once that button has actually been pressed. A model that
+      // committed the register with no question attached leaves nothing to tap,
+      // and asserting the conversion anyway would fail it for the harness's
+      // silence rather than for anything it did.
+      if (/told me/i.test(ctx.tapped ?? '')) {
+        out.push(
+          check(
+            'one tap turned the unexplained absence into a timely cancellation',
+            norm(aarav?.status) === 'cancelled_timely',
+            marked,
+          ),
+        )
+      }
+      return out
     },
   },
 
@@ -962,11 +1046,34 @@ const CASES: Case[] = [
     stage: 'churn',
     persona: 'client',
     who: 'meera',
-    what: 'leaving is an end date, never a delete (§8.3) — and the history has to survive it',
+    what: 'a family cannot end its own enrolment — the leave is proposed here and written by the admin (§11.4)',
     text: 'we are stopping after this month. please take aarav out of the fitness batch.',
     wants: ['act', 'plan'],
+    /**
+     * **The write is the admin's, and that is the whole point of the case.**
+     *
+     * This asked for `ended_on` to be set, and it cannot be. RLS lets no holder
+     * update `enrollment`, so `end_enrollment` called by a parent takes the routed
+     * branch (operations.ts:906): it proposes the exact change to the admin behind
+     * one button and tells the family the honest state — "I've sent it to the owner
+     * to make official". Nothing changes in the data, by design, and the operation
+     * says so in its own preview before the tap.
+     *
+     * Driven 16 Aug that is exactly what happened, and `aarav is out of fitness`
+     * failed a turn in which every step was right. A check that the product is
+     * built to refuse is not a strict test, it is a broken one — it can only ever
+     * report the design as a defect, and it hides the question that is actually
+     * open. So the checks below follow the leave down the road it really takes:
+     * nothing deleted, the proposal reaching the admin, and a live button on the
+     * admin's phone that would do the write.
+     *
+     * What is still NOT asked, because nothing in the product answers it yet: what
+     * happens if the admin never taps. Until they do, the fitness batch keeps
+     * billing, and no job chases them. That is a finding about the product, and it
+     * belongs in the report rather than in a check written to fail.
+     */
     tap: true,
-    expect: async (q) => {
+    expect: async (q, ctx) => {
       const enrol = await q(`
         select p.full_name as who, cl.name as class, e.ended_on::text
           from enrollment e
@@ -974,13 +1081,58 @@ const CASES: Case[] = [
           join person p on p.id = pl.person_id
           join class cl on cl.id = e.class_id
          order by p.full_name`)
-      const aaravFitness = enrol.filter(
-        (r: any) => norm(r.who).includes('aarav') && norm(r.class).includes('fitness'),
+      const aarav = (cls: string) =>
+        enrol.filter((r: any) => norm(r.who).includes('aarav') && norm(r.class).includes(cls))
+      // Everything the admin was sent this turn — the routed proposal goes to a
+      // DIFFERENT contact than the one who spoke, which is why it cannot be found
+      // in the speaker's own thread the way a reply can.
+      const escalated = await q(`
+        select left(m.body, 160) as body, m.payload, p.full_name as to_whom
+          from message m
+          join contact ct on ct.id = m.contact_id
+          join person p on p.id = ct.person_id
+          join academy_admin aa on aa.person_id = p.id
+         where m.direction = 'outbound' and m.suppressed_reason is null
+           and m.created_at >= '${ctx.startedAt}'::timestamptz
+         order by m.created_at asc`)
+      // The whole window is queried so a failure prints what the admin DID get,
+      // and narrowed here: the jobs drained between the tap and this check talk to
+      // the admin too, and an evening digest is not somebody being told about a
+      // leave. `is_escalation` is the flag the routed branch sets on itself.
+      const routed = escalated.filter(
+        (m: any) => m?.payload?.is_escalation === true && norm(m.body).includes('aarav'),
       )
+      const buttons = routed.flatMap((m: any) =>
+        Array.isArray(m?.payload?.buttons) ? m.payload.buttons : [],
+      )
+      const ids = buttons
+        .map((b: any) => String(b?.actionId ?? ''))
+        .filter((s: string) => /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(s))
+      // A button is only an offer if the action behind it is still there and still
+      // says what it said — a title alone is a picture of a button.
+      const staged = ids.length
+        ? await q(`select id::text as id, kind, payload->>'op' as op, consumed_at::text, expires_at::text
+                     from action where id in (${ids.map((s: string) => `'${s}'`).join(',')})`)
+        : []
       const history = await q(`select count(*)::int as n from tally_line`)
       return [
-        check('aarav is out of fitness', aaravFitness.length > 0 && aaravFitness.every((r: any) => r.ended_on), enrol),
-        check('his other classes are untouched', enrol.some((r: any) => norm(r.who).includes('aarav') && !r.ended_on), enrol),
+        // §8.3, and the reason the routing exists at all: leaving is an end date,
+        // never a delete. A parent's request that removed the row would take the
+        // attendance and the money with it.
+        check('nothing was deleted — aarav is still on the fitness roll', aarav('fitness').length > 0, enrol),
+        check(
+          'his other classes were not touched',
+          aarav('beginner').length > 0 && aarav('beginner').every((r: any) => !r.ended_on),
+          enrol,
+        ),
+        // Rule 15: a handoff with no return trip is indistinguishable from being
+        // ignored. The family was told it went to the owner; this is whether it did.
+        check('the leave reached the owner', routed.length > 0, escalated),
+        check(
+          'the owner has one tap that would actually end it',
+          staged.some((a: any) => a.op === 'end_enrollment' && !a.consumed_at),
+          { staged, buttons: buttons.map((b: any) => b?.title) },
+        ),
         check('the money history survived', Number(history[0]?.n ?? 0) > 0, history),
       ]
     },
@@ -1832,6 +1984,31 @@ type TurnRecord = {
  *     another process survives being undone by this one.
  * ========================================================================== */
 
+/* ========================================================================== *
+ * FULL VISIBILITY
+ *
+ * A probe record is evidence, and evidence that stops mid-sentence is a guess.
+ *
+ * These fields used to be sliced to 700 and 900 characters. The model's own
+ * reasoning rides inside a `(model)` row's `args`, so the 700 cap cut the
+ * thinking off part-way through the sentence that explained the decision, and
+ * any query returning more than a few rows lost its rows. A report built on
+ * that can say WHAT a turn did and never WHY — and "why" is the whole question
+ * when a turn goes wrong. A model that did not know it should stop somebody's
+ * messages and a model that knew and could not are the same tool trace and
+ * different bugs.
+ *
+ * So nothing is truncated silently. The cap is high enough not to bind in
+ * normal use, and when it does bind it says so in the record, in the record's
+ * own words, rather than ending mid-token and looking complete.
+ * ========================================================================== */
+const FIELD_CAP = 400_000
+function full(v: unknown): string {
+  const s = typeof v === 'string' ? v : JSON.stringify(v ?? null)
+  if (s.length <= FIELD_CAP) return s
+  return `${s.slice(0, FIELD_CAP)}\n…[TRUNCATED — ${s.length - FIELD_CAP} more characters of ${s.length}]`
+}
+
 const CLOCK_STEP_MS = 60 * 60 * 1000
 /**
  * Total travel one probe run may spend, across every stage.
@@ -1882,6 +2059,55 @@ async function runChild(model: string, arm: string): Promise<void> {
 
   const q: Sql = async <T = any>(sql: string) =>
     withSession({ role: 'service', academyId: made.academyId }, async (tx) => (await tx.unsafe(sql)) as unknown as T[])
+
+  /**
+   * **Refuse to drive next to a leftover probe business, and say so before
+   * spending anything.**
+   *
+   * Every tenant shares one sender by design (`createAcademy` — "exactly as
+   * production has one number"), and §10.1 resolves an inbound by the pair (from,
+   * sender). The admin is safe because `createAcademy` picks a number free across
+   * the whole world. The families are not: they are composed by the MODEL out of
+   * fixed prompt text, so two probe runs invent the same three phone numbers, and
+   * from the second run onwards every coach and client message matches two
+   * contacts and resolves to neither.
+   *
+   * That is checked here rather than left to `neverLanded` below because the cost
+   * is asymmetric — the collision only bites once the arc has composed its
+   * families, which is nine turns and most of the money in. Refusing costs one
+   * query. `--keep` is what leaves these behind, and it is the right flag to have;
+   * it just needs clearing up after, and nothing said so.
+   *
+   * Only OTHER probe businesses count. The dev seed lives on the same sender and
+   * has never collided — its numbers are in a different block — and children are
+   * spawned one at a time, so a sibling arm's academy is never live here.
+   */
+  const strays: { id: string; name: string }[] = []
+  for (const id of await worldAcademyIds()) {
+    if (id === made.academyId) continue
+    const [row] = await withSession({ role: 'service', academyId: id }, async (tx) =>
+      (await tx`select name from academy where id = ${id}::uuid`) as unknown as { name: string }[],
+    )
+    if (row?.name?.startsWith('Probe ')) strays.push({ id, name: String(row.name) })
+  }
+  if (strays.length) {
+    await dropAcademy(made.academyId).catch(() => {})
+    console.error(
+      c.red(
+        `\n  refusing to drive — ${strays.length} probe business${strays.length > 1 ? 'es' : ''} ` +
+          `already on this sender:\n` +
+          strays.map((s) => `    ${s.name}  ${s.id}`).join('\n') +
+          `\n\n  They share the sender, and this arc composes the same family numbers every run, so ` +
+          `every\n  coach and client turn would resolve to two contacts and reach neither — silently.\n` +
+          `  Drop them and drive again:\n` +
+          strays
+            .map((s) => `    npx tsx -e "import('@/lib/seed').then(m => m.dropAcademy('${s.id}'))"`)
+            .join('\n') +
+          `\n`,
+      ),
+    )
+    process.exit(3)
+  }
 
   /**
    * The per-case cursor, on the clock `created_at` actually runs on (0027 — the
@@ -2089,12 +2315,98 @@ async function runChild(model: string, arm: string): Promise<void> {
       }
       const startedAt = await domainNow()
       let fatal: string | null = null
+      /** Set only when the message never became a turn at all — see below. */
+      let neverLanded: string | null = null
       if (speaker) {
         try {
-          await inboundFromContact({ contactId: speaker.id, text: kase.text })
+          /**
+           * **The result is read, and this is not defensive tidying — it is the
+           * difference between a model failure and a harness failure.**
+           *
+           * `inboundFromContact` is addressed to a contact, but it delivers by
+           * PHONE: it looks the contact's number up and hands `ingestInbound` the
+           * pair (from, sender), which re-resolves through §10.1. That round trip
+           * throws away the one unambiguous fact the caller had. When two academies
+           * on the shared sender hold the same number, `resolveInbound` finds two
+           * matches and refuses to guess — which is exactly right for a real
+           * inbound, and fatal here: it returns `{ok:false, unresolved}`, writes no
+           * message, runs no turn, and RAISES NOTHING.
+           *
+           * Driven 16 Aug against a database still holding a `--keep` academy from
+           * the run before, that is what happened to every coach and client turn in
+           * the arc — five of them. The admin was untouched because `createAcademy`
+           * scans the world for a free number; the families are composed by the
+           * MODEL from fixed prompt text, so they are byte-identical between runs.
+           * Each of the five recorded 0 rounds, 0 tokens, an empty reply and a
+           * column of failing checks — indistinguishable, on the page, from a model
+           * that read the message and said nothing back.
+           *
+           * The same comment at `prospectPhone` above records this class being
+           * found and fixed for ONE number. Nothing made the next one loud. So the
+           * result is inspected now, and the academy is checked too: a single match
+           * in somebody ELSE's business succeeds quietly and drives a turn against
+           * the wrong tenant, which is worse than the refusal.
+           */
+          const landed: any = await inboundFromContact({ contactId: speaker.id, text: kase.text })
+          if (!landed?.ok) {
+            const why = landed?.unresolved
+              ? `§10.1 could not tell which academy ${speaker.name} belongs to — ${
+                  (landed.candidates ?? []).map((c: any) => c.name).join(' vs ') || 'no candidates'
+                }. Another business on this sender holds the same number; drop the stale one and re-drive.`
+              : landed?.notFound
+                ? 'no academy in the world owns that contact'
+                : 'the inbound did not land, and did not say why'
+            neverLanded = `the message never reached a turn — ${why}`
+          } else if (landed.academyId && landed.academyId !== made.academyId) {
+            neverLanded =
+              `the message landed in a DIFFERENT business (${landed.academyId}) — ` +
+              `this turn was driven against somebody else's rows`
+          }
+          fatal = neverLanded
         } catch (e) {
           fatal = (e as Error)?.message?.slice(0, 300) ?? String(e)
         }
+      }
+
+      /**
+       * Same reasoning as the refused clock walk above, one step further along: a
+       * question the world could not pose must not be scored. If the sentence never
+       * became a turn, every check below is being asked about a world nobody spoke
+       * to, and each one it fails is charged to the model. Record the refusal and
+       * nothing else.
+       */
+      if (neverLanded) {
+        process.stderr.write(c.red(`    DID NOT RUN — ${neverLanded}\n`))
+        records.push({
+          model,
+          thinking: arm,
+          modelReported: null,
+          case: kase.name,
+          stage: kase.stage,
+          persona: kase.persona,
+          spokeAs: speaker?.name ?? null,
+          what: kase.what,
+          said: kase.text,
+          clockNote,
+          tapNote: null,
+          jobs,
+          reply: { body: '', words: 0, buttons: [], list: false, link: false, suppressed: null, all: [], flags: [] },
+          tools: [],
+          toolNames: [],
+          wants: kase.wants,
+          wanted: false,
+          rounds: 0,
+          latencyMs: 0,
+          inTok: 0,
+          cachedTok: 0,
+          outTok: 0,
+          usd: null,
+          error: neverLanded,
+          checks: [],
+          claimedDone: false,
+          backedByWrite: false,
+        })
+        continue
       }
 
       const turns = speaker
@@ -2119,10 +2431,22 @@ async function runChild(model: string, arm: string): Promise<void> {
               order by created_at asc`,
           )
         : []
+      // Anything the model's own turn has to answer for is asked HERE, while the
+      // world is still only what the turn made of it. See `expectBeforeTap`.
+      let preChecks: Check[] = []
+      if (speaker && kase.expectBeforeTap) {
+        try {
+          preChecks = await kase.expectBeforeTap(q, { startedAt, contactId: speaker.id, tapped: null })
+        } catch (e) {
+          preChecks = [check('pre-tap expectation query failed', false, (e as Error)?.message ?? String(e))]
+        }
+      }
+
       // The tap goes down the same road a thumb does — `inboundFromContact` with an
       // `actionId` and no text — so the plan that runs is the one stored in the
       // action row (§2.2), not a re-reading of the sentence.
       let tapNote: string | null = null
+      let tapped: string | null = null
       if (kase.tap && speaker) {
         // Newest message first: the confirmation is on the last thing said, and an
         // older message in the same window may carry a stale one.
@@ -2147,6 +2471,7 @@ async function runChild(model: string, arm: string): Promise<void> {
           tapNote = `nothing staged to tap — ${offered.map((b: any) => `[${b?.title}: ${kindOf.get(String(b.actionId)) ?? '?'}]`).join(' ') || 'no buttons at all'}`
         } else {
           const tappedAt = await domainNow()
+          tapped = String(hit.title ?? '')
           try {
             await inboundFromContact({ contactId: speaker.id, actionId: String(hit.actionId) })
             const after = await q(
@@ -2155,26 +2480,45 @@ async function runChild(model: string, arm: string): Promise<void> {
                   and contact_id = '${speaker.id}'::uuid and created_at >= '${tappedAt}'::timestamptz
                 order by created_at desc limit 1`,
             )
-            tapNote = `tapped [${hit.title}] → ${String(after[0]?.body ?? '(nothing came back)').slice(0, 160)}`
+            tapNote = `tapped [${hit.title}] → ${String(after[0]?.body ?? '(nothing came back)')}`
           } catch (e) {
-            tapNote = `tapped [${hit.title}] and it threw: ${(e as Error)?.message?.slice(0, 160)}`
+            tapNote = `tapped [${hit.title}] and it threw: ${(e as Error)?.message}`
           }
         }
       }
 
       const trace: any[] = Array.isArray(t.tool_calls) ? t.tool_calls : []
-      const tools = trace.map((x: any) => ({
-        round: Number(x?.round ?? 0),
-        name: String(x?.name ?? '?'),
-        args: JSON.stringify(x?.args ?? {}).slice(0, 700),
-        // The RESULT, not just the call. A tool that refuses returns
-        // `{result:{error, hint, signature}}` rather than throwing, so `error`
-        // is empty on exactly the failures worth reading — which is why the
-        // first run could show `plan → plan` with identical arguments and no
-        // way to see what the model was told in between.
-        result: JSON.stringify(x?.result ?? null).slice(0, 900),
-        ...(x?.error ? { error: String(x.error).slice(0, 300) } : {}),
-      }))
+      const tools = trace.map((x: any) => {
+        const msg = x?.args?.message
+        return {
+          round: Number(x?.round ?? 0),
+          name: String(x?.name ?? '?'),
+          args: full(x?.args ?? {}),
+          // The RESULT, not just the call. A tool that refuses returns
+          // `{result:{error, hint, signature}}` rather than throwing, so `error`
+          // is empty on exactly the failures worth reading — which is why the
+          // first run could show `plan → plan` with identical arguments and no
+          // way to see what the model was told in between.
+          result: full(x?.result ?? null),
+          /**
+           * The model's own thinking, lifted out of the `args` blob to a field
+           * of its own.
+           *
+           * It used to be reachable only as a JSON string inside a JSON string,
+           * under a 700-character cap that cut it off mid-sentence — so a report
+           * could say WHAT a turn did and never WHY. Why is the whole question
+           * when a turn goes wrong: the difference between a model that did not
+           * know it should stop somebody's messages and one that knew and could
+           * not is invisible in the tool names, and decides what you fix.
+           */
+          ...(typeof msg?.reasoning_content === 'string' && msg.reasoning_content.trim()
+            ? { reasoning: msg.reasoning_content }
+            : {}),
+          // What it wrote as prose on this round, before any tool ran.
+          ...(typeof msg?.content === 'string' && msg.content.trim() ? { drafted: msg.content } : {}),
+          ...(x?.error ? { error: String(x.error) } : {}),
+        }
+      })
       // The model's own per-round records ride in the same array as the tool
       // calls, deliberately — the score file wants them, because "what it wrote
       // on round 3 before calling nothing" is the evidence a wrong reply raises.
@@ -2207,11 +2551,14 @@ async function runChild(model: string, arm: string): Promise<void> {
           ]
       if (speaker) {
         try {
-          checks = await kase.expect(q, { startedAt, contactId: speaker.id })
+          checks = await kase.expect(q, { startedAt, contactId: speaker.id, tapped })
         } catch (e) {
           checks = [check('expectation query failed', false, (e as Error)?.message ?? String(e))]
         }
       }
+      // Asked earlier, reported here — a reader of the record should not have to
+      // know which side of the thumb a check fell on to find it.
+      checks = [...preChecks, ...checks]
       // Every case pays for the invariants, so a defect introduced by one sentence
       // is caught by whichever case happens to run after it — which is the point:
       // nobody has to predict which prompt will break which rule.
@@ -2400,7 +2747,7 @@ function report(all: TurnRecord[]): void {
       if (r.jobs.length) lines.push(`**Queue:** ${r.jobs.join(' · ')}`, '')
       if (r.checks.length) {
         lines.push('**Is it actually true?**', '')
-        for (const k of r.checks) lines.push(`- ${k.ok ? '✅' : '❌'} ${k.label} — \`${k.detail.slice(0, 300)}\``)
+        for (const k of r.checks) lines.push(`- ${k.ok ? '✅' : '❌'} ${k.label} — \`${k.detail}\``)
         lines.push('')
       }
       lines.push(

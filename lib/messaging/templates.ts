@@ -58,11 +58,18 @@ export const TEMPLATES: Record<TemplateName, TemplateDef> = {
     category: 'utility',
     language: 'en',
     params: ['academy', 'who', 'event', 'detail'],
-    body: '{academy}: {who} has {event}. {detail}',
+    // The dash frame, not `{who} has {event}` — a verb in a FROZEN body agrees
+    // with a parameter it cannot see. `{who}` is one child or two ("Ananya and
+    // Dev", the sibling merge working as designed), and the approved text
+    // cannot conjugate: "Ananya and Dev has a class coming up" shipped to a
+    // real parent. The rule this encodes: no verb, article or preposition in a
+    // template body whose correct form depends on what a parameter will carry.
+    // `session_outcome` below has always used this frame; it is the same idiom.
+    body: '{academy}: {who} — {event}. {detail}',
     quickReply: 'See the details',
     covers: 'client reminders — CL-REMINDER, CL-FIRST-CONTACT, CL-INTRO, PR-WELCOME',
     example:
-      'Sharwin Academy: Aarav has Beginners Batch tomorrow. 6:30–7:30pm at Green Park, with Coach Vinod.',
+      'Sharwin Academy: Aarav — Beginners Batch tomorrow. 6:30–7:30pm at Green Park, with Coach Vinod.',
   },
   session_change: {
     name: 'session_change',

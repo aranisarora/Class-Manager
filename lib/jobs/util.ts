@@ -361,14 +361,27 @@ export function spanLabel(start: Date | string, end: Date | string, tz: string):
   return `${left}–${timeLabel(end, tz)}`
 }
 
-/** "today", "tomorrow", "Sat 14 Jun" — what a person would actually say. */
+/**
+ * "today", "tomorrow (Sun)", "Sat 14 Jun" — what a person would actually say.
+ *
+ * "tomorrow" carries its weekday because the word alone erases the one fact
+ * that tells two messages apart. A class that runs every day has a class
+ * tomorrow every day, so Meera's phone got the identical sentence — word for
+ * word — at the same minute on two consecutive days, about two different
+ * classes, and it read as the system stuttering (arc finding). "today" carries
+ * it too, found the same way one run later: the fix anchored "tomorrow" and the
+ * coach's register prompt — "take the register. Evening Fitness — today
+ * 7:00–8pm" — became the surviving byte-identical pair, because a recurring
+ * prompt about a daily class says "today" every day. Same class of bug, same
+ * fix: the relative word stays (it is the idiom), the anchor disambiguates.
+ */
 export function dayLabel(d: Date | string, tz: string, reference: Date): string {
   const target = zoned(d, tz).startOf('day')
   const today = zoned(reference, tz).startOf('day')
   const diff = Math.round(target.diff(today, 'days').days)
-  if (diff === 0) return 'today'
-  if (diff === 1) return 'tomorrow'
-  if (diff === -1) return 'yesterday'
+  if (diff === 0) return `today (${target.toFormat('ccc')})`
+  if (diff === 1) return `tomorrow (${target.toFormat('ccc')})`
+  if (diff === -1) return `yesterday (${target.toFormat('ccc')})`
   if (diff > 1 && diff < 7) return target.toFormat('cccc')
   return target.toFormat('ccc d LLL')
 }

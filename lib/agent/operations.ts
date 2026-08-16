@@ -935,6 +935,47 @@ const endEnrollment: OperationDef = {
             `and I'll confirm here once it's done. Classes and billing carry on as normal until then.`,
         },
       })
+      /**
+       * Rule 15's return trip, kept by machinery rather than by the sentence
+       * above promising it. "I'll confirm here once it's done" is a runtime
+       * sentence with — until this step — nothing behind it: if the admin never
+       * taps, the enrolment keeps billing past the date the family named, and
+       * the promise is exactly the "worst sentence you can send" the doctrine
+       * describes, written by the runtime itself (arc finding, client-leaves).
+       * The watch checks in two days whether the end date landed; silence when
+       * it has, one nudge to the admin when it has not. The family stays quiet
+       * either way until it is done — they were promised the outcome, not the
+       * status. Deduped on player+date, so re-raising the same leave does not
+       * stack watches.
+       */
+      const nowAt = await now(ctx.academyId)
+      const slug = `end-enrollment-${args.player_id.slice(0, 8)}-${endIso}`
+      steps.push({
+        schedule: {
+          kind: 'agent_task',
+          run_at: new Date(nowAt.getTime() + 48 * 3600_000).toISOString(),
+          dedupe_key: dedupe.agentTask(ctx.academyId, slug),
+          payload: {
+            slug,
+            instruction:
+              `${live[0].holder_name ?? 'The family'} asked to end ${name}'s ` +
+              `${classes.length === 1 ? classes[0] : `${classes.length} classes`} enrolment on ${endIso}. ` +
+              `It was routed to the admin to make official, and this person was promised they would hear once it is done. ` +
+              `The context rows show whether the end date has landed. If ended_on is set, the loop is closed — do nothing; ` +
+              `silence is the result. If ended_on is still null, the admin has not acted and billing is still running: send ` +
+              `the admin ONE reminder (reply with to_contact_id 'admin') carrying a button ` +
+              `{kind:'operation', op:'end_enrollment', args:{player_id:'${args.player_id}'` +
+              `${args.class_id ? `, class_id:'${args.class_id}'` : ''}, end_date:'${endIso}'}} so their tap makes it official. ` +
+              `Do not message this person either way — they hear when it lands, not that it has not.`,
+            context:
+              `select e.id as enrollment_id, c.name as class, e.ended_on from enrollment e ` +
+              `join class c on c.id = e.class_id where e.player_id = '${args.player_id}'` +
+              (args.class_id ? ` and e.class_id = '${args.class_id}'` : ''),
+            minted_by_contact_id: ctx.contactId,
+            expires_at: new Date(zoned(endIso, a.timezone).toJSDate().getTime() + 7 * 86_400_000).toISOString(),
+          },
+        },
+      })
       return steps
     }
 
@@ -2314,7 +2355,7 @@ const clientCancel: OperationDef = {
   name: 'client_cancel',
   ownScope: true,
   description:
-    "A family cancels a session. Confirms first, then writes cancelled_timely inside the window or absent outside it, and tells the coach the headcount changed.",
+    "A family cancels a session. Call it directly — it puts its own confirmation question, with working buttons, on their screen; never compose your own confirmation for it. Then it writes cancelled_timely inside the window or absent outside it, and tells the coach the headcount changed.",
   params: z.object({
     session_id: uuid,
     player_id: uuid,
@@ -2682,7 +2723,10 @@ const confirmPayment: OperationDef = {
 
 const optOut: OperationDef = {
   name: 'opt_out',
-  description: 'Stop messaging a number for this academy. Confirmed before it takes effect; the admin is told.',
+  description:
+    'Stop messaging a number for this academy. Call it directly — it puts its own confirmation question, with working '
+    + 'buttons, on their screen, and nothing changes until they tap it. Never compose your own confirmation for it. '
+    + 'The admin is told when it takes effect.',
   destructive: true,
   params: z.object({ contact_id: uuid.nullish(), confirmed: z.boolean().optional().default(false) }),
   async build(ctx, args, id) {
@@ -3366,7 +3410,7 @@ const sendInviteDraft: OperationDef = {
   name: 'send_invite_draft',
   ownScope: true,
   description:
-    'Draft the invite the ADMIN forwards from their own number, carrying a wa.me deep link with prefilled text. The bot never sends it.',
+    'Draft the invite the ADMIN forwards from their own number, carrying a wa.me deep link with prefilled text. The bot never sends it. The draft itself carries the [Sent it] button that records the forward — never compose your own.',
   params: z.object({
     coach_id: uuid.nullish(),
     person_id: uuid.nullish(),
@@ -3493,7 +3537,7 @@ type AuditRow = {
 const undo: OperationDef = {
   name: 'undo',
   description:
-    'Undo a previous operation. Reverses the database writes; anyone who was messaged gets a correction, and I say so before it runs.',
+    'Undo a previous operation. Reverses the database writes; anyone who was messaged gets a correction. Call it directly — it asks its own confirmation with working buttons before anything runs; never compose your own.',
   destructive: true,
   params: z.object({ audit_id: uuid, confirmed: z.boolean().optional().default(false) }),
   async build(ctx, args, id) {

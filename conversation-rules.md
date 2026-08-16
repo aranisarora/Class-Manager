@@ -842,3 +842,79 @@ the model never called `reply` at all (`read → reflect:remember`) and offered 
 prose bullets, 142 words, with only the generic `What can you do?` menu to tap. Both times
 `opt_out` never executed. The gate is right; what is missing is anything that guarantees an
 explicit stop request ends in a working stop affordance.
+
+### F-S · The readiness page's three suite defects, fixed 16 Aug 2026 — and a fourth the fix uncovered
+
+The arc readiness page named two of its own failures as the suite's fault rather than the
+model's. Both were right, both are now fixed, and driving the fix found a third that was
+voiding whole turns in silence. None of the three is a product change.
+
+**1. `coach-marks-register` — the test pressed the button that changed the answer it was about
+to read.** The model marked the register correctly: roster read, Aarav `absent`, Ananya and Dev
+`present`, three rows written, session flipped to `completed`. It then did the thoughtful thing
+and asked the §8.2 catch-point question, offering `[Aarav told me] [No, just absent]`. The
+harness taps the affirmative by ACTION KIND, and the first of those is an `operation` while the
+refusal is a `noop` — so it tapped `[Aarav told me]`, which correctly rewrites Aarav to
+`cancelled_timely` and takes the charge off. The checks then asserted *Aarav is down as absent*
+and *exactly one player is absent*, and failed a turn in which every step was right.
+
+**Fix:** `Case` gained `expectBeforeTap`, run after the turn and before the thumb lands, and the
+four register checks moved into it. `expect` now asks the separate question of whether the
+BUTTON did what it offered — session closed off, everybody else still marked in, and (only when
+a *told me* button was actually pressed, which `CaseCtx.tapped` now carries) that one tap
+produced `cancelled_timely`. The case is strictly stronger than before: it covers the register
+AND the catch-point, where it used to cover neither.
+
+**2. `client-leaves` — a check the product is built to refuse.** RLS lets no holder update
+`enrollment`, so `end_enrollment` called by a parent takes the routed branch
+(`operations.ts:906`): it proposes the exact change to the admin behind one button and tells the
+family the honest state. `ended_on` stays null BY DESIGN, and the operation says so in its own
+preview before she taps. The check *aarav is out of fitness* could never pass. A check the
+design refuses is not a strict test, it is a broken one — it can only ever report the design as
+a defect, and it hides the question that is actually open.
+
+**Fix:** the case now follows the leave down the road it really takes — nothing deleted, Beginners
+untouched, an `is_escalation` message naming Aarav reaching an admin contact, and an unconsumed
+`end_enrollment` action behind the button on the owner's phone. Verified against the `--keep`
+academy the readiness run left behind: the escalation is there, `is_escalation` true, one button,
+and the action is `operation/end_enrollment` with `consumed_at` null. **This also settles F-R's
+open harness note** — yes, the owner really did receive the routed request. What is still not
+asked, because nothing in the product answers it: whether anything guarantees the admin ever
+taps. Until they do, Fitness keeps billing. That is a product gap, and it does not become a
+check written to fail.
+
+**3. The one the fix uncovered: an inbound that never landed was scored as a model that said
+nothing.** Re-driving the arc, every coach and client turn came back 0 rounds, 0 tokens, empty
+reply — five of eighteen, `coach-confirms`, `coach-marks-register`, `client-asks-balance`,
+`client-leaves`, `opt-out` — while every admin turn was fine.
+
+The cause is a shared sender and a discarded return value. `createAcademy` puts every tenant on
+one number on purpose ("exactly as production has one number"), and §10.1 resolves an inbound by
+the pair (from, sender). The ADMIN is safe because `createAcademy` picks a number free across the
+whole world. The families are not: they are composed by the MODEL out of fixed prompt text, so
+two probe runs invent the same three numbers. With a `--keep` academy still present,
+`app.inbound_candidates` returned two matches, `resolveInbound` correctly refused to guess, and
+`ingestInbound` returned `{ok:false, unresolved}` — writing no message, running no turn, and
+raising nothing. `inboundFromContact`'s result was never read, so the probe drove on and scored
+the case against a world nobody had spoken to.
+
+The comment at `prospectPhone` records this exact class being found and fixed for ONE number.
+Nothing made the next one loud — the F-P lesson a fourth time: a fix that names one instance
+leaves the class alive.
+
+**Fix, both halves:**
+- *Read the result.* A non-`ok` inbound, or one that lands in a different `academyId`, is now
+  recorded as **DID NOT RUN** with the reason — no checks scored, matching what the refused
+  clock walk already does. A question the world could not pose must not be charged to the model.
+- *Refuse before spending.* The child now bails at startup if another `Probe *` business is on
+  the sender, drops its own academy, prints the ids and the exact command to clear them, and
+  exits 3. One query, before nine turns and most of the money. Children are spawned serially, so
+  a stray is always a leftover and never a live sibling.
+
+**Not re-driven end to end.** The guard now correctly blocks any run while the readiness page's
+`--keep` academy is present, and that academy is the report's evidence base — so the two fixed
+cases were verified against it directly instead, which is better evidence for these two than a
+fresh world: it is the exact state the page flagged. Post-tap it holds Aarav `cancelled_timely`,
+Ananya and Dev `present`, session `completed`; the turn's own recorded `mark_attendance` result
+holds the pre-tap register the new hook reads. Every check in both rewritten cases passes against
+it. Drop that academy to drive the whole arc clean again.
