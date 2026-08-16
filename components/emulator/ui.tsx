@@ -116,43 +116,14 @@ export function Toggle({
   )
 }
 
-/** queued ○ · sent ✓ · delivered ✓✓ · read ✓✓ blue (§2.4). Never claims more than the row says. */
-export function Ticks({ status }: { status: 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'suppressed' }) {
-  switch (status) {
-    case 'queued':
-      return (
-        <span className="font-mono text-[10px] text-zinc-500" title="queued — not on the wire yet">
-          ○
-        </span>
-      )
-    case 'sent':
-      return (
-        <span className="font-mono text-[10px] text-zinc-400" title="sent — accepted by the transport">
-          ✓
-        </span>
-      )
-    case 'delivered':
-      return (
-        <span className="font-mono text-[10px] tracking-[-0.15em] text-zinc-300" title="delivered to the handset">
-          ✓✓
-        </span>
-      )
-    case 'read':
-      return (
-        <span className="font-mono text-[10px] tracking-[-0.15em] text-sky-400" title="read">
-          ✓✓
-        </span>
-      )
-    case 'failed':
-      return (
-        <span className="font-mono text-[10px] text-rose-400" title="failed">
-          ✕
-        </span>
-      )
-    default:
-      return null
-  }
-}
+/**
+ * §2.4's ladder lives in `icons.tsx` now, drawn rather than typed.
+ *
+ * It was two ✓ glyphs with negative tracking, which is a font pretending to be an icon: the
+ * pair rendered at a different width on every platform and could not take the blue that says
+ * "read". Deleted rather than left beside its replacement — two implementations of one mark
+ * is how the pane and the handset quietly stop agreeing.
+ */
 
 export function Empty({ children }: { children: ReactNode }) {
   return <div className="px-3 py-6 text-center text-[11px] leading-relaxed text-zinc-600">{children}</div>

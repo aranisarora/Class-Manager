@@ -39,12 +39,22 @@ function Workspace() {
   const { state } = useEmulator()
   return (
     // Full-bleed: the instrument owns the viewport and every scroll happens inside a column.
-    <div className="fixed inset-0 flex flex-col overflow-hidden bg-zinc-950 text-zinc-200">
+    //
+    // `data-wa` defines WhatsApp's palette for the whole workspace, but only the surfaces
+    // that ask for it — the tray, the deck, the panes — actually wear it. The clock bar and
+    // the event log keep the instrument's own zinc, which is the point: the two layers are
+    // told apart by looking, not by remembering which is which.
+    <div data-wa={state.waTheme} className="fixed inset-0 flex flex-col overflow-hidden bg-zinc-950 text-zinc-200">
       <ClockBar />
       <BootError />
       <div className="flex min-h-0 flex-1">
         {state.showTray ? (
-          <div className="flex w-[264px] shrink-0 flex-col border-r border-zinc-800 bg-zinc-900">
+          // 300px is WhatsApp Web's own floor for the chat list, and the tray needs it now
+          // that a row carries a 49px avatar and a full line of preview text.
+          <div
+            className="flex w-[318px] shrink-0 flex-col"
+            style={{ background: 'var(--wa-shell)', borderRight: '1px solid var(--wa-rule)' }}
+          >
             <ContactTray />
             <FaultPanel />
           </div>

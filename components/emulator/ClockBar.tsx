@@ -22,6 +22,7 @@ import {
   type AutoDelivery,
   type ScenarioMeta,
 } from '@/lib/emulator/state'
+import { Icon } from './icons'
 import { Btn, Chip, Spinner, cx } from './ui'
 
 const STEPS: { label: string; ms: number }[] = [
@@ -471,6 +472,30 @@ export function ClockBar() {
         <DeliveryPicker />
         {busy ? <Spinner /> : null}
         <ConnectionDot />
+        {/* The two view controls that decide what a screenshot of this page is evidence OF.
+            `chrome` puts the whole probe layer down, leaving the panes as a handset draws
+            them; the theme forces light or dark rather than following the operator's OS,
+            because most parents run light and most developers run dark. Both persist. */}
+        <Btn
+          size="xs"
+          active={!state.chrome}
+          onClick={() => actions.setChrome(!state.chrome)}
+          title={
+            state.chrome
+              ? 'handset view — put the instrumentation down and see the panes exactly as a parent does'
+              : 'instrumentation is hidden — bring back templates, costs, ttls and wire warnings'
+          }
+        >
+          <Icon name="probe" size={12} />
+          {state.chrome ? 'handset' : 'probing off'}
+        </Btn>
+        <Btn
+          size="xs"
+          onClick={() => actions.setWaTheme(state.waTheme === 'dark' ? 'light' : 'dark')}
+          title="which WhatsApp theme the panes wear — what her phone looks like is not what yours does"
+        >
+          {state.waTheme}
+        </Btn>
         <Btn size="xs" active={state.showTray} onClick={() => actions.toggle('showTray')} title="toggle the contact tray">
           tray
         </Btn>

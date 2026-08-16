@@ -16,18 +16,35 @@ import {
   windowState,
   type EmuContact,
 } from '@/lib/emulator/state'
+import { Icon } from './icons'
 import { Btn, Chip, Empty, ROLE_SHORT, ROLE_TONE, STATE_TONE, Spinner, cx } from './ui'
+import { Avatar, WaUnread } from './wa-ui'
 
+/**
+ * One row of the chat list, at WhatsApp's own proportions: a 49px avatar, the name at 17px
+ * over a single ellipsised line of the last message, the time top-right and the unread count
+ * bottom-right.
+ *
+ * Underneath it, and only while the probe layer is up, sits the third line the handset has no
+ * use for: roles (§6.2 compose, so a solo operator reads `admin coach` and never a scalar),
+ * §11.2 contact state, the number, the thread size and the service window. That line is why
+ * this tray is not just a chat list — but putting it INSIDE the row's own two lines, which is
+ * where it used to live, is what stopped the tray from reading as one.
+ */
 function ContactRow({
   c,
   open,
+  pinned,
   activity,
   nowIso,
+  chrome,
 }: {
   c: EmuContact
   open: boolean
+  pinned: boolean
   activity: number
   nowIso: string
+  chrome: boolean
 }) {
   const { actions } = useEmulator()
   // The ticking now, passed in from the tray rather than read here: one timer for the whole
@@ -35,28 +52,81 @@ function ContactRow({
   // closed (§14.7).
   const win = windowState(c, nowIso)
   const tz = usePrimaryTimezone()
+  const preview = c.lastMessageBody?.replace(/\s+/g, ' ').trim()
+
   return (
-    <button
-      type="button"
-      onClick={() => (open ? actions.closePane(c.id) : actions.openPane(c.id))}
-      title={open ? 'close this pane' : 'open as a pane'}
-      className={cx(
-        'group flex w-full items-start gap-1.5 border-l-2 px-2 py-1.5 text-left transition-colors',
-        open
-          ? 'border-l-emerald-500 bg-emerald-950/25 hover:bg-emerald-950/40'
-          : 'border-l-transparent hover:bg-zinc-800/60',
-      )}
+    <div
+      className="group relative"
+      style={{ background: open ? 'var(--wa-active)' : undefined }}
     >
-      <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-1">
-          <span className="truncate text-[12px] text-zinc-200">{c.name}</span>
-          {activity > 0 && !open ? (
-            <span className="ml-auto rounded-full bg-emerald-600 px-1.5 text-[9px] font-semibold text-emerald-50">
-              {activity}
+      <button
+        type="button"
+        onClick={() => (open ? actions.closePane(c.id) : actions.openPane(c.id))}
+        title={open ? 'close this pane' : 'open as a pane'}
+        className="flex w-full items-center gap-3 px-[15px] text-left transition-colors hover:bg-[var(--wa-hover)]"
+        style={{ minHeight: 72 }}
+      >
+        <Avatar name={c.name} seed={c.id} size={49} ring={open} />
+        <span className="min-w-0 flex-1 py-2.5">
+          <span className="flex items-baseline gap-2">
+            <span className="truncate text-[17px] leading-[22px]" style={{ color: 'var(--wa-ink)' }}>
+              {c.name}
             </span>
-          ) : null}
+            {c.lastMessageAt ? (
+              <span
+                className="ml-auto shrink-0 text-[12px]"
+                style={{ color: activity > 0 && !open ? 'var(--wa-unread-bg)' : 'var(--wa-ink-dim)' }}
+              >
+                {fmtTime(c.lastMessageAt, tz)}
+              </span>
+            ) : null}
+          </span>
+          <span className="mt-[2px] flex items-center gap-1.5">
+            <span className="min-w-0 flex-1 truncate text-[14px] leading-[19px]" style={{ color: 'var(--wa-ink-dim)' }}>
+              {preview ? (
+                <>
+                  {c.lastMessageDirection === 'outbound' ? (
+                    <span className="mr-1 inline-flex translate-y-[2px]" style={{ color: 'var(--wa-tick-plain)' }}>
+                      <Icon name="check" size={13} />
+                    </span>
+                  ) : null}
+                  {preview}
+                </>
+              ) : (
+                <span style={{ color: 'var(--wa-ink-faint)' }}>no history</span>
+              )}
+            </span>
+            {pinned ? (
+              <span style={{ color: 'var(--wa-ink-dim)' }} title="pinned to the front of the deck">
+                <Icon name="pin" size={13} />
+              </span>
+            ) : null}
+            {activity > 0 && !open ? <WaUnread n={activity} /> : null}
+          </span>
         </span>
-        <span className="mt-0.5 flex flex-wrap items-center gap-1">
+      </button>
+
+      {/* The pin lives outside the open/close button so one is not a way to hit the other.
+          It is revealed on hover the way WhatsApp reveals a row's chevron, and stays visible
+          once set so a pinned row says so without being pointed at. */}
+      {open ? (
+        <button
+          type="button"
+          onClick={() => (pinned ? actions.unpinPane(c.id) : actions.pinPane(c.id))}
+          title={pinned ? 'unpin — let it move with the deck' : 'pin — hold this chat at the front of the deck'}
+          aria-label={pinned ? 'unpin chat' : 'pin chat'}
+          className={cx(
+            'absolute top-1.5 right-1.5 rounded-full p-1.5 transition-opacity hover:bg-white/10',
+            pinned ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+          )}
+          style={{ color: pinned ? 'var(--wa-accent)' : 'var(--wa-ink-dim)' }}
+        >
+          <Icon name={pinned ? 'pinOff' : 'pin'} size={13} />
+        </button>
+      ) : null}
+
+      {chrome ? (
+        <div className="probe-dim flex flex-wrap items-center gap-1 px-[15px] pb-1.5">
           {c.roles.length ? (
             c.roles.map((r) => (
               <Chip key={r} tone={ROLE_TONE[r] ?? 'neutral'}>
@@ -68,39 +138,23 @@ function ContactRow({
           )}
           <Chip tone={STATE_TONE[String(c.state)] ?? 'quiet'}>{String(c.state)}</Chip>
           {c.optedOutAt ? <Chip tone="danger">opted out</Chip> : null}
-          {!c.isPrimary ? <Chip tone="quiet" title="a second number for the same person">2nd no.</Chip> : null}
-        </span>
-        {/* The last thing said, the way a chat list shows it — so which threads have
-            history, and what state each one was left in, is visible without opening
-            twelve panes. */}
-        {c.lastMessageBody ? (
-          <span className="mt-0.5 flex items-baseline gap-1">
-            <span className="font-mono text-[9px] text-zinc-600">
-              {c.lastMessageDirection === 'inbound' ? '←' : '→'}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-[10px] text-zinc-500">
-              {c.lastMessageBody.replace(/\s+/g, ' ').trim()}
-            </span>
-            {c.lastMessageAt ? (
-              <span className="shrink-0 font-mono text-[9px] text-zinc-600">
-                {fmtTime(c.lastMessageAt, tz)}
-              </span>
+          {!c.isPrimary ? (
+            <Chip tone="quiet" title="a second number for the same person">
+              2nd no.
+            </Chip>
+          ) : null}
+          <span className="probe ml-auto flex items-center gap-1.5 opacity-70">
+            <span className="truncate">{c.phone ?? '—'}</span>
+            {c.messageCount > 0 ? (
+              <span title="messages in this thread, both directions">{c.messageCount} msg</span>
             ) : null}
+            <span className={win.open ? 'text-emerald-500/90' : 'text-amber-600/90'}>
+              {win.open ? `window ${fmtDuration(win.msLeft)}` : 'window closed'}
+            </span>
           </span>
-        ) : null}
-        <span className="mt-0.5 flex items-center gap-1.5 font-mono text-[9px] text-zinc-600">
-          <span className="truncate">{c.phone ?? '—'}</span>
-          {c.messageCount > 0 ? (
-            <span title="messages in this thread, both directions">{c.messageCount} msg</span>
-          ) : (
-            <span className="text-zinc-700">no history</span>
-          )}
-          <span className={win.open ? 'text-emerald-500/80' : 'text-amber-600/80'}>
-            {win.open ? `window ${fmtDuration(win.msLeft)}` : 'window closed'}
-          </span>
-        </span>
-      </span>
-    </button>
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -132,7 +186,7 @@ function NewContactForm({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <div className="space-y-1 border-b border-zinc-800 bg-zinc-950/60 px-2 py-1.5">
+    <div className="space-y-1 border-b border-zinc-800 bg-zinc-950 px-2 py-1.5">
       <input
         autoFocus
         value={name}
@@ -226,7 +280,7 @@ function NewAcademyForm({ onDone }: { onDone: () => void }) {
     'w-full rounded border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-emerald-700 focus:outline-none'
 
   return (
-    <div className="space-y-1 border-b border-zinc-800 bg-zinc-950/60 px-2 py-1.5">
+    <div className="space-y-1 border-b border-zinc-800 bg-zinc-950 px-2 py-1.5">
       <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={keys}
         placeholder="business — e.g. Green Park Badminton" className={field} />
       <input value={adminName} onChange={(e) => setAdminName(e.target.value)} onKeyDown={keys}
@@ -298,10 +352,10 @@ export function ContactTray() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 border-b border-zinc-800 bg-zinc-900/60 px-2 py-1.5">
+      <div className="shrink-0 px-2 py-1.5" style={{ background: 'var(--wa-header)', borderBottom: '1px solid var(--wa-rule)' }}>
         <div className="flex items-center justify-between">
-          <span className="font-mono text-[10px] tracking-widest text-zinc-500 uppercase">world</span>
-          <span className="font-mono text-[10px] text-zinc-600">
+          <span className="probe tracking-widest uppercase" style={{ color: 'var(--wa-ink-dim)' }}>world</span>
+          <span className="probe" style={{ color: 'var(--wa-ink-dim)' }}>
             {state.academies.length} business{state.academies.length === 1 ? '' : 'es'} · {state.contacts.length} contacts ·{' '}
             {state.panes.length} open
           </span>
@@ -311,7 +365,8 @@ export function ContactTray() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="filter by name, number, role…"
-            className="min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-emerald-700 focus:outline-none"
+            className="min-w-0 flex-1 rounded-lg px-3 py-1.5 text-[13px] outline-none"
+            style={{ background: 'var(--wa-input)', color: 'var(--wa-ink)' }}
           />
           <Btn
             size="xs"
@@ -358,14 +413,15 @@ export function ContactTray() {
         {groups.map(({ academy, contacts }) => {
           const isCollapsed = collapsed[academy.id]
           return (
-            <div key={academy.id} className="border-b border-zinc-800/70">
+            <div key={academy.id} style={{ borderBottom: '1px solid var(--wa-rule)' }}>
               <button
                 type="button"
                 onClick={() => setCollapsed((s) => ({ ...s, [academy.id]: !s[academy.id] }))}
-                className="flex w-full items-center gap-1.5 bg-zinc-900/40 px-2 py-1.5 text-left hover:bg-zinc-800/50"
+                className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left hover:brightness-110"
+                style={{ background: 'var(--wa-header)' }}
               >
-                <span className="font-mono text-[9px] text-zinc-600">{isCollapsed ? '▸' : '▾'}</span>
-                <span className="truncate text-[11px] font-semibold tracking-wide text-zinc-300">{academy.name}</span>
+                <span className="probe" style={{ color: 'var(--wa-ink-dim)' }}>{isCollapsed ? '▸' : '▾'}</span>
+                <span className="truncate text-[13px] font-medium" style={{ color: 'var(--wa-ink)' }}>{academy.name}</span>
                 <span className="ml-auto flex items-center gap-1">
                   {academy.onboardingState !== 'live' ? (
                     <Chip tone="warn" title="§2.6 — nothing is sent until the admin says go">
@@ -377,7 +433,7 @@ export function ContactTray() {
               </button>
               {!isCollapsed ? (
                 <>
-                  <div className="flex items-center gap-2 border-b border-zinc-800/60 px-2 pb-1 font-mono text-[9px] text-zinc-600">
+                  <div className="probe flex items-center gap-2 px-2 pb-1" style={{ borderBottom: '1px solid var(--wa-rule)', color: 'var(--wa-ink-dim)' }}>
                     <span title="sender number this academy routes through (§16.3)">
                       {academy.senderPhone ?? 'no sender'}
                     </span>
@@ -390,7 +446,7 @@ export function ContactTray() {
                         if (!window.confirm(`Drop "${academy.name}" and everything in it? This cannot be undone.`)) return
                         void actions.dropAcademy(academy.id, academy.name)
                       }}
-                      className="ml-auto text-[9px] text-zinc-600 hover:text-rose-400 disabled:opacity-40"
+                      className="probe ml-auto hover:text-rose-400 disabled:opacity-40"
                     >
                       drop business
                     </button>
@@ -401,6 +457,8 @@ export function ContactTray() {
                         key={c.id}
                         c={c}
                         open={state.panes.includes(c.id)}
+                        pinned={state.pinned.includes(c.id)}
+                        chrome={state.chrome}
                         activity={state.activity[c.id] ?? 0}
                         nowIso={nowIso}
                       />
@@ -415,19 +473,26 @@ export function ContactTray() {
         })}
       </div>
 
-      <div className="flex shrink-0 items-center gap-1 border-t border-zinc-800 bg-zinc-900/60 px-2 py-1">
+      <div className="flex shrink-0 items-center gap-1 px-2 py-1" style={{ background: 'var(--wa-header)', borderTop: '1px solid var(--wa-rule)' }}>
+        {/* A pin is a statement that a thread outlives a sweep, so the sweep says what it
+            will actually do rather than promising to close everything and then not. */}
         <button
           type="button"
           onClick={actions.closeAllPanes}
-          disabled={!state.panes.length}
-          className="text-[10px] text-zinc-500 hover:text-zinc-200 disabled:opacity-40"
+          disabled={state.panes.length === state.pinned.length}
+          title={
+            state.pinned.length
+              ? `close every pane except the ${state.pinned.length} pinned`
+              : 'close every open pane'
+          }
+          className="text-[10px] disabled:opacity-40 hover:opacity-100" style={{ color: 'var(--wa-ink-dim)' }}
         >
-          close all panes
+          {state.pinned.length ? 'close the rest' : 'close all panes'}
         </button>
         <button
           type="button"
           onClick={() => void actions.refreshState()}
-          className="ml-auto text-[10px] text-zinc-500 hover:text-zinc-200"
+          className="ml-auto text-[10px] hover:opacity-100" style={{ color: 'var(--wa-ink-dim)' }}
         >
           reload world
         </button>

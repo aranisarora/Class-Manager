@@ -82,6 +82,214 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+   WhatsApp's own surface.
+
+   §17 says the emulator is a primitive WhatsApp — behavioural fidelity, not
+   visual. That was the right trade while the pane was a diagram. It stops being
+   right the moment somebody asks the question the emulator exists to answer:
+   *is this what the parent sees?* A diagram cannot answer it. A pane wearing
+   WhatsApp's own palette, bubble geometry and chrome can.
+
+   So the chat is drawn as the handset draws it, and the instrumentation the
+   emulator adds is drawn as something else deliberately — see `.probe`. The two
+   layers must never be confusable, because telling them apart IS the review.
+
+   Values are WhatsApp Web's. They live under [data-wa] rather than a media query
+   because the reviewer needs to FORCE a theme: most parents run light, most
+   developers run dark, and "what does this look like on her phone" is a question
+   the OS preference cannot answer.
+   --------------------------------------------------------------------------- */
+
+@layer base {
+  [data-wa='dark'] {
+    --wa-shell: #111b21; /* chat list + app ground */
+    --wa-header: #202c33; /* panel headers, composer bar */
+    --wa-panel: #202c33;
+    --wa-hover: #202c33;
+    --wa-active: #2a3942;
+    --wa-input: #2a3942;
+    --wa-canvas: #0b141a; /* conversation ground, under the doodle */
+    --wa-in: #202c33; /* incoming bubble */
+    --wa-out: #005c4b; /* outgoing bubble */
+    --wa-ink: #e9edef;
+    --wa-ink-dim: #8696a0;
+    --wa-ink-faint: #667781;
+    --wa-rule: rgba(134, 150, 160, 0.15);
+    --wa-accent: #00a884; /* the green: send, unread badge, FAB */
+    --wa-icon: #aebac1; /* header + composer glyphs sit brighter than body meta */
+    --wa-tick: #53bdeb; /* read */
+    --wa-tick-plain: #8696a0; /* sent + delivered */
+    --wa-link: #53bdeb;
+    --wa-pill: #182229; /* date divider + system notice */
+    --wa-unread-bg: #00a884;
+    --wa-unread-ink: #111b21;
+    --wa-doodle-opacity: 0.10;
+    --wa-shadow: rgba(11, 20, 26, 0.13);
+  }
+
+  [data-wa='light'] {
+    --wa-shell: #ffffff;
+    --wa-header: #f0f2f5;
+    --wa-panel: #ffffff;
+    --wa-hover: #f5f6f6;
+    --wa-active: #f0f2f5;
+    --wa-input: #ffffff;
+    --wa-canvas: #efeae2;
+    --wa-in: #ffffff;
+    --wa-out: #d9fdd3;
+    --wa-ink: #111b21;
+    --wa-ink-dim: #667781;
+    --wa-ink-faint: #8696a0;
+    --wa-rule: #e9edef;
+    --wa-accent: #00a884;
+    --wa-icon: #54656f;
+    --wa-tick: #53bdeb;
+    --wa-tick-plain: rgba(17, 27, 33, 0.45);
+    --wa-link: #027eb5;
+    --wa-pill: #ffffff;
+    /* Light mode's unread badge is the brand green with white on it, not the
+       teal the dark theme uses — the two are different tokens at WhatsApp too. */
+    --wa-unread-bg: #25d366;
+    --wa-unread-ink: #ffffff;
+    --wa-doodle-opacity: 0.07;
+    --wa-shadow: rgba(11, 20, 26, 0.13);
+  }
+}
+
+@layer components {
+  /* The wallpaper. WhatsApp tiles a doodle sheet behind every conversation, and
+     it is the single most recognisable thing on the screen — a flat panel reads
+     as a mockup no matter how right the bubbles are. Authored as one tile rather
+     than shipped as an asset: it has to recolour with the theme, which a PNG
+     cannot do, and it costs about a kilobyte. */
+  .wa-wallpaper {
+    position: relative;
+    background-color: var(--wa-canvas);
+  }
+  /* The doodles ride on a pseudo-element rather than the element's own
+     background, which is what lets one sheet serve both themes: `opacity` and
+     `filter: invert()` are properties of a layer, and a background-image has
+     neither. They are small (a 200px tile) and very faint on purpose — the
+     sheet is a texture you notice only when it is missing, and drawn any
+     louder it competes with the messages it sits behind. */
+  .wa-wallpaper::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: var(--wa-doodle-opacity);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200' viewBox='0 0 200 200'%3E%3Cg fill='none' stroke='%23ffffff' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 20h14a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3h-7l-4 4v-4h-3a3 3 0 0 1-3-3v-7a3 3 0 0 1 3-3z'/%3E%3Cpath d='M62 16l3 6 6.6 1-4.8 4.6 1.2 6.6-6-3.1-6 3.1 1.2-6.6-4.8-4.6 6.6-1z'/%3E%3Ccircle cx='112' cy='25' r='7'/%3E%3Cpath d='M112 20v5l2.6 2'/%3E%3Cpath d='M156 18v12M150 24h12'/%3E%3Cpath d='M18 64c4-5 10-5 14 0s10 5 14 0'/%3E%3Cpath d='M78 58a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13zM78 71v5'/%3E%3Cpath d='M122 60h13v10h-5l-2.6 3.2-2.6-3.2h-2.8z'/%3E%3Cpath d='M166 58l4 8-4 8-4-8z'/%3E%3Cpath d='M16 106l5-5 5 5-5 5z'/%3E%3Cpath d='M52 100h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H52a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2zM55 97v3M63 97v3'/%3E%3Cpath d='M96 113c5-2.6 5-9 0-11.6-5 2.6-5 9 0 11.6z'/%3E%3Ccircle cx='136' cy='106' r='6.5'/%3E%3Cpath d='M132.5 106h7M136 102.5v7'/%3E%3Cpath d='M176 100l3 4-3 4-3-4z'/%3E%3Cpath d='M24 146a6 6 0 1 1 12 0 6 6 0 0 1-12 0zM30 140v-4'/%3E%3Cpath d='M66 144l4 4 8-8'/%3E%3Cpath d='M106 140h11l2.6 5.2-2.6 5.2h-11l-2.6-5.2z'/%3E%3Cpath d='M152 138v11M146.5 143.5h11'/%3E%3Cpath d='M182 140c3.5 2 3.5 7 0 9'/%3E%3Cpath d='M18 180h12l-6 7z'/%3E%3Cpath d='M58 176a5 5 0 1 1 10 0 5 5 0 0 1-10 0z'/%3E%3Cpath d='M98 174v10M94 179h8'/%3E%3Cpath d='M136 172h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-6l-3 3v-3h-1a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z'/%3E%3Cpath d='M176 176l3 6 3-6'/%3E%3C/g%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size: 200px 200px;
+  }
+  /* One sheet, drawn in white. Light mode inverts it to ink rather than
+     shipping a second copy that could drift from the first. */
+  [data-wa='light'] .wa-wallpaper::before {
+    filter: invert(1);
+  }
+
+  /* Bubble geometry. WhatsApp's radius is 7.5px with one corner squared off
+     where the tail attaches, and the tail is a drawn notch rather than a CSS
+     triangle — a rotated square leaves a seam against the bubble at any
+     non-integer zoom, which is exactly where a fake shows. */
+  .wa-bubble {
+    position: relative;
+    max-width: 100%;
+    width: fit-content;
+    border-radius: 7.5px;
+    font-size: 14.2px;
+    line-height: 19px;
+    box-shadow: 0 1px 0.5px var(--wa-shadow);
+    overflow-wrap: anywhere;
+  }
+  /* Padding is asymmetric and the wide side is the tail side — 9px where the
+     notch attaches, 7px on the free edge. Equal padding is the commonest tell
+     in a copy of this UI. */
+  .wa-bubble--in {
+    background: var(--wa-in);
+    color: var(--wa-ink);
+    padding: 6px 7px 8px 9px;
+    border-top-left-radius: 0;
+    margin-right: auto;
+  }
+  .wa-bubble--out {
+    background: var(--wa-out);
+    color: var(--wa-ink);
+    padding: 6px 9px 8px 7px;
+    border-top-right-radius: 0;
+    margin-left: auto;
+  }
+  .wa-tail {
+    position: absolute;
+    top: 0;
+    width: 8px;
+    height: 13px;
+    overflow: hidden;
+  }
+  .wa-tail--in {
+    left: -8px;
+  }
+  .wa-tail--out {
+    right: -8px;
+  }
+
+  /* The meta run — time, then ticks — sits INSIDE the bubble at the bottom
+     right, on the LAST line of the message.
+
+     Not a float. A float lands where it is declared, so declaring it before the
+     text pins the clock beside the FIRST line and declaring it after drops it
+     onto a row of its own. WhatsApp's trick is two pieces: an inline-block
+     spacer closing the text, which reserves a gap on whatever line the text
+     happens to end on, and the meta absolutely positioned into that gap. A
+     short message keeps the clock beside it; a long one lets the last line run
+     under it; neither leaves an empty row. */
+  .wa-meta {
+    position: absolute;
+    right: 9px;
+    bottom: 5px;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
+    line-height: 15px;
+    color: color-mix(in srgb, var(--wa-ink) 60%, transparent);
+    user-select: none;
+    white-space: nowrap;
+  }
+  .wa-meta-gap {
+    display: inline-block;
+    width: 62px;
+    height: 1px;
+  }
+  /* Ticks widen the run, so an outbound message reserves more. */
+  .wa-bubble--in .wa-meta-gap {
+    width: 74px;
+  }
+
+  /* The instrumentation layer. Everything the emulator knows that WhatsApp does
+     not: costs, templates, ttls, suppression reasons, wire limits.
+
+     It is monospace on purpose and that is not costume — every value in it is an
+     id, a count, a duration or a measurement. It stays visually outside the
+     handset so the two are never confused, and `.probe-dim` lets the whole layer
+     recede until it is wanted, which is what the chrome toggle drives. */
+  .probe {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 14px;
+    letter-spacing: 0.01em;
+  }
+  .probe-dim {
+    opacity: 0.45;
+    transition: opacity 120ms ease-out;
+  }
+  .probe-dim:hover,
+  .probe-dim:focus-within {
+    opacity: 1;
+  }
+}
+
 /* Shared primitives the emulator renders with (§17: a primitive WhatsApp, not a
    replica). `.tick` reads data-status: queued|sent|delivered|read|failed. */
 

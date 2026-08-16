@@ -335,6 +335,46 @@ export type EmulatorState = {
   clock: EmuClock
   faults: Record<FaultKind, { active: boolean; rate: number }>
   panes: string[]
+  /**
+   * The panes that hold the front of the deck, in pin order.
+   *
+   * `panes` is the deck's order and stays that way — a second ordered array would give the
+   * row two sources of truth, and the first divergence would render as a pane in one place
+   * and its pin in another. So this is not an order: it is the SET of ids `orderPanes`
+   * floats to the front, and the invariant it buys is that every pinned id occupies a
+   * prefix of `panes`. Anything that moves an id re-establishes it.
+   *
+   * An array rather than a `Record<string, boolean>` because pin order matters — pin A then
+   * B should read A, B — and because `panes: string[]` is the precedent next door.
+   */
+  pinned: string[]
+  /**
+   * The one pane filling the deck, or `''` for the row.
+   *
+   * A single slot rather than a flag per pane: "full size" means it takes the whole deck,
+   * two expanded panes is not a state the row can draw, and a per-pane boolean makes that
+   * unrenderable state expressible. Same shape and same `''` default as `clockScope` below,
+   * for the same reason — one slot, sometimes empty.
+   */
+  expanded: string
+  /**
+   * Whether the probe layer is drawn.
+   *
+   * The emulator exists to answer "is this what the parent sees?", and until now it could
+   * not: every template chip, cost, ttl and wire warning sat in the frame, so no screenshot
+   * of a pane was ever evidence about a handset. Off, the panes are WhatsApp and nothing
+   * else. The instrumentation is not deleted by this — it is the reason the surface exists —
+   * it is put down for as long as somebody is looking at the message instead of the machine.
+   */
+  chrome: boolean
+  /**
+   * Which WhatsApp theme the panes wear.
+   *
+   * Not `prefers-color-scheme`. Most developers run dark and most parents run light, and
+   * "what does this actually look like on her phone" is a question the operator's own OS
+   * setting cannot answer.
+   */
+  waTheme: 'dark' | 'light'
   threads: Record<string, ThreadState>
   events: EmuEvent[]
   cursor: string | null
@@ -1109,6 +1149,10 @@ const initialState: EmulatorState = {
     {} as EmulatorState['faults'],
   ),
   panes: [],
+  pinned: [],
+  expanded: '',
+  chrome: true,
+  waTheme: 'dark',
   threads: {},
   events: [],
   cursor: null,
@@ -1137,8 +1181,14 @@ type Action =
   | { type: 'pane/open'; contactId: string }
   | { type: 'pane/close'; contactId: string }
   | { type: 'pane/closeAll' }
-  | { type: 'pane/restore'; panes: string[] }
+  | { type: 'pane/restore'; panes: string[]; pinned: string[] }
   | { type: 'pane/move'; contactId: string; dir: -1 | 1 }
+  | { type: 'pane/pin'; contactId: string }
+  | { type: 'pane/unpin'; contactId: string }
+  /** `''` collapses, exactly as `clock/scope` uses `''` for the world. */
+  | { type: 'pane/expand'; contactId: string }
+  | { type: 'ui/chrome'; value: boolean }
+  | { type: 'ui/waTheme'; value: 'dark' | 'light' }
   | { type: 'filters/set'; patch: Partial<EventFilters> }
   | { type: 'connection'; value: Connection }
   | { type: 'busy'; key: string; value: boolean }
@@ -1149,6 +1199,20 @@ type Action =
   | { type: 'scenario/set'; scenario: string }
   | { type: 'delivery/mode'; mode: AutoDelivery }
   | { type: 'clock/scope'; academyId: string }
+
+/**
+ * Pinned first, everything else in the order it already had.
+ *
+ * A stable partition rather than a sort: `panes` is an order an operator built by hand with
+ * the ‹ › controls, and a comparator that ties on "both unpinned" would be free to shuffle
+ * it. Run after every mutation that can move an id, so "pinned means the front of the deck"
+ * is a property of the array itself rather than a rule the deck re-applies at render time.
+ */
+function orderPanes(panes: string[], pinned: string[]): string[] {
+  const isPinned = new Set(pinned)
+  const front = pinned.filter((id) => panes.includes(id))
+  return [...front, ...panes.filter((id) => !isPinned.has(id))]
+}
 
 function mergeMessages(prev: EmuMessage[], incoming: EmuMessage[]): EmuMessage[] {
   // A refetch is authoritative. Optimistic echoes survive only briefly, so a slow round trip
@@ -1222,6 +1286,15 @@ function reducer(state: EmulatorState, action: Action): EmulatorState {
         clock: normalizeClock(pick(p, 'clock', 'time') as Raw, state.clock),
         faults: normalizeFaults(pick(p, 'faults'), state.faults),
         panes: contacts.length ? state.panes.filter((id) => known.has(id)) : state.panes,
+        pinned: contacts.length ? state.pinned.filter((id) => known.has(id)) : state.pinned,
+        /**
+         * An expanded pane whose contact left the world collapses back to the row.
+         * Otherwise a reseed leaves the deck rendering a single "not in this world"
+         * card at full width, with every other open pane hidden behind it and no
+         * obvious way back — the dangling-id failure the scope comment below is about,
+         * except this one takes the whole surface with it.
+         */
+        expanded: state.expanded && contacts.length && !known.has(state.expanded) ? '' : state.expanded,
         /**
          * A scope pointed at an academy that no longer exists falls back to the
          * world. Seeding a fixture drops every academy in the world, so without
@@ -1352,23 +1425,58 @@ function reducer(state: EmulatorState, action: Action): EmulatorState {
       const activity = { ...state.activity }
       delete activity[action.contactId]
       if (state.panes.includes(action.contactId)) return { ...state, activity }
-      return { ...state, panes: [...state.panes, action.contactId], activity }
+      // Behind the pins, never in front of them: a pin is a claim on the front of the deck,
+      // and an open that jumped it would make the pin look like it had come undone.
+      return { ...state, panes: orderPanes([...state.panes, action.contactId], state.pinned), activity }
     }
     case 'pane/close':
-      return { ...state, panes: state.panes.filter((p) => p !== action.contactId) }
-    case 'pane/closeAll':
-      return { ...state, panes: [] }
+      // Closing drops the pin too, so `pinned` can never name an id with no pane. That
+      // debris would resurface on the next open and silently reorder the deck.
+      return {
+        ...state,
+        panes: state.panes.filter((p) => p !== action.contactId),
+        pinned: state.pinned.filter((p) => p !== action.contactId),
+        expanded: state.expanded === action.contactId ? '' : state.expanded,
+      }
+    case 'pane/closeAll': {
+      // A pin is a statement that this thread outlives a sweep, and this is the sweep.
+      const panes = state.panes.filter((id) => state.pinned.includes(id))
+      return { ...state, panes, expanded: panes.includes(state.expanded) ? state.expanded : '' }
+    }
     case 'pane/restore':
-      return { ...state, panes: action.panes }
+      return { ...state, panes: orderPanes(action.panes, action.pinned), pinned: action.pinned }
     case 'pane/move': {
       const i = state.panes.indexOf(action.contactId)
       const j = i + action.dir
       if (i < 0 || j < 0 || j >= state.panes.length) return state
+      // A swap across the pin boundary is a pin or an unpin, not a move. Allowing it would
+      // leave `panes` in a shape `orderPanes` immediately undoes, which reads to an operator
+      // as the button simply not working.
+      if (state.pinned.includes(action.contactId) !== state.pinned.includes(state.panes[j])) return state
       const panes = [...state.panes]
       const [p] = panes.splice(i, 1)
       panes.splice(j, 0, p)
       return { ...state, panes }
     }
+    case 'pane/pin': {
+      if (state.pinned.includes(action.contactId)) return state
+      const pinned = [...state.pinned, action.contactId]
+      return { ...state, pinned, panes: orderPanes(state.panes, pinned) }
+    }
+    case 'pane/unpin': {
+      if (!state.pinned.includes(action.contactId)) return state
+      const pinned = state.pinned.filter((p) => p !== action.contactId)
+      // The pane keeps the slot it was floated to. Putting it back where it sat before the
+      // pin would mean remembering that position, and an unpin is a statement about
+      // importance rather than a request to be moved somewhere.
+      return { ...state, pinned, panes: orderPanes(state.panes, pinned) }
+    }
+    case 'pane/expand':
+      return { ...state, expanded: action.contactId }
+    case 'ui/chrome':
+      return { ...state, chrome: action.value }
+    case 'ui/waTheme':
+      return { ...state, waTheme: action.value }
     case 'filters/set':
       return { ...state, filters: { ...state.filters, ...action.patch } }
     case 'connection':
@@ -1439,6 +1547,14 @@ export type EmulatorActions = {
   closePane: (contactId: string) => void
   closeAllPanes: () => void
   movePane: (contactId: string, dir: -1 | 1) => void
+  /** Hold this thread at the front of the deck; survives close-the-rest and a reload. */
+  pinPane: (contactId: string) => void
+  unpinPane: (contactId: string) => void
+  /** Blow one pane up to fill the deck, or `''` to go back to the row. */
+  expandPane: (contactId: string) => void
+  /** Put the probe layer down and leave the handset. */
+  setChrome: (value: boolean) => void
+  setWaTheme: (value: 'dark' | 'light') => void
   advance: (ms: number) => Promise<void>
   jumpToNextEvent: () => Promise<void>
   setClockTo: (iso: string) => Promise<void>
@@ -1507,6 +1623,8 @@ type Ctx = { state: EmulatorState; actions: EmulatorActions }
 const EmulatorContext = createContext<Ctx | null>(null)
 
 const PANES_KEY = 'cm.emulator.panes'
+const PINNED_KEY = 'cm.emulator.pinned'
+const UI_KEY = 'cm.emulator.ui'
 
 let toastSeq = 0
 
@@ -1613,13 +1731,39 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
   useEffect(() => {
     void refreshState()
     void refreshEvents()
+    // Panes and pins are read in ONE pass and restored in ONE dispatch. Two dispatches
+    // would let the deck paint an unpinned order for a frame, and reading in a later effect
+    // would race the save effect below, which writes the initial `[]` before a restore in a
+    // separate pass could land.
     try {
       const raw = window.localStorage.getItem(PANES_KEY)
+      const rawPinned = window.localStorage.getItem(PINNED_KEY)
       if (raw) {
         const panes = JSON.parse(raw)
         if (Array.isArray(panes) && panes.every((p) => typeof p === 'string')) {
-          dispatch({ type: 'pane/restore', panes: panes.slice(0, 12) })
+          const kept = panes.slice(0, 12)
+          const parsedPins: unknown = rawPinned ? JSON.parse(rawPinned) : []
+          // A pin for a pane that is not open is debris: restoring it would float a contact
+          // to the front the moment they were next opened, for no reason on screen.
+          const pinned =
+            Array.isArray(parsedPins) && parsedPins.every((p) => typeof p === 'string')
+              ? (parsedPins as string[]).filter((id) => kept.includes(id))
+              : []
+          dispatch({ type: 'pane/restore', panes: kept, pinned })
         }
+      }
+    } catch {
+      /* ignore */
+    }
+    // The two view preferences are read in the same pass and validated by enumeration —
+    // anything that is not one of the known values falls back to the default rather than
+    // being trusted, because this is user-writable storage.
+    try {
+      const raw = window.localStorage.getItem(UI_KEY)
+      if (raw) {
+        const ui = JSON.parse(raw) as Record<string, unknown>
+        if (typeof ui?.chrome === 'boolean') dispatch({ type: 'ui/chrome', value: ui.chrome })
+        if (ui?.waTheme === 'dark' || ui?.waTheme === 'light') dispatch({ type: 'ui/waTheme', value: ui.waTheme })
       }
     } catch {
       /* ignore */
@@ -1634,6 +1778,30 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
       /* ignore */
     }
   }, [state.panes])
+
+  // Its own key and its own effect, so pinning does not rewrite the panes entry and a
+  // corrupt value in one cannot cost the other.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(PINNED_KEY, JSON.stringify(state.pinned))
+    } catch {
+      /* ignore */
+    }
+  }, [state.pinned])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(UI_KEY, JSON.stringify({ chrome: state.chrome, waTheme: state.waTheme }))
+    } catch {
+      /* ignore */
+    }
+  }, [state.chrome, state.waTheme])
+
+  /**
+   * `expanded` is deliberately NOT persisted. `panes` survives a reload because it is a
+   * layout an operator built; an expanded pane is a momentary way of looking at one of them,
+   * and restoring full-screen on boot would hide a deck nobody remembers collapsing.
+   */
 
   /* Load a thread the moment its pane opens. */
   const loadedPanes = useRef<Set<string>>(new Set())
@@ -1799,6 +1967,11 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
       closePane: (contactId) => dispatch({ type: 'pane/close', contactId }),
       closeAllPanes: () => dispatch({ type: 'pane/closeAll' }),
       movePane: (contactId, dir) => dispatch({ type: 'pane/move', contactId, dir }),
+      pinPane: (contactId) => dispatch({ type: 'pane/pin', contactId }),
+      unpinPane: (contactId) => dispatch({ type: 'pane/unpin', contactId }),
+      expandPane: (contactId) => dispatch({ type: 'pane/expand', contactId }),
+      setChrome: (value) => dispatch({ type: 'ui/chrome', value }),
+      setWaTheme: (value) => dispatch({ type: 'ui/waTheme', value }),
 
       /**
        * The scope every clock control below rides on.

@@ -14,6 +14,9 @@ export const dynamic = 'force-dynamic'
  */
 export default function EmulatorLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-200 antialiased selection:bg-emerald-800/60">{children}</div>
+    // No `selection:` override here — `globals.css` already defines `::selection` for the
+    // whole app, and a second one on this wrapper set the background without the paired
+    // foreground, which is the shape of a contrast bug even when it happens not to be one.
+    <div className="min-h-screen bg-zinc-950 text-zinc-200 antialiased">{children}</div>
   )
 }

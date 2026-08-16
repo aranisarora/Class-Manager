@@ -1,12 +1,27 @@
 'use client'
 
 /**
- * One message, rendered as a primitive WhatsApp (§17) — behavioral fidelity, not visual.
- * Everything the spec insists must be visible is visible here: the status ticks (§2.4),
- * template-vs-in-window and which of the eight templates carried it (§16.2), the sender
- * number, the cost of the conversation it opened, the catalog moment it came from (§12),
- * whether an action is still tappable and for how long (§2.2), any Cloud API limit it breaks,
- * and anything on the row the wire would refuse to carry (§17).
+ * One message, drawn twice over.
+ *
+ * **The handset layer** is WhatsApp: the bubble, its tail, the wallpaper it sits on, the time
+ * and ticks floated into the bottom-right of the last line, the reply buttons as cards under
+ * the message. Nothing in it is invented. If it renders here it should be indistinguishable
+ * from a screenshot, because "is this what the parent sees?" is the question this whole
+ * surface exists to answer and until now it was answered by a diagram.
+ *
+ * **The probe layer** is everything the emulator knows that WhatsApp does not — the template
+ * that carried it (§16.2), the catalog moment behind it (§12), the cost of the conversation
+ * it opened, the ttl left on an action (§2.2), what the wire would refuse (§17). It is
+ * monospace, it is dimmed until wanted, and it is drawn OUTSIDE the bubble on purpose.
+ *
+ * The separation is the design. Every one of these facts used to sit inside or on top of the
+ * bubble, which meant no screenshot of this pane was ever evidence about a handset — the
+ * instrument was in the frame. Now `chrome` collapses the probe layer away and what is left
+ * is the message, exactly as sent.
+ *
+ * Which side is which: a pane stands in for THIS CONTACT's handset, so their own messages
+ * (direction `inbound`) are the green ones on the right, and the academy's (`outbound`)
+ * arrive grey on the left. That is why `inbound` maps to `--out`.
  */
 
 import { useEffect, useState } from 'react'
@@ -25,7 +40,9 @@ import {
   type EmuMessage,
   type MessageStatus,
 } from '@/lib/emulator/state'
-import { Chip, Ticks, cx } from './ui'
+import { Icon, Ticks } from './icons'
+import { Chip, cx } from './ui'
+import { BubbleTail } from './wa-ui'
 import { WaText } from './wa-text'
 
 const SUPPRESS_LABEL: Record<string, string> = {
@@ -45,9 +62,8 @@ const SUPPRESS_LABEL: Record<string, string> = {
  * The photographed timetable at full size.
  *
  * §7.1 calls a photo of the week's classes the single biggest friction reducer in the
- * product, and the pane cropped it to a 208px letterbox with `object-cover` — the one image
- * the whole feature turns on was the one image nobody could read. Fixed rather than fixed,
- * and one tap away from the whole thing.
+ * product, and the pane cropped it to a letterbox — the one image the whole feature turns on
+ * was the one image nobody could read.
  */
 function Lightbox({ media, onClose }: { media: NonNullable<EmuMessage['media']>; onClose: () => void }) {
   useEffect(() => {
@@ -66,33 +82,27 @@ function Lightbox({ media, onClose }: { media: NonNullable<EmuMessage['media']>;
       aria-label={media.filename ?? 'attachment'}
     >
       <div className="flex w-full max-w-5xl items-center gap-2 pb-2">
-        <span className="truncate font-mono text-[11px] text-zinc-400">{media.filename ?? media.kind}</span>
+        <span className="probe truncate text-zinc-400">{media.filename ?? media.kind}</span>
         <a
           href={media.url}
           target="_blank"
           rel="noreferrer"
           onClick={(e) => e.stopPropagation()}
-          className="ml-auto rounded border border-zinc-700 px-2 py-0.5 font-mono text-[10px] text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+          className="probe ml-auto rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
         >
           open in a tab ↗
         </a>
         <button
           type="button"
           onClick={onClose}
-          className="rounded border border-zinc-700 px-2 py-0.5 font-mono text-[10px] text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+          className="probe rounded border border-zinc-700 px-2 py-0.5 text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
         >
           close (esc)
         </button>
       </div>
       {media.kind === 'video' ? (
         // eslint-disable-next-line jsx-a11y/media-has-caption
-        <video
-          src={media.url}
-          controls
-          autoPlay
-          onClick={(e) => e.stopPropagation()}
-          className="max-h-[85vh] max-w-full rounded"
-        />
+        <video src={media.url} controls autoPlay onClick={(e) => e.stopPropagation()} className="max-h-[85vh] max-w-full rounded" />
       ) : (
         // eslint-disable-next-line @next/next/no-img-element
         <img
@@ -116,85 +126,82 @@ function MediaBlock({
   onOpen: () => void
 }) {
   const label =
-    media.kind === 'image'
-      ? 'image'
-      : media.kind === 'audio'
-        ? 'voice note'
-        : media.kind === 'video'
-          ? 'video'
-          : 'document'
+    media.kind === 'image' ? 'image' : media.kind === 'audio' ? 'voice note' : media.kind === 'video' ? 'video' : 'document'
 
   // §17 in the one direction it must hold: the emulator may show less than production sends,
   // never more. A template send has no room for media on the wire, so this draws the hole.
   if (dropped) {
     return (
-      <div className="mb-1.5 rounded border border-dashed border-amber-800/70 bg-amber-950/20 px-2 py-1.5">
+      <div className="probe mb-1.5 rounded border border-dashed border-amber-700/70 bg-amber-950/30 px-2 py-1.5">
         <div className="flex items-center gap-1.5">
           <Chip tone="warn">DROPPED</Chip>
-          <span className="font-mono text-[9px] text-amber-300/90">{label} not on the wire</span>
+          <span className="text-amber-300/90">{label} not on the wire</span>
         </div>
-        <p className="mt-1 text-[10px] leading-snug text-amber-200/70">{dropped}</p>
+        <p className="mt-1 leading-snug text-amber-200/70">{dropped}</p>
       </div>
     )
   }
 
   return (
-    <div className="mb-1.5 overflow-hidden rounded border border-zinc-600/60 bg-zinc-950/60">
+    <div className="mb-1 overflow-hidden rounded-[6px]" style={{ background: 'rgba(0,0,0,0.18)' }}>
       {media.kind === 'image' ? (
         <button type="button" onClick={onOpen} title="open full size" className="block w-full">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={media.url}
-            alt={media.filename ?? 'attached image'}
-            className="block max-h-56 w-full bg-black/40 object-contain"
-          />
+          <img src={media.url} alt={media.filename ?? 'attached image'} className="block max-h-72 w-full object-cover" />
         </button>
       ) : media.kind === 'audio' ? (
-        // §14.5 — "voice notes go to the model as audio". A driver has to be able to hear
-        // what they just sent, or a mis-recorded Kannada voice note and a correctly recorded
-        // one are the same grey waveform on screen.
+        // §14.5 — a driver has to be able to hear what they just sent, or a mis-recorded
+        // Kannada voice note and a correct one are the same grey waveform on screen.
         // eslint-disable-next-line jsx-a11y/media-has-caption
-        <audio src={media.url} controls preload="metadata" className="block h-8 w-full" />
+        <audio src={media.url} controls preload="metadata" className="block h-9 w-full" />
       ) : media.kind === 'video' ? (
-        // The composer accepts video, the sniffer classifies it and the label names it — and
-        // there was no branch that drew one, so every video fell through to the document row.
         <button type="button" onClick={onOpen} title="open full size" className="block w-full">
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-          <video src={media.url} controls preload="metadata" className="block max-h-56 w-full bg-black/40" />
+          <video src={media.url} controls preload="metadata" className="block max-h-72 w-full" />
         </button>
       ) : (
         <a
           href={media.url}
           target="_blank"
           rel="noreferrer"
-          className="flex items-center gap-2 px-2 py-2 text-[11px] text-zinc-300 hover:bg-zinc-900/60"
+          className="flex items-center gap-2.5 px-2.5 py-2.5 text-[13px] hover:bg-black/15"
+          style={{ color: 'var(--wa-ink)' }}
         >
-          <span>📄</span>
-          <span className="truncate">{media.filename ?? 'attachment'}</span>
-          <span className="ml-auto font-mono text-[9px] text-zinc-600">open ↗</span>
+          <span
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
+            style={{ background: 'rgba(0,0,0,0.22)' }}
+          >
+            <Icon name="attach" size={17} />
+          </span>
+          <span className="min-w-0 flex-1 truncate">{media.filename ?? 'attachment'}</span>
         </a>
       )}
-      <div className="flex items-center justify-between border-t border-zinc-700/50 px-2 py-1">
-        <span className="font-mono text-[9px] text-zinc-500">{label}</span>
-        {media.filename ? <span className="truncate font-mono text-[9px] text-zinc-600">{media.filename}</span> : null}
-      </div>
     </div>
   )
 }
 
+/**
+ * A reply button, as WhatsApp draws one: a full-width card under the message, separated from
+ * it, in the accent colour. The probe facts about it — which action id, how long it stays
+ * tappable, why it is dead — ride along in the instrument idiom rather than in the label,
+ * because the label is what a parent reads.
+ */
 function ActionButton({
   b,
   nowIso,
   onTap,
   busy,
+  chrome,
 }: {
   b: EmuButton
   nowIso: string
   onTap: (actionId: string, label: string) => void
   busy: boolean
+  chrome: boolean
 }) {
   const reason = buttonDisabled(b, nowIso)
   const left = reason ? null : msUntil(b.expiresAt, nowIso)
+  const urgent = left !== null && left < 10 * 60_000
   return (
     <button
       type="button"
@@ -202,23 +209,25 @@ function ActionButton({
       onClick={() => onTap(b.actionId, b.title)}
       title={reason ? `action ${reason}` : `action ${b.actionId.slice(0, 8)}`}
       className={cx(
-        'group flex w-full items-center justify-center gap-1.5 rounded border px-2 py-1.5 text-[12px] transition-colors',
-        reason
-          ? 'cursor-not-allowed border-zinc-800 bg-zinc-900/60 text-zinc-600'
-          : 'border-zinc-700 bg-zinc-800/80 text-sky-300 hover:border-sky-600/60 hover:bg-zinc-700/80',
+        'flex w-full items-center justify-center gap-1.5 rounded-[7.5px] px-3 py-2 text-[14px] transition-colors',
+        'shadow-[0_1px_0.5px_var(--wa-shadow)]',
+        reason ? 'cursor-not-allowed' : 'hover:brightness-110',
       )}
+      style={{
+        background: 'var(--wa-in)',
+        color: reason ? 'var(--wa-ink-faint)' : 'var(--wa-link)',
+      }}
     >
       <span className="truncate">{b.title}</span>
-      {reason ? <span className="font-mono text-[9px] tracking-wide text-zinc-600">· {reason}</span> : null}
-      {/* §2.2's actions carry a ttl, and nothing showed it — so a button that was about to
-          stop working looked exactly like one that would work forever, and the moment it
-          expired could not be watched happening. */}
-      {left !== null ? (
+      {chrome && reason ? <span className="probe opacity-70">· {reason}</span> : null}
+      {/* §2.2's actions carry a ttl, and nothing showed it — a button about to stop working
+          looked exactly like one that would work forever. */}
+      {chrome && left !== null ? (
         <span
-          className={cx('font-mono text-[9px] tracking-wide', left < 10 * 60_000 ? 'text-amber-400' : 'text-zinc-500')}
+          className={cx('probe', urgent ? 'text-amber-400' : 'opacity-55')}
           title="how long this minted action stays tappable"
         >
-          · {fmtDuration(left)} left
+          · {fmtDuration(left)}
         </span>
       ) : null}
     </button>
@@ -226,27 +235,24 @@ function ActionButton({
 }
 
 /**
- * The Flow's one call to action, attached to the bubble.
+ * The Flow's call to action, attached inside the bubble.
  *
  * Attached, not floating below it: WhatsApp draws a reply button as its own card under the
  * message and a Flow CTA as a divided strip inside it, and the difference is the whole point —
- * a reply button sends a word back, this one opens a form. Drawing both the same way would
- * make the emulator agree with itself and disagree with the handset.
- *
- * The disabled state is the load-bearing part. `flow_token` is a single-use `action` row, so a
- * form that has been submitted once, or whose ttl has run out, is dead — and until this
- * rendered it, a dead form and a live one were the same bubble.
+ * a reply button sends a word back, this one opens a form.
  */
 function FlowButton({
   flow,
   nowIso,
   onOpen,
   busy,
+  chrome,
 }: {
   flow: EmuFlow
   nowIso: string
   onOpen: () => void
   busy: boolean
+  chrome: boolean
 }) {
   const reason = buttonDisabled({ ...flow, actionId: flow.flowToken }, nowIso)
   const left = reason ? null : msUntil(flow.expiresAt, nowIso)
@@ -257,22 +263,21 @@ function FlowButton({
       onClick={onOpen}
       title={reason ? `flow ${reason}` : `flow ${flow.flowId} · screen ${flow.screen}`}
       className={cx(
-        'mt-1 -mr-2 -mb-1 -ml-2 flex items-center justify-center gap-1.5 border-t px-2 py-1.5 text-[12px] transition-colors',
-        'w-[calc(100%+1rem)]',
-        reason
-          ? 'cursor-not-allowed border-white/10 text-zinc-500 line-through decoration-zinc-600'
-          : 'border-violet-500/30 text-violet-300 hover:bg-violet-500/10',
+        'mt-1.5 -mr-[9px] -mb-[8px] -ml-[9px] flex items-center justify-center gap-1.5 border-t px-3 py-2 text-[14px] transition-colors',
+        'w-[calc(100%+18px)]',
+        reason ? 'cursor-not-allowed line-through' : 'hover:bg-white/5',
       )}
+      style={{
+        borderColor: 'color-mix(in srgb, var(--wa-ink) 14%, transparent)',
+        color: reason ? 'var(--wa-ink-faint)' : 'var(--wa-link)',
+      }}
     >
-      <span className="font-mono text-[10px]">▤</span>
-      <span className="truncate">{flow.cta || '(no cta)'}</span>
-      {reason ? <span className="font-mono text-[9px] tracking-wide no-underline">· {reason}</span> : null}
-      {left !== null ? (
-        <span
-          className={cx('font-mono text-[9px] tracking-wide', left < 10 * 60_000 ? 'text-amber-400' : 'text-zinc-500')}
-          title="how long this flow_token stays submittable"
-        >
-          · {fmtDuration(left)} left
+      <Icon name="copy" size={15} />
+      <span className="truncate no-underline">{flow.cta || '(no cta)'}</span>
+      {chrome && reason ? <span className="probe no-underline opacity-70">· {reason}</span> : null}
+      {chrome && left !== null ? (
+        <span className="probe no-underline opacity-55" title="how long this flow_token stays submittable">
+          · {fmtDuration(left)}
         </span>
       ) : null}
     </button>
@@ -292,6 +297,8 @@ export function Bubble({
   nowIso,
   meta,
   senderFallback,
+  chrome = true,
+  tight = false,
   onTap,
   onOpenList,
   onOpenFlow,
@@ -304,6 +311,10 @@ export function Bubble({
   nowIso: string
   meta: EmuEvent | null
   senderFallback: string | null
+  /** False collapses the probe layer, leaving the handset exactly as a parent sees it. */
+  chrome?: boolean
+  /** The message above this one came from the same side — close the gap up. */
+  tight?: boolean
   onTap: (actionId: string, label: string) => void
   onOpenList: (m: EmuMessage) => void
   onOpenFlow: (m: EmuMessage) => void
@@ -317,20 +328,22 @@ export function Bubble({
   const violations = limitViolations(m)
   const dropped = droppedOnTheWire(m)
 
+  // Suppressed messages never reached a handset, so they get no bubble at all — drawing one
+  // would put a message on screen that nobody received. This is pure probe.
   if (m.status === 'suppressed' || m.suppressReason) {
     const reason = m.suppressReason ?? 'suppressed'
     return (
-      <div className="my-2 px-2">
-        <div className="rounded border border-dashed border-rose-900/70 bg-rose-950/20 px-2 py-1.5">
+      <div className="px-3 py-1.5">
+        <div className="probe rounded-[7.5px] border border-dashed border-rose-900/70 bg-rose-950/25 px-2.5 py-2">
           <div className="flex items-center gap-1.5">
-            <Chip tone="danger">SUPPRESSED</Chip>
-            <span className="font-mono text-[10px] text-rose-300/90">{reason}</span>
-            <span className="ml-auto font-mono text-[9px] text-zinc-600">{fmtTime(m.at, tz)}</span>
+            <Chip tone="danger">NOT SENT</Chip>
+            <span className="text-rose-300/90">{reason}</span>
+            <span className="ml-auto opacity-60">{fmtTime(m.at, tz)}</span>
           </div>
-          <p className="mt-1 line-clamp-3 text-[11px] leading-snug text-zinc-500">
+          <p className="mt-1.5 line-clamp-3 font-sans text-[13px] leading-snug text-zinc-400">
             {m.body ? <WaText text={m.body} /> : '—'}
           </p>
-          <p className="mt-1 text-[10px] text-zinc-600">{SUPPRESS_LABEL[reason] ?? 'never reached the wire'}</p>
+          <p className="mt-1 opacity-70">{SUPPRESS_LABEL[reason] ?? 'never reached the wire'}</p>
         </div>
       </div>
     )
@@ -343,96 +356,178 @@ export function Bubble({
   const rung = nextRung(m.status)
   const flowState = m.flow ? buttonDisabled({ ...m.flow, actionId: m.flow.flowToken }, nowIso) : null
 
+  // The contact's own messages sit right in green; the academy's arrive left in grey.
+  const side: 'in' | 'out' = inbound ? 'out' : 'in'
+
+  const probeChips =
+    chrome &&
+    (templateName || inWindow === false || m.catalogId || m.flow || violations.length || cost !== null)
+
   return (
-    /*
-     * A pane stands in for the contact's own handset — the composer says "type as this
-     * contact" — and the sides were the wrong way round: the business's messages sat on the
-     * right, where a person's own replies belong, so every screenshot read as if the parent
-     * had said what the bot said. Inbound (what this contact sends) is theirs and goes right;
-     * outbound (what the academy sends them) arrives on the left.
-     */
-    <div className={cx('flex px-2 py-1', inbound ? 'justify-end' : 'justify-start', m.pending && 'opacity-60')}>
-      <div className={cx('relative max-w-[86%] min-w-[120px]', inbound ? 'mr-1.5' : 'ml-1.5')}>
-        {/* tail */}
-        <span
-          aria-hidden
-          className={cx(
-            'absolute top-0 h-0 w-0',
-            inbound
-              ? '-right-1.5 border-t-[9px] border-r-[9px] border-t-emerald-900 border-r-transparent'
-              : '-left-1.5 border-t-[9px] border-l-[9px] border-t-zinc-800 border-l-transparent',
-          )}
-        />
-        <div
-          className={cx(
-            'rounded-md px-2 pt-1.5 pb-1 shadow-sm',
-            inbound ? 'rounded-tr-none bg-emerald-900' : 'rounded-tl-none bg-zinc-800',
-          )}
-        >
-          {/* §17 — template-vs-in-window is always visible, on every outbound row. */}
-          {!inbound ? (
-            <div className="mb-1 flex flex-wrap items-center gap-1">
-              {templateName ? (
-                <Chip tone="template" title="Out of the 24h window, carried by one of the eight approved templates (§16.2)">
-                  TEMPLATE · {templateName}
-                </Chip>
-              ) : inWindow === false ? (
-                <Chip tone="danger" title="Out of window with no template — this could not have gone out">
-                  out of window · no template
-                </Chip>
-              ) : (
-                <Chip tone="window" title="Free-form reply inside the 24h window — no template, no tier, no cost (§14.7)">
-                  in-window
-                </Chip>
-              )}
-              {m.catalogId ? (
-                <Chip tone="catalog" title="The catalog moment code raised (§12) — the bot chose what to do with it">
-                  {m.catalogId}
-                </Chip>
-              ) : null}
-              {/* A Flow's evidence, on the bubble: which published artifact, which screen it
-                  opens on, and whether the action row behind `flow_token` is still live. The
-                  last one is the fact worth being able to see — it is the difference between
-                  a form that can be filled in and one that would be refused on submit. */}
-              {m.flow ? (
-                <>
-                  <Chip tone="violet" title="a WhatsApp Flow — a form inside the chat, carried by this message's one action slot">
-                    FLOW · {m.flow.flowId}
-                  </Chip>
-                  <Chip tone="quiet" title="the screen flow_action: navigate opens on">
-                    {m.flow.screen || 'no screen'}
-                  </Chip>
-                  <Chip
-                    tone={flowState ? 'danger' : 'window'}
-                    title={`flow_token ${m.flow.flowToken || '(none)'} — an action row (§2.2): minted once, submittable once`}
-                  >
-                    token {flowState ?? 'live'}
-                  </Chip>
-                </>
-              ) : null}
+    // WhatsApp packs a run from one sender to a 2px gap and opens 12px when the sender
+    // changes. It is the cheapest signal on the screen for "this is one thought" and its
+    // absence is what makes an even-spaced copy read as a transcript rather than a chat.
+    <div
+      className={cx('group/msg flex px-3', inbound ? 'justify-end' : 'justify-start')}
+      style={{ paddingTop: tight ? 1 : 6, paddingBottom: 1 }}
+    >
+      <div
+        className={cx('relative flex min-w-0 flex-col', inbound ? 'items-end' : 'items-start')}
+        style={{ maxWidth: 'var(--wa-bubble-max, 85%)' }}
+      >
+        {/* ---------------- handset ---------------- */}
+        <div className={cx('wa-bubble', side === 'out' ? 'wa-bubble--out' : 'wa-bubble--in', m.pending && 'opacity-70')}>
+          <BubbleTail side={side} />
+
+          {m.header ? (
+            <div
+              className="mb-0.5 text-[14px] leading-[19px] font-semibold"
+              style={{ color: 'color-mix(in srgb, var(--wa-ink) 92%, transparent)' }}
+            >
+              {m.header}
             </div>
           ) : null}
 
-          {m.header ? (
-            <div className="mb-1 border-b border-white/10 pb-1 text-[12px] font-semibold text-zinc-100">{m.header}</div>
-          ) : null}
+          {m.media ? <MediaBlock media={m.media} dropped={dropped} onOpen={() => setLightbox(true)} /> : null}
 
-          {m.media ? (
-            <MediaBlock media={m.media} dropped={dropped} onOpen={() => setLightbox(true)} />
-          ) : null}
+          <span className="wa-meta">
+            {fmtTime(m.at, tz)}
+            {!inbound ? (
+              // Ticks belong to the sender's own bubble on a handset. They stay on the
+              // academy's side here because they are the instrument for §2.4 — the control
+              // that walks a message up the ladder one rung per tap, and the only way to
+              // reach `delivered` by hand.
+              <button
+                type="button"
+                disabled={!rung}
+                onClick={() => rung && onAdvanceStatus(m.id, rung)}
+                title={
+                  rung
+                    ? `mark ${rung} — one rung at a time, because queued ≠ sent ≠ delivered ≠ read (§2.4)`
+                    : m.status === 'read'
+                      ? 'read — the top of the ladder'
+                      : 'queued — the transport has not accepted this yet, so there is nothing to advance'
+                }
+                className={cx('-my-1 rounded px-0.5 py-1', rung ? 'hover:bg-white/10' : 'cursor-default')}
+                style={{ color: m.status === 'read' ? 'var(--wa-tick)' : undefined }}
+              >
+                <Ticks status={m.status} size={15} />
+              </button>
+            ) : null}
+          </span>
 
-          {/* Body text is the one place WhatsApp applies markup, so it is the one place this
-              renders it — see `wa-text.tsx` for why the header, footer and button titles
-              above and below stay literal. */}
+          {/* `wa-meta-gap` closes the text and reserves the clock's corner on whatever line
+              the message happens to end on — see the rule in globals.css for why this is a
+              spacer and not a float. */}
           {m.body ? (
-            <WaText text={m.body} className="block text-[13px] leading-snug whitespace-pre-wrap text-zinc-100" />
+            <span className="block text-[14.2px] leading-[19px] whitespace-pre-wrap">
+              <WaText text={m.body} />
+              <span className="wa-meta-gap" aria-hidden />
+            </span>
           ) : m.media ? null : (
-            <p className="text-[13px] text-zinc-500 italic">(no body — nothing for a handset to draw)</p>
+            <span className="block text-[14.2px] leading-[19px] italic" style={{ color: 'var(--wa-ink-faint)' }}>
+              (no body — nothing for a handset to draw)
+              <span className="wa-meta-gap" aria-hidden />
+            </span>
           )}
 
-          {m.footer ? <p className="mt-1 text-[10px] text-zinc-400/80">{m.footer}</p> : null}
+          {m.footer ? (
+            <div className="mt-1 text-[12.5px] leading-[17px]" style={{ color: 'var(--wa-ink-dim)' }}>
+              {m.footer}
+            </div>
+          ) : null}
 
-          <div className="mt-1 flex items-center justify-end gap-1.5">
+          {m.flow ? (
+            <FlowButton flow={m.flow} nowIso={nowIso} onOpen={() => onOpenFlow(m)} busy={busyFlow(m.flow.flowToken)} chrome={chrome} />
+          ) : null}
+        </div>
+
+        {/* reply buttons — their own cards under the message, as the wire carries them */}
+        {m.buttons.length ? (
+          <div className="mt-[3px] flex w-full flex-col gap-[3px]">
+            {m.buttons.slice(0, 3).map((b, i) => (
+              <ActionButton key={`${b.actionId}:${i}`} b={b} nowIso={nowIso} onTap={onTap} busy={busyTap(b.actionId)} chrome={chrome} />
+            ))}
+            {m.buttons.length > 3 && chrome ? (
+              <div className="probe rounded border border-rose-900/70 bg-rose-950/30 px-2 py-1 text-center text-rose-300">
+                {m.buttons.length - 3} button(s) over the Cloud API max of 3 — would be rejected
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* §14.6 — the Cloud API's `cta_url`. A real anchor, because the claim under test is
+            that a person taps a button rather than reading a signed JWT. */}
+        {m.link ? (
+          <a
+            href={m.link.url}
+            target="_blank"
+            rel="noreferrer"
+            title={m.link.url}
+            className="mt-[3px] flex w-full items-center justify-center gap-1.5 rounded-[7.5px] px-3 py-2 text-[14px] shadow-[0_1px_0.5px_var(--wa-shadow)] hover:brightness-110"
+            style={{ background: 'var(--wa-in)', color: 'var(--wa-link)' }}
+          >
+            <Icon name="expand" size={14} />
+            <span className="truncate">{m.link.title}</span>
+          </a>
+        ) : null}
+
+        {m.list ? (
+          <button
+            type="button"
+            onClick={() => onOpenList(m)}
+            className="mt-[3px] flex w-full items-center justify-center gap-1.5 rounded-[7.5px] px-3 py-2 text-[14px] shadow-[0_1px_0.5px_var(--wa-shadow)] hover:brightness-110"
+            style={{ background: 'var(--wa-in)', color: 'var(--wa-link)' }}
+          >
+            <Icon name="menu" size={14} />
+            {m.list.buttonText}
+          </button>
+        ) : null}
+
+        {m.failedReason ? (
+          <div className="probe mt-1 rounded border border-rose-900/70 bg-rose-950/30 px-2 py-1 text-rose-300">
+            failed · {m.failedReason}
+          </div>
+        ) : null}
+
+        {/* ---------------- probe ---------------- */}
+        {probeChips ? (
+          <div
+            className={cx(
+              'probe-dim mt-1 flex flex-wrap items-center gap-1',
+              inbound ? 'justify-end' : 'justify-start',
+            )}
+          >
+            {templateName ? (
+              <Chip tone="template" title="Out of the 24h window, carried by one of the eight approved templates (§16.2)">
+                {templateName}
+              </Chip>
+            ) : inWindow === false ? (
+              <Chip tone="danger" title="Out of window with no template — this could not have gone out">
+                out of window · no template
+              </Chip>
+            ) : null}
+            {m.catalogId ? (
+              <Chip tone="catalog" title="The catalog moment code raised (§12) — the bot chose what to do with it">
+                {m.catalogId}
+              </Chip>
+            ) : null}
+            {m.flow ? (
+              <>
+                <Chip tone="violet" title="a WhatsApp Flow — a form inside the chat, carried by this message's one action slot">
+                  flow {m.flow.flowId}
+                </Chip>
+                <Chip tone="quiet" title="the screen flow_action: navigate opens on">
+                  {m.flow.screen || 'no screen'}
+                </Chip>
+                <Chip
+                  tone={flowState ? 'danger' : 'window'}
+                  title={`flow_token ${m.flow.flowToken || '(none)'} — an action row (§2.2): minted once, submittable once`}
+                >
+                  token {flowState ?? 'live'}
+                </Chip>
+              </>
+            ) : null}
             {violations.length ? (
               <Chip tone="danger" title={`Cloud API limits: ${violations.join(' · ')}`}>
                 LIMIT
@@ -440,7 +535,7 @@ export function Bubble({
             ) : null}
             {cost !== null && !inbound ? (
               <span
-                className="font-mono text-[9px] text-zinc-400/70"
+                className="probe opacity-70"
                 title={
                   m.conversationCategory
                     ? `${m.conversationCategory} conversation${cost === 0 ? ' — no charge' : ''}`
@@ -457,97 +552,17 @@ export function Bubble({
             <button
               type="button"
               onClick={() => setShowRaw((v) => !v)}
-              title={fmtStamp(m.at, tz)}
-              className="font-mono text-[9px] text-zinc-400/70 hover:text-zinc-200"
+              title={`${fmtStamp(m.at, tz)} — open the message row behind this bubble`}
+              className="probe rounded border px-1 opacity-60 hover:opacity-100"
+              style={{ borderColor: 'var(--wa-rule)' }}
             >
-              {fmtTime(m.at, tz)}
+              {showRaw ? 'hide row' : 'row ›'}
             </button>
-            {/* Ticks belong to the sender's own bubble on a real handset. They stay on the
-                academy's side here because they are the instrument for §2.4 — the control
-                that walks a message up the ladder one rung per tap, which is the only way
-                to reach `delivered` by hand. */}
-            {!inbound ? (
-              <button
-                type="button"
-                disabled={!rung}
-                onClick={() => rung && onAdvanceStatus(m.id, rung)}
-                title={
-                  rung
-                    ? `mark ${rung} — one rung at a time, because queued ≠ sent ≠ delivered ≠ read (§2.4)`
-                    : m.status === 'read'
-                      ? 'read — the top of the ladder'
-                      : 'queued — the transport has not accepted this yet, so there is nothing to advance'
-                }
-                className={cx('rounded px-0.5', rung ? 'hover:bg-white/10' : 'cursor-default opacity-70')}
-              >
-                <Ticks status={m.status} />
-              </button>
-            ) : null}
-          </div>
-
-          {m.flow ? (
-            <FlowButton
-              flow={m.flow}
-              nowIso={nowIso}
-              onOpen={() => onOpenFlow(m)}
-              busy={busyFlow(m.flow.flowToken)}
-            />
-          ) : null}
-        </div>
-
-        {m.buttons.length ? (
-          <div className="mt-1 flex flex-col gap-1">
-            {m.buttons.slice(0, 3).map((b, i) => (
-              <ActionButton
-                key={`${b.actionId}:${i}`}
-                b={b}
-                nowIso={nowIso}
-                onTap={onTap}
-                busy={busyTap(b.actionId)}
-              />
-            ))}
-            {m.buttons.length > 3 ? (
-              <div className="rounded border border-rose-900/70 bg-rose-950/30 px-2 py-1 text-center font-mono text-[10px] text-rose-300">
-                {m.buttons.length - 3} button(s) over the Cloud API max of 3 — would be rejected
-              </div>
-            ) : null}
           </div>
         ) : null}
 
-        {/* §14.6 — the Cloud API's `cta_url`. A real anchor, because the whole claim being
-            tested here is that a person taps a button rather than reading a signed JWT. */}
-        {m.link ? (
-          <a
-            href={m.link.url}
-            target="_blank"
-            rel="noreferrer"
-            title={m.link.url}
-            className="mt-1 flex w-full items-center justify-center gap-1.5 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1.5 text-[12px] text-sky-300 hover:border-sky-600/60 hover:bg-zinc-700/80"
-          >
-            <span className="font-mono text-[10px]">↗</span>
-            <span className="truncate">{m.link.title}</span>
-          </a>
-        ) : null}
-
-        {m.list ? (
-          <button
-            type="button"
-            onClick={() => onOpenList(m)}
-            className="mt-1 flex w-full items-center justify-center gap-1.5 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1.5 text-[12px] text-sky-300 hover:border-sky-600/60 hover:bg-zinc-700/80"
-          >
-            <span className="font-mono text-[10px]">☰</span>
-            {m.list.buttonText}
-          </button>
-        ) : null}
-
-        {m.failedReason ? (
-          <div className="mt-1 rounded border border-rose-900/70 bg-rose-950/30 px-2 py-1 font-mono text-[10px] text-rose-300">
-            failed · {m.failedReason}
-          </div>
-        ) : null}
-
-        {showRaw ? (
-          <div className="mt-1 rounded border border-zinc-800 bg-zinc-950 px-2 py-1.5 font-mono text-[9px] leading-relaxed text-zinc-400">
+        {showRaw && chrome ? (
+          <div className="probe mt-1 w-full rounded border border-zinc-800 bg-zinc-950/90 px-2 py-1.5 leading-relaxed text-zinc-400">
             <div>id · {m.id}</div>
             <div>queued · {m.queuedAt ? fmtStamp(m.queuedAt, tz) : '—'}</div>
             <div>sent · {m.sentAt ? fmtStamp(m.sentAt, tz) : '—'}</div>
@@ -556,14 +571,13 @@ export function Bubble({
             <div>sender · {sender ?? '—'}</div>
             <div>wa id · {m.waMessageId ?? '—'}</div>
             {m.conversationCategory ? <div>category · {m.conversationCategory}</div> : null}
-            <div>
-              route · {templateName ? `template ${templateName}` : inWindow === false ? 'out of window' : 'in-window'}
-            </div>
+            <div>route · {templateName ? `template ${templateName}` : inWindow === false ? 'out of window' : 'in-window'}</div>
             {dropped ? <div className="text-amber-400">wire · {dropped}</div> : null}
             {violations.length ? <div className="text-rose-400">limits · {violations.join(' · ')}</div> : null}
             {m.buttons.map((b) => (
               <div key={b.actionId} className="truncate">
-                action · {b.actionId || '(none)'} {b.consumedAt ? '· consumed' : ''} {b.expiresAt ? `· ttl ${fmtStamp(b.expiresAt, tz)}` : ''}
+                action · {b.actionId || '(none)'} {b.consumedAt ? '· consumed' : ''}{' '}
+                {b.expiresAt ? `· ttl ${fmtStamp(b.expiresAt, tz)}` : ''}
               </div>
             ))}
             {m.flow ? (
@@ -572,7 +586,8 @@ export function Bubble({
                   flow · {m.flow.flowId} · screen {m.flow.screen || '(none)'} · {m.flow.mode}
                 </div>
                 <div className="truncate">
-                  flow_token · {m.flow.flowToken || '(none)'} {m.flow.consumedAt ? `· consumed ${fmtStamp(m.flow.consumedAt, tz)}` : ''}{' '}
+                  flow_token · {m.flow.flowToken || '(none)'}{' '}
+                  {m.flow.consumedAt ? `· consumed ${fmtStamp(m.flow.consumedAt, tz)}` : ''}{' '}
                   {m.flow.expiresAt ? `· ttl ${fmtStamp(m.flow.expiresAt, tz)}` : ''}
                 </div>
                 {Object.keys(m.flow.data).length ? (
@@ -586,9 +601,7 @@ export function Bubble({
         ) : null}
       </div>
 
-      {lightbox && m.media && !dropped ? (
-        <Lightbox media={m.media} onClose={() => setLightbox(false)} />
-      ) : null}
+      {lightbox && m.media && !dropped ? <Lightbox media={m.media} onClose={() => setLightbox(false)} /> : null}
     </div>
   )
 }

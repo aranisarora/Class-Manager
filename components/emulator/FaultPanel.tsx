@@ -54,7 +54,10 @@ export function FaultPanel() {
   const activeCount = FAULT_KINDS.filter((k) => state.faults[k].active).length
 
   return (
-    <div className="shrink-0 border-t border-zinc-800 bg-zinc-900/60">
+    // Opaque instrument ground, not an alpha over whatever is behind it. This panel injects
+    // faults — it is the emulator at its least handset-like — and on the light chat list a
+    // translucent zinc washed every label out to unreadable grey-on-white.
+    <div className="shrink-0 border-t border-zinc-800 bg-zinc-900">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
