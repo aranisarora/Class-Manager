@@ -63,9 +63,11 @@
  * time and runs the queue. Both are shared with whatever else is driving this
  * database, and both are bounded here rather than trusted to be small:
  *
- *   - **the clock** moves in steps of at most an hour, to the next scheduled
- *     moment where there is one sooner, within a total budget, and is put back
- *     where it was found before the process exits. See `CLOCK_STEP_MS`.
+ *   - **the clock** is THIS academy's own (0024's per-academy `sim_clock` row),
+ *     never the world's, so a real tenant sharing this database keeps real time
+ *     while the arc walks days. It moves in steps of at most an hour, to the next
+ *     scheduled moment where there is one sooner, within a total budget, and the
+ *     row is dropped before the process exits. See `CLOCK_STEP_MS` and "The clock".
  *   - **the queue** is drained for THIS academy only. See `drainOwnJobs`.
  *   - **the business** is dropped on the way out, and its jobs with it, unless
  *     `--keep`. Nothing else in the world is touched.
@@ -3108,14 +3110,32 @@ type TurnRecord = {
  * reads calm and nothing has been tested. So time moves in steps of at most an
  * hour, and to the next scheduled moment where there is one sooner than that.
  *
- * The clock is a GLOBAL singleton — `sim_clock` has no `academy_id` and
- * `app.now()` takes no argument — and it is shared with whatever else is driving
- * this database. Two consequences, both load-bearing:
+ * **The clock this probe moves is its OWN, and that is load-bearing now that a
+ * real tenant can share the database.** 0024 gave `sim_clock` a nullable
+ * `academy_id`; `app.now_for()` resolves a tenant's own row and falls back to
+ * the world row (`academy_id is null`) for every tenant without one. This file
+ * used to move the world row, and the comment here used to say — correctly, when
+ * it was written — that the clock was a global singleton.
  *
- *   - total travel is capped, and a stage that wants more than the cap FAILS
- *     rather than quietly dragging somebody else's world along with it.
- *   - it is put back relatively, `advance(-moved)`, so a concurrent advance by
- *     another process survives being undone by this one.
+ * It is no longer only a probe's own business. A real academy has no clock row,
+ * so it INHERITS the world offset, and the deployed cron beats every 60 seconds
+ * calling `planAhead()` + `runDueJobs()` across all tenants. A probe that moved
+ * the world 96 hours would therefore hand a live business four days of reminders,
+ * digests and dunning to fire at once, as real WhatsApp messages, while the run
+ * was still going — and "put it back on the way out" cannot help, because the
+ * beat lands during the run rather than after it.
+ *
+ * So every mutation below names `made.academyId`. `advance` seeds the tenant's
+ * row from the world offset on first write (`ensureRow`), so the arc still starts
+ * where the world is, and the world row is never touched. The three properties
+ * that made the old shared-clock discipline necessary are kept anyway, because
+ * two probes can still share a database with each other:
+ *
+ *   - time moves in steps of at most an hour, never one big hop.
+ *   - total travel is capped, and a stage that wants more than the cap FAILS.
+ *   - the tenant's row is dropped on the way out — by `reset(academyId)`, which
+ *     DELETES it so the tenant follows the world again, and by the `on delete
+ *     cascade` on `sim_clock.academy_id` when the business itself is dropped.
  * ========================================================================== */
 
 /* ========================================================================== *
@@ -3183,12 +3203,26 @@ async function runChild(model: string, arm: string): Promise<void> {
   const { createAcademy, createTestContact, dropAcademy, inboundFromContact, worldAcademyIds } =
     await import('@/lib/seed')
   const { withSession } = await import('@/lib/db')
-  const { advance, now, nextEventAt } = await import('@/lib/clock')
+  const clock = await import('@/lib/clock')
   const { HANDLERS, JobSkip, planAheadFor } = await import('@/lib/jobs')
   const { msOf } = await import('@/lib/jobs/util')
 
   const label = `Probe ${model}`
   const made = await createAcademy({ name: label, adminName: 'Probe Admin', timezone: 'Asia/Kolkata', category: 'badminton' })
+
+  /**
+   * Every clock call in this child names this probe's own academy — see "The
+   * clock" above for why that is a safety property and not a tidiness one.
+   *
+   * Bound here rather than at the import because `made` does not exist until the
+   * line above, and bound as three names the rest of the file already uses so no
+   * call site has to remember the argument. Forgetting it at one of the six call
+   * sites would move the world instead, which is exactly the failure this is
+   * removing, and a wrapper cannot be forgotten.
+   */
+  const now = () => clock.now(made.academyId)
+  const advance = (ms: number) => clock.advance(ms, made.academyId)
+  const nextEventAt = () => clock.nextEventAt(made.academyId)
   // `inboundFromContact` walks a cached academy list; a business created a
   // millisecond ago is not in it until the cache is refreshed, and the symptom
   // would be "no such contact" rather than anything pointing here.
@@ -3330,7 +3364,7 @@ async function runChild(model: string, arm: string): Promise<void> {
     return log
   }
 
-  /** Step the world forward to `target`, draining as it goes. Never in one hop. */
+  /** Step THIS ACADEMY forward to `target`, draining as it goes. Never in one hop. */
   let clockMovedMs = 0
   async function walkClockTo(target: Date, log: string[]): Promise<string> {
     const from = await now()
@@ -3338,9 +3372,13 @@ async function runChild(model: string, arm: string): Promise<void> {
     if (distance <= 0) return `already past ${target.toISOString()}`
     const left = CLOCK_BUDGET_MS - clockMovedMs
     if (distance > left) {
-      // Reject loudly rather than moving anyway. The budget exists because this
-      // clock belongs to the whole world, and a probe that overruns it is
-      // interfering with runs it cannot see.
+      // Reject loudly rather than moving anyway. The budget no longer protects
+      // other tenants — the clock is this academy's own — but it still protects
+      // the RUN: a stage that wants days rather than hours has usually failed to
+      // reach the moment it was aiming at, and dragging time until something
+      // fires would turn that into a pass. It is a statement about how far this
+      // arc should ever need to travel, which is why it stayed when the sharing
+      // reason went away.
       return `REFUSED: ${target.toISOString()} is ${(distance / 3_600_000).toFixed(1)}h away and ${(left / 3_600_000).toFixed(1)}h of clock budget is left`
     }
     let steps = 0
@@ -3760,10 +3798,27 @@ async function runChild(model: string, arm: string): Promise<void> {
     mkdirSync(OUT_DIR, { recursive: true })
     writeFileSync(join(OUT_DIR, `${armFile(model, arm)}.json`), JSON.stringify(records, null, 2))
 
-    // Relative, so an advance by another process between then and now survives.
+    /**
+     * Give the clock back by DELETING this tenant's row, not by winding it back.
+     *
+     * `reset(academyId)` removes the row, which puts the academy back on the world
+     * clock — "stop having a clock of my own" rather than "be pinned to this
+     * particular offset". The old `advance(-clockMovedMs)` was relative so that a
+     * concurrent advance by another process survived being undone; that reasoning
+     * belonged to a shared world row and no longer applies, because the only writer
+     * of THIS row is this process. Winding back now would leave a real row behind
+     * holding whatever the world offset was when the run started, which would then
+     * stop tracking the world — a clock frozen at a stale offset is worse than none.
+     *
+     * Unconditional, and not guarded on `clockMovedMs`: a run that failed partway
+     * may have written the row via `ensureRow` without completing a step, and the
+     * row should not outlive the process either way. `--keep` keeps the business,
+     * and the business keeping a clock of its own is the one case where a leftover
+     * row would be silently wrong.
+     */
+    await clock.reset(made.academyId).catch(() => null)
     if (clockMovedMs !== 0) {
-      await advance(-clockMovedMs).catch(() => null)
-      process.stderr.write(c.dim(`  clock put back ${(clockMovedMs / 3_600_000).toFixed(1)}h\n`))
+      process.stderr.write(c.dim(`  clock given back (${(clockMovedMs / 3_600_000).toFixed(1)}h of travel, this academy only)\n`))
     }
     if (!has('keep')) {
       // `job` has no FK to `academy`, so dropping the business leaves its queue

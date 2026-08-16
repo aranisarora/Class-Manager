@@ -2277,34 +2277,30 @@ async function main(): Promise<void> {
 
     case 'clock': {
       /**
-       * **There is one clock, and it belongs to the world rather than to a business.**
+       * **`--academy` moves that tenant alone; without it the WORLD clock moves.**
        *
-       * Somebody reaching for `--academy` here means it, so being told plainly beats a
-       * flag that is quietly ignored — a clock you believe you scoped and did not is how
-       * you conclude the wrong thing about a tenant's ladder. What it would take is a
-       * migration, and migrations are not this driver's to write:
+       * This block used to say there was one clock and it belonged to the world, and
+       * listed the three things a per-academy clock would need. 0024 wrote exactly that
+       * migration — `sim_clock.academy_id` nullable with two partial unique indexes,
+       * `app.now_for()` for a tenant you name, and `next_event_at` taking an optional
+       * academy — so the whole caveat is now history rather than a limitation, and it is
+       * deleted rather than left to be read as current.
        *
-       *   · `sim_clock` is a singleton by construction — `singleton boolean unique
-       *     check (singleton)`, no `academy_id` — so there is nowhere to put a second
-       *     offset. It would need an `academy_id` column, the singleton constraint
-       *     replaced by two partial unique indexes (one row where `academy_id is null`,
-       *     one per academy), and `resetWorld` taught to clear both.
-       *   · `app.now()` (0004) reads `(select offset_ms from sim_clock limit 1)` and takes
-       *     no argument. It would have to fall back through `app.academy_id()` to the
-       *     global row — which also means every session that reads time must be pinned to
-       *     a tenant, and `lib/clock.ts` (one process-wide memo, `now(): Promise<Date>`)
-       *     and `app.next_event_at()` would both have to become per-academy.
-       *   · `job` carries its tenant in `payload->>'academy_id'`, not a column, and
-       *     `runner.claim()` selects `run_at <= app.now()` globally. Per-academy time
-       *     means per-academy claiming, or one tenant's clock runs another's jobs.
+       * What matters at this call site is which row moves, because the two are not
+       * equally safe once a real business shares the database. A tenant with no clock of
+       * its own FOLLOWS the world's, so moving the world moves every real academy too,
+       * and the deployed cron beats every 60 seconds running `planAhead()` +
+       * `runDueJobs()` across all tenants. Against production that is a live business's
+       * next few days of reminders fired at once, as real WhatsApp messages.
        *
-       * Everything short of that is a costume: holding one tenant's jobs back does not
-       * stop its sessions passing or its windows expiring, and calling that a clock would
-       * be worse than not having one.
+       * Two things already stand between that and an accident, and neither is this
+       * comment. `/api/emulator/clock` guards with `requireSandboxAcademy(body.academyId)`,
+       * whose second rule is that an ABSENT academy is a refusal — so the unscoped form
+       * is refused on any deployment that is not a scratch box, which is where the
+       * unscoped form is dangerous. And `scripts/probe-model.ts` names its own academy on
+       * every clock call for the same reason. Locally, unscoped stays the default and
+       * stays right: there is nobody else's business to disturb.
        */
-      // 0024 wrote that migration. `--academy` moves that tenant alone; without
-      // it the world clock moves, which is what every caller did before and
-      // still does. A tenant with no clock of its own follows the world's.
       let clockAcademyId: string | undefined
       {
         const wantedClockAcademy = flag('academy')
