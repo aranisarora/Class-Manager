@@ -316,18 +316,29 @@ export async function registerExpiry(job: Job): Promise<void> {
      * so a fourth session going unmarked is a change and says so, while the same
      * three said again is not.
      */
-    const outstanding = await tx<{ session_id: string }[]>`
-      select s.id as session_id
-        from session s
-        join session_coach sc on sc.session_id = s.id and sc.declined_at is null
-       where s.academy_id = ${academyId}
-         and sc.coach_id in ${tx(coaches.map((c) => c.coach_id).length ? coaches.map((c) => c.coach_id) : [''])}
-         and s.status = 'scheduled'
-         and s.ends_at < app.now()
-         and not exists (select 1 from attendance a where a.session_id = s.id)
-       order by s.id`
+    const coachIds = coaches.map((c) => c.coach_id)
+    // A session nobody is assigned to still owes its register, and `in ()` is a
+    // syntax error rather than an empty set — so the whole-set query only runs
+    // when there is a coach to scope it to, and this session stands for itself
+    // otherwise. An empty array cast to uuid[] would have thrown here on every
+    // unassigned session, which is a job that dies rather than a message that
+    // repeats.
+    const outstanding = coachIds.length
+      ? (
+          await tx<{ session_id: string }[]>`
+            select s.id as session_id
+              from session s
+              join session_coach sc on sc.session_id = s.id and sc.declined_at is null
+             where s.academy_id = ${academyId}
+               and sc.coach_id = any (${coachIds}::uuid[])
+               and s.status = 'scheduled'
+               and s.ends_at < app.now()
+               and not exists (select 1 from attendance a where a.session_id = s.id)
+             order by s.id`
+        ).map((r) => r.session_id)
+      : [sessionId]
 
-    return { academy, session, coaches, recipients, outstanding: outstanding.map((r) => r.session_id) }
+    return { academy, session, coaches, recipients, outstanding }
   })
 
   const { academy, session, coaches, recipients, outstanding } = plan

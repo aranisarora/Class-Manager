@@ -283,6 +283,29 @@ export async function consumeAction(
                 and w.payload ->> 'kind' in ('operation', 'steps')
            )
         returning a.id
+      ),
+      -- The question this card was asking is answered.
+      --
+      -- A pending_request exists from the moment the ask reaches a screen (0032,
+      -- the send path), and this is the other end of it: the tap is the answer,
+      -- whichever of the buttons was pressed, because a card asks ONE question
+      -- and declining is an answer to it. Keyed by message_id for exactly that
+      -- reason -- a card with three buttons is three action rows and one
+      -- question.
+      --
+      -- In the same statement as the claim, and not a follow-up write, for the
+      -- reason the sibling invalidation is: two writes that must not come apart
+      -- are one statement, or they will eventually come apart.
+      --
+      -- (No backticks and no apostrophes in here. See the NOTE above.)
+      answered as (
+        update pending_request pr
+           set resolved_at = app.now(), resolution = 'tapped'
+          from claimed c
+         where pr.message_id = c.message_id
+           and pr.academy_id = ${ctx.academyId}
+           and pr.resolved_at is null
+        returning pr.id
       )
       select payload from claimed`
     return rows.length ? rows[0].payload : null

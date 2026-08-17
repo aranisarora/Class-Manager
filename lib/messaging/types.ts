@@ -197,6 +197,27 @@ export type OutboundMessage = {
    */
   stateKey?: string
   /**
+   * **What question this message puts on somebody's screen, so the unanswered
+   * state exists from the first second.**
+   *
+   * `isConfirmationRequest` says a question was asked. It says nothing about
+   * WHAT, and nothing at all once the message has scrolled away — which is the
+   * single most expensive missing state in this product's history. An untapped
+   * "stop messaging me" left the world identical to her never having asked
+   * (F-AF); a coach's untapped decline left a class uncovered with nobody
+   * re-asking (F-AQ). Worse than absent: a staged action rendered as "done" in
+   * the next turn's context, and the model repeated the lie to the person it was
+   * about.
+   *
+   * `subject` is what the question is ABOUT, normalised — a second ask on the
+   * same subject supersedes the first rather than accumulating beside it (0032's
+   * partial unique index). `send` derives one from the catalog moment and the
+   * subject people when a caller supplies none, so the row exists even for a
+   * protocol nobody has taught about this field: a state that depends on somebody
+   * remembering is not a state.
+   */
+  confirmation?: { kind: string; subject: string; question?: string }
+  /**
    * Additive (not in CONTRACTS §5, safe to omit): named parameters for the §16.2 template
    * used when this message goes out of window. Omitted, `send` fills them from what it
    * knows — academy name, the catalog row's event phrase, the composed body as the detail —

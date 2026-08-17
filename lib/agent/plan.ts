@@ -78,6 +78,22 @@ export type MessageStep = {
    */
   opt_out_ack?: boolean
   /**
+   * RUNTIME-INTERNAL. What question this message puts on somebody's screen, so
+   * `send` can record it as outstanding from the moment it lands (0032).
+   *
+   * `is_confirmation_request` above says a question was asked; this says what it
+   * was ABOUT, which is what a later turn needs and what makes a second ask on
+   * the same subject supersede rather than accumulate. `send` derives one when a
+   * protocol does not supply it, so the row exists either way — but a protocol
+   * that knows its own subject should say so, because "the money mute" is a
+   * better key than a list of person ids.
+   *
+   * Stripped from model-authored plans like the other runtime-internal fields:
+   * a forged pending request is a question nobody asked, sitting in somebody
+   * else's tail.
+   */
+  confirmation?: { kind: string; subject: string; question?: string }
+  /**
    * RUNTIME-INTERNAL, set by `expand` on steps an operation produced. It is what
    * lets `resolveContact` address the owner from a parent's turn — see the long
    * note there. `PlanStepSchema` strips unknown keys, so a model-authored plan
@@ -1893,6 +1909,7 @@ async function flushOutbox(
         fixed: m.fixed ?? entry?.fixed ?? false,
         preLaunchOk: m.pre_launch_ok,
         optOutAck: m.opt_out_ack,
+        confirmation: m.confirmation,
         // §16.3 — this path sends as `svc` because it mints actions and touches
         // infrastructure, but the *message* is still a reply to the person whose
         // turn this is. Losing that distinction here made every plan's read-back

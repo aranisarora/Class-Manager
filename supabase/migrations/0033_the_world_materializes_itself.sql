@@ -161,23 +161,25 @@ create trigger academy_guard_go_live
 create or replace function app.is_placeholder_phone(p text) returns boolean
   language sql immutable
 as $$
+  -- **The NATIONAL part, not the whole string.** Testing the whole thing was the
+  -- obvious version and it catches nothing: every E.164 number starts with a
+  -- country code, so "+919999999999" is not all-one-digit and sailed straight
+  -- through the check written to stop exactly it. The last ten digits are the
+  -- number somebody would actually dial, and they are where a placeholder shows.
+  with d as (select regexp_replace(coalesce(p, ''), '[^0-9]', '', 'g') as n),
+       tail as (select right(d.n, 10) as t, d.n from d)
   select case
-    when p is null then false
-    else (
-      -- Digits only, after the country code and any punctuation.
-      with d as (select regexp_replace(p, '[^0-9]', '', 'g') as n)
-      select length(d.n) >= 7
-         and (
-           -- 9999999999, 0000000000
-           d.n ~ '^(.)\1+$'
-           -- 1234567890 and its reverse, anywhere in the number
-           or d.n like '%1234567890%'
-           or d.n like '%0987654321%'
-           or d.n like '%123456789%'
-         )
-        from d
-    )
+    when length(tail.n) < 7 then false
+    else
+      -- 9999999999, 0000000000
+      tail.t ~ '^(.)\1+$'
+      -- an ascending or descending run, whichever way round it was typed
+      or tail.n like '%1234567890%'
+      or tail.n like '%0987654321%'
+      or tail.n like '%123456789%'
+      or tail.n like '%987654321%'
   end
+  from tail
 $$;
 
 alter table contact drop constraint if exists contact_phone_not_placeholder;

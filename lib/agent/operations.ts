@@ -2191,30 +2191,79 @@ const clientCancel: OperationDef = {
  * Money — record_payment / request_payment
  * =========================================================================== */
 
+/**
+ * The scopes somebody can actually ask for, and the words they ask in.
+ *
+ * "Please stop messaging me about money. I will pay when I pay." — the commonest
+ * stop request in the record, and the product had one answer to it: stop
+ * everything, or nothing. The model went looking for the middle, enumerated
+ * `set_timing`'s keys, found none, fell back to a memory fact and said "Done" —
+ * and a money message went out nine days later (F-AV). The always-rule *nobody
+ * was messaged after they opted out* passed every later turn because the column
+ * was never set.
+ *
+ * 0032 gives each scope a row the standing jobs read, so half a stop is a thing
+ * that can actually be kept.
+ */
+const OPT_OUT_SCOPE = z.enum(['all', 'money', 'reminders', 'outcomes', 'announcements'])
+
+const SCOPE_WORDS: Record<string, { asks: string; keeps: string }> = {
+  all: { asks: 'stop all', keeps: 'Reminders and tallies stop too.' },
+  money: { asks: 'stop anything about money', keeps: 'Session reminders and news about their classes still come.' },
+  reminders: { asks: 'stop the session reminders', keeps: 'Anything about money, and news if a class changes, still comes.' },
+  outcomes: { asks: 'stop the after-class messages', keeps: 'Reminders and anything about money still come.' },
+  announcements: { asks: 'stop the general announcements', keeps: 'Reminders, money and news about their own classes still come.' },
+}
+
 const optOut: OperationDef = {
   name: 'opt_out',
   description:
-    'Stop messaging a number for this academy. Call it directly — it puts its own confirmation question, with working '
-    + 'buttons, on their screen, and nothing changes until they tap it. Never compose your own confirmation for it. '
-    + 'The admin is told when it takes effect.',
+    'Stop messaging a number for this academy — all of it, or one KIND of it. Call it directly: it puts its own '
+    + 'confirmation question, with working buttons, on their screen, and nothing changes until they tap it. Never '
+    + 'compose your own confirmation for it. '
+    + "**Somebody asking you to stop usually wants less, not silence** — \"stop messaging me about money\" is a scope, "
+    + "so pass scope:'money' rather than stopping everything they hear. The scopes are all, money, reminders, "
+    + 'outcomes and announcements, and each one is a row the standing jobs actually read, so it holds when nobody '
+    + 'is in the conversation. `until` is a date for a pause rather than a stop. The admin is told when it takes effect.',
   destructive: true,
-  params: z.object({ contact_id: uuid.nullish(), confirmed: z.boolean().optional().default(false) }),
+  params: z.object({
+    contact_id: uuid.nullish(),
+    scope: OPT_OUT_SCOPE.optional().default('all'),
+    /** Their own words, kept so the next turn can say what was understood. */
+    stated: z.string().max(300).nullish(),
+    /** A pause rather than a stop. Local date. */
+    until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+    confirmed: z.boolean().optional().default(false),
+  }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
     const contactId = args.contact_id ?? (ctx.role === 'service' ? null : ctx.contactId)
     if (!contactId) throw new Error('I do not know which number that is')
+    const scope = args.scope ?? 'all'
+    const words = SCOPE_WORDS[scope] ?? SCOPE_WORDS.all
+    const untilPhrase = args.until ? ` until ${args.until}` : ''
 
     if (!args.confirmed) {
       return [
         {
           message: {
             to_contact_id: contactId,
-            body: `Just to be sure — stop all ${a.name} messages to this number? Reminders and tallies stop too.`,
+            body:
+              `Just to be sure — ${words.asks} ${a.name} messages to this number${untilPhrase}? ` +
+              words.keeps,
             is_confirmation_request: true,
+            // The question, recorded the moment it reaches their screen (0032).
+            // Subject is the scope, so asking again about money replaces the open
+            // money question instead of leaving two.
+            confirmation: { kind: 'opt_out', subject: scope },
             buttons: [
               {
-                title: 'Yes, stop them',
-                action: { kind: 'operation', op: 'opt_out', args: { contact_id: contactId, confirmed: true } },
+                title: scope === 'all' ? 'Yes, stop them' : 'Yes, stop those',
+                action: {
+                  kind: 'operation',
+                  op: 'opt_out',
+                  args: { contact_id: contactId, scope, stated: args.stated ?? null, until: args.until ?? null, confirmed: true },
+                },
               },
               { title: 'Never mind', action: { kind: 'noop', ack: 'No change — you stay on the list.' } },
             ],
@@ -2228,27 +2277,73 @@ const optOut: OperationDef = {
       `select c.person_id, p.full_name, c.phone_e164 from contact c join person p on p.id = c.person_id
         where c.id = ${uid(contactId)} and c.academy_id = ${uid(ctx.academyId)}`,
     )
-    const steps: PlanStep[] = [
-      {
-        note: `${c?.full_name ?? 'that number'} stops hearing from ${a.name}`,
-        personal: `you won't hear from ${a.name} again`,
-      },
-      {
-        write: `update contact set opted_out_at = app.now(), state = 'opted_out'
-                 where id = ${uid(contactId)} and academy_id = ${uid(ctx.academyId)}`,
-        requireRows: 1,
-      },
-      {
-        message: {
-          to_contact_id: contactId,
-          fixed: true,
-          // The write above has already landed in this transaction, so without this
-          // the gate suppresses the very sentence that says the gate worked.
-          opt_out_ack: true,
-          body: `Done — no more messages from ${a.name} to this number. Message me any time to turn them back on.`,
-        },
-      },
-    ]
+
+    /**
+     * A scope is a `comm_preference` row; the whole channel is still the column.
+     *
+     * They are different facts and the difference is load-bearing: `opted_out_at`
+     * means nothing at all reaches this number, and the send path checks it
+     * before anything else, ahead of even a `fixed` row. A scope is narrower and
+     * is checked per category, so what they did NOT ask to stop keeps working —
+     * which is the half that used to require them to accept silence to get.
+     */
+    const steps: PlanStep[] =
+      scope === 'all'
+        ? [
+            {
+              note: `${c?.full_name ?? 'that number'} stops hearing from ${a.name}`,
+              personal: `you won't hear from ${a.name} again`,
+            },
+            {
+              write: `update contact set opted_out_at = app.now(), state = 'opted_out'
+                       where id = ${uid(contactId)} and academy_id = ${uid(ctx.academyId)}`,
+              requireRows: 1,
+            },
+            {
+              message: {
+                to_contact_id: contactId,
+                fixed: true,
+                // The write above has already landed in this transaction, so without this
+                // the gate suppresses the very sentence that says the gate worked.
+                opt_out_ack: true,
+                body: `Done — no more messages from ${a.name} to this number. Message me any time to turn them back on.`,
+              },
+            },
+          ]
+        : [
+            {
+              note: `${c?.full_name ?? 'that number'} stops hearing about ${scope}${untilPhrase}`,
+              personal: `nothing about ${scope} from now on${untilPhrase}`,
+            },
+            {
+              // Superseded rather than duplicated: one live preference per scope
+              // per contact is the index in 0032, and re-stating a mute is the
+              // commonest way it arrives.
+              write:
+                `update comm_preference set released_at = app.now()` +
+                ` where contact_id = ${uid(contactId)} and scope = ${lit(scope)} and released_at is null`,
+            },
+            {
+              write:
+                `insert into comm_preference (academy_id, contact_id, person_id, scope, until, stated, set_by_person_id)` +
+                ` values (app.academy_id(), ${uid(contactId)},` +
+                ` (select person_id from contact where id = ${uid(contactId)}),` +
+                ` ${lit(scope)}, ${args.until ? `date ${lit(args.until)}` : 'null'},` +
+                ` ${args.stated ? lit(args.stated) : 'null'},` +
+                ` ${ctx.role === 'user' ? uid(ctx.personId) : 'null'})`,
+              service: true,
+              requireRows: 1,
+            },
+            {
+              message: {
+                to_contact_id: contactId,
+                fixed: true,
+                body:
+                  `Done — nothing about ${scope} from ${a.name}${untilPhrase}. ` +
+                  `${words.keeps} Say the word and I'll put it back.`,
+              },
+            },
+          ]
     for (const adminPerson of await adminPersonIds(ctx)) {
       if (c && adminPerson === c.person_id) continue
       steps.push({
@@ -2257,7 +2352,10 @@ const optOut: OperationDef = {
           catalog_id: 'AD-OPT-OUT',
           fixed: true,
           subject_person_ids: c ? [c.person_id] : undefined,
-          body: `${c?.full_name ?? 'Someone'} (${c?.phone_e164 ?? ''}) has stopped messages. You may want to call.`,
+          body:
+            scope === 'all'
+              ? `${c?.full_name ?? 'Someone'} (${c?.phone_e164 ?? ''}) has stopped all messages. You may want to call.`
+              : `${c?.full_name ?? 'Someone'} (${c?.phone_e164 ?? ''}) has asked for nothing about ${scope}${untilPhrase}. Everything else still reaches them.`,
           buttons: [{ title: 'Call them', action: { kind: 'noop', ack: c?.phone_e164 ?? 'No number on file.' } }],
         },
       })
@@ -2270,18 +2368,14 @@ const optOut: OperationDef = {
  * set_timing — §8.2. The timings are defaults, not constants.
  * =========================================================================== */
 
-// The scheduler reads exactly these keys off person.settings (then
-// academy.settings, then the default), so an override written under any other
-// name would be a fact that changes no behaviour.
-const TIMING_KEY = z.enum([
-  TIMING_KEYS.coachComingLeadMinutes,
-  TIMING_KEYS.coachNudgeLeadMinutes,
-  TIMING_KEYS.adminEscalateLeadMinutes,
-  TIMING_KEYS.clientReminderLeadHours,
-  TIMING_KEYS.registerExpiryHours,
-  TIMING_KEYS.clientReminderMuted,
-  TIMING_KEYS.clientOutcomeMuted,
-])
+// `TIMING_KEY` stood here, listing the settings keys `set_timing` would accept.
+// The operation went with the other wrappers (it was one UPDATE on a jsonb
+// column), and its two MUTE keys went further than that: 0032 made them
+// `comm_preference` rows, because a mute the standing jobs cannot read is a
+// promise nothing keeps. The lead-time keys are still what the scheduler reads —
+// `TIMING_KEYS` in `lib/jobs/kinds.ts` is the one statement of them, and an
+// override written under any other name is still a fact that changes no
+// behaviour.
 
 const onboardCoach: OperationDef = {
   name: 'onboard_coach',

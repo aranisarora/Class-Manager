@@ -143,6 +143,28 @@ export async function planAheadFor(academyId: string): Promise<number> {
         { subject_kind: s.subject_kind, subject_id: s.subject_id, n: pass }, true)
     }
 
+    /**
+     * -- questions that stopped mattering ---------------------------------------
+     *
+     * A `pending_request` is resolved by a tap, by a newer ask on the same
+     * subject, or by its own expiry — and the third has to be swept, because
+     * nothing else visits it. Left unswept, the variable tail would tell a model
+     * for weeks that somebody had been asked something they were asked about a
+     * session that has long since run.
+     *
+     * Here rather than in a handler because it is bookkeeping about the whole
+     * tenant, it costs one statement, and it runs on the same beat that plans
+     * everything else. Above the go-live return on purpose: a question raised
+     * during setup expires the same way.
+     */
+    await tx`
+      update pending_request
+         set resolved_at = app.now(), resolution = 'expired'
+       where academy_id = ${academyId}
+         and resolved_at is null
+         and expires_at is not null
+         and expires_at < app.now()`
+
     // §2.6 — building the roster messages nobody. Everything below this line
     // talks to a human, so it waits for the admin to say go.
     if (academy.onboarding_state !== 'live') return out
@@ -245,7 +267,12 @@ export async function planAheadFor(academyId: string): Promise<number> {
         // "Bill only" is a real setting, not a memory: a muted holder gets no
         // class reminders (the tally and dunning are not planned here and are
         // deliberately unaffected).
-        if (e.holder_settings?.['client_reminder_muted']) continue
+        // The mute is checked at the send path now, for every category and every
+        // sender, rather than here for one of them (0032). Checking it twice
+        // would be two authors of one truth, and the copy that used to live here
+        // read a settings key that no longer exists — a filter that can only
+        // ever say no, which is the shape of a guard that has quietly stopped
+        // guarding.
         // §8.2 again: one lead time for every family is a schedule; per-person
         // timings are a manager. The parent's own record wins.
         const leadHours = leadFor(
@@ -268,8 +295,24 @@ export async function planAheadFor(academyId: string): Promise<number> {
          and s.ends_at between app.now() - interval '48 hours' and app.now() + interval '1 hour'
     `
     for (const m of marked) {
-      push('client_outcome', nowAt, dedupe.clientOutcome(m.session_id, m.player_id),
-        { session_id: m.session_id, player_id: m.player_id }, true)
+      /**
+       * Deferred past the night, like the register escalation beside it.
+       *
+       * The send path is the floor now and it SUPPRESSES rather than delays — it
+       * has no queue of its own and inventing one there would put a second
+       * scheduler beside this one. So the scheduling has to do its half: an
+       * 8:30pm class marked at 9:45 would otherwise have its outcome dropped
+       * rather than delivered, and how a child got on is worth telling a parent
+       * in the morning. `allowPast` still holds for everything already inside
+       * waking hours, which is almost all of it.
+       */
+      push(
+        'client_outcome',
+        deferPastQuietHours(nowAt, academy.timezone, academy.settings),
+        dedupe.clientOutcome(m.session_id, m.player_id),
+        { session_id: m.session_id, player_id: m.player_id },
+        true,
+      )
     }
 
     // -- the two bookends, today and tomorrow (§7.2, §10.2) ---------------------

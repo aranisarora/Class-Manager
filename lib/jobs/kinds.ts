@@ -132,8 +132,14 @@ export const TIMING_KEYS = {
   // I won't ask again" → nothing anywhere would have stopped the asking).
   // A truthy value on the holder person's settings mutes the category; the
   // bill and dunning are deliberately not mutable this way.
-  clientReminderMuted: 'client_reminder_muted',
-  clientOutcomeMuted: 'client_outcome_muted',
+  // **These two are gone, and their absence is the fix.** They were the only
+  // scoped mutes the product had: jsonb keys on `person.settings`, invented by
+  // `set_timing`, readable by exactly two job handlers and by nothing the model
+  // could query. So "stop messaging me about money" had nowhere to go at all,
+  // and "stop reminding me" had a home only the scheduler knew about. 0032
+  // migrated both to `comm_preference` rows and dropped the keys, and the send
+  // path reads them for every category — which is what makes a mute a thing that
+  // holds rather than a thing two handlers remember.
 } as const
 
 export type TimingName = keyof typeof TIMING_DEFAULTS

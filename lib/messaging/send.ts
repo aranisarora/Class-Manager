@@ -941,6 +941,49 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
       }),
     })
 
+    /**
+     * ── The question, recorded where it was asked ─────────────────────────────
+     *
+     * **Here rather than in each protocol, and only once a message has actually
+     * been queued.** A suppressed ask is not an outstanding question — nobody was
+     * asked anything — and every gate above this line can suppress one, so any
+     * earlier write would record questions nobody ever saw.
+     *
+     * The subject is derived when the caller supplies none, because a state that
+     * depends on somebody remembering to pass a field is not a state: that is
+     * F-AF and F-AQ, where an untapped confirmation left the world identical to
+     * the ask never having happened. The catalog moment and the people the
+     * message is ABOUT are ids, not prose, and they are exactly what distinguishes
+     * one outstanding question from another.
+     *
+     * Superseding rather than colliding: 0032's partial unique index means one
+     * open question per person per subject, so re-asking replaces. `on conflict`
+     * cannot express that (the index is partial on `resolved_at is null`), so the
+     * older row is resolved first and the reason it ended is recorded.
+     */
+    if (msg.isConfirmationRequest) {
+      const kind = msg.confirmation?.kind ?? msg.catalogId ?? 'confirmation'
+      const subject =
+        msg.confirmation?.subject ??
+        [...(msg.subjectPersonIds ?? [])].sort().join('+') ??
+        row.contact_id
+      const question = (msg.confirmation?.question ?? msg.body ?? '').slice(0, 500)
+      await tx`
+        update pending_request
+           set resolved_at = app.now(), resolution = 'superseded'
+         where academy_id = ${row.academy_id}
+           and contact_id = ${row.contact_id}
+           and kind = ${kind}
+           and subject = ${subject || row.contact_id}
+           and resolved_at is null`
+      await tx`
+        insert into pending_request
+          (academy_id, contact_id, person_id, kind, subject, question, message_id, asked_turn_id)
+        values (${row.academy_id}, ${row.contact_id}, ${row.person_id}, ${kind},
+                ${subject || row.contact_id}, ${question || '(a confirmation)'}, ${messageId},
+                nullif(current_setting('app.turn_id', true), '')::uuid)`
+    }
+
     return {
       kind: 'send',
       messageId,

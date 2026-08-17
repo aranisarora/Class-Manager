@@ -71,6 +71,12 @@ export type ComposeSpec = {
    * Told once per state — see `OutboundMessage.stateKey` and F-AN.
    */
   stateKey?: string
+  /**
+   * Additive: what question this message puts on a screen. `send` derives one
+   * when a confirmation request arrives without it — see
+   * `OutboundMessage.confirmation`.
+   */
+  confirmation?: { kind: string; subject: string; question?: string }
 }
 
 /** Mints an action per button, then hands a well-formed OutboundMessage to `send`. */
@@ -128,6 +134,7 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
     preLaunchOk: spec.preLaunchOk,
     templateParams: spec.templateParams,
     stateKey: spec.stateKey,
+    confirmation: spec.confirmation,
   }
 
   // Validate the shape BEFORE minting: an unrenderable message must not leave a trail of
