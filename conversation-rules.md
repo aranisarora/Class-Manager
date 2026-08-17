@@ -1007,6 +1007,37 @@ each is a shape this document keeps warning about:
   `left join … group by … count()`, which is the same question and arguably the
   better answer, because it also says who has FEW marks rather than only none.
 
+**The instrument contaminated its own later cases, and manufactured four
+findings doing it.** The second full run came back 21/25, and every one of the
+four was the harness:
+
+- `row-cap` inserts 10,600 filler messages to push a read past the 10,000-row
+  cap, and stamped them with `app.now()`. The 24-hour send ceiling is per
+  business, so this case silently spent the send budget of every case after it.
+  `scoped-mute` then could not deliver its confirmation and said so exactly
+  right — *"the row is unwritten, so nothing has changed; her request is not yet
+  honored"* — and set a watch to retry. It was recorded as a failure for
+  behaving perfectly. Two cases later `two-places` opened its reply to the admin
+  with *"10,627 messages have gone out from this business"*: the fixture
+  narrating itself to the customer. The rows are backdated 200 days now, which
+  costs nothing — the row cap is about how many rows a SELECT returns and does
+  not care when they were queued.
+- `two-places` counted `class_coach` rows for a class that the earlier
+  `create-class` case had already built WITH a coach on it, so it demanded the
+  model explain a clash it had not caused. It grades what this turn wrote now.
+- `roster-tonight` demanded `app.session_roster` on a Tuesday, for a class that
+  runs Mon/Wed/Fri. The model answered in full — no session tonight, next one
+  tomorrow — and was marked down for not fetching a roster that would have been
+  empty. Required only when the world says there is a session.
+- `anti-join` rejected a correlated scalar subquery, the fourth correct
+  spelling and arguably the cleanest.
+
+This is the F6 shape again, and it is worth stating as a rule: **when a driven
+case fails, read the turn before believing the check.** Across this session's
+runs, ten apparent model failures were read by hand and **eight were the
+instrument**. A harness with a green row you have not read is a harness that has
+told you nothing.
+
 And two that were real and not the model's:
 
 - The cursor for "what was said this turn" was host time, while `created_at` runs

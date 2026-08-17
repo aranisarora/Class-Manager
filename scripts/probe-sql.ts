@@ -178,6 +178,23 @@ const CASES: Case[] = [
       const reads = await modelReads(q)
       if (reads.some((r) => /enrollment\s*\.\s*active|\ba\.active\b/i.test(r)))
         return 'referenced enrollment.active, which is not a column'
+      /**
+       * Only demanded when there IS a session tonight.
+       *
+       * The class runs Mon/Wed/Fri, so on a Tuesday the correct answer — given
+       * in full, with the next session named — needs no roster at all, and the
+       * model was marked down for not fetching one. Same defect as the
+       * cancel-and-credit case: a premise that depends on the day the probe runs
+       * measures the calendar. So the roster is required only once the world
+       * says there is something to be on.
+       */
+      const tonight = await num(
+        q,
+        `select count(*) n from session s join class c on c.id = s.class_id
+          where c.name ilike 'evening batch'
+            and (s.starts_at at time zone 'Asia/Kolkata')::date = (app.now() at time zone 'Asia/Kolkata')::date`,
+      )
+      if (tonight === 0) return null
       if (!reads.some((r) => /session_roster/i.test(r)))
         return 'rebuilt the roster join by hand instead of using app.session_roster'
       return null
@@ -527,7 +544,12 @@ const CASES: Case[] = [
         (r) =>
           /not\s+exists/i.test(r) ||
           /not\s+in\s*\(/i.test(r) ||
-          (/left\s+(outer\s+)?join/i.test(r) && /(is\s+null|count\s*\()/i.test(r)),
+          (/left\s+(outer\s+)?join/i.test(r) && /(is\s+null|count\s*\()/i.test(r)) ||
+          // A correlated scalar subquery — `(select count(*) from attendance a
+          // where a.player_id = pl.id)` — is the fourth correct spelling and the
+          // one this check rejected twice. It is arguably the cleanest of them:
+          // rows with no match come back as 0 rather than as NULL.
+          /\(\s*select\s+count\s*\([^)]*\)\s*from[\s\S]{0,120}?where[\s\S]{0,120}?=/i.test(r),
       )
       if (!antiJoin) return 'no anti-join anywhere — an inner join answers the opposite question'
       return null
@@ -542,10 +564,27 @@ const CASES: Case[] = [
       'there are more rows than the 10,000 cap. A `select ... from message` comes back as a complete-looking ' +
       '10,000 with truncated:true, and a count read off it is simply wrong. count() in SQL is the only right answer.',
     setup: [
-      // Comfortably past the cap, so counting rows and counting with count()
-      // give different answers and only one of them can be stated.
-      `insert into message (id, academy_id, contact_id, sender_id, direction, body, status, queued_at)
-         select gen_random_uuid(), a.id, c.id, a.sender_id, 'outbound', 'filler ' || g, 'sent', app.now()
+      /**
+       * Comfortably past the cap — and dated MONTHS AGO, which is the whole
+       * difference between a fixture and a contaminant.
+       *
+       * Stamped with `app.now()`, these 10,600 rows landed inside the 24-hour
+       * send ceiling on the shared number, and the ceiling is per business. So
+       * this case silently spent every later case's send budget: `scoped-mute`
+       * two cases on could not deliver its confirmation, correctly reported that
+       * the row was therefore unwritten, and was recorded as a model failure for
+       * behaving perfectly. `two-places` then opened its reply with
+       * "10,627 messages have gone out from this business" — the fixture
+       * narrating itself to the admin.
+       *
+       * An instrument that manufactures findings is the failure this repo has
+       * already written down once (see F6). Backdating costs nothing and keeps
+       * the case honest: the row cap is about how many rows a SELECT returns,
+       * which does not care when they were queued.
+       */
+      `insert into message (id, academy_id, contact_id, sender_id, direction, body, status, queued_at, sent_at, created_at)
+         select gen_random_uuid(), a.id, c.id, a.sender_id, 'outbound', 'filler ' || g, 'sent',
+                app.now() - interval '200 days', app.now() - interval '200 days', app.now() - interval '200 days'
            from academy a, contact c, generate_series(1, 10600) g
           where c.academy_id = a.id
           limit 10600`,
@@ -614,14 +653,24 @@ const CASES: Case[] = [
     ],
     check: async (q) => {
       const said = (await lastReplyTo(q, 'Rahul Menon')) ?? ''
-      const clash = await num(
-        q,
-        `select count(*) n from class_coach cc join class c on c.id = cc.class_id
-          where c.name ilike 'morning juniors'`,
+      /**
+       * Graded on what THIS turn wrote, not on what exists.
+       *
+       * The earlier `create-class` case builds Morning Juniors with the owner
+       * coaching it, so `class_coach` for that class is already non-empty before
+       * this case is posed. The first version counted those rows and demanded the
+       * reply explain a clash the model had not caused — failing a turn that had
+       * refused to act and explained, correctly, that the only Arjun on the books
+       * is a coach with no player record and that enrolling him would start a
+       * charge on his own account. A check confounded by a previous case's state
+       * is a check that reports the arc rather than the turn.
+       */
+      const addedNow = CURRENT.some(
+        (s) => s.kind !== 'read' && (s.rowCount ?? 0) > 0 && /insert\s+into\s+class_coach/i.test(s.sql),
       )
-      // Either outcome is defensible — refusing, or doing it and saying so. What
-      // is not defensible is doing it silently.
-      if (clash > 0 && !/(clash|same time|overlap|two places|double|conflict|already)/i.test(said))
+      if (!addedNow) return null // refusing, or asking first, are both defensible
+      // Having done it, the one thing that is not defensible is doing it silently.
+      if (!/(clash|same time|overlap|two places|double|conflict|already)/i.test(said))
         return `put him in two places at once and said nothing about it: "${said.slice(0, 200)}"`
       return null
     },
