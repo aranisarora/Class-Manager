@@ -20,25 +20,46 @@ evidence (DRIVING.md, the R10 note) is that instructions do not close behavioral
 
 ## What is open right now
 
-Fifteen findings, newest drive last. The detail for each is in the Part it belongs to.
+**Most of this table was closed on 17 Aug 2026 by the ARCHITECTURE.md pass**, and
+what closed each one is named below. Nothing here is closed by a drive yet: these
+are structural changes with unit-level proof (`check-world` 14/14, `check-clash`
+15/15, `npm run ask` 25/25 tripwires), and the drive is what turns "the mechanism
+exists" into "the behaviour happened". Read the next drive against this list.
 
 | # | What is wrong | Where the fix lives | Found |
 | --- | --- | --- | --- |
-| **F-C** | Watches multiply without a subject key; the spam spends the frequency cap the real message needed | `schedule`'s mint path — a normalised subject key, so a second watch supersedes | 15 Aug |
-| **F-D** | Memory still takes parentage restatements and self-authored policies — the shapes with no figure for the gate to catch | `lib/agent/memory.ts` — partial by design; the rest is prompt boundary + curation | 15 Aug |
-| **F-E** | A fabricated roster count reached a coach; claims of fact have no structural check | R10 shadow-mode traceability gate — specified in DRIVING.md, unbuilt | 15 Aug |
-| **F-G** | Template lead-in and composed body each name the subject, so every out-of-window send says it twice | `lib/messaging/send.ts` — the newline half was fixed 16 Aug; the double subject was not | 15 Aug |
-| **F-I** | Mid-month joins bill in full; `turn_id` NULL on job sends; an unknown number is dropped without trace; §14.8 escalation unenforced | several — named per bullet | 15 Aug |
-| **F-R** | Duplicate sends once a drive travels past the first reminder cycle; `app.session_roster` times out at 5s on a large world | `lib/jobs/handlers/*`; the view itself, undiagnosed | 16 Aug |
-| **F-AF** | An untapped "stop messaging me" evaporates — the world is identical to her never having asked | `operations.ts` `optOut` — record the request, let the tap set scope | 16 Aug |
-| **F-AG** | Columns RLS demands and required operation args are missing from the schema the model is shown | the declarations in `lib/agent/tools.ts` / `operations.ts` | 16 Aug |
-| **F-AJ** | The trailing honesty guard is gated on a pending plan, so the turn that failed to make one has no guard | `loop.ts:1564`; plus `retry`/`retrying` in `tools.ts:189` | 16 Aug |
-| **F-AM** | F-AJ's first casualty — "I've flagged it to the owner" about a child's injury, with no message behind it | the trailing `composeAndSend` in `lib/agent/loop.ts` | 16 Aug |
-| **F-AN** | Standing jobs repeat byte-identical messages into stuck states, daily | `lib/jobs/handlers/*` — dedupe per state, not per byte-window | 16 Aug |
-| **F-AO** | A promise of quiet has no machinery, and negative promises are invisible to every guard | the dunning/chase surface — a pause the model can reach | 16 Aug |
-| **F-AP** | `schedule` accepts a `context_query` written from imagination, against tables that do not exist | the `schedule` executor — validate at mint, while the model can still fix it | 16 Aug |
-| **F-AQ** | An untapped operation confirmation evaporates (`decline_coach`; same class as F-AF) | operation-owned confirmations — leave a residue the next turn can see | 16 Aug |
+| **F-D** | Memory still takes parentage restatements — the shape with no figure for the gate to catch. *(The self-authored-policy half closed: `policyShapedFact` refuses it and `business_rule` is its real home.)* | `lib/agent/memory.ts` — partial by design; the rest is prompt boundary + curation | 15 Aug |
+| **F-I** | Mid-month joins bill in full; an unknown number is dropped without trace; §14.8 escalation unenforced. *(`turn_id` on job sends closed — `serviceFrom` carries it and `message.origin` says what sent it.)* | several — named per bullet | 15 Aug |
+| **F-R** | `app.session_roster` times out at 5s on a large world. *(The duplicate sends closed — see F-AN.)* | the view itself, undiagnosed | 16 Aug |
 | **F-AR** | The answer dies beside a tool call on the final round, and an operation's side-message stands in as the reply | `lib/agent/loop.ts` — recovery must fire on discarded prose, not just on silence | 16 Aug |
+
+### Closed 17 Aug 2026, by the architecture pass
+
+Each names the mechanism, not the intention. The evidence for these is unit-level
+and the drive has not run yet, so none has moved to `findings-archive.md` — a fix
+that lands behaviourally can still leave its mechanism dead (F-P), and that is
+exactly what the next drive is for.
+
+| # | What closed it |
+| --- | --- |
+| **F-C** | `schedule` takes a declared `subject`; `job.subject_key` has a partial unique index, so a second watch supersedes. The runtime cannot derive a subject without reading prose, so the model states it. |
+| **F-E** | The R10 gate exists, in shadow mode as DRIVING.md specified: `lib/agent/traceability.ts` compares the scalars a message states against what this turn's tools returned, records it on the flight recorder, and blocks nothing. |
+| **F-G** | Every template lead-in names the sender and nothing else; the word ratio moved into the sign-off. `withoutRestatedFrame` — the runtime edit that patched the seam — is gone with the seam. |
+| **F-AF** | `pending_request` (0032), written where the ask reaches the wire and resolved in the same statement that claims the tap. The tail renders every open one. |
+| **F-AG** | Every restriction the audit found unstated is on the declaration it applies to: one message per person per turn, buttons-or-list, the interactive body cap and its consequence, and that what is written is what is read. |
+| **F-AJ, F-AM** | The verb lists are gone entirely. `turnState` tells the model what the turn has actually done, on every round, before it writes a sentence — the runtime knowing and not saying was the whole defect. |
+| **F-AN** | `message.stateKey`: a message about a standing state carries what that state IS, and is told once until it changes. No time window. |
+| **F-AO, F-AV** | `comm_preference` (0032) is a scoped mute the send path reads for every category, and `opt_out` gains a scope. Half a stop is now a thing that can be kept. |
+| **F-AP** | `context_query` is parsed and planned against the real schema at mint, while the model can still fix it. |
+| **F-AQ** | Same row as F-AF. A question is outstanding from the moment it lands, whichever protocol asked it. |
+| **F-AS** | `registerExpiry` reframes rather than suppresses when the coach is the recipient-as-admin: on per-session rates the unmarked register is the invoice, so it is news about money. |
+| **F-AT** | `message.status = 'suppressed'`, apart from `failed`. A gate is a decision; the wire saying no is a fault. |
+| **F-AW** | A `schedule` step's `kind` is checked against the handler registry at mint, and a model-authored message body is validated when the plan is. |
+| **F-AX** | `PRECONDITION_FAILED` stops asserting a race and re-runs as the service role to say which it was. |
+| **F-AY** | A trigger: a coach who is already an admin is active on insert, whichever route wrote the row. Proved in `check-world` from raw SQL. |
+| **F-AZ** | `GENERIC_EVENT` is gone; `{event}` is filled from what the runtime knows — who it is about and when — and `coach_schedule` finally has a subject parameter. |
+| **the two manufactured findings** | The prompt-leak check no longer fires on the string inside a correct refusal, and the cross-family check asks the world for a balance instead of a regex for a name. |
+| **the circular invention checks** | Bounded to `memory_fact` rows that predate the turn. Support means evidence, not agreement with oneself. |
 
 **Harness, not product** (recorded so the next drive does not chase them): the `adv` suite's
 two manufactured findings, and the two case-checks named under Part 5's *Also worth

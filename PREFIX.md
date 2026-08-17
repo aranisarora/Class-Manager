@@ -112,9 +112,13 @@ constraint allows.**
 6. **A behavior in a named situation → nowhere. Build it.** This is the rung everything
    deleted was standing on.
 
-Note that `lib/doctrine.md` is also sent **alone** by `synthesisDoctrine()` to the brief and
-the digest, which author no SQL and call no operations. Anything you put in doctrine must be
-true on that path too — which is why the capability statement lives in `PREAMBLE` instead.
+~~Note that `lib/doctrine.md` is also sent **alone** by `synthesisDoctrine()` to the brief and
+the digest.~~ **That path is gone (17 Aug 2026).** The brief and the digest are ordinary turns
+opened by a job, so they get the same prefix, the same tools and the same flight recorder as
+every other turn — and the constraint goes with the path: nothing in doctrine has to be true
+on a toolless path when there is no toolless path. The capability statement stays in
+`PREAMBLE` regardless, because moving it is a prompt change and prompt changes here are made
+on the evidence of a drive rather than on a tidy-up.
 
 ## The traps
 
@@ -216,6 +220,8 @@ one of these, you have rediscovered a thing that was already considered and reje
 
 | Removed | When | Why |
 | --- | --- | --- |
+| ~20 operation signatures, again — this time the operations themselves | 17 Aug 2026 | Thirteen wrapper operations deleted (ARCHITECTURE.md layer 2). The tool surface went 36 declarations to 23 and the cached block lost 4,318 characters. Their knowledge did not go into the prefix: the invariants moved DOWN into triggers and constraints, and the consequences into `SCHEMA_DOC`, which is rung 2. If you are about to add a paragraph explaining what a write implies, that is where it goes. |
+| *"Reach for the operation rather than raw INSERTs — create_class is the only thing that schedules the sessions"* | 17 Aug 2026 | An instruction standing in for a property, and half false besides: the planner materialised every class on every tick anyway. 0033 makes a `class_slot` imply its sessions by trigger, so the sentence is true without being said. **The general lesson: an instruction that describes a guarantee is a guarantee that does not exist.** |
 | The eleven behavior modules | phase-6 arc | Retired by measurement. Same lifecycle driven with and without them; truth tied, the module-free replies were plainer, and the prescriptions were implicated in their own arm's two worst behaviors. |
 | ~20 operation signatures as prose (5,789 chars) | — | Moved into the tool declarations, where a schema constrains decoding. A paragraph upstream of the decode point constrains nothing. |
 | *"Reschedule is the makeup — the first offer is another slot"* | 17 Aug 2026 | A policy choice, derivable once `reschedule_session` is declared with its own consequence line. Script, not fact. |
