@@ -1,17 +1,22 @@
 /**
  * fo-report — turn a probe run into the page a person reads.
  *
- * Reads `.probe/fo/<model>.json` (probe-model's own record file) and writes a
- * standalone HTML report scored on the four pillars.
+ * Reads a run's record file (probe-model's own output) and writes a standalone
+ * HTML report scored on the four pillars.
  *
  * Every number on the page is computed from the records here rather than typed
  * in. That is not tidiness: this report's whole subject is a product that said
  * true-sounding things it had not checked, and a hand-transcribed number in the
  * write-up would be the same defect one level up.
  *
- *   node scripts/fo-report.mjs [--in .probe/fo/deepseek-v4-flash.json] [--out .probe/fo/f-o-verify.html]
+ *   node scripts/fo-report.mjs [--in <records>.json] [--out <page>.html]
+ *
+ * With no flags it renders the NEWEST f-o run under `.probe/runs/` to a dated
+ * page in `.probe/reports/`. See `scripts/_probe-runs.mjs` for the layout.
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { newest, describe } from './_probe-runs.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (n, d) => {
@@ -21,8 +26,14 @@ const flag = (n, d) => {
   return a.includes('=') ? a.slice(a.indexOf('=') + 1) : (argv[i + 1] ?? d)
 }
 
-const IN = flag('in', '.probe/fo/deepseek-v4-flash.json')
-const OUT = flag('out', '.probe/fo/f-o-verify.html')
+const picked = newest('fo', { prefer: 'deepseek-v4-flash.json', out: 'verify' })
+const IN = flag('in', picked?.record)
+const OUT = flag('out', picked?.out)
+if (!IN || !OUT) {
+  console.error(`${describe('fo', picked)} — pass --in <records>.json --out <page>.html`)
+  process.exit(2)
+}
+if (!flag('in')) console.log(describe('fo', picked))
 const records = JSON.parse(readFileSync(IN, 'utf8'))
 
 /** The prelude exists to build a world; the F-O cases are what is being asked. */
@@ -344,5 +355,6 @@ Every figure is computed from the run's own records. Rupees at ₹${USD_INR}/USD
 </footer>
 </div>`
 
+mkdirSync(dirname(OUT), { recursive: true })
 writeFileSync(OUT, html)
 console.log(`wrote ${OUT} — ${records.length} records, ${foPass}/${fo.length} regression cases held`)

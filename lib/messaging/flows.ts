@@ -698,8 +698,9 @@ export type FormId = (typeof FORM_IDS)[number]
  * The model writes the body when it sends a form itself. This is the other path — a
  * tap, with no model in the loop — and whatever is written here goes to a phone
  * exactly as typed. Every one of them ends by saying the form is optional, because
- * doctrine rule 4 says a form is an offer and never a toll, and the one copy nobody
- * reviews is the copy where that rule quietly stops being true.
+ * a form is an offer and never a toll — stated on the `reply` declaration's `form`
+ * parameter — and the one copy nobody reviews is the copy where that rule quietly
+ * stops being true.
  */
 export const FORM_INTRO: Record<FormId, string> = {
   business_setup:

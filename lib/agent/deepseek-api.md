@@ -174,8 +174,8 @@ of an extra tool round is ~₹0.1 (mostly cache-hit input), which is why
 
 - **Verified live**: model list; 402 shape and precedence; text-only schema
   rejection; key authenticates.
-- **Docs, not yet exercised** (account had no balance): everything about tool
-  calls, thinking, caching behavior, JSON mode, finish reasons.
-- **Unverified and load-bearing if used**: named `tool_choice` forcing;
-  strict mode; parallel tool-call frequency; Hinglish competence; real cache
-  hit rates; real latency. All on the phase-6 list in `deepseek-migration.md`.
+- **Exercised by the probe campaign and by production traffic since cutover
+  (15 Aug 2026)**: tool calls, thinking tiers, caching behavior, JSON mode,
+  finish reasons, Hinglish competence, real cache hit rates and latency.
+- **Still unverified — and not used by the product, which is why**: named
+  `tool_choice` forcing; strict mode. Verify before either is relied on.

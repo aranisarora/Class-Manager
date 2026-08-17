@@ -7,7 +7,9 @@ business in natural language.
 Built from [`product-spec.md`](./product-spec.md), which remains the authority on behavior.
 [`DRIVING.md`](./DRIVING.md) is how you drive it and find real defects — the ten roots
 every failure so far has been an instance of, what to measure, and the traps that make a
-bad run look like a good one.
+bad run look like a good one. [`PREFIX.md`](./PREFIX.md) governs what the model is told:
+read it before adding a line to the prompt, and read its graveyard before adding one that
+has already been removed twice.
 
 **The emulator is the product surface in this build.** Meta Cloud API setup is deliberately not
 wired; the transport abstraction is real and `lib/messaging/transport-cloud.ts` is written

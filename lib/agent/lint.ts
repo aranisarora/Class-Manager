@@ -11,7 +11,7 @@
  *   3. downgrade claims the system cannot back — "delivered" where only
  *      `sent_at` is known
  *   4. rewrite product vocabulary the academy's memory says they do not use into
- *      the word they do use (doctrine rule 3)
+ *      the word they do use (doctrine: *speak simply* — their words, from memory)
  *
  * NUMBER-GROUNDING IS DELIBERATELY NOT HERE, and must not be added.
  * -----------------------------------------------------------------------------
@@ -536,7 +536,7 @@ function downgradeClaims(text: string, evidence?: DeliveryEvidence): string {
 }
 
 // -----------------------------------------------------------------------------
-// 4. their words, not ours (doctrine rule 3)
+// 4. their words, not ours (doctrine: *speak simply*)
 // -----------------------------------------------------------------------------
 
 export type VocabularyPreference = { prefer: string; avoid: string }

@@ -1,9 +1,10 @@
 /**
  * adv-report — the adversarial drive, told turn by turn, with the judgement shown.
  *
- *   node scripts/adv-report.mjs --in .probe/adv/deepseek-v4-flash--thinking-default.json \
- *                               --judge .probe/adv/judgements.json \
- *                               --out .probe/adv-readiness.html
+ *   node scripts/adv-report.mjs [--in <records>.json] [--judge <judgements>.json] [--out <page>.html]
+ *
+ * With no flags it renders the NEWEST adv run under `.probe/runs/` to a dated
+ * page in `.probe/reports/`. See `scripts/_probe-runs.mjs` for the layout.
  *
  * WHY A SECOND REPORT
  * -----------------------------------------------------------------------------
@@ -41,7 +42,9 @@
  * Everything on the page is computed from the records except the judgements and
  * the prose, which are marked as such wherever they appear.
  */
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { newest, describe } from './_probe-runs.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (n, d) => {
@@ -51,9 +54,15 @@ const flag = (n, d) => {
   return a.includes('=') ? a.slice(a.indexOf('=') + 1) : (argv[i + 1] ?? d)
 }
 
-const IN = flag('in', '.probe/adv/deepseek-v4-flash--thinking-default.json')
-const JUDGE = flag('judge', '.probe/adv/judgements.json')
-const OUT = flag('out', '.probe/adv-readiness.html')
+const picked = newest('adv', { prefer: 'deepseek-v4-flash.json' })
+const IN = flag('in', picked?.record)
+const JUDGE = flag('judge', picked?.judgements)
+const OUT = flag('out', picked?.out)
+if (!IN || !OUT) {
+  console.error(`${describe('adv', picked)} — pass --in <records>.json --out <page>.html`)
+  process.exit(2)
+}
+if (!flag('in')) console.log(describe('adv', picked))
 const TITLE = flag('title', 'What it does when the person is not co-operating')
 const RUN_ON = flag('run-on', '16 Aug 2026')
 /**
@@ -662,5 +671,6 @@ ${records.map(turnHtml).join('')}
 </footer>
 </div></body></html>`
 
+mkdirSync(dirname(OUT), { recursive: true })
 writeFileSync(OUT, html)
 console.log(`wrote ${OUT} — ${records.length} turns, ${gradedAdv.length} judged`)

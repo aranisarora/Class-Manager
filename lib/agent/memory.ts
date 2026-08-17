@@ -268,7 +268,7 @@ export async function hotSet(
   subjectKind: SubjectKind,
   subjectId: string,
   academyId: string,
-): Promise<string> {
+): Promise<string | null> {
   const tenant = tenantOf(subjectKind, subjectId, academyId)
   // Unreachable through the type, reachable through an empty string. Loud, because
   // returning '' here is indistinguishable from an empty memory and always was.
@@ -283,9 +283,22 @@ export async function hotSet(
     })
     return (rows[0]?.memory ?? '').trim()
   } catch {
-    // A hot set that cannot be read is an empty context, not a dead turn. The
-    // record is untouched and searchFacts still reaches it.
-    return ''
+    /**
+     * **null is a failed read; '' is a subject with nothing recorded.** These were
+     * one value, and they are opposite sentences by the time they reach a person:
+     * the tail renders an empty hot set as "(nothing recorded yet)", so a refused
+     * or timed-out read told the model, in as many words, that it had never been
+     * told anything about this business — and it then behaves like a first meeting
+     * with somebody it has served for months.
+     *
+     * The old comment here justified '' on the grounds that "searchFacts still
+     * reaches it". `searchFacts` was deleted as dead code; nothing reaches past
+     * this now except a `read` the model has to think to run, which it will not do
+     * if it believes the answer is "nothing recorded".
+     *
+     * Still not a dead turn — the caller decides. It just has to be able to.
+     */
+    return null
   }
 }
 

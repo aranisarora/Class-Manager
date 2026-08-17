@@ -37,6 +37,7 @@ import { isJobKind, JOB_KINDS, type JobKind } from '@/lib/jobs'
 import type { Academy, Contact, Identity, Person, Role } from '@/lib/types'
 import { beginAudit, readDiffIn } from '@/lib/audit'
 import { OPERATIONS, jsonLit, lit, moneyLit, uid, type OperationName } from './operations'
+import { coachClashes } from './clash'
 import { parseSteps as parseStepsShared } from './steps'
 
 /* ------------------------------------------------------------------------- *
@@ -155,6 +156,13 @@ export type PlanResult = {
   stagedMessages: { toContactId: string; preview: string }[]
   scheduled: { kind: string; run_at: string }[]
   summary: string
+  /**
+   * What this plan put in two places at once (`./clash`). Also in `summary`,
+   * because it is one of the plan's notes; kept separately because
+   * `needsPreview` decides on it and the model is better served by the facts
+   * than by the sentence they were folded into.
+   */
+  clashes: string[]
   error?: string
 }
 
@@ -1055,12 +1063,17 @@ export async function previewPlan(
   let expanded: PlanStep[] = []
   try {
     expanded = await expand(ctx, steps, 0)
-    const diffs = await withRollback(ctx, async (tx) => {
+    // The diff is merged INSIDE the transaction now, because the clash check
+    // reads it and has to run against the world the steps just made — before
+    // the rollback takes it away again.
+    const inTx = await withRollback(ctx, async (tx) => {
       const auditId = await beginAuditSafe(tx, ctx, 'preview', steps)
       await runSteps(tx, ctx, expanded, state)
-      return await readDiffSafe(tx, ctx, auditId)
+      const read = await readDiffSafe(tx, ctx, auditId)
+      const diffs = read.length ? read : synthDiffs(state.exec)
+      return { diffs, clashes: await noteClashes(tx, ctx, diffs, state) }
     })
-    const merged = diffs.length ? diffs : synthDiffs(state.exec)
+    const merged = inTx.diffs
     assertSomethingChanged(expanded, merged)
     // Rule 7 — merged here too, so the preview the person confirms against
     // describes the messages that will actually go.
@@ -1072,6 +1085,7 @@ export async function previewPlan(
       stagedMessages: state.staged.map((m) => ({ toContactId: m.toContactId, preview: previewOf(m) })),
       scheduled: state.scheduled,
       summary: buildSummary(merged, state),
+      clashes: inTx.clashes,
     }
   } catch (e) {
     return failed(state, e, opts?.noHints ? null : await hintFor(ctx, e, expanded, state.notes, intent))
@@ -1294,13 +1308,23 @@ export async function executePlan(
   let expanded: PlanStep[] = []
   try {
     expanded = await expand(ctx, steps, 0)
-    const diffs = await withSession(ctx, async (tx) => {
+    const inTx = await withSession(ctx, async (tx) => {
       auditId = await beginAuditSafe(tx, ctx, intent, steps, auditId)
       await runSteps(tx, ctx, expanded, state)
-      return await readDiffSafe(tx, ctx, auditId)
+      const read = await readDiffSafe(tx, ctx, auditId)
+      const diffs = read.length ? read : synthDiffs(state.exec)
+      /**
+       * Asked here as well as in the preview, so the property is the plan's
+       * rather than the previewed plan's. Every model-authored write is gated
+       * by `needsPreview` before it reaches this function, but a Flow
+       * submission is not — the setup form writes a whole week in one plan,
+       * which is exactly where two 7am Mondays get typed — and a receipt that
+       * names the overlap is the only warning that path has.
+       */
+      return { diffs, clashes: await noteClashes(tx, ctx, diffs, state) }
     })
     // ---- committed. Only now does anything reach the wire. ----
-    const merged = diffs.length ? diffs : synthDiffs(state.exec)
+    const merged = inTx.diffs
     assertSomethingChanged(expanded, merged)
     // Rule 7 — one event, one person, one message. Assigned back onto the state
     // so the receipt's staged-vs-sent arithmetic counts the messages that were
@@ -1318,6 +1342,7 @@ export async function executePlan(
       stagedMessages: state.staged.map((m) => ({ toContactId: m.toContactId, preview: previewOf(m) })),
       scheduled: state.scheduled,
       summary: receipt,
+      clashes: inTx.clashes,
     }
   } catch (e) {
     return { ...failed(state, e, await hintFor(ctx, e, expanded, state.notes, intent)), auditId, outcomes: [] }
@@ -1333,6 +1358,8 @@ function failed(state: RunState, e: unknown, hint?: string | null): PlanResult {
     stagedMessages: [],
     scheduled: [],
     summary: 'Nothing was changed and nobody was messaged.',
+    // A plan that rolled back put nobody anywhere.
+    clashes: [],
     error: (e instanceof PlanAbort ? `${e.code}: ${message}` : message) + (hint ? ` — ${hint}` : ''),
   }
 }
@@ -1634,6 +1661,57 @@ async function readDiffSafe(tx: Tx, ctx: SessionCtx, auditId: string): Promise<T
   return normalizeDiffs(raw)
 }
 
+/**
+ * What this plan just put in two places at once (`./clash`), as plan notes.
+ *
+ * A `note` is the right home for it: it is the one part of a plan written in
+ * the business's own words, so the overlap rides into `buildSummary` and out
+ * through every surface that already carries a summary — the preview the admin
+ * taps, the receipt, and the runtime's own line under a `steps` button
+ * (`withRuntimeDiffLine`). Doctrine 14 asks for the cost before the tap, and
+ * this is the sentence that puts it there without anybody composing it.
+ *
+ * The same sentence in both note lists, in lockstep with `runSteps`. A coach
+ * can reach one of these — `claim_cover` puts them on a session that lands on
+ * top of their own — and their receipt is the `personal` one, so leaving it out
+ * would be the only case where the person double-booked is not told.
+ *
+ * In a savepoint, so a plan can never fail because of a check that only had
+ * something to add.
+ */
+async function noteClashes(
+  tx: Tx,
+  ctx: SessionCtx,
+  diffs: TableDiff[],
+  state: RunState,
+): Promise<string[]> {
+  /**
+   * `inSavepoint` returns null when the check itself failed, and `?? []` used to
+   * collapse that into the same value as "ran, found nothing" — so a crashed
+   * double-booking check was indistinguishable from a clean one, and the silence
+   * read as clearance. That is the failure this whole check exists to prevent,
+   * one layer up: the model looks sideways, gets "no conflicts", and writes.
+   *
+   * The distinction already existed in the return type; only the `??` threw it
+   * away. A check that did not run now says so, in the same note list a real
+   * clash uses — so it rides into `buildSummary`, the preview, and the receipt,
+   * and a person decides with the uncertainty in front of them. Still never
+   * fatal: an overlap is sometimes intended, and a check that could not run is
+   * not grounds to refuse a plan.
+   */
+  const found = await inSavepoint(tx, (sp) => coachClashes(sp, ctx.academyId, diffs))
+  if (found === null) {
+    const note =
+      'the double-booking check could not run on this one, so nothing here rules out the coach already being somewhere else at that time'
+    state.notes.push(note)
+    state.personalNotes.push(note)
+    return []
+  }
+  state.notes.push(...found)
+  state.personalNotes.push(...found)
+  return found
+}
+
 /** Substitutes the audit id a button could not know at compose time (see `undo`). */
 function bindAudit<T>(value: T, auditId: string): T {
   if (typeof value === 'string') return (value === '$AUDIT_ID' ? auditId : value) as unknown as T
@@ -1903,6 +1981,28 @@ export function needsPreview(
   const earlyOwnScope =
     steps.length === 1 && 'operation' in steps[0] && Boolean(OPERATIONS[steps[0].operation.name]?.ownScope)
   if (earlyOwnScope) return false
+
+  /**
+   * A plan can be consequential for what it collides with rather than for how
+   * much it writes.
+   *
+   * Every other test here is a census — of rows, of money, of recipients — and
+   * a coach booked into two places at once registers on none of them. Creating
+   * one was three inserts, nobody else's money and nothing deleted, so it ran
+   * unattended and was described to the admin in the past tense
+   * (`tn-two-places`). This is the line that makes a contradiction cost a tap,
+   * and the tap is also the override: an overlap the admin actually means is
+   * confirmed the same way everything else is, so nothing needs a flag.
+   *
+   * **Below `earlyOwnScope` deliberately.** The only way a non-admin reaches a
+   * clash is by confirming or un-declining a session somebody else assigned
+   * them — `claim_cover`, which is own-scope and first-tap-wins. Gating that
+   * would put a diff in front of a coach standing on a court (F-P) and lose
+   * them the race besides, to tell them something they are about to be told
+   * anyway: the overlap is a plan note, so it is in their receipt either way.
+   * Deciding about your own day is not a proposal.
+   */
+  if (result.clashes.length) return true
 
   if (result.diffs.some((d) => MONEY_TABLES.has(d.table))) return true
 

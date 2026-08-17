@@ -1,7 +1,11 @@
 /**
  * arc-report — the lifecycle arc, told as what actually happened inside each turn.
  *
- *   node scripts/arc-report.mjs [--in .probe/<arm>.json] [--out .probe/arc-readiness.html]
+ *   node scripts/arc-report.mjs [--in <records>.json] [--out <page>.html]
+ *
+ * With no flags it renders the NEWEST arc run under `.probe/runs/` to a dated
+ * page in `.probe/reports/`. See `scripts/_probe-runs.mjs` for the layout and
+ * for why the default is resolved rather than hardcoded.
  *
  * WHY THIS WAS REWRITTEN
  * -----------------------------------------------------------------------------
@@ -28,7 +32,9 @@
  * marked as judgements wherever they appear — are read back by hand against
  * that full transcript.
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { newest, describe } from './_probe-runs.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (n, d) => {
@@ -38,8 +44,14 @@ const flag = (n, d) => {
   return a.includes('=') ? a.slice(a.indexOf('=') + 1) : (argv[i + 1] ?? d)
 }
 
-const IN = flag('in', '.probe/arc-full/deepseek-v4-flash--thinking-low.json')
-const OUT = flag('out', '.probe/arc-readiness.html')
+const picked = newest('arc', { prefer: 'deepseek-v4-flash--thinking-low.json' })
+const IN = flag('in', picked?.record)
+const OUT = flag('out', picked?.out)
+if (!IN || !OUT) {
+  console.error(`${describe('arc', picked)} — pass --in <records>.json --out <page>.html`)
+  process.exit(2)
+}
+if (!flag('in')) console.log(describe('arc', picked))
 const VERIFIED_ON = flag('verified-on', '16 Aug 2026')
 const TITLE = flag('title', 'Where the bot went wrong')
 const records = JSON.parse(readFileSync(IN, 'utf8'))
@@ -659,7 +671,7 @@ ${wrongOnes
 ${
   FIXED.length
     ? `<h2>What the last page reported broken, re-measured on this run</h2>
-<p class="sub">The baseline arc (15–16 Aug, <code>.probe/arc-full</code>) reported one bot fault and three product
+<p class="sub">The baseline arc (15–16 Aug, <code>.probe/runs/2026-08-16-1135-arc-full</code>) reported one bot fault and three product
 findings. This run drove the same 18 sentences with the fixes in: new decode-point instructions (the
 <code>reply</code> declaration's channel facts, the self-confirming operations saying "call me directly", the
 tap-only <code>confirmed</code> parameter no longer advertised to the model), one doctrine line (a worked-out
@@ -727,6 +739,7 @@ tool name alone.
 </footer>
 </div>`
 
+mkdirSync(dirname(OUT), { recursive: true })
 writeFileSync(OUT, html)
 console.log(`wrote ${OUT}`)
 console.log(`  ${records.length} turns · ${held.length} right · ${broke.length} wrong`)

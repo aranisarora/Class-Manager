@@ -416,7 +416,7 @@ export function atTimeOn(date: string, time: string, tz: string): Date {
  *
  * A send time computed as `start − lead` has no idea what a night is: a 6:30pm
  * class with the default 14-hour lead put reminders on parents' phones at
- * 4:30am (driven; conversation-rules.md F-H). A time that falls inside the
+ * 4:30am (driven; findings-archive.md F-H). A time that falls inside the
  * academy's quiet hours is pulled BACK to the last waking minute before they
  * begin — the evening before, for an early-morning time — never pushed later,
  * because a reminder after the class started is worse than one a little early.

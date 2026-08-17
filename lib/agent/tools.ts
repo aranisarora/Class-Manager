@@ -133,7 +133,7 @@ export type ToolCtx = {
  * The verbs that mean a write happened. Shared by both shapes below.
  *
  * The routing verbs — flagged, escalated, raised, notified, informed — are the
- * F-K addition (conversation-rules.md): *"I've flagged it to the owner"* shipped
+ * F-K addition (findings-archive.md): *"I've flagged it to the owner"* shipped
  * with `claimedDone: false` because every verb here was a doing-verb and none
  * was a telling-verb, so the checker read the sentence as claiming nothing.
  * "told" stays out deliberately: "I've told you the price" is ordinary
@@ -1201,16 +1201,36 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
     name: 'read',
     description:
       'Run one SELECT over the schema. RLS scopes it to what this person may see; 5s and 10k rows. Aggregates, window functions and date maths are all allowed. Always returns a scope line so an obviously wrong denominator is visible. ' +
+      /**
+       * There is no budget on LOOKING, and the declaration used to imply there
+       * was. "A turn has AT MOST FIVE TOOL ROUNDS" sat directly under advice
+       * about not spending rounds, and the two together read as *check less* —
+       * against doctrine's *work with complete information*, which asks for the
+       * sideways lookup nobody prompted.
+       * The month drive is what that cost looks like: `class_coach` read zero
+       * times in thirty-five turns, and a class created over an existing one
+       * after two reads that only resolved ids. Rows are free; the scarce unit
+       * is the round, and saying which is which is the whole fix.
+       */
+      'Reads are free and never wasted — ask for everything the decision needs, including the rows around the one you came for. Breadth costs nothing. ' +
       // The loop has always executed every function call in a round concurrently
       // (`for (const call of res.functionCalls)`), and nothing anywhere said so — so
       // the model asked one question per round and paid a whole prefix for each. A
       // four-step discovery chain is two rounds instead of four for one sentence here.
-      'If you need several unrelated things, ask for them ALL IN THE SAME ROUND — several read calls in one round cost one round between them, while asking one at a time costs a round each. ' +
+      'What costs is a ROUND, not a query: several read calls in one round cost one round between them, while asking one at a time costs a round each. So ask for everything you want ALL IN THE SAME ROUND. ' +
       // The budget was enforced and never stated, so the model paced a resource it
       // could not see — and learned it existed only by running out, with its notes
       // to itself shipped as the reply (F-AI). The count is stable; the position
       // arrives per round from the loop, which is the only thing that knows it.
-      'A turn has AT MOST FIVE TOOL ROUNDS across all tools; the runtime tells you which round you are on as you go.',
+      'A turn has five tool rounds across all tools and the runtime tells you which one you are on. Batched properly that is far more than any amount of looking needs, so it is never a reason to check less. ' +
+      // The cap was stated and its CONSEQUENCE was not. 10,001 rows come back as a
+      // complete-looking 10,000 plus a flag, and a count read off a truncated result is
+      // simply wrong with nothing marking it — the same shape as every other silent
+      // ceiling in this product. The flag is only useful if the model knows to look.
+      'At the row cap the result is NOT an error: you get 10,000 rows and truncated:true, which looks exactly like a complete answer. Never state a count or a total off a truncated result — aggregate in SQL with count()/sum() instead of counting rows yourself. ' +
+      // Refused before Postgres ever sees it, so there is no database error to read and
+      // repair from — the only feedback is the refusal itself, which is cheaper to avoid.
+      'Refused outright, before the database sees them: more than one statement, anything that is not SELECT/WITH, and the fragments pg_sleep, dblink, copy and pg_read.',
     parametersJsonSchema: {
       type: 'object',
       properties: {
@@ -1336,7 +1356,11 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
     name: 'schedule',
     description:
       "Schedule yourself to look at something later. It runs as an ordinary turn under this person's own permissions, and deciding to do nothing is the common and correct outcome. Reach for it whenever you say you will check back, whenever you promise to wait, and whenever you route something to somebody else and owe the person who raised it an answer. Then say in one clause what it will actually do — what you look at, how often, against what, until when, and that they will hear nothing if nothing moves. expires_at is REQUIRED: a watch with no expiry is a leak. " +
-      'And know what already runs without you: standing jobs remind every family before every session, chase every unmarked register, send each coach their day and the owner their brief and digest, bill the month, and chase every unpaid bill (a dunning ladder: a few spaced nudges, then it puts the bill in front of the admin). A watch duplicating one of those sends somebody the same thing twice — the promise is already kept, so say so instead of minting it.',
+      'And know what already runs without you: standing jobs remind every family before every session, chase every unmarked register, send each coach their day and the owner their brief and digest, bill the month, and chase every unpaid bill (a dunning ladder: a few spaced nudges, then it puts the bill in front of the admin). A watch duplicating one of those sends somebody the same thing twice — the promise is already kept, so say so instead of minting it. ' +
+      // Stated up front rather than only on hitting it. A cap discovered by refusal is a
+      // round spent, and the refusal arrives at the moment a promise has usually already
+      // been made in prose — which is the one thing this tool exists to stop.
+      'A business can hold 25 live watches at once. Past that this refuses, so if you are near it, drop one you no longer need rather than promising something you cannot mint.',
     parametersJsonSchema: {
       type: 'object',
       properties: {
@@ -1542,6 +1566,10 @@ function compactDiff(r: Awaited<ReturnType<typeof previewPlan>>, executed = true
     }),
     messages: r.stagedMessages.map((m) => m.preview),
     scheduled: r.scheduled,
+    // Already inside `summary` — it is one of the plan's notes — but a fact the
+    // model has to reason about should not have to be parsed back out of a
+    // sentence. This is also why the plan came back needing a tap.
+    ...(r.clashes.length ? { clashes: r.clashes } : {}),
     // One diff, two truths. An EXECUTED diff is what is now in the rows; a
     // STAGED one is what a tap WOULD write — and carrying the executed
     // coaching on both taught a staged "rows: 2" to read as a receipt: the
@@ -2481,15 +2509,37 @@ export async function runTool(
         }
       }
 
-      // §5 — the bot writes facts asynchronously after a turn, never blocking
-      // a reply.
-      void writeFact(ctx.session, {
-        subjectKind,
-        subjectId,
-        fact: String(args?.fact ?? ''),
-        source: `turn:${ctx.turnId}`,
-        supersedes: args?.supersedes ? String(args.supersedes) : undefined,
-      }).catch(() => {})
+      /**
+       * §5 says a fact write never blocks a reply, and this used to read
+       * `void writeFact(...).catch(() => {})` followed by an unconditional
+       * `{ ok: true }`. That is not non-blocking, it is **unobserved**: the gate
+       * above runs synchronously, and everything after it — the insert, the dedupe
+       * check, the curation trigger — could fail with the model already told the
+       * fact was stored. It then says "I'll remember that" on the strength of a
+       * value nothing computed.
+       *
+       * The same shape as the census `null`-vs-`[]` bug and as the clash check: a
+       * failure and a success reported with one value. Awaiting it costs one
+       * round-trip on a call that is already inside a tool, and the reply is not
+       * composed until the round ends anyway — so nothing is actually blocked that
+       * was not already waiting.
+       */
+      try {
+        await writeFact(ctx.session, {
+          subjectKind,
+          subjectId,
+          fact: String(args?.fact ?? ''),
+          source: `turn:${ctx.turnId}`,
+          supersedes: args?.supersedes ? String(args.supersedes) : undefined,
+        })
+      } catch (e) {
+        return {
+          result: {
+            error: `not stored: ${e instanceof Error ? e.message : String(e)}`,
+            hint: 'The fact was NOT saved. Do not tell them you will remember it. Say what you know now, and try again next turn if it still matters.',
+          },
+        }
+      }
       return { result: { ok: true } }
     }
 

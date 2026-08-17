@@ -728,8 +728,10 @@ async function executeAction(
    * when the reminder was composed.
    *
    * The body says what the form is and, always, that they can say the same thing here
-   * instead. A form is an offer and never a toll (doctrine rule 4), and the one place
-   * that rule is most easily broken is the runtime's own copy, which no model reviews.
+   * instead. A form is an offer and never a toll — the rule now lives on the `reply`
+   * declaration's `form` parameter, where the model decodes against it rather than
+   * reading it as prose 40k characters upstream — and the one place it is most easily
+   * broken is the runtime's own copy, which no model reviews.
    */
   if (payload.kind === 'form') {
     const built = await formFor(session, identity, payload.form as FormId, {
@@ -1006,7 +1008,7 @@ async function modelTurn(
     // The tenant's clock, not the world's. This line is the model's entire sense of
     // "now" — driven with a moved tenant clock, the bare call told a coach
     // "It is Saturday, 10:52am" on his Wednesday, and every watch the turn
-    // scheduled landed in the past (conversation-rules.md F-A).
+    // scheduled landed in the past (findings-archive.md F-A).
     now(identity.academyId).then((at) => inZone(at, identity.academy.timezone)),
     recentLookups(identity),
     recentActions(identity),
@@ -1489,7 +1491,7 @@ async function modelTurn(
    * staring at the chat, so trailing prose is a safety net; on `source: 'job'` there is
    * no one waiting, silence is the expected outcome (§13.1), and this same net delivered
    * the model's deliberation — "I will stay quiet until Wednesday", watch bookkeeping,
-   * "no follow-up is needed" — as real messages (conversation-rules.md F-B). Discarded,
+   * "no follow-up is needed" — as real messages (findings-archive.md F-B). Discarded,
    * with a trace entry so a drive can still see what the model was thinking.
    */
   if (text.trim() && !spoke() && input.source === 'job') {
@@ -2140,8 +2142,12 @@ export async function synthesize(academyId: string, kind: 'brief' | 'digest'): P
     if (!admins.length) return { turnId, sent: [], toolCalls: 0 }
 
     const memory = {
-      academy: await hotSet('academy', academyId, academyId).catch(() => ''),
-      admin: await hotSet('person', admins[0].person_id, academyId).catch(() => ''),
+      // `?? ''` as well as the catch: hotSet now returns null on a failed read rather
+      // than collapsing it into an empty string. The digest has no way to act on the
+      // distinction — it composes from a payload either way — so here, unlike the turn
+      // tail, flattening it is the right call.
+      academy: (await hotSet('academy', academyId, academyId).catch(() => '')) ?? '',
+      admin: (await hotSet('person', admins[0].person_id, academyId).catch(() => '')) ?? '',
     }
 
     const instruction =

@@ -36,11 +36,21 @@ Postgres. You author SQL against these tables directly.
     "withheld by policy" arrive as the same zero rows: report what they can see,
     and where their view ends say "not something I can see from here" — never
     that the thing does not exist.
-  - WRITE: **every INSERT must set academy_id = app.academy_id() explicitly, on
-    every row, including rows in a multi-row VALUES list.** Nothing fills it in
+  - WRITE (INSERT): **every INSERT must set academy_id = app.academy_id() explicitly,
+    on every row, including rows in a multi-row VALUES list.** Nothing fills it in
     for you: the column is not defaulted, and the policy checks it, so an insert
     that leaves it out is refused with "new row violates row-level security
     policy" — which looks like a permissions problem and is a missing column.
+  - WRITE (UPDATE and DELETE): **the dangerous half, because it does not fail.** An
+    INSERT the policy refuses raises an error you can read. An UPDATE or DELETE whose
+    rows the policy excludes simply **matches nothing and raises nothing** — no error,
+    no warning, and a statement that reports success. This is how a coach was told
+    "you're all set up" and stayed invited forever: the row existed, the id was right,
+    and the policy gave them no UPDATE on it, so Postgres changed nothing and said
+    nothing. So never read "no error" as "it worked" on an UPDATE or a DELETE. Read
+    back the row you meant to change, and if it did not change, say so — the two
+    explanations are that the WHERE matched nothing, or that this person is not allowed
+    to make this change and it must be routed to the admin instead.
 - **Never call now(), current_date or current_timestamp. Use app.now().** The clock
   is drivable; sql now() ignores it and produces answers that are wrong in test and
   subtly wrong in production.

@@ -13,6 +13,8 @@
     "drive": "tsx scripts/drive.ts",
     "wa": "tsx scripts/wa-cloud.ts",
     "probe": "tsx scripts/probe-model.ts",
+    "ask": "tsx scripts/probe-ask.ts",
+    "surface": "tsx scripts/probe-surface.ts",
     "verify:static": "node scripts/verify-static.mjs"
   },
   "dependencies": {

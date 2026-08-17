@@ -37,9 +37,25 @@ export async function beginAudit(tx: Tx, input: BeginAuditInput): Promise<string
     throw new AppError({ code: 'audit_no_academy', message: 'beginAudit needs an academyId.' })
   }
 
+  /**
+   * `$4::text::jsonb`, not `$4::jsonb` — the cast that reads like it parses and does
+   * not. postgres.js types a parameter from its JS value, and against a `jsonb` target
+   * it sends a string as a JSON *string*: `$4::jsonb` with `'{"a":1}'` stores the
+   * scalar `"{\"a\":1}"`, `jsonb_typeof` says `string`, every `->>'key'` returns null,
+   * and nothing raises. `lib/seed.ts` carries the full account — it is how
+   * `person.settings` in both seeded worlds came to hold a string, and how the real
+   * webhook queue silently dropped every inbound. `lib/actions.ts` and
+   * `lib/messaging/send.ts` already spell it the safe way; this call site did not, so
+   * `audit_entry.plan` has been taking the same shape.
+   *
+   * Harmless where it was already working: text→jsonb parses to the same value either
+   * way. Check what is already stored with
+   * `select jsonb_typeof(plan) from audit_entry` — anything reading `string` was
+   * written by the old cast.
+   */
   const rows = await unsafeQuery<{ id: string }>(
     tx,
-    'select app.begin_audit($1::uuid, $2::uuid, $3::text, $4::jsonb) as id',
+    'select app.begin_audit($1::uuid, $2::uuid, $3::text, $4::text::jsonb) as id',
     [
       input.academyId,
       input.actorPersonId && isUuid(input.actorPersonId) ? input.actorPersonId : null,

@@ -127,6 +127,14 @@ applied from a workstation as a role that owns the schema; the runtime role deli
 not that role, and putting the privileged URL on the deployment only widens what a
 compromised build can reach.
 
+**`DEEPSEEK_API_KEY` has been pasted into chat more than once, and the decision on
+15 Aug 2026 was not to rotate it.** Recorded so it is a known accepted risk rather than an
+oversight someone rediscovers. The mitigations that remain are the two that always mattered:
+it lives in `.env.local` and on Vercel only, never in the repo, and a **balance cap on the
+DeepSeek platform bounds what a leak can spend**. Set that cap if it is not set. Rotating the
+key is one dashboard action plus one `vercel env` update, so if the accepted risk ever stops
+feeling accepted, the cost of reversing this is an afternoon.
+
 ### The `DATABASE_URL` user is not a detail
 
 The Supabase dashboard's connection string authenticates as `postgres.<PROJECT_REF>`, and

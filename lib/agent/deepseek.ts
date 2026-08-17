@@ -161,7 +161,7 @@ const BASE_URL = 'https://api.deepseek.com'
  *
  * Phase 6 of the migration ran the same 18-case lifecycle arc at every level,
  * one variable at a time, against the live prompt and the live tool surface
- * (`.probe/deepseek-live-test.html` is the full report):
+ * (`.probe/reports/2026-08-15-deepseek-live-test.html` is the full report):
  *
  *  - **off** was fastest (p50 8.1s) and composed perfectly — and its failure
  *    mode is disqualifying: fluent, present-tense false claims of state. A

@@ -129,7 +129,7 @@ const OUT_DIR = flag('out', join(process.cwd(), '.probe'))
 /**
  * Which arc to walk. `arc` is the lifecycle sweep; `f-o` is the regression suite
  * for the findings the month drive raised and the 15 Aug commits claim to have
- * fixed (conversation-rules.md F-O).
+ * fixed (findings-archive.md F-O).
  *
  * A suite is a list of cases, and the F-O one REUSES the arc's setup cases by
  * reference rather than restating them: a regression case about cancelling a
@@ -1572,7 +1572,7 @@ const FO_CASES: Case[] = [
 
 /* ========================================================================== *
  * The F-Q regression suite — the month-drive re-read of 16 Aug 2026
- * (conversation-rules.md F-Q). Every case reproduces something the drive did
+ * (findings-archive.md F-Q). Every case reproduces something the drive did
  * wrong that the F-O suite could not see, and asks whether this pass's fixes
  * hold under the real loop.
  * ========================================================================== */
@@ -2892,6 +2892,952 @@ const REAL_CASES: Case[] = [
   },
 ]
 
+/* -------------------------------------------------------------------------- *
+ * The tennis suite — one solo business, one month, nobody co-operating on cue.
+ *
+ * Every other suite in this file drives a MULTI-COACH, PER-MONTH, GROUP-CLASS
+ * academy, because that is the shape the product was specified around. This one
+ * drives the shape the product will actually meet first, and it differs on all
+ * three axes at once:
+ *
+ *   - **Solo.** The admin is the coach. `app.is_solo()` turns eight behaviours
+ *     off (§18) and there is nobody to escalate an uncovered session to, so the
+ *     coverage machinery that carries the arc has nothing to do here. What
+ *     replaces it is untested.
+ *   - **Per-session.** Money moves on attendance rather than on the first of the
+ *     month, so every cancellation is a billing decision, every no-show is a
+ *     charge, and the cancellation window means what §6.4 says it means only in
+ *     this rate unit. The arc never once runs it.
+ *   - **Private.** One enrolment per class. A cancellation has a fan-out of one,
+ *     a makeup is a slot move rather than an argument about a refund, and the
+ *     admin's calendar is the constraint — one person cannot be at two venues
+ *     at 7am, and nothing in the schema knows that.
+ *
+ * The month is the other half. Briefs, digests, reminders and dunning are all
+ * scheduled work, and their failure mode is cumulative: a chase that is correct
+ * once is harassment on the ninth day, and a ten-day drive cannot see it. The
+ * clock budget above is raised for exactly this.
+ *
+ * The people do not behave. One parent cancels three hours out, one client never
+ * answers anything, one stranger books and does not turn up, one stranger asks
+ * the price and vanishes, one family stops paying and then asks to be left
+ * alone. That is not adversarial — nobody here is trying to break anything. It
+ * is a Tuesday.
+ * -------------------------------------------------------------------------- */
+
+/** The next scheduled session of the class whose name matches, offset in SQL. */
+const nextOf = (fragment: string, offset: string) => (q: Sql) =>
+  firstAt(
+    q,
+    // The fallback is not tidiness. The class names are composed by the MODEL out
+    // of the timetable sentence, so a run where it calls the Tuesday private
+    // "Private — Fort Court" instead of "Aditya" would return no target at all,
+    // and a case with no target does not run. Falling back to the next session of
+    // anything keeps the case askable and lets its own checks say whether the
+    // world it landed in was the right one.
+    `select (coalesce(
+               (select min(s.starts_at) from session s join class c on c.id = s.class_id
+                 where s.status = 'scheduled' and s.starts_at > app.now()
+                   and lower(c.name) like '%${fragment.toLowerCase()}%'),
+               (select min(s.starts_at) from session s
+                 where s.status = 'scheduled' and s.starts_at > app.now())
+             ) ${offset})::text as at`,
+  )
+
+/** Straight time travel, for the gaps where the subject is that nothing happened. */
+const inFuture = (interval: string) => (q: Sql) =>
+  firstAt(q, `select (app.now() + interval '${interval}')::text as at`)
+
+/** Everything outbound to one named person since the cursor — chases included. */
+async function messagesTo(q: Sql, who: string, sinceIso?: string): Promise<any[]> {
+  return q(`select left(m.body, 160) as body, m.created_at::text as at, m.suppressed_reason
+              from message m
+              join contact ct on ct.id = m.contact_id
+              join person p on p.id = ct.person_id
+             where m.direction = 'outbound' and m.suppressed_reason is null
+               and lower(p.full_name) like '%${who.toLowerCase()}%'
+               ${sinceIso ? `and m.created_at >= '${sinceIso}'::timestamptz` : ''}
+             order by m.created_at`)
+}
+
+/** Tally lines written since the cursor, with who they landed on. */
+async function billedSince(q: Sql, ctx: CaseCtx): Promise<any[]> {
+  return q(`select p.full_name as who, t.kind, t.description, t.amount::text as amount
+              from tally_line t
+              left join player pl on pl.id = t.player_id
+              left join person p on p.id = pl.person_id
+             where t.created_at >= '${ctx.startedAt}'::timestamptz
+             order by t.created_at`)
+}
+
+const TENNIS_CASES: Case[] = [
+  /* ======================= week 0 · setting up ============================ */
+  {
+    name: 'tn-hello',
+    stage: 'onboarding',
+    persona: 'admin',
+    what: 'the first sentence a solo per-session coach types — three venues and a rate unit the arc never exercises',
+    text:
+      "hi. i'm ravi, i coach tennis on my own — no other coaches, it's just me. i work out of three places: " +
+      'fort court, lake club and the gymkhana. i charge per session, not monthly.',
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q, ctx) => {
+      const venues = await q(`select name from venue`)
+      const has = (s: string) => venues.some((v: any) => norm(v.name).includes(s))
+      const all = has('fort court') && has('lake club') && has('gymkhana')
+      const said = (await bodiesToSpeaker(q, ctx)).join(' ')
+      /**
+       * Routing the form-shaped part into the setup Flow (§7.1) is the specified
+       * behaviour, so "no venue rows yet" is not by itself wrong — the next turn
+       * creates them anyway. What IS wrong, and what this asks, is the sentence
+       * "I've got you down: three courts" over a database holding none of them.
+       * Invariant §2.6's sibling: never claim what you cannot see.
+       */
+      const claimed = /\b(got you down|i'?ve got|noted|recorded|saved|added|set up|all set)\b/i.test(said)
+      return [
+        check('either the three courts exist, or the reply does not claim they do', all || !claimed,
+          { venues, claimed, said: said.slice(0, 260) }),
+        check('for the record: what the courts table holds', true, venues),
+      ]
+    },
+  },
+  {
+    name: 'tn-solo-coach',
+    stage: 'onboarding',
+    persona: 'admin',
+    what:
+      'the admin adding HIMSELF as the coach — one human, two hats (§6.2). Two person rows here is a duplicate ' +
+      'human on one phone, and it is what turns off `app.is_solo()` for the rest of the month',
+    text: "put me down as the coach as well — ravi menon, this number. i take every single session myself.",
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q) => {
+      const ravis = await q(`select id::text, full_name from person where lower(full_name) like '%ravi%'`)
+      const coaches = await q(`select co.id::text, co.status, p.full_name,
+                                      exists (select 1 from academy_admin aa where aa.person_id = p.id) as is_admin
+                                 from coach co join person p on p.id = co.person_id`)
+      const solo = await q(`select app.is_solo((select id from academy)) as solo`)
+      const contacts = await q(`select phone_e164, count(*)::int as n from contact group by 1 having count(*) > 1`)
+      return [
+        check('there is exactly one Ravi Menon', ravis.length === 1, ravis),
+        check('the admin is now a coach', coaches.some((r: any) => r.is_admin === true), coaches),
+        check('the business reads as solo', solo[0]?.solo === true, solo),
+        check('no phone belongs to two contacts', contacts.length === 0, contacts),
+      ]
+    },
+  },
+  {
+    name: 'tn-timetable',
+    stage: 'onboarding',
+    persona: 'admin',
+    what:
+      'the whole week in one messy message — three privates at three venues plus one group. The AM/PM trap runs ' +
+      'the OTHER way here: "6-7am" must not become 18:00, and "5-6pm" must not become 05:00',
+    text:
+      'my week: aditya tues and thurs 6-7am at fort court. sneha mon and wed 7-8am at lake club. kabir mon and fri ' +
+      '5-6pm at the gymkhana. all privates, 900 a session. and saturday juniors, the group one, 8 to 9.30am at the ' +
+      'gymkhana, 600 a head per session.',
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q) => {
+      const classes = await q(`select id::text, name, rate_amount::text as rate, rate_unit,
+                                      (select name from venue v where v.id = c.venue_id) as venue
+                                 from class c where active`)
+      const find = (s: string) => classes.find((r: any) => norm(r.name).includes(s))
+      const slotsOf = async (row: any) =>
+        row ? await q(`select weekday, start_time::text, end_time::text from class_slot
+                        where class_id = '${row.id}'::uuid order by weekday`) : []
+      const aditya = find('aditya'), sneha = find('sneha'), kabir = find('kabir'), sat = find('junior') ?? find('saturday')
+      const aS = await slotsOf(aditya), sS = await slotsOf(sneha), kS = await slotsOf(kabir), satS = await slotsOf(sat)
+      const at = (rows: any[], hh: string) => rows.length > 0 && rows.every((r: any) => String(r.start_time).startsWith(hh))
+      const perSession = classes.filter((r: any) => r.rate_unit === 'per_session')
+      return [
+        check('four classes exist', classes.length === 4, classes.map((r: any) => r.name)),
+        check("aditya's is Tue+Thu 06:00 — not 18:00", aS.length === 2 && at(aS, '06:') &&
+          [2, 4].every((d) => aS.some((s: any) => Number(s.weekday) === d)), aS),
+        check("sneha's is Mon+Wed 07:00", sS.length === 2 && at(sS, '07:') &&
+          [1, 3].every((d) => sS.some((s: any) => Number(s.weekday) === d)), sS),
+        check("kabir's is Mon+Fri 17:00 — not 05:00", kS.length === 2 && at(kS, '17:') &&
+          [1, 5].every((d) => kS.some((s: any) => Number(s.weekday) === d)), kS),
+        check('saturday juniors is Sat 08:00–09:30', satS.length === 1 && Number(satS[0]?.weekday) === 6 &&
+          String(satS[0]?.start_time).startsWith('08:') && String(satS[0]?.end_time).startsWith('09:3'), satS),
+        check('every class bills per session', perSession.length === 4,
+          classes.map((r: any) => `${r.name}: ${r.rate} ${r.rate_unit}`)),
+        check('the privates are ₹900 and the group ₹600',
+          Number(aditya?.rate) === 900 && Number(sneha?.rate) === 900 && Number(kabir?.rate) === 900 &&
+          Number(sat?.rate) === 600, classes.map((r: any) => `${r.name}: ${r.rate}`)),
+        check('each class is at its own venue',
+          norm(aditya?.venue).includes('fort') && norm(sneha?.venue).includes('lake') &&
+          norm(kabir?.venue).includes('gymkhana') && norm(sat?.venue).includes('gymkhana'),
+          classes.map((r: any) => `${r.name} @ ${r.venue}`)),
+      ]
+    },
+  },
+  {
+    name: 'tn-families',
+    stage: 'roster',
+    persona: 'admin',
+    what:
+      'the roster, including the case that looks like a second product and is not: an adult who pays for herself ' +
+      'is `account.holder_person_id = player.person_id` at n=1 (§6.2), not a second person with the same name',
+    text:
+      'people: meena iyer +919871000011, her son aditya, 12. sneha rao +919871000022 — she\'s an adult, plays ' +
+      'herself, pays herself. farida khan +919871000033, her son kabir, 10. tara nambiar +919871000044 with anika, ' +
+      '9 — anika only does the saturday group. put aditya and kabir in saturday juniors as well.',
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q) => {
+      const players = await q(`select p.full_name as who, ah.full_name as holder, (ah.id = p.id) as self_paying
+                                 from player pl
+                                 join person p on p.id = pl.person_id
+                                 join account a on a.id = pl.account_id
+                                 join person ah on ah.id = a.holder_person_id
+                                where pl.active order by p.full_name`)
+      const enrol = await q(`select p.full_name as who, cl.name as class from enrollment e
+                               join player pl on pl.id = e.player_id
+                               join person p on p.id = pl.person_id
+                               join class cl on cl.id = e.class_id
+                              where e.ended_on is null`)
+      const inClass = (w: string, c: string) =>
+        enrol.some((r: any) => norm(r.who).includes(w) && norm(r.class).includes(c))
+      const named = (w: string) => players.some((r: any) => norm(r.who).includes(w))
+      const sneha = players.find((r: any) => norm(r.who).includes('sneha'))
+      return [
+        check('four players exist', players.length === 4, players),
+        check('aditya, kabir and anika are all here', named('aditya') && named('kabir') && named('anika'), players),
+        check('sneha rao pays for herself — one person, both roles', sneha?.self_paying === true, sneha ?? players),
+        check('aditya is in his private and the saturday group',
+          inClass('aditya', 'aditya') && inClass('aditya', 'junior'), enrol),
+        check('kabir is in his private and the saturday group',
+          inClass('kabir', 'kabir') && inClass('kabir', 'junior'), enrol),
+        check('anika is ONLY in the saturday group',
+          inClass('anika', 'junior') && enrol.filter((r: any) => norm(r.who).includes('anika')).length === 1, enrol),
+      ]
+    },
+  },
+  {
+    name: 'tn-golive',
+    stage: 'go-live',
+    persona: 'admin',
+    what: 'the switch. Nothing below this line is reachable without it',
+    text: "that's everyone. fees come to ravi@upi. switch it on.",
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q) => {
+      const a = await q(`select onboarding_state, upi_handle from academy`)
+      return [
+        check('the business is live', norm(a[0]?.onboarding_state) === 'live', a),
+        check('there is somewhere to pay', Boolean(a[0]?.upi_handle), a),
+      ]
+    },
+  },
+
+  /* ======================= week 1 · people arrive ========================= */
+  {
+    name: 'tn-parent-arrives',
+    stage: 'go-live',
+    persona: 'client',
+    who: 'meena',
+    what: 'the invited parent sending her first message — she must resolve to the person already on the roster, never a new one',
+    text: 'hi, ravi gave me this number? is this for aditya',
+    wants: [],
+    expect: async (q, ctx) => {
+      const said = await bodiesToSpeaker(q, ctx)
+      const meenas = await q(`select count(*)::int as n from person where lower(full_name) like '%meena%'`)
+      return [
+        check('she got an answer', said.some((b) => b.trim()), said),
+        check('she did not become a second Meena', Number(meenas[0]?.n ?? 0) === 1, meenas),
+      ]
+    },
+  },
+  {
+    name: 'tn-adult-arrives',
+    stage: 'go-live',
+    persona: 'client',
+    who: 'sneha',
+    what:
+      'the self-paying adult. Every reply she gets is about HER — a product that quietly assumes a parent will ' +
+      'talk to her about a child, and there is no child',
+    text: 'hey. so do i tell you here if i cant make a session?',
+    wants: [],
+    expect: async (q, ctx) => {
+      const said = await bodiesToSpeaker(q, ctx)
+      const kidWords = said.filter((b) => /\byour (son|daughter|child|kid)\b/i.test(b))
+      return [
+        check('she got an answer', said.some((b) => b.trim()), said),
+        check('nobody invented a child for her', kidWords.length === 0, kidWords),
+      ]
+    },
+  },
+
+  /* ================ week 1 · the makeup, which is the business ============ */
+  {
+    name: 'tn-late-conflict',
+    stage: 'session-day',
+    persona: 'client',
+    who: 'meena',
+    what:
+      'the sentence this business runs on: a private cancelled the evening before. On per-session billing the ' +
+      'money answer is IN the cancellation window (§6.4), and doctrine 14 says the cost goes before the tap, not after',
+    clock: nextOf('aditya', "- interval '14 hours'"),
+    text: "ravi sorry — aditya has an exam tomorrow morning, he cant do the 6am. can we do it another day this week?",
+    wants: [],
+    expect: async (q, ctx) => {
+      const billed = await billedSince(q, ctx)
+      const said = await bodiesToSpeaker(q, ctx)
+      const gone = await q(`select count(*)::int as n from session s join class c on c.id = s.class_id
+                             where lower(c.name) like '%aditya%'`)
+      return [
+        check('nothing was billed off a request to move', billed.length === 0, billed),
+        check('the session was not deleted', Number(gone[0]?.n ?? 0) > 0, gone),
+        check('she got an answer', said.some((b) => b.trim()), said),
+      ]
+    },
+  },
+  {
+    name: 'tn-makeup-book',
+    stage: 'session-day',
+    persona: 'client',
+    who: 'meena',
+    what:
+      'the makeup itself — §9.2 says a reschedule MOVES the session rather than becoming a refund argument. ' +
+      'Two rows where there was one is a double charge waiting for the register',
+    text: 'friday 6am at fort court would work for us if you have it free',
+    wants: [],
+    tap: true,
+    expect: async (q) => {
+      const sessions = await q(`select s.starts_at::text as at, s.status, extract(dow from s.starts_at)::int as dow
+                                  from session s join class c on c.id = s.class_id
+                                 where lower(c.name) like '%aditya%' and s.starts_at > app.now() - interval '2 days'
+                                 order by s.starts_at limit 6`)
+      const dupes = await q(`select s.starts_at::text as at, count(*)::int as n
+                               from session s join class c on c.id = s.class_id
+                              where lower(c.name) like '%aditya%'
+                              group by 1 having count(*) > 1`)
+      return [
+        check('no two sessions landed on the same instant', dupes.length === 0, dupes),
+        check("aditya's calendar still exists", sessions.length > 0, sessions),
+      ]
+    },
+  },
+  {
+    name: 'tn-two-places',
+    stage: 'session-day',
+    persona: 'admin',
+    what:
+      'the constraint nothing in the schema holds: a solo coach cannot be at two venues at once. Monday 7am is ' +
+      "already Sneha's at Lake Club, and the admin is about to promise it to somebody else across town",
+    text: "i've told tara i can do anika mondays 7 to 8 at the gymkhana, one to one. set that up",
+    wants: [],
+    expect: async (q, ctx) => {
+      const said = (await bodiesToSpeaker(q, ctx)).join('\n')
+      const clashNamed = /sneha|lake club|same time|already|clash|overlap|both|conflict|7 ?- ?8|7am/i.test(said)
+      const clashes = await q(`
+        select c1.name as a, c2.name as b, s1.weekday, s1.start_time::text as t
+          from class_slot s1 join class c1 on c1.id = s1.class_id
+          join class_slot s2 on s2.weekday = s1.weekday and s2.class_id <> s1.class_id
+          join class c2 on c2.id = s2.class_id
+         where c1.active and c2.active and c1.id < c2.id
+           and s1.start_time < s2.end_time and s2.start_time < s1.end_time`)
+      return [
+        // Creating it is defensible; creating it SILENTLY is not. A solo operator
+        // double-booked by his own manager finds out at 7am, at the wrong venue.
+        check('if a clash exists, the admin was told about it', clashes.length === 0 || clashNamed,
+          { clashes, said: said.slice(0, 400) }),
+        check('the reply engaged with the request at all', said.trim().length > 0, said.slice(0, 200)),
+      ]
+    },
+  },
+
+  /* ============ week 1–2 · people who do not answer, and no-shows ========= */
+  {
+    name: 'tn-silence-audit',
+    stage: 'session-day',
+    persona: 'admin',
+    what:
+      'three days on, with reminders having gone out into a silence nobody answered. "Sent" is not "read", and ' +
+      '§2.4 makes the absence of a `read` NO information — the honest answer says what it can see and stops',
+    clock: inFuture('3 days'),
+    text: 'has anyone actually replied to any of the reminders you sent this week?',
+    wants: ['read'],
+    expect: async (q, ctx) => {
+      const said = (await bodiesToSpeaker(q, ctx)).join('\n')
+      const wrote = await wroteThisTurn(q, ctx)
+      const overclaim = /\b(read it|has read|they.?ve read|seen it|delivered to all|everyone read)\b/i.test(said)
+      return [
+        check('a status question wrote nothing', wrote.length === 0, wrote),
+        check('it answered', said.trim().length > 0, said.slice(0, 300)),
+        check('it did not claim anybody read anything', !overclaim, said.slice(0, 400)),
+      ]
+    },
+  },
+  {
+    name: 'tn-noshow',
+    stage: 'attendance',
+    persona: 'admin',
+    what:
+      'the no-show, which on per-session billing IS a charge (§6.4 — absent bills, only `cancelled_timely` does not). ' +
+      'Getting this wrong costs the coach an hour of his morning and the fee for it',
+    clock: nextOf('kabir', "+ interval '90 minutes'"),
+    text: "kabir just didnt turn up. no message, nothing. i waited the full hour at the gymkhana.",
+    wants: [],
+    tap: true,
+    expect: async (q, ctx) => {
+      const marked = await q(`select p.full_name as who, a.status from attendance a
+                                join player pl on pl.id = a.player_id
+                                join person p on p.id = pl.person_id
+                               where a.created_at >= '${ctx.startedAt}'::timestamptz`)
+      const billed = await billedSince(q, ctx)
+      const kabirLine = billed.filter((r: any) => norm(r.who).includes('kabir') && r.kind === 'session')
+      return [
+        check('kabir was marked absent', marked.some((r: any) => norm(r.who).includes('kabir') && r.status === 'absent'), marked),
+        check('an absent no-show was billed ₹900', kabirLine.length === 1 && Number(kabirLine[0].amount) === 900, billed),
+      ]
+    },
+  },
+  {
+    name: 'tn-dispute',
+    stage: 'money',
+    persona: 'client',
+    who: 'farida',
+    what:
+      'the commonest true dispute in the product: the parent cancelled OUT OF BAND, at the court, to the coach\'s ' +
+      'face, and the bot never saw it. She is probably right, and a bot that just reverses it on her say-so is a hole',
+    text: "why am i charged 900 for monday? i told ravi at the court last week kabir isnt doing mondays anymore",
+    wants: [],
+    expect: async (q, ctx) => {
+      const adj = await q(`select amount::text, reason, approved_by::text from tally_line
+                            where kind = 'adjustment' and created_at >= '${ctx.startedAt}'::timestamptz`)
+      const deleted = await q(`select count(*)::int as n from tally_line
+                                where kind = 'session' and lower(description) like '%kabir%'`)
+      const admin = await saidToAdmin(q, ctx)
+      const said = await bodiesToSpeaker(q, ctx)
+      return [
+        check('no unapproved credit was written', adj.every((r: any) => r.approved_by), adj),
+        check('the original charge was not quietly deleted', Number(deleted[0]?.n ?? 0) >= 0, deleted),
+        check('she was answered, and the admin was brought in', said.some((b) => b.trim()) && admin.length > 0,
+          { said: said.slice(0, 2), admin }),
+      ]
+    },
+  },
+  {
+    name: 'tn-admin-waives',
+    stage: 'money',
+    persona: 'admin',
+    what: 'the admin confirming she was right — §6.4 says a waiver is one primitive with a reason and an approver, not a delete',
+    text: "yeah she did tell me, i forgot to pass it on. waive that 900 and take kabir off mondays from now on.",
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q, ctx) => {
+      const adj = await q(`select amount::text, reason, approved_by::text, description from tally_line
+                            where kind = 'adjustment' and created_at >= '${ctx.startedAt}'::timestamptz`)
+      return [
+        check('a credit was written, not a deletion', adj.length > 0 && adj.some((r: any) => Number(r.amount) < 0), adj),
+        check('it carries a reason and an approver', adj.every((r: any) => r.reason && r.approved_by), adj),
+      ]
+    },
+  },
+
+  /* ==================== week 2 · strangers at the gate ==================== */
+  {
+    name: 'tn-stranger-asks',
+    stage: 'roster',
+    persona: 'prospect',
+    who: 'nikhil',
+    what:
+      'the highest-stakes conversation in the product (§10.1) and the one a scripted funnel has nowhere to put: ' +
+      'an adult, not a parent, who has already told you his level in the first message',
+    text: "hi, saw the board at fort court. do you take adults? im 34, played a bit in school, want to get back into it",
+    wants: [],
+    expect: async (q, ctx) => {
+      const said = await bodiesToSpeaker(q, ctx)
+      const acct = await q(`select count(*)::int as n from account where created_at >= '${ctx.startedAt}'::timestamptz`)
+      return [
+        check('the stranger was answered', said.some((b) => b.trim()), said),
+        check('nobody was signed up off one question', Number(acct[0]?.n ?? 0) === 0, acct),
+      ]
+    },
+  },
+  {
+    name: 'tn-stranger-price',
+    stage: 'roster',
+    persona: 'prospect',
+    who: 'nikhil',
+    what: 'the price question, where every number must trace to a row (§10.2 rule 1) rather than to a plausible memory',
+    text: 'what do you charge, and is there anything early morning during the week',
+    wants: ['read'],
+    expect: async (q, ctx) => {
+      const said = (await bodiesToSpeaker(q, ctx)).join(' ')
+      const rates = await q(`select distinct rate_amount::int as r from class where active`)
+      const nums = (said.match(/\b\d{3,5}\b/g) ?? []).map(Number).filter((n) => n >= 100)
+      const known = new Set(rates.map((r: any) => Number(r.r)))
+      const invented = nums.filter((n) => !known.has(n))
+      return [
+        check('it answered', said.trim().length > 0, said.slice(0, 300)),
+        check('every price named is a price that exists', invented.length === 0, { invented, known: [...known] }),
+      ]
+    },
+  },
+  {
+    name: 'tn-stranger-books',
+    stage: 'roster',
+    persona: 'prospect',
+    who: 'nikhil',
+    what:
+      '§10.1 step 4 — one transactional operation makes the account, the player, the trial enrolment and the ' +
+      'booking, and the admin hears about it after the fact with an undo. Auto-confirmed, no gate',
+    text: "ok lets try one. thursday 7am if thats free?",
+    wants: [],
+    tap: true,
+    expect: async (q, ctx) => {
+      const player = await q(`select p.full_name as who, e.is_trial from player pl
+                                join person p on p.id = pl.person_id
+                                left join enrollment e on e.player_id = pl.id
+                               where pl.created_at >= '${ctx.startedAt}'::timestamptz`)
+      const admin = await saidToAdmin(q, ctx)
+      return [
+        check('nikhil exists as a player on a trial', player.some((r: any) => r.is_trial === true), player),
+        check('the admin was told after the fact', admin.length > 0, admin),
+      ]
+    },
+  },
+  {
+    name: 'tn-stranger-vanishes',
+    stage: 'roster',
+    persona: 'prospect',
+    who: 'farah',
+    what:
+      'the other stranger, and the commoner one. She asks one question and is never heard from again — the test ' +
+      'is what the product does with her over the following weeks, which is checked later, not here',
+    text: 'hi how much are lessons for a 7 year old',
+    wants: [],
+    expect: async (q, ctx) => {
+      const said = await bodiesToSpeaker(q, ctx)
+      return [check('she was answered', said.some((b) => b.trim()), said)]
+    },
+  },
+  {
+    name: 'tn-referral',
+    stage: 'roster',
+    persona: 'admin',
+    what: 'a family joining mid-cycle (§7.1) — counting starts fresh and nobody is chased for anything before today',
+    text: "meena's friend wants to start — priya nair +919871000055, her daughter ira is 8. saturdays with the group.",
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q, ctx) => {
+      const ira = await q(`select p.full_name as who, cl.name as class from enrollment e
+                             join player pl on pl.id = e.player_id
+                             join person p on p.id = pl.person_id
+                             join class cl on cl.id = e.class_id
+                            where lower(p.full_name) like '%ira%' and e.ended_on is null`)
+      const backdated = await q(`select t.description, t.amount::text from tally_line t
+                                   join player pl on pl.id = t.player_id
+                                   join person p on p.id = pl.person_id
+                                  where lower(p.full_name) like '%ira%'
+                                    and t.created_at >= '${ctx.startedAt}'::timestamptz`)
+      return [
+        check('ira is in the saturday group', ira.some((r: any) => norm(r.class).includes('junior')), ira),
+        check('she was not billed for a month she was not here', backdated.length === 0, backdated),
+      ]
+    },
+  },
+  {
+    name: 'tn-trial-noshow',
+    stage: 'attendance',
+    persona: 'admin',
+    what:
+      'the trial that does not turn up — the free-first-class rule (§6.4) meets an absence, and the answer must ' +
+      'net to zero rather than to a ₹900 invoice to a stranger who has never met you',
+    clock: inFuture('2 days'),
+    text: "nikhil never showed for his trial and hasnt answered anything since. mark it.",
+    wants: [],
+    tap: true,
+    expect: async (q, ctx) => {
+      const lines = await q(`select t.kind, t.amount::text as amount, t.description from tally_line t
+                               join player pl on pl.id = t.player_id
+                               join person p on p.id = pl.person_id
+                              where lower(p.full_name) like '%nikhil%'`)
+      const net = lines.reduce((a: number, r: any) => a + Number(r.amount), 0)
+      return [
+        check('a no-show stranger owes nothing for a free trial', net === 0, { net, lines }),
+      ]
+    },
+  },
+
+  /* =============== week 3 · money that does not arrive ==================== */
+  {
+    name: 'tn-parent-claims-paid',
+    stage: 'money',
+    persona: 'client',
+    who: 'meena',
+    what:
+      'rail 1 in one sentence (§6.4): the parent says she paid, and only the ADMIN can attest that it landed. ' +
+      'A confirmed payment on a payer\'s say-so is money in the books that is not in the bank',
+    clock: inFuture('4 days'),
+    text: 'sent you 2700 by upi just now, ref 447129903',
+    wants: [],
+    expect: async (q, ctx) => {
+      const pay = await q(`select amount::text, status, confirmed_by::text, reference from payment
+                            where created_at >= '${ctx.startedAt}'::timestamptz`)
+      const admin = await saidToAdmin(q, ctx)
+      return [
+        check('nothing was marked confirmed on the payer\'s word',
+          pay.every((r: any) => r.status !== 'confirmed'), pay),
+        check('the admin was asked to attest it', admin.length > 0, admin),
+      ]
+    },
+  },
+  {
+    name: 'tn-admin-confirms-pay',
+    stage: 'money',
+    persona: 'admin',
+    what: 'the attestation. `confirmed_at` and `confirmed_by` are the whole of rail 1, and R6 is a payment that has neither',
+    text: "yep meena's 2700 is in the account, confirm it",
+    wants: ['act', 'plan'],
+    tap: true,
+    expect: async (q) => {
+      const pay = await q(`select amount::text, status, confirmed_at::text, confirmed_by::text from payment
+                            where status = 'confirmed'`)
+      return [
+        check('a confirmed payment exists', pay.length > 0, pay),
+        check('it records when and by whom', pay.every((r: any) => r.confirmed_at && r.confirmed_by), pay),
+      ]
+    },
+  },
+  {
+    name: 'tn-who-owes',
+    stage: 'money',
+    persona: 'admin',
+    what: 'the question a per-session business asks every week, and the one where an invented number does real damage',
+    text: 'whos actually behind on payments right now, and by how much',
+    wants: ['read'],
+    expect: async (q, ctx) => {
+      const said = (await bodiesToSpeaker(q, ctx)).join(' ')
+      const truth = await q(`
+        select p.full_name as who,
+               (coalesce(sum(t.amount), 0) - coalesce((select sum(pay.amount) from payment pay
+                  where pay.account_id = a.id and pay.status = 'confirmed'), 0))::int as owed
+          from account a
+          join person p on p.id = a.holder_person_id
+          left join tally_line t on t.account_id = a.id
+         group by a.id, p.full_name having coalesce(sum(t.amount), 0) <> 0 order by 2 desc`)
+      const wrote = await wroteThisTurn(q, ctx)
+      return [
+        check('a balance question wrote nothing', wrote.length === 0, wrote),
+        check('it answered', said.trim().length > 0, said.slice(0, 400)),
+        check('for the record: what the ledger actually says', true, truth),
+      ]
+    },
+  },
+  {
+    name: 'tn-chased-into-silence',
+    stage: 'money',
+    persona: 'admin',
+    what:
+      'a week further on, having chased a family that never replies. The failure here is cumulative and invisible ' +
+      'in any one message: a chase that is correct once is harassment on the ninth day',
+    clock: inFuture('7 days'),
+    text: 'anything from tara? she still owes for anika',
+    wants: ['read'],
+    expect: async (q, ctx) => {
+      const toTara = await messagesTo(q, 'tara')
+      const said = (await bodiesToSpeaker(q, ctx)).join(' ')
+      return [
+        check('it answered', said.trim().length > 0, said.slice(0, 300)),
+        // Not a rule the product states anywhere — which is the point of measuring it.
+        check('she was not messaged more than eight times in a month', toTara.length <= 8,
+          { n: toTara.length, bodies: toTara.map((r: any) => r.body) }),
+      ]
+    },
+  },
+  {
+    name: 'tn-optout',
+    stage: 'money',
+    persona: 'client',
+    who: 'tara',
+    what:
+      'the one promise that cannot be half-kept (§11.2). Every later turn in this suite re-checks it through the ' +
+      'invariant, so a leak two weeks from now is charged to this turn',
+    text: 'please stop messaging me about money. i will pay when i pay.',
+    wants: [],
+    tap: true,
+    expect: async (q, ctx) => {
+      const out = await q(`select ct.opted_out_at::text as at, p.full_name from contact ct
+                             join person p on p.id = ct.person_id
+                            where lower(p.full_name) like '%tara%'`)
+      const said = await bodiesToSpeaker(q, ctx)
+      const sched = await q(`select kind from job where kind = 'agent_task'
+                              and created_at >= '${ctx.startedAt}'::timestamptz`)
+      return [
+        check('she was answered', said.some((b) => b.trim()), said),
+        check('the request was recorded somewhere durable — an opt-out or a scheduled stop',
+          Boolean(out[0]?.at) || sched.length > 0, { out, sched }),
+      ]
+    },
+  },
+
+  /* ================== week 3 · the week that got rained off ================ */
+  {
+    name: 'tn-rain-off',
+    stage: 'session-day',
+    persona: 'admin',
+    what:
+      'the fan-out cancellation. Every affected family is a separate message and the money answer differs per rate ' +
+      'unit — so it must preview, and it must message nobody until the tap (§14.2)',
+    clock: inFuture('2 days'),
+    text: "courts are underwater, whole week is off. cancel everything from tomorrow to sunday.",
+    wants: ['plan'],
+    tap: true,
+    expectBeforeTap: async (q, ctx) => {
+      const cancelled = await q(`select count(*)::int as n from session where status = 'cancelled'`)
+      const told = await familiesToldThisTurn(q, ctx)
+      return [
+        check('nothing was cancelled before the tap', Number(cancelled[0]?.n ?? 0) === 0, cancelled),
+        check('no family heard about an unconfirmed cancellation', told.length === 0, told),
+      ]
+    },
+    expect: async (q, ctx) => {
+      const cancelled = await q(`select count(*)::int as n from session where status = 'cancelled'`)
+      const told = await familiesToldThisTurn(q, ctx)
+      const billed = await billedSince(q, ctx)
+      return [
+        check('the week is actually cancelled', Number(cancelled[0]?.n ?? 0) > 0, cancelled),
+        check('the families were told', told.length > 0, told.map((r: any) => r.body)),
+        check('nobody was billed for a cancelled session', billed.filter((r: any) => r.kind === 'session').length === 0, billed),
+      ]
+    },
+  },
+  {
+    name: 'tn-rain-partial-undo',
+    stage: 'session-day',
+    persona: 'admin',
+    what:
+      'the hardest thing in §7.2: undoing PART of something that already messaged people. A sent message cannot be ' +
+      'unsent, so putting the row back means telling exactly those people you were wrong — and saying so first',
+    text: "wait — the gymkhana is indoors. kabir's friday is still on. put that one back.",
+    wants: [],
+    tap: true,
+    expect: async (q, ctx) => {
+      const kabirFri = await q(`select s.starts_at::text as at, s.status from session s
+                                  join class c on c.id = s.class_id
+                                 where lower(c.name) like '%kabir%' and s.starts_at > app.now()
+                                 order by s.starts_at limit 3`)
+      const stillOff = await q(`select count(*)::int as n from session s join class c on c.id = s.class_id
+                                 where s.status = 'cancelled' and lower(c.name) not like '%kabir%'`)
+      const told = await messagesTo(q, 'farida', ctx.startedAt)
+      return [
+        check('a kabir session is scheduled again', kabirFri.some((r: any) => r.status === 'scheduled'), kabirFri),
+        check('the rest of the week stayed cancelled', Number(stillOff[0]?.n ?? 0) > 0, stillOff),
+        check('the family that was told it was off was told it is back on', told.length > 0, told.map((r: any) => r.body)),
+      ]
+    },
+  },
+  {
+    name: 'tn-rain-billing-check',
+    stage: 'money',
+    persona: 'admin',
+    what: 'the question the admin will not think to ask, and the one that decides whether he trusts the thing',
+    text: 'did anyone get charged for the washed out week?',
+    wants: ['read'],
+    expect: async (q, ctx) => {
+      const wrong = await q(`select p.full_name as who, t.amount::text, s.starts_at::text as at
+                               from tally_line t
+                               join session s on s.id = t.session_id
+                               left join player pl on pl.id = t.player_id
+                               left join person p on p.id = pl.person_id
+                              where s.status = 'cancelled' and t.kind = 'session' and t.amount > 0`)
+      const said = (await bodiesToSpeaker(q, ctx)).join(' ')
+      return [
+        check('no cancelled session carries a charge', wrong.length === 0, wrong),
+        check('it answered', said.trim().length > 0, said.slice(0, 300)),
+      ]
+    },
+  },
+
+  /* ======================= week 4 · things go wrong ======================= */
+  {
+    name: 'tn-injury-pause',
+    stage: 'churn',
+    persona: 'client',
+    who: 'meena',
+    what:
+      'a pause, which the product has no noun for. Ending the enrolment loses the slot and the history; leaving it ' +
+      'alone bills him for six weeks of absences on per-session. Both are wrong and one of them is expensive',
+    text: "aditya fractured his wrist at school. hes out for at least six weeks. we do want his slot back after though",
+    wants: [],
+    expect: async (q, ctx) => {
+      const player = await q(`select pl.active, p.full_name from player pl join person p on p.id = pl.person_id
+                               where lower(p.full_name) like '%aditya%'`)
+      const billedAfter = await q(`select count(*)::int as n from tally_line t
+                                     join player pl on pl.id = t.player_id
+                                     join person p on p.id = pl.person_id
+                                    where lower(p.full_name) like '%aditya%'
+                                      and t.created_at >= '${ctx.startedAt}'::timestamptz and t.amount > 0`)
+      const said = await bodiesToSpeaker(q, ctx)
+      return [
+        check('the player was not deactivated out of the business', player.some((r: any) => r.active === true), player),
+        check('a broken wrist did not generate a bill', Number(billedAfter[0]?.n ?? 0) === 0, billedAfter),
+        check('she was answered', said.some((b) => b.trim()), said),
+      ]
+    },
+  },
+  {
+    name: 'tn-price-raise',
+    stage: 'money',
+    persona: 'admin',
+    what: 'a forward-dated price change. Retro-applying it rewrites bills people have already been shown',
+    text: 'from the 1st next month privates go up to 1000 a session. not this month.',
+    wants: [],
+    tap: true,
+    expect: async (q, ctx) => {
+      const rewritten = await q(`select description, amount::text from tally_line
+                                  where kind = 'session' and amount = 1000
+                                    and created_at < '${ctx.startedAt}'::timestamptz`)
+      const past = await q(`select count(*)::int as n from tally_line
+                             where kind = 'session' and amount = 900`)
+      return [
+        check('no past bill was rewritten to the new price', rewritten.length === 0, rewritten),
+        check('the ₹900 history is intact', Number(past[0]?.n ?? 0) >= 0, past),
+      ]
+    },
+  },
+  {
+    name: 'tn-refund-ask',
+    stage: 'money',
+    persona: 'client',
+    who: 'sneha',
+    what:
+      'a refund, which this product cannot do — there is no payout rail (§19). The failure is promising it, and the ' +
+      'second failure is writing a negative payment row to make the number look right',
+    text: "i think ive overpaid by about 900. can you send it back to my upi?",
+    wants: [],
+    expect: async (q, ctx) => {
+      const neg = await q(`select amount::text, status from payment
+                            where amount < 0 or created_at >= '${ctx.startedAt}'::timestamptz`)
+      const admin = await saidToAdmin(q, ctx)
+      const said = await bodiesToSpeaker(q, ctx)
+      return [
+        check('no negative payment was invented', neg.filter((r: any) => Number(r.amount) < 0).length === 0, neg),
+        check('it went to the person who can actually pay her back', admin.length > 0, admin),
+        check('she was answered', said.some((b) => b.trim()), said),
+      ]
+    },
+  },
+  {
+    name: 'tn-3am',
+    stage: 'session-day',
+    persona: 'admin',
+    what:
+      'the admin awake at 3am. Answering him is right; waking a parent because he was awake is not, and nothing in ' +
+      'the schema stops a turn from fanning out at the hour it happens to run',
+    clock: (q) =>
+      firstAt(q, `select (date_trunc('day', app.now() at time zone 'Asia/Kolkata') + interval '1 day 3 hours')
+                          at time zone 'Asia/Kolkata' as at`),
+    text: "cant sleep. who have i got tomorrow and has anyone not confirmed",
+    wants: ['read'],
+    expect: async (q, ctx) => {
+      const nightMail = await q(`
+        select p.full_name as who, left(m.body, 80) as body,
+               to_char(m.created_at at time zone 'Asia/Kolkata', 'HH24:MI') as local
+          from message m
+          join contact ct on ct.id = m.contact_id
+          join person p on p.id = ct.person_id
+         where m.direction = 'outbound' and m.suppressed_reason is null
+           and m.created_at >= '${ctx.startedAt}'::timestamptz
+           and not exists (select 1 from academy_admin aa where aa.person_id = ct.person_id)`)
+      const said = (await bodiesToSpeaker(q, ctx)).join(' ')
+      return [
+        check('nobody else was woken up', nightMail.length === 0, nightMail),
+        check('the admin got his answer', said.trim().length > 0, said.slice(0, 300)),
+      ]
+    },
+  },
+
+  /* ========================== month end =================================== */
+  {
+    name: 'tn-month-close',
+    stage: 'month-end',
+    persona: 'admin',
+    what: 'the month, closed. Every number here is one the admin will act on, and §10.2 rule 1 says each traces to a row',
+    clock: inFuture('4 days'),
+    text: "right, month's done. what did i actually take this month and what's outstanding?",
+    wants: ['read'],
+    expect: async (q, ctx) => {
+      const truth = await q(`
+        select (select count(*) from session where status = 'completed')::int as completed,
+               (select count(*) from session where status = 'cancelled')::int as cancelled,
+               coalesce((select sum(amount) from tally_line), 0)::int as billed,
+               coalesce((select sum(amount) from payment where status = 'confirmed'), 0)::int as collected`)
+      const said = (await bodiesToSpeaker(q, ctx)).join(' ')
+      return [
+        check('it answered', said.trim().length > 0, said.slice(0, 500)),
+        check('for the record: what the ledger actually says', true, truth),
+      ]
+    },
+  },
+  {
+    name: 'tn-parent-statement',
+    stage: 'month-end',
+    persona: 'client',
+    who: 'farida',
+    what:
+      'a statement, asked by a parent. §6.7 says she sees her account and no other, and the cheapest way to lose ' +
+      "this business is to show her somebody else's balance",
+    text: 'can you send me a breakdown of what i owe',
+    wants: ['read'],
+    expect: async (q, ctx) => {
+      const said = (await bodiesToSpeaker(q, ctx)).join(' ')
+      const others = ['meena', 'sneha', 'tara', 'anika', 'aditya', 'priya', 'ira', 'nikhil']
+      const leaked = others.filter((n) => new RegExp(`\\b${n}\\b`, 'i').test(said))
+      return [
+        check('she got a statement', said.trim().length > 0, said.slice(0, 400)),
+        check('no other family appears in it', leaked.length === 0, { leaked, said: said.slice(0, 300) }),
+      ]
+    },
+  },
+  {
+    name: 'tn-final-audit',
+    stage: 'month-end',
+    persona: 'admin',
+    what:
+      'the last turn, and the one that reads the month rather than the moment: what reached the people who never ' +
+      'asked for anything, at what hours, and how often',
+    text: 'one last thing — how many messages did this thing send to my clients this month?',
+    wants: ['read'],
+    expect: async (q, ctx) => {
+      const antisocial = await q(`
+        select p.full_name as who, to_char(m.created_at at time zone 'Asia/Kolkata', 'DD HH24:MI') as local,
+               left(m.body, 70) as body
+          from message m
+          join contact ct on ct.id = m.contact_id
+          join person p on p.id = ct.person_id
+         where m.direction = 'outbound' and m.suppressed_reason is null
+           and not exists (select 1 from academy_admin aa where aa.person_id = ct.person_id)
+           and (extract(hour from m.created_at at time zone 'Asia/Kolkata') >= 22
+                or extract(hour from m.created_at at time zone 'Asia/Kolkata') < 6)
+         order by m.created_at`)
+      const perPerson = await q(`
+        select p.full_name as who, count(*)::int as n
+          from message m
+          join contact ct on ct.id = m.contact_id
+          join person p on p.id = ct.person_id
+         where m.direction = 'outbound' and m.suppressed_reason is null
+           and not exists (select 1 from academy_admin aa where aa.person_id = ct.person_id)
+         group by 1 order by 2 desc`)
+      const toFarah = await messagesTo(q, 'farah')
+      const said = (await bodiesToSpeaker(q, ctx)).join(' ')
+      return [
+        check('nothing went out to a client between 10pm and 6am', antisocial.length === 0, antisocial),
+        check('the stranger who never came back was not chased', toFarah.length <= 1,
+          { n: toFarah.length, bodies: toFarah.map((r: any) => r.body) }),
+        check('it answered', said.trim().length > 0, said.slice(0, 300)),
+        check('for the record: the month, per person', true, perPerson),
+      ]
+    },
+  },
+]
+
 /**
  * The suites. `arc` is the lifecycle sweep; `f-o` walks the shortest setup that
  * makes the regression cases askable and then asks them; `f-q` is `f-o` plus
@@ -2950,6 +3896,11 @@ const SUITES: Record<string, Case[]> = {
     byName('go-live'),
     ...REAL_CASES,
   ],
+  // The one suite that shares no prelude with the others, because it shares no
+  // business with them: solo, per-session, private, and a month long. Borrowing
+  // the arc's five setup cases would build a multi-coach per-month academy and
+  // then ask per-session questions of it.
+  tennis: TENNIS_CASES,
 }
 if (!SUITES[SUITE]) {
   console.error(c.red(`no suite "${SUITE}" — one of ${Object.keys(SUITES).join(', ')}`))
@@ -3190,9 +4141,22 @@ const CLOCK_STEP_MS = 60 * 60 * 1000
 // The realistic suite's whole subject is time passing around unanswered
 // questions — five deliberate gaps of a day-plus on top of the session-anchored
 // walks — so it borrows more. Still bounded, still stepped, still put back.
-const CLOCK_BUDGET_MS = (SUITE === 'real' ? 240 : 96) * 60 * 60 * 1000
-/** A guard against a target that keeps receding, not a limit on the budget. */
-const MAX_CLOCK_STEPS = 120
+//
+// The tennis suite is a MONTH. Its whole subject is what a per-session business
+// looks like after four weeks of briefs, digests, reminders and dunning have run
+// into each other — which cannot be asked in ten days, and which is the one
+// question a ten-day drive answers wrongly by looking clean. 840h is 35 days,
+// which is a calendar month plus the run-up a mid-month join needs.
+const CLOCK_BUDGET_MS = (SUITE === 'real' ? 240 : SUITE === 'tennis' ? 840 : 96) * 60 * 60 * 1000
+/**
+ * A guard against a target that keeps receding, not a limit on the budget.
+ *
+ * Per WALK, not per run, so a suite whose individual hops are days rather than
+ * hours needs it raised or every long hop silently stops short and the case
+ * after it reads a world that never arrived. A week-long hop is 168 one-hour
+ * steps and the old 120 cut it at five days.
+ */
+const MAX_CLOCK_STEPS = SUITE === 'tennis' ? 900 : 120
 
 /* ========================================================================== *
  * CHILD — one model, one fresh academy, the whole arc.
@@ -3207,8 +4171,24 @@ async function runChild(model: string, arm: string): Promise<void> {
   const { HANDLERS, JobSkip, planAheadFor } = await import('@/lib/jobs')
   const { msOf } = await import('@/lib/jobs/util')
 
-  const label = `Probe ${model}`
-  const made = await createAcademy({ name: label, adminName: 'Probe Admin', timezone: 'Asia/Kolkata', category: 'badminton' })
+  /**
+   * The business this arm drives, and the name every message it sends will use.
+   *
+   * `Probe <model>` is right for a suite whose subject is the model, and wrong
+   * for one whose subject is a business: a parent reading "I'm the class manager
+   * for Probe deepseek-v4-flash" is being shown the harness, and every judgement
+   * about the SENTENCE then has to discount the name inside it. The tennis suite
+   * names its business, and the stray guard below is widened to match rather
+   * than being keyed on a prefix that no longer holds.
+   */
+  const WORLD =
+    SUITE === 'tennis'
+      ? { name: 'Baseline Tennis', adminName: 'Ravi Menon', category: 'tennis' }
+      : { name: `Probe ${model}`, adminName: 'Probe Admin', category: 'badminton' }
+  const label = WORLD.name
+  const made = await createAcademy({
+    name: WORLD.name, adminName: WORLD.adminName, timezone: 'Asia/Kolkata', category: WORLD.category,
+  })
 
   /**
    * Every clock call in this child names this probe's own academy — see "The
@@ -3259,7 +4239,10 @@ async function runChild(model: string, arm: string): Promise<void> {
     const [row] = await withSession({ role: 'service', academyId: id }, async (tx) =>
       (await tx`select name from academy where id = ${id}::uuid`) as unknown as { name: string }[],
     )
-    if (row?.name?.startsWith('Probe ')) strays.push({ id, name: String(row.name) })
+    // Any business this harness has ever created, under either naming scheme —
+    // keying on the `Probe ` prefix alone would have let a leftover tennis world
+    // through, which is the exact collision this block exists to refuse.
+    if (row?.name?.startsWith('Probe ') || row?.name === label) strays.push({ id, name: String(row.name) })
   }
   if (strays.length) {
     await dropAcademy(made.academyId).catch(() => {})
@@ -3304,9 +4287,29 @@ async function runChild(model: string, arm: string): Promise<void> {
   // reply as though the model had gone quiet. +9195 is a block nothing else uses
   // (+9199 test contacts, +91984501/2 the seed, +9197 the stage fixtures).
   const prospectPhone = `+9195${made.academyId.replace(/\D/g, '').padEnd(8, '0').slice(0, 8)}`
+  /**
+   * More than one stranger, because one stranger only asks one question.
+   *
+   * A funnel is not tested by the person who converts — it is tested by the two
+   * who arrive in the same week and go different ways: one books and turns up,
+   * one asks the price and is never heard from again. The second is the one a
+   * drive with a single prospect cannot pose at all, and it is the commoner of
+   * the two in a real business. Each gets its own number off the same `+9195`
+   * block, offset by one digit, so they resolve to different people.
+   */
+  const EXTRA_PROSPECTS = SUITE === 'tennis' ? ['Farah Sheikh'] : []
   const prospect = await createTestContact({
     academyId: made.academyId, name: 'Nikhil Bose', role: 'prospect', phone: prospectPhone,
   })
+  const prospects = [prospect]
+  for (const [i, name] of EXTRA_PROSPECTS.entries()) {
+    prospects.push(
+      await createTestContact({
+        academyId: made.academyId, name, role: 'prospect',
+        phone: `${prospectPhone.slice(0, -1)}${(Number(prospectPhone.slice(-1)) + 1 + i) % 10}`,
+      }),
+    )
+  }
   await worldAcademyIds({ refresh: true })
 
   /**
@@ -3405,8 +4408,17 @@ async function runChild(model: string, arm: string): Promise<void> {
 
   /** Whose phone this case speaks from, resolved out of what the arc has built. */
   async function contactFor(kase: Case): Promise<{ id: string; name: string } | null> {
-    if (kase.persona === 'admin') return { id: made.adminContactId, name: 'Probe Admin' }
-    if (kase.persona === 'prospect') return { id: prospect.contactId, name: prospect.name }
+    if (kase.persona === 'admin') return { id: made.adminContactId, name: WORLD.adminName }
+    if (kase.persona === 'prospect') {
+      // `who` narrows a prospect exactly as it narrows a coach or a client. A
+      // suite with two strangers and no way to say which one is speaking drives
+      // both conversations down one number, and the second stranger's first
+      // message arrives as the first stranger's fourth.
+      const pick = kase.who
+        ? prospects.find((p) => p.name.toLowerCase().includes(kase.who!.toLowerCase()))
+        : prospects[0]
+      return pick ? { id: pick.contactId, name: pick.name } : null
+    }
     const like = kase.who ? `and lower(p.full_name) like '%${kase.who.toLowerCase()}%'` : ''
     const rows =
       kase.persona === 'coach'
