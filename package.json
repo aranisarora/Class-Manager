@@ -25,6 +25,7 @@
     "judge": "node scripts/judge.mjs",
     "report": "node scripts/report.mjs",
     "runs": "node scripts/report.mjs --list",
+    "findings": "tsx scripts/_findings.ts",
     "verify:static": "node scripts/verify-static.mjs"
   },
   "dependencies": {

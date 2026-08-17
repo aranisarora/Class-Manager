@@ -17,9 +17,28 @@
  * itself. Nothing measured whether it can.
  *
  * So this is narrow on purpose. Every case is chosen because the SQL is the hard
- * part, the checks are SQL against the real rows rather than a reading of the
- * reply, and a case fails on what is TRUE IN THE DATABASE afterwards — not on
- * whether the sentence sounded right.
+ * part, and what is recorded is the statements themselves plus the business
+ * counted either side of the turn — not a reading of the reply.
+ *
+ * NOTHING HERE PASSES OR FAILS ANY MORE
+ * -----------------------------------------------------------------------------
+ * 25 `check` closures stood here, one per case, and this probe's own two runs on
+ * 17 Aug 2026 are the argument against them:
+ *
+ *   The 13:09 run scored **21/25**, and one of the four failures was a grader
+ *   artifact. `two-places` counted `class_coach` rows a PREVIOUS case had created
+ *   and failed a turn that had written nothing and asked a good clarifying
+ *   question. The fix landed three minutes after the run — so the page anybody
+ *   opened reported a defect that did not exist.
+ *
+ *   The 13:16 run scored **12/25** having barely happened. It died at case 9 when
+ *   the provider stopped answering; sixteen cases after it executed no SQL at
+ *   all, and five of them PASSED — `two-places`, `ambiguous-name`,
+ *   `withheld-not-absent`, `duplicate-class` — because their checks are negative
+ *   and a model that does nothing satisfies them.
+ *
+ * A scoreboard that can fail a correct turn and pass a dead one is not a weak
+ * instrument, it is a misleading one. Read the run instead: JUDGING.md.
  *
  * THE LADDER
  * -----------------------------------------------------------------------------
@@ -45,9 +64,9 @@
  * `lib/agent/sql-trace.ts` is what makes the write half visible — a plan carrying
  * six statements used to be one clipped line in the flight recorder.
  *
- * A case that passes its check while the model wrote four wrong statements first
- * is a case that PASSED AND SHOULD BE READ. The verdict is not the finding; the
- * statements are.
+ * A case that reached the right answer over four refused statements is not the
+ * same event as one that reached it in a single read, and no verdict can carry
+ * that difference. The statements are the finding.
  */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { loadEnvFiles, c } from './_env'
@@ -138,11 +157,8 @@ type Case = {
    * routing is the thing under test, so tapping would measure the wrong half.
    */
   tap?: boolean
-  /**
-   * The verdict. Runs as the service role AFTER the turn and decides on what is
-   * true in the database. Return `null` to pass, or the sentence that is wrong.
-   */
-  check: (q: Q) => Promise<string | null>
+  /** The finding this case re-stages, from `scripts/_findings.ts`. */
+  finding?: string
 }
 
 type Q = <T = any>(sql: string) => Promise<T[]>
@@ -162,11 +178,6 @@ const CASES: Case[] = [
     persona: 'admin',
     text: 'how many classes do we have running right now?',
     probes: 'the simplest possible read. `class` is one table; the only trap is counting ended ones.',
-    check: async (q) => {
-      const reads = await modelReads(q)
-      if (!reads.some((r) => /\bfrom\s+class\b/i.test(r))) return 'never read the class table'
-      return null
-    },
   },
   {
     id: 'roster-tonight',
@@ -176,31 +187,6 @@ const CASES: Case[] = [
     probes:
       'app.session_roster exists precisely so this join is not rebuilt. The hand-written version is four tables ' +
       'and a date predicate, and the commonest mistake is `enrollment.active`, which does not exist.',
-    check: async (q) => {
-      const reads = await modelReads(q)
-      if (reads.some((r) => /enrollment\s*\.\s*active|\ba\.active\b/i.test(r)))
-        return 'referenced enrollment.active, which is not a column'
-      /**
-       * Only demanded when there IS a session tonight.
-       *
-       * The class runs Mon/Wed/Fri, so on a Tuesday the correct answer — given
-       * in full, with the next session named — needs no roster at all, and the
-       * model was marked down for not fetching one. Same defect as the
-       * cancel-and-credit case: a premise that depends on the day the probe runs
-       * measures the calendar. So the roster is required only once the world
-       * says there is something to be on.
-       */
-      const tonight = await num(
-        q,
-        `select count(*) n from session s join class c on c.id = s.class_id
-          where c.name ilike 'evening batch'
-            and (s.starts_at at time zone 'Asia/Kolkata')::date = (app.now() at time zone 'Asia/Kolkata')::date`,
-      )
-      if (tonight === 0) return null
-      if (!reads.some((r) => /session_roster/i.test(r)))
-        return 'rebuilt the roster join by hand instead of using app.session_roster'
-      return null
-    },
   },
   {
     id: 'coach-list',
@@ -210,14 +196,6 @@ const CASES: Case[] = [
     probes:
       "`select full_name from coach` is the error this schema invites — the name is on `person`. " +
       'A failure here is the one that ended with an admin being asked for a uuid over WhatsApp.',
-    check: async (q) => {
-      const reads = await modelReads(q)
-      const badJoin = reads.some((r) => /from\s+coach\b/i.test(r) && !/join\s+person|person\s+p/i.test(r) && /full_name/i.test(r))
-      if (badJoin) return 'selected full_name from coach without joining person'
-      const errs = await sqlErrors(q)
-      if (errs.some((e) => /column .*full_name.* does not exist/i.test(e))) return 'hit "full_name does not exist" on coach'
-      return null
-    },
   },
 
   /* --- tier 2: aggregates, money, coverage, time ------------------------ */
@@ -229,13 +207,6 @@ const CASES: Case[] = [
     probes:
       'coverage is derived, never stored, and `uncovered_session` already computes it. ' +
       'Rebuilt by hand the usual error is treating a declined row as coverage.',
-    check: async (q) => {
-      const reads = await modelReads(q)
-      const usedView = reads.some((r) => /uncovered_session|session_coverage|session_is_covered/i.test(r))
-      const handRolled = reads.some((r) => /session_coach/i.test(r) && !/declined_at/i.test(r))
-      if (!usedView && handRolled) return 'hand-rolled coverage and ignored declined_at'
-      return null
-    },
   },
   {
     id: 'what-she-owes',
@@ -255,17 +226,6 @@ const CASES: Case[] = [
          select gen_random_uuid(), a.academy_id, a.id, 2400, 'rail1', 'requested', app.now()
            from account a join person p on p.id = a.holder_person_id where p.full_name = 'Divya Rao'`,
     ],
-    check: async (q) => {
-      const reads = await modelReads(q)
-      const touchedPayment = reads.some((r) => /\bpayment\b/i.test(r))
-      const usedHelper = reads.some((r) => /account_balance/i.test(r))
-      if (!touchedPayment && !usedHelper) return 'never looked at payment, so any balance it stated was a charge total'
-      const naive = reads.some(
-        (r) => /\bpayment\b/i.test(r) && !/confirmed/i.test(r) && !/account_balance/i.test(r),
-      )
-      if (naive) return "summed payment without filtering status='confirmed'"
-      return null
-    },
   },
   {
     id: 'attendance-rate',
@@ -275,12 +235,6 @@ const CASES: Case[] = [
     probes:
       'an aggregate with a denominator. Counting rows client-side is what the row cap silently breaks; ' +
       'count()/sum() in SQL is what the read declaration asks for.',
-    check: async (q) => {
-      const reads = await modelReads(q)
-      if (!reads.some((r) => /count\s*\(|sum\s*\(|avg\s*\(/i.test(r)))
-        return 'never aggregated in SQL — counted rows itself'
-      return null
-    },
   },
   {
     id: 'clock-discipline',
@@ -290,12 +244,6 @@ const CASES: Case[] = [
     probes:
       'app.now() is the only clock. now()/current_date read the host and are wrong in test and subtly ' +
       'wrong in production, and nothing fails when they are used.',
-    check: async (q) => {
-      const reads = await modelReads(q)
-      const wallClock = reads.filter((r) => /\bnow\s*\(\s*\)/i.test(r.replace(/app\s*\.\s*now\s*\(\s*\)/gi, '')) || /current_date|current_timestamp/i.test(r))
-      if (wallClock.length) return `used the wall clock instead of app.now(): ${wallClock[0]?.slice(0, 160)}`
-      return null
-    },
   },
 
   /* --- tier 3: one statement -------------------------------------------- */
@@ -307,11 +255,6 @@ const CASES: Case[] = [
     probes:
       'the smallest write there is, and it fails without `academy_id = app.academy_id()` with an error ' +
       'that reads like a permissions problem.',
-    check: async (q) => {
-      const n = await num(q, `select count(*) n from venue where name ilike '%green park%'`)
-      if (n === 0) return 'no venue row was written'
-      return null
-    },
   },
   {
     id: 'add-coach',
@@ -321,17 +264,6 @@ const CASES: Case[] = [
     probes:
       'two rows, not one: a `person` and a `coach` pointing at it, in one transaction, with the second ' +
       "selecting back the first's id. Plus a text-enum literal for pay_unit and status.",
-    check: async (q) => {
-      const row = await one(
-        q,
-        `select c.status, c.pay_amount, c.pay_unit from coach c join person p on p.id = c.person_id
-          where p.full_name ilike '%priya%'`,
-      )
-      if (!row) return 'no coach row for Priya'
-      if (Number(row.pay_amount) !== 600) return `pay_amount is ${row.pay_amount}, not 600`
-      if (row.pay_unit !== 'per_session') return `pay_unit is '${row.pay_unit}', not 'per_session'`
-      return null
-    },
   },
   {
     id: 'business-rule',
@@ -341,12 +273,6 @@ const CASES: Case[] = [
     probes:
       '`business_rule`, not a memory fact — and provenance owner_stated, because the owner said it. ' +
       'The `remember` tool is the wrong home and its declaration says so.',
-    check: async (q) => {
-      const row = await one(q, `select provenance, statement from business_rule where statement ilike '%saturday%'`)
-      if (!row) return 'no business_rule row was written'
-      if (row.provenance !== 'owner_stated') return `provenance is '${row.provenance}', not 'owner_stated'`
-      return null
-    },
   },
 
   /* --- tier 4: several statements, ids it does not have ----------------- */
@@ -360,23 +286,6 @@ const CASES: Case[] = [
       'linking to ids that do not exist until the statement before it runs. The slots imply the sessions ' +
       'by trigger, so a model that schedules sessions by hand has misread the schema.',
     setup: [`insert into venue (id, academy_id, name) select gen_random_uuid(), id, 'Green Park' from academy on conflict do nothing`],
-    check: async (q) => {
-      const cls = await one(q, `select id, rate_amount, rate_unit from class where name ilike '%morning junior%'`)
-      if (!cls) return 'no class row'
-      if (Number(cls.rate_amount) !== 900) return `rate_amount is ${cls.rate_amount}, not 900`
-      if (cls.rate_unit !== 'per_month') return `rate_unit is '${cls.rate_unit}', not 'per_month'`
-      const slots = await q<{ weekday: number; start_time: string }>(
-        `select weekday, start_time::text from class_slot where class_id = '${cls.id}'::uuid order by weekday`,
-      )
-      if (slots.length !== 2) return `${slots.length} class_slot rows, expected 2 (Mon and Wed)`
-      const days = slots.map((s) => Number(s.weekday)).sort()
-      if (days[0] !== 1 || days[1] !== 3) return `weekdays are ${days.join(',')}, expected 1,3 (Mon,Wed)`
-      const coaches = await num(q, `select count(*) n from class_coach where class_id = '${cls.id}'::uuid`)
-      if (coaches === 0) return 'nobody assigned to coach it'
-      const sessions = await num(q, `select count(*) n from session where class_id = '${cls.id}'::uuid`)
-      if (sessions === 0) return 'the slots did not materialise sessions — the trigger did not fire'
-      return null
-    },
   },
   {
     id: 'enroll-family',
@@ -387,28 +296,12 @@ const CASES: Case[] = [
       'the longest chain in the schema: person, contact, account, person again for the child, player, ' +
       'enrollment. The parent pays and the child plays, and collapsing them into one person is the ' +
       'modelling error this table split exists to prevent.',
-    check: async (q) => {
-      const mum = await one(q, `select id from person where full_name ilike '%kavita%'`)
-      if (!mum) return 'no person row for the mother'
-      const kid = await one(q, `select id from person where full_name ilike '%aryan%'`)
-      if (!kid) return 'no person row for the child'
-      if (mum.id === kid.id) return 'the mother and the child are the same person row'
-      const acct = await one(q, `select id from account where holder_person_id = '${mum.id}'::uuid`)
-      if (!acct) return 'no account held by the mother'
-      const player = await one(q, `select id, account_id from player where person_id = '${kid.id}'::uuid`)
-      if (!player) return 'no player row for the child'
-      if (player.account_id !== acct.id) return "the child's player row is not billed to the mother's account"
-      const enr = await num(q, `select count(*) n from enrollment where player_id = '${player.id}'::uuid`)
-      if (enr === 0) return 'the child was not enrolled in anything'
-      const contact = await num(q, `select count(*) n from contact where phone_e164 like '%9876500011%'`)
-      if (contact === 0) return 'her number was not recorded as a contact'
-      return null
-    },
   },
 
   /* --- tier 5: the failures Postgres does not report -------------------- */
   {
     id: 'silent-update',
+    finding: 'F-AX',
     tier: 5,
     persona: 'coach',
     text: 'can you change my pay to 900 a session please',
@@ -416,48 +309,16 @@ const CASES: Case[] = [
       'THE case. A coach has no UPDATE on their own `coach` row, so the statement matches nothing and ' +
       'raises nothing. A model that reads "no error" as "it worked" tells them it is done and it is not. ' +
       'The right answer is to notice the zero rows and route it to the admin.',
-    check: async (q) => {
-      const row = await one(
-        q,
-        `select c.pay_amount from coach c join person p on p.id = c.person_id where p.full_name ilike '%arjun%'`,
-      )
-      if (row && Number(row.pay_amount) === 900) return null // if the policy let it through, that is a real answer
-      /**
-       * Graded on the ROUTE, not on the wording.
-       *
-       * The first version of this check grepped the coach's reply for "done" and
-       * failed a turn that had behaved perfectly — the sentence was "I'll let you
-       * know once it's done", which is a promise about the future and the exact
-       * opposite of a false claim. A tripwire that cannot tell those apart is
-       * measuring English, so this measures what the product can actually see:
-       * a write that did not land must reach the person who can make it land.
-       */
-      const toAdmin = await num(
-        q,
-        `select count(*) n from message m
-           join contact ct on ct.id = m.contact_id
-           join academy_admin aa on aa.person_id = ct.person_id
-          where m.direction = 'outbound' and m.body ilike '%900%'`,
-      )
-      if (toAdmin === 0)
-        return `pay is still ${row?.pay_amount ?? 'unset'} and nothing was routed to the admin — the change died silently`
-      return null
-    },
   },
   {
     id: 'withheld-not-absent',
+    finding: 'F-AS',
     tier: 5,
     persona: 'coach',
     text: 'what is everyone at the academy paying in fees this month?',
     probes:
       'a coach reading money gets zero rows by policy, not by absence. "Nobody owes anything" is the ' +
       'wrong sentence and it is the one an empty result invites.',
-    check: async (q) => {
-      const said = (await lastReplyTo(q, 'Arjun Shetty')) ?? ''
-      if (/\b(no (one|body) (owes|is paying)|nothing is owed|there are no fees|no fees)\b/i.test(said))
-        return `reported a policy refusal as an absence: "${said.slice(0, 200)}"`
-      return null
-    },
   },
   {
     id: 'duplicate-class',
@@ -468,14 +329,6 @@ const CASES: Case[] = [
       'a class name is unique while the class is open, so this is refused rather than created. ' +
       'The failure mode is not the refusal — it is narrowing the lookup with `limit 1` until the ' +
       'duplicate is invisible, which is how one academy prompted a coach twice for a fortnight.',
-    check: async (q) => {
-      const n = await num(
-        q,
-        `select count(*) n from class where name ilike 'evening batch' and active and ends_on is null`,
-      )
-      if (n > 1) return `${n} open classes named "Evening Batch" — the unique index did not hold`
-      return null
-    },
   },
   {
     id: 'cancel-and-credit',
@@ -489,16 +342,6 @@ const CASES: Case[] = [
     probes:
       'a session is never deleted; cancelled is a status with a reason. And what was billed for it is ' +
       'credited back with an offsetting tally_line, or the family pays for a session that did not happen.',
-    check: async (q) => {
-      const deleted = await num(q, `select count(*) n from session where status = 'cancelled'`)
-      if (deleted === 0) return 'no session was cancelled'
-      const gone = await num(
-        q,
-        `select count(*) n from session s join class c on c.id = s.class_id where c.name ilike '%evening batch%'`,
-      )
-      if (gone === 0) return 'the sessions were deleted rather than cancelled'
-      return null
-    },
   },
   {
     id: 'end-not-delete',
@@ -508,19 +351,6 @@ const CASES: Case[] = [
     probes:
       'ending is a date, never a delete. `ended_on` stops the billing from that date and keeps every ' +
       'past row attributed; a DELETE takes the history with it.',
-    check: async (q) => {
-      const kid = await one(q, `select id from person where full_name ilike '%anika%'`)
-      if (!kid) return 'harness: no Anika in this world'
-      const player = await one(q, `select id, active from player where person_id = '${kid.id}'::uuid`)
-      if (!player) return 'the player row was deleted rather than ended'
-      const enr = await one(
-        q,
-        `select ended_on from enrollment where player_id = '${player.id}'::uuid order by created_at desc limit 1`,
-      )
-      if (!enr) return 'the enrollment row was deleted rather than ended'
-      if (!enr.ended_on) return 'nothing was ended — ended_on is still null'
-      return null
-    },
   },
 
   /* --- tier 6: SQL that is hard, not merely unfamiliar ------------------- */
@@ -532,30 +362,6 @@ const CASES: Case[] = [
     probes:
       'an anti-join. The natural inner join answers the opposite question and returns rows that look ' +
       'plausible, so this is wrong without being empty — the hardest kind of wrong to notice.',
-    check: async (q) => {
-      const reads = await modelReads(q)
-      /**
-       * Three spellings, all correct, and the first version of this check only
-       * accepted two. `left join attendance … group by … count(a.id)` returns 0
-       * for a player with no marks and is a perfectly good anti-join — arguably
-       * the better answer, because it also says who has FEW marks rather than
-       * only who has none. What is actually being tested is whether the rows
-       * with no match survive the join, so the check asks for that.
-       */
-      const antiJoin = reads.some(
-        (r) =>
-          /not\s+exists/i.test(r) ||
-          /not\s+in\s*\(/i.test(r) ||
-          (/left\s+(outer\s+)?join/i.test(r) && /(is\s+null|count\s*\()/i.test(r)) ||
-          // A correlated scalar subquery — `(select count(*) from attendance a
-          // where a.player_id = pl.id)` — is the fourth correct spelling and the
-          // one this check rejected twice. It is arguably the cleanest of them:
-          // rows with no match come back as 0 rather than as NULL.
-          /\(\s*select\s+count\s*\([^)]*\)\s*from[\s\S]{0,120}?where[\s\S]{0,120}?=/i.test(r),
-      )
-      if (!antiJoin) return 'no anti-join anywhere — an inner join answers the opposite question'
-      return null
-    },
   },
   {
     id: 'row-cap',
@@ -591,15 +397,6 @@ const CASES: Case[] = [
           where c.academy_id = a.id
           limit 10600`,
     ],
-    check: async (q) => {
-      const truncated = CURRENT.filter((r) => r.truncated)
-      const aggregated = (await modelReads(q)).some((r) => /count\s*\(/i.test(r))
-      if (!aggregated) return 'never used count() — any number it stated came off a capped result'
-      const said = (await lastReplyTo(q, 'Rahul Menon')) ?? ''
-      if (/\b10,?000\b/.test(said) && truncated.length)
-        return `stated 10,000 — the row cap read back as a fact: "${said.slice(0, 160)}"`
-      return null
-    },
   },
   {
     id: 'sibling-discount',
@@ -609,39 +406,20 @@ const CASES: Case[] = [
     probes:
       'the effective rate lives on the ENROLLMENT and defaults from the class. Changing class.rate_amount ' +
       'silently re-prices every other family, and nothing complains.',
-    check: async (q) => {
-      const cls = await one(q, `select rate_amount from class where name ilike 'evening batch'`)
-      if (Number(cls?.rate_amount) !== 2400)
-        return `changed the CLASS rate to ${cls?.rate_amount} — every family in the batch was re-priced`
-      const enr = await one(
-        q,
-        `select e.rate_amount from enrollment e
-           join player pl on pl.id = e.player_id join person p on p.id = pl.person_id
-          where p.full_name ilike '%anika%' order by e.created_at desc limit 1`,
-      )
-      if (Number(enr?.rate_amount) !== 1800) return `the enrollment rate is ${enr?.rate_amount}, not 1800`
-      return null
-    },
   },
   {
     id: 'scoped-mute',
+    finding: 'F-AV',
     tier: 6,
     persona: 'client',
     text: 'please stop messaging me about money, the rest is fine',
     probes:
       'a scope, not an opt-out. `comm_preference` with scope=money is what actually stops the 9am payment ' +
       'reminder; setting contact.opted_out_at instead silences the session reminders she just said were fine.',
-    check: async (q) => {
-      const optedOut = await num(q, `select count(*) n from contact where opted_out_at is not null`)
-      if (optedOut > 0) return 'opted her out of the whole channel — she asked for one scope'
-      const pref = await one(q, `select scope from comm_preference where released_at is null`)
-      if (!pref) return 'no comm_preference row — nothing will actually stop'
-      if (pref.scope !== 'money') return `scope is '${pref.scope}', not 'money'`
-      return null
-    },
   },
   {
     id: 'two-places',
+    finding: 'F-AU',
     tier: 6,
     persona: 'admin',
     text: 'put Arjun on the Morning Juniors class as well — it is Mondays and Wednesdays 6 to 7pm',
@@ -653,29 +431,6 @@ const CASES: Case[] = [
          select gen_random_uuid(), id, 'Morning Juniors', 900, 'per_month', (app.now() - interval '1 day')::date, true
            from academy on conflict do nothing`,
     ],
-    check: async (q) => {
-      const said = (await lastReplyTo(q, 'Rahul Menon')) ?? ''
-      /**
-       * Graded on what THIS turn wrote, not on what exists.
-       *
-       * The earlier `create-class` case builds Morning Juniors with the owner
-       * coaching it, so `class_coach` for that class is already non-empty before
-       * this case is posed. The first version counted those rows and demanded the
-       * reply explain a clash the model had not caused — failing a turn that had
-       * refused to act and explained, correctly, that the only Arjun on the books
-       * is a coach with no player record and that enrolling him would start a
-       * charge on his own account. A check confounded by a previous case's state
-       * is a check that reports the arc rather than the turn.
-       */
-      const addedNow = CURRENT.some(
-        (s) => s.kind !== 'read' && (s.rowCount ?? 0) > 0 && /insert\s+into\s+class_coach/i.test(s.sql),
-      )
-      if (!addedNow) return null // refusing, or asking first, are both defensible
-      // Having done it, the one thing that is not defensible is doing it silently.
-      if (!/(clash|same time|overlap|two places|double|conflict|already)/i.test(said))
-        return `put him in two places at once and said nothing about it: "${said.slice(0, 200)}"`
-      return null
-    },
   },
   {
     id: 'dedupe-key',
@@ -685,14 +440,6 @@ const CASES: Case[] = [
     probes:
       'a recurring charge needs a dedupe_key, which is billing identity: without one a retry double-charges ' +
       'and nothing detects it. Null is for a waiver, where doing it twice is a decision.',
-    check: async (q) => {
-      const lines = await q<{ dedupe_key: string | null; amount: string }>(
-        `select dedupe_key, amount from tally_line where amount = 400`,
-      )
-      if (!lines.length) return 'nobody was charged'
-      if (lines.every((l) => !l.dedupe_key)) return 'charged with no dedupe_key — a retry double-charges'
-      return null
-    },
   },
   {
     id: 'ambiguous-name',
@@ -702,13 +449,6 @@ const CASES: Case[] = [
     probes:
       '"Rao" matches two people in this world — Divya Rao and Anika Rao. Picking one with `limit 1` is the ' +
       'failure: it is silent, it is wrong half the time, and only one of them is a player at all.',
-    check: async (q) => {
-      const marked = await q<{ status: string }>(`select status from attendance`)
-      const said = (await lastReplyTo(q, 'Rahul Menon')) ?? ''
-      if (marked.length > 0 && !/which|Anika|clarif|two|both/i.test(said))
-        return `marked attendance off an ambiguous name without asking: "${said.slice(0, 200)}"`
-      return null
-    },
   },
   {
     id: 'month-boundary',
@@ -724,42 +464,85 @@ const CASES: Case[] = [
                 (date_trunc('month', app.now()) - interval '1 month')::date, 'monthly', 'July fees', 2400
            from account a limit 1`,
     ],
-    check: async (q) => {
-      const reads = await modelReads(q)
-      if (!reads.some((r) => /tally_line/i.test(r))) return 'never read tally_line'
-      const naive = reads.some(
-        (r) => /tally_line/i.test(r) && /\bnow\s*\(\s*\)/i.test(r.replace(/app\s*\.\s*now\s*\(\s*\)/gi, '')),
-      )
-      if (naive) return 'used the wall clock for the month boundary'
-      return null
-    },
   },
 ]
 
 /* ------------------------------------------------------------------------- *
- * What the model actually sent — read back per case
+ * The world, photographed
+ *
+ * 25 hand-written `check` closures stood here, one per case, each deciding
+ * pass/fail from a query written by whoever wrote the case. They are gone for the
+ * reason the rest of the instrument's checks are gone, and this probe's own
+ * report is the clearest evidence for it:
+ *
+ *   The 17 Aug ladder run scored 21/25. One of the four failures — `two-places` —
+ *   was a grader artifact: the check counted `class_coach` rows a PREVIOUS case
+ *   had created, and failed a turn that had written nothing and asked a good
+ *   clarifying question. It was fixed three minutes after the run, which means
+ *   the page anybody opened showed a defect that did not exist.
+ *
+ *   And the run in the other direction is worse. A later run collapsed at case 9
+ *   — the provider stopped answering and sixteen cases executed no SQL at all —
+ *   and it scored **12/25**, because five checks are negative and a model that
+ *   does nothing passes them. `two-places`, `ambiguous-name`,
+ *   `withheld-not-absent` and `duplicate-class` all passed a turn that never
+ *   happened.
+ *
+ * A scoreboard that can fail a correct turn and pass a dead one is not a weak
+ * instrument. What replaces it is the whole business, counted either side of
+ * every case, and the statements underneath.
  * ------------------------------------------------------------------------- */
 
-let CURRENT: SqlRecord[] = []
+const lit = (s: string) => `'${String(s).replace(/'/g, "''")}'`
 
-const modelReads = async (_q: Q): Promise<string[]> =>
-  CURRENT.filter((r) => r.kind === 'read').map((r) => r.sql)
-const modelWrites = (): string[] => CURRENT.filter((r) => r.kind === 'write').map((r) => r.sql)
-const sqlErrors = async (_q: Q): Promise<string[]> =>
-  CURRENT.filter((r) => r.error).map((r) => String(r.error))
-
-async function lastReplyTo(q: Q, name: string): Promise<string | null> {
-  const rows = await q<{ body: string }>(
-    `select m.body from message m
-       join contact ct on ct.id = m.contact_id
-       join person p on p.id = ct.person_id
-      where m.direction = 'outbound' and p.full_name ilike ${lit(`%${name}%`)}
-      order by m.created_at desc limit 1`,
-  )
-  return rows[0]?.body ?? null
+/**
+ * Every count worth having, in one round trip.
+ *
+ * Deliberately the same shape `probe-model` takes, so a reader moving between the
+ * two reads the same numbers in the same order — and so `scripts/report.mjs` can
+ * diff either without knowing which instrument produced it.
+ */
+async function worldSnapshot(q: Q): Promise<Record<string, unknown>> {
+  const rows = await q(`select
+      (select count(*)::int from venue)                                          as venues,
+      (select count(*)::int from class where active)                             as classes,
+      (select count(*)::int from class_slot)                                     as slots,
+      (select count(*)::int from coach)                                          as coaches,
+      (select count(*)::int from coach where status = 'active')                  as coaches_active,
+      (select count(*)::int from person)                                         as people,
+      (select count(*)::int from account)                                        as accounts,
+      (select count(*)::int from player where active)                            as players,
+      (select count(*)::int from enrollment where ended_on is null)              as enrolled,
+      (select count(*)::int from session)                                        as sessions,
+      (select count(*)::int from session where status = 'cancelled')             as cancelled,
+      (select count(*)::int from attendance)                                     as attendance,
+      (select count(*)::int from tally_line)                                     as tally_lines,
+      (select coalesce(sum(amount), 0)::text from tally_line)                    as billed,
+      (select count(*)::int from payment)                                        as payments,
+      (select count(*)::int from business_rule)                                  as rules,
+      (select count(*)::int from comm_preference where released_at is null)      as mutes,
+      (select count(*)::int from contact where opted_out_at is not null)         as opted_out,
+      (select count(*)::int from pending_request where resolved_at is null)      as pending,
+      (select count(*)::int from job where status = 'pending')                   as jobs_pending,
+      (select count(*)::int from message where direction = 'outbound'
+         and suppressed_reason is null)                                          as sent,
+      (select count(*)::int from message where suppressed_reason is not null)    as suppressed`)
+  return (rows[0] ?? {}) as Record<string, unknown>
 }
 
-const lit = (s: string) => `'${String(s).replace(/'/g, "''")}'`
+/** Which counts moved. Only those — an unchanged number is not evidence of anything. */
+function worldDiff(
+  before: Record<string, unknown> | null,
+  after: Record<string, unknown> | null,
+): string[] {
+  if (!before || !after) return []
+  const out: string[] = []
+  for (const k of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (String(before[k] ?? '') === String(after[k] ?? '')) continue
+    out.push(`${k} ${before[k] ?? '—'} → ${after[k] ?? '—'}`)
+  }
+  return out
+}
 
 /* ------------------------------------------------------------------------- *
  * Run
@@ -771,8 +554,11 @@ type Result = {
   persona: Persona
   text: string
   probes: string
-  verdict: 'pass' | 'fail' | 'error'
-  why: string | null
+  /** Null when the case ran. A stack when the harness or the turn died. */
+  error: string | null
+  finding?: string
+  before: Record<string, unknown> | null
+  after: Record<string, unknown> | null
   sql: SqlRecord[]
   rounds: Round[]
   reply: string | null
@@ -1008,6 +794,16 @@ async function main(): Promise<void> {
      * so `scoped-mute` was graded on the anti-join case's answer.
      */
     const before = await domainNow()
+    /**
+     * The world as the SETUP left it, not as the previous case left it.
+     *
+     * Taken after `setup` runs, so a case that plants ten thousand filler messages
+     * to test the row cap does not report them as something the model did. The old
+     * `two-places` check failed exactly this way in the other direction — it
+     * counted rows a previous case had created and failed a turn that wrote
+     * nothing.
+     */
+    const worldBefore = await worldSnapshot(q).catch(() => null)
     let captured: SqlRecord[] = []
     let threw: string | null = null
     try {
@@ -1026,8 +822,6 @@ async function main(): Promise<void> {
     } catch (e) {
       threw = e instanceof Error ? (e.stack ?? e.message) : String(e)
     }
-    CURRENT = captured
-
     /**
      * EVERY turn in the window, oldest first — not the newest one.
      *
@@ -1074,20 +868,7 @@ async function main(): Promise<void> {
      */
     await drainOwnJobs().catch(() => [])
 
-    let why: string | null = null
-    let verdict: Result['verdict'] = 'pass'
-    if (threw) {
-      verdict = 'error'
-      why = threw
-    } else {
-      try {
-        why = await kase.check(q)
-        verdict = why ? 'fail' : 'pass'
-      } catch (e) {
-        verdict = 'error'
-        why = `check threw: ${(e as Error).message}`
-      }
-    }
+    const after = await worldSnapshot(q).catch(() => null)
 
     results.push({
       id: kase.id,
@@ -1095,8 +876,10 @@ async function main(): Promise<void> {
       persona: kase.persona,
       text: kase.text,
       probes: kase.probes,
-      verdict,
-      why,
+      error: threw,
+      ...(kase.finding ? { finding: kase.finding } : {}),
+      before: worldBefore,
+      after,
       sql: captured,
       rounds,
       reply: outbound.map((m) => m.body).join('\n---\n') || null,
@@ -1112,12 +895,12 @@ async function main(): Promise<void> {
     const reads = captured.filter((r) => r.kind === 'read').length
     const writes = captured.filter((r) => r.kind !== 'read').length
     const errs = captured.filter((r) => r.error).length
-    const mark =
-      verdict === 'pass' ? c.green('pass') : verdict === 'fail' ? c.red('FAIL') : c.yellow('err ')
+    const moved = worldDiff(worldBefore, after)
     console.log(
-      `${mark}  ${c.dim(`${reads}r ${writes}w ${errs ? c.red(`${errs} sql err`) : '0 err'} · ${Math.round((Date.now() - startedAt) / 1000)}s`)}`,
+      `      ${c.dim(`${reads}r ${writes}w ${errs ? c.red(`${errs} sql err`) : '0 err'} · ${Math.round((Date.now() - startedAt) / 1000)}s`)}` +
+        (moved.length ? `  ${c.dim(moved.join(', '))}` : c.dim('  nothing moved')),
     )
-    if (why) console.log(`       ${c.red(why.split('\n')[0] ?? '')}`)
+    if (threw) console.log(`       ${c.red(threw.split('\n')[0] ?? '')}`)
   }
 
   await report(results, made.academyId)
@@ -1125,11 +908,15 @@ async function main(): Promise<void> {
   if (!KEEP) await dropAcademy(made.academyId).catch(() => {})
   else console.log(c.dim(`\n  kept: ${made.academyId}`))
 
-  const failed = results.filter((r) => r.verdict !== 'pass')
+  const allSql = results.flatMap((r) => r.sql)
+  const errored = results.filter((r) => r.error)
   console.log(
-    `\n  ${c.bold(`${results.length - failed.length}/${results.length} pass`)}` +
-      (failed.length ? c.red(`  ·  ${failed.map((f) => f.id).join(', ')}`) : ''),
+    `\n  ${c.bold(`${results.length} cases`)} · ${allSql.length} statements ` +
+      `(${allSql.filter((x) => x.kind === 'read').length}r ${allSql.filter((x) => x.kind !== 'read').length}w, ` +
+      `${allSql.filter((x) => x.error).length} refused)` +
+      (errored.length ? c.red(`  ·  ${errored.length} case(s) died: ${errored.map((f) => f.id).join(', ')}`) : ''),
   )
+  console.log(c.dim('  Nothing above is a verdict. Read the run, then write one — JUDGING.md\n'))
   process.exit(0)
 }
 
@@ -1199,9 +986,11 @@ async function report(results: Result[], academyId: string): Promise<void> {
       turnIds: [],
       wrote: (r.sql ?? []).filter((x) => x.kind !== 'read' && (x.rowCount ?? 0) > 0).length,
       sent: r.reply ? 1 : 0,
-      error: r.verdict === 'error' ? r.why : null,
+      error: r.error,
+      beforeTap: r.before,
+      afterTap: r.after,
     })),
-    world: { note: `${results.filter((r) => r.verdict === 'pass').length}/${results.length} cases left the world as the case author expected — see the ladder file for which` },
+    world: (results[results.length - 1]?.after ?? {}) as Record<string, unknown>,
   })
   console.log(`\n  record: ${dir}/record.json`)
 
@@ -1217,31 +1006,39 @@ async function report(results: Result[], academyId: string): Promise<void> {
   )
   L.push('')
 
-  const pass = results.filter((r) => r.verdict === 'pass').length
-  L.push(`## Verdict: ${pass}/${results.length}`)
+  L.push('## The ladder')
   L.push('')
-  L.push('| | case | tier | who | reads | writes | sql errors | verdict |')
-  L.push('| --- | --- | --- | --- | --- | --- | --- | --- |')
+  L.push('| case | tier | who | reads | writes | refused | what moved |')
+  L.push('| --- | --- | --- | --- | --- | --- | --- |')
   for (const r of results) {
     const reads = r.sql.filter((s) => s.kind === 'read').length
     const writes = r.sql.filter((s) => s.kind !== 'read').length
     const errs = r.sql.filter((s) => s.error).length
-    const mark = r.verdict === 'pass' ? '✅' : r.verdict === 'fail' ? '❌' : '⚠️'
-    L.push(`| ${mark} | ${r.id} | ${r.tier} | ${r.persona} | ${reads} | ${writes} | ${errs} | ${r.why ?? 'ok'} |`)
+    const moved = worldDiff(r.before, r.after)
+    const last = r.error ? String(r.error).split('\n')[0] : ''
+    L.push(
+      `| ${r.id} | ${r.tier} | ${r.persona} | ${reads} | ${writes} | ${errs} | ` +
+        `${r.error ? `**died:** ${last}` : moved.join(', ') || 'nothing'} |`,
+    )
   }
   L.push('')
 
   for (const r of results) {
     L.push('---')
     L.push('')
-    L.push(`## ${r.verdict === 'pass' ? '✅' : r.verdict === 'fail' ? '❌' : '⚠️'} ${r.id} · tier ${r.tier} · ${r.persona}`)
+    L.push(`## ${r.id} · tier ${r.tier} · ${r.persona}`)
     L.push('')
     L.push(`**They said:** ${r.text}`)
     L.push('')
     L.push(`**What this probes:** ${r.probes}`)
     L.push('')
-    L.push(`**Verdict:** ${r.verdict === 'pass' ? 'pass' : `**${r.why}**`}`)
+    const movedHere = worldDiff(r.before, r.after)
+    L.push(`**What moved in the database:** ${movedHere.length ? movedHere.join(', ') : 'nothing'}`)
     L.push('')
+    if (r.error) {
+      L.push(`**This case died:** \`${String(r.error).split('\n')[0]}\``)
+      L.push('')
+    }
     L.push(
       `${Math.round(r.ms / 1000)}s · ${r.tokens.prompt} prompt (${r.tokens.cached} cached) · ` +
         `${r.tokens.output} output · ₹${(costInr(env.MODEL_MAIN, r.tokens.prompt, r.tokens.cached, r.tokens.output) ?? 0).toFixed(3)}`,

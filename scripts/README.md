@@ -12,9 +12,9 @@ record — [`../JUDGING.md`](../JUDGING.md) is how.
 
 | | |
 |---|---|
-| `probe-ask.ts` | `npm run ask` — interrogate the prefix, toolless. Measures the ceiling: what the context makes derivable. |
+| `probe-ask.ts` | `npm run ask` — interrogate the prefix, toolless. Measures the ceiling: what the context makes derivable. Takes a scenario id, or **any question you type**: `npm run ask -- "what if she pays twice?"`, `--who coach`, `--list`. |
 | `probe-model.ts` | `npm run probe` — the real loop through a scripted lifecycle arc, in a fresh academy per model. Suites: `arc`, `fo`, `fq`, `adv`, `real`, `tennis`, `stress`. |
-| `probe-sql.ts` | `npm run probe:sql` — the SQL ladder. Can the model actually write the statements? |
+| `probe-sql.ts` | `npm run probe:sql` — the SQL ladder, six tiers. Can the model actually write the statements? |
 | `drive-week.ts` | `npm run drive:week` — one settled week, personas balanced by construction, standing jobs firing on their own schedule. |
 | `drive.ts` | `npm run drive` — be a person talking to the bot, one command at a time. Posts to the emulator API a human uses, so there is no second code path. |
 
@@ -24,7 +24,20 @@ record — [`../JUDGING.md`](../JUDGING.md) is how.
 PROBE_FULL_TRACE=1 npm run dev
 ```
 
-## 2 · Reading a run
+## 2 · What has already broken
+
+`_findings.ts` (`npm run findings`) reads the ledger in `../conversation-rules.md` — it does not
+copy it — and cross-references every `F-xx` against the instruments, so the table answers one
+question nothing else could: **which of the things that have already broken does no instrument
+even ask about?** `--open` and `--bare` narrow it.
+
+The instruments do *not* share a scenario list, deliberately. `probe-ask` asks "walk me through
+what you would do" with no world; `probe-sql` posts a sentence into a real academy; `probe-model`
+puts it at a point in a lifecycle where the rows exist. One text cannot serve all three without
+becoming the worst of the three, and the setup — most of the work — has nothing in common. What
+they share is the finding, and a `finding:` field on a case is how a stage is declared.
+
+## 3 · Reading a run
 
 | | |
 |---|---|
@@ -32,7 +45,7 @@ PROBE_FULL_TRACE=1 npm run dev
 | `judge-feed.mjs` | The inside of a turn, rendered for a person to read *while the drive is still walking*. |
 | `judge.mjs` | The same job done by a judge model when there is nobody free to read. Writes the same `judgement.json` a person writes, deliberately: the two are interchangeable. |
 
-## 3 · Static checks — of the product's code, not of the model's behaviour
+## 4 · Static checks — of the product's code, not of the model's behaviour
 
 These assert things about code and data that are true or false regardless of what any model
 said. That is why they survived the removal of the behavioural checks: none of them reads
@@ -56,7 +69,7 @@ prose.
 | `check-wa-text.tsx` | Does the pane render WhatsApp's markup the way WhatsApp does? |
 | `verify-invariants.mjs`, `verify-plan-tap.mjs`, `smoke.mjs` | End-to-end over the running dev server. |
 
-## 4 · Operating the thing
+## 5 · Operating the thing
 
 | | |
 |---|---|
@@ -67,7 +80,7 @@ prose.
 | `probe-prefix.ts`, `probe-prefix-tokens.ts`, `probe-ceiling.ts` | What the prefix costs, in characters, in real tokens, and in tool declarations. |
 | `guard-value.ts` | What each runtime guard has actually caught. |
 | `ops-cookie.mjs` | How a script gets through the ops gate. |
-| `_env.ts`, `_danger.ts`, `_capture.ts` | Shared. Leading underscore means "not a command". |
+| `_env.ts`, `_danger.ts`, `_capture.ts`, `_findings.ts` | Shared. Leading underscore means "not a command" — `_findings.ts` is the exception, and runs. |
 
 ---
 

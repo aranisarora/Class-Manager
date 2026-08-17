@@ -136,6 +136,20 @@ export type Turn = {
   /** Rows this turn audited, and messages it put on the wire. Counts, not verdicts. */
   wrote: number
   sent: number
+  /**
+   * The business, counted either side of the harness's thumb.
+   *
+   * A tap is not a neutral observer — the button exists to change the world — so
+   * for any case whose subject is what the button changes, a single snapshot is
+   * measuring the harness rather than the model. Both are kept and the reader
+   * picks; `scripts/report.mjs` prints only the counts that moved.
+   *
+   * Null on a driver that takes no snapshot (`ask` has no world at all), which is
+   * why they are nullable rather than optional: absent and "not applicable here"
+   * are the same fact, and one of them should not read as a missing field.
+   */
+  beforeTap?: Record<string, unknown> | null
+  afterTap?: Record<string, unknown> | null
   error: string | null
 }
 

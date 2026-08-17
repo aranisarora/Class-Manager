@@ -66,10 +66,21 @@ opinion about what zero writes means, frozen where the next reader cannot argue 
 Open it with:
 
 ```bash
-node scripts/report.mjs                  # newest run, as a page
+npm run report                           # newest run, as a page
+npm run runs                             # which runs exist, and which are judged
 node scripts/report.mjs --run .probe/runs/2026-08-17-13-09-arc
 node scripts/judge-feed.mjs --academy "Smash Badminton"   # live, mid-drive
 ```
+
+And before deciding a run was thorough, ask what it never asked about:
+
+```bash
+npm run findings           # every F-xx in conversation-rules.md, and what stages it
+npm run findings -- --bare # the ones no instrument asks about at all
+```
+
+That last list is where the surprises have come from. A finding staged by nothing is not a
+finding that has been fixed; it is one nobody is watching.
 
 ---
 

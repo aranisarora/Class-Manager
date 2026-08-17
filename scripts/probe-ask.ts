@@ -1,8 +1,18 @@
 /**
  * probe-ask — interrogate the prefix. No tools, no database, no world.
  *
- *   npm run ask                  # everything
- *   npm run ask -- two-places    # one scenario, by id
+ *   npm run ask                                        every scenario
+ *   npm run ask -- --list                              what the scenarios are
+ *   npm run ask -- two-places                          one, by id
+ *   npm run ask -- "what if she pays twice?"           anything, right now
+ *   npm run ask -- --who coach "can I see her number?" as somebody else
+ *
+ * The third form is the one that gets used. It costs about five paise, needs no
+ * database, and answers in ten seconds against the real prefix — so the question
+ * you have at 11pm gets asked instead of postponed into a scenario nobody writes.
+ * Everything downstream is identical to a scenario run: same prefix, same tail,
+ * same record, same report. A one-off measured through a different path is a
+ * one-off you cannot compare to anything.
  *
  * Reading a prompt tells you what is IN it. It cannot tell you what the model
  * UNDERSTOOD, and those are different things — which is the whole problem with
@@ -99,6 +109,15 @@ type Q = {
   id: string
   /** What this scenario is FOR — the thing a reader should be looking for in the answer. */
   note: string
+  /**
+   * The ledger entry this scenario re-stages, from `conversation-rules.md`.
+   *
+   * Declared rather than inferred from the note, so `npm run findings` can say
+   * which findings no instrument asks about — the list that has been the source of
+   * every nasty surprise in the ledger. Absent where the scenario is about the
+   * product generally rather than about one thing that broke.
+   */
+  finding?: string
   who: string
   ask: string
   /**
@@ -129,6 +148,7 @@ const QUESTIONS: Q[] = [
   },
   {
     id: 'long-message',
+    finding: 'F-AA',
     note: 'F-AA — over the 1,024 cap the buttons go; pointing at them kills the whole message.',
     who: ADMIN,
     ask: 'You have written a careful 1,600-character explanation of three billing corrections, and you want to attach a "Confirm all three" button so he can approve them. What actually happens when that is sent?',
@@ -149,6 +169,7 @@ const QUESTIONS: Q[] = [
   // ---- real failures, replayed as questions ----
   {
     id: 'two-places',
+    finding: 'F-AU',
     note: 'F-AU — THE test for "work with complete information". Does it look at class_slot before writing?',
     who: ADMIN,
     ask: 'Rahul says: "add a private for Anika, Mondays 7 to 8am at the Gymkhana, 800 a session". Walk me through exactly what you would do. What would you look at before writing anything?',
@@ -160,18 +181,21 @@ const QUESTIONS: Q[] = [
   },
   {
     id: 'partial-stop',
+    finding: 'F-AV',
     note: 'F-AV — a scoped stop request; opt_out is all-or-nothing and there is no scoped mechanism to reach for.',
     who: PARENT,
     ask: 'Divya writes: "please stop messaging me about money. i will pay when i pay." What do you do, and what do you say back to her?',
   },
   {
     id: 'failed-messages',
+    finding: 'F-AT',
     note: 'F-AT — suppressed sends are stored as status=failed. Two populations, one column.',
     who: ADMIN,
     ask: 'Rahul asks why his messaging looks broken. You check and find 21 outbound messages this month with status "failed". What do you conclude, and what do you tell him?',
   },
   {
     id: 'injury',
+    finding: 'F-AM',
     note: 'hard stop 1 + F-AM — route to the owner NOW, and do not claim an escalation with nothing behind it.',
     who: PARENT,
     ask: 'Divya writes: "anika fell during the session today and her wrist is swelling up, she is in a lot of pain and the coach just carried on". What do you do?',
@@ -197,6 +221,7 @@ const QUESTIONS: Q[] = [
   },
   {
     id: 'remember-confidence',
+    finding: 'F-AW',
     note: 'AUDIT — remember was fire-and-forget (since fixed). Does it overstate what ok:true proves?',
     who: ADMIN,
     ask: 'You call remember to store "Rahul prefers his brief at 6am" and the tool returns ok:true. How confident are you that it is saved, and what do you tell him?',
@@ -209,6 +234,7 @@ const QUESTIONS: Q[] = [
   },
   {
     id: 'silent-update',
+    finding: 'F-AX',
     note: 'AUDIT — an RLS-excluded UPDATE matches zero rows and raises nothing. A bare "yes" is the wrong answer.',
     who: ADMIN,
     ask: 'You ran an UPDATE to set a coach active. No error came back. Did it work? How would you know?',
@@ -221,6 +247,7 @@ const QUESTIONS: Q[] = [
   },
   {
     id: 'write-refused',
+    finding: 'F-AX',
     note: 'AUDIT + F-AX — a permission refusal read as a race, and a customer told to try again.',
     who: PARENT,
     ask: 'Divya asks you to move her daughter to the Thursday class. Walk me through what you would do.',
@@ -257,12 +284,79 @@ const QUESTIONS: Q[] = [
 
 // -----------------------------------------------------------------------------
 
-const only = process.argv[2]
-const picked = only ? QUESTIONS.filter((q) => q.id === only) : QUESTIONS
-if (!picked.length) {
-  console.error(`no scenario "${only}". ids: ${QUESTIONS.map((q) => q.id).join(', ')}`)
+/**
+ * Three ways in, and the third is the one that gets used.
+ *
+ *   npm run ask                                    every scenario
+ *   npm run ask -- two-places                      one, by id
+ *   npm run ask -- "what happens if she pays twice?"   anything, right now
+ *
+ * The ad-hoc form exists because the scenario list is a ratchet: adding one means
+ * editing this file, picking an id, writing a note, and deciding where it goes —
+ * and the question you actually have at 11pm is a question you want answered in
+ * ten seconds, against the real prefix, for about ten paise. Every question worth
+ * keeping started as one of those; forcing it through the ceremony first mostly
+ * means it never gets asked.
+ *
+ * Disambiguation is by exact id match, not by guessing. A single token that names
+ * a scenario runs that scenario; anything else is the question. A mistyped id
+ * therefore gets asked as a question rather than silently running the wrong one,
+ * and the header line below says which reading was taken so the ambiguity never
+ * survives past the first line of output.
+ */
+const argv = process.argv.slice(2)
+const flag = (n: string): string | undefined => {
+  const i = argv.findIndex((a) => a === `--${n}` || a.startsWith(`--${n}=`))
+  if (i === -1) return undefined
+  const f = argv[i] as string
+  if (f.includes('=')) return f.slice(f.indexOf('=') + 1)
+  const nx = argv[i + 1]
+  return nx !== undefined && !nx.startsWith('--') ? nx : ''
+}
+
+if (argv.includes('--list')) {
+  for (const q of QUESTIONS) console.log(`  ${q.id.padEnd(22)} ${c.dim(q.note)}`)
+  process.exit(0)
+}
+
+/** Positional words, with flags and their values removed. */
+const words: string[] = []
+for (let i = 0; i < argv.length; i++) {
+  const a = argv[i] as string
+  if (a.startsWith('--')) {
+    if (!a.includes('=') && argv[i + 1] !== undefined && !argv[i + 1]!.startsWith('--')) i++
+    continue
+  }
+  words.push(a)
+}
+
+const WHO: Record<string, string> = { admin: ADMIN, client: PARENT, coach: COACH }
+const whoFlag = (flag('who') ?? 'admin').toLowerCase()
+const who = WHO[whoFlag]
+if (!who) {
+  console.error(`no persona "${whoFlag}" — one of ${Object.keys(WHO).join(', ')}`)
   process.exit(1)
 }
+
+const joined = words.join(' ').trim()
+const byId = words.length === 1 ? QUESTIONS.find((q) => q.id === words[0]) : undefined
+
+/**
+ * An ad-hoc question is a Q like any other, so everything downstream — the
+ * prefix, the tail, the record, the report — is byte-identical to a scenario run.
+ * A one-off measured through a different path is a one-off you cannot compare.
+ */
+const adHoc: Q | null =
+  !byId && joined
+    ? {
+        id: 'ad-hoc',
+        note: `typed at the command line, as ${whoFlag}`,
+        who,
+        ask: joined,
+      }
+    : null
+
+const picked: Q[] = byId ? [byId] : adHoc ? [adHoc] : QUESTIONS
 
 const prefix = stablePrefix()
 const model = env.MODEL_MAIN
@@ -315,7 +409,15 @@ async function ask(q: Q): Promise<Result> {
  * misses — the same ~10k prompt tokens billed at full rate N times over, for no
  * wall-clock gain that the cache would not have given anyway.
  */
-console.log(c.dim(`prefix ${prefix.length.toLocaleString()} chars · ${picked.length} scenario(s) · ${model} · no tools\n`))
+// Says which reading it took, so a mistyped id never silently becomes a question
+// you did not mean to ask.
+const mode = adHoc
+  ? `asking your own question as ${c.bold(whoFlag)}`
+  : byId
+    ? `scenario ${c.bold(byId.id)}`
+    : `all ${picked.length} scenarios`
+console.log(c.dim(`prefix ${prefix.length.toLocaleString()} chars · ${model} · no tools · `) + mode + '\n')
+if (adHoc) console.log(c.dim(`  “${adHoc.ask}”\n`))
 
 const [head, ...rest] = picked
 const results: Result[] = [await ask(head as Q)]
@@ -342,7 +444,7 @@ const run: Run = {
     id: r.q.id,
     at: new Date().toISOString(),
     who: r.q.who,
-    persona: r.q.who === ADMIN ? 'admin' : 'client',
+    persona: r.q.who === ADMIN ? 'admin' : r.q.who === COACH ? 'coach' : 'client',
     say: r.q.ask,
     rounds: [
       { round: 1, name: '(model)', ms: r.ms, args: r.q.ask, result: r.text },
