@@ -2,7 +2,7 @@
 
 > Build document. Everything needed to implement the product: setup, invariants, architecture, data model, behavior, message catalog, scheduled work, and build order.
 >
-> **Stack:** Next.js (API, webhook, emulator) · Supabase (Postgres, RLS, Storage) · WhatsApp Cloud API (Meta, direct) · WhatsApp Flows for everything form-shaped (§14.6) · DeepSeek, text only (§14.5) · a durable job scheduler, which is required, not optional (§13).
+> **Stack:** Next.js (API, webhook, emulator) · Supabase (Postgres, RLS, Storage) · WhatsApp Cloud API (Meta, direct) · everything form-shaped is asked for in the chat (§14.6) · DeepSeek, text only (§14.5) · a durable job scheduler, which is required, not optional (§13).
 >
 > **Read §2 before writing any code.** Those rules are broken by omission, not by intent.
 
@@ -52,7 +52,7 @@ Non-negotiable. Each is a rule a plausible-looking implementation breaks silentl
 
 Indian coaching businesses run on WhatsApp by hand — schedules, payment chasing, cancellations, parent communication. This moves that workload onto a WhatsApp-native manager. Clients book, pay and get reminded. Coaches get their day and mark attendance with taps. Admins run the business through natural language and menus.
 
-**The chat is the interface. Nobody installs anything. Nobody logs in. Nobody leaves WhatsApp.** Everything form-shaped is a **Flow** (§14.6); anything spatial or dense is **rendered to an image and sent in the chat** (§14.6). There is no web surface and no link to tap — see §15 for what was removed and why.
+**The chat is the interface. Nobody installs anything. Nobody logs in. Nobody leaves WhatsApp.** Everything form-shaped is **asked for, one question at a time** (§14.6); anything spatial or dense is **rendered to an image and sent in the chat** (§14.6). There is no web surface, no form and no link to tap — see §15 for what was removed and why.
 
 Every user is **WhatsApp-only by design**. A number not on WhatsApp is out of scope.
 
@@ -414,7 +414,7 @@ payment (
 - **The free first class is a rule that mints an adjustment** — a negative line equal to the first `session` line. **Per player, not per account.** A second child gets their own trial.
 - Balance for a period = `sum(tally_line.amount) - sum(confirmed payment.amount)`.
 
-### 6.5 Messaging, actions, Flows
+### 6.5 Messaging and actions
 
 ```sql
 sender (                          -- §16.3. global, no academy_id. never a constant.
@@ -451,16 +451,6 @@ action (                          -- §2.2, the payload rule
   consumed_at            timestamptz,
   consumed_by_contact_id uuid references contact(id)
 )
-
-flow_send (                       -- §14.6. one row per Flow put in front of a human.
-  flow_name    text not null,      -- business_setup | add_class | register
-  flow_token   text not null unique,-- opaque, per-send; comes back on the response
-  context      jsonb not null,      -- fully resolved, exactly like action.payload
-  sent_to_contact_id uuid not null references contact(id),
-  expires_at   timestamptz not null,
-  responded_at timestamptz,
-  response     jsonb                -- the `nfm_reply` payload, stored verbatim
-)
 ```
 
 **Every interactive button carries an `action.id` as its reply payload.** On tap: load, check expiry and consumption, check the tapping contact matches `minted_for_contact_id`, execute the stored payload, stamp `consumed_at`. **No model call, no re-resolution, no string parsing.**
@@ -472,9 +462,9 @@ flow_send (                       -- §14.6. one row per Flow put in front of a 
 
 Both are authored at compose time, when the model has the context to get them right, and replayed verbatim at tap time. **The freedom is in what can be minted; the safety is that minting and tapping are different moments.** Invariant 2 is untouched. Without this, §4.3's follow-up buttons can only ever demonstrate verbs someone hardcoded, which caps the product's discoverable surface at its tool authors' imagination.
 
-**`flow_send` is the same rule for form-shaped work.** The context is fully resolved when the Flow goes out; the response is matched back by `flow_token` and validated against the schema the Flow declared. **No model call between sending a Flow and receiving its response.**
+**There is no `flow_send`, and there is no third kind.** A `flow_send` table was specified here — one row per WhatsApp Flow put in front of a human, with a `flow_token` matching the response back to it — and was never built before Flows were removed (§14.6). Form-shaped work now arrives as ordinary inbound text, so it needs no token, no per-send row and no response schema: **the answer to a question is a message, and messages already have a table.**
 
-**A Flow is bound to the conversation; a link was bearer auth.** The response arrives on the recipient's own thread and cannot be detached from it — there is nothing to forward, nothing to leak into a family group, and no window during which a stolen string is a session. This is the security property that decided §15, and it is a property of the transport, not of anything this codebase has to get right.
+What that costs is the one guarantee the token bought — a submission executed with no model call between the send and the write. A typed answer has to be understood, so it goes through the model like anything else. That is the trade §14.6 makes deliberately: understanding *"just Aarav, and Kiran was twenty minutes late"* is the capability, and it is not reachable by a form that never had a field for it. **The write it reaches is still a named operation, so what a sentence can do is bounded exactly as a tap was.**
 
 ### 6.6 Jobs
 
@@ -517,7 +507,7 @@ Every policy carries a regression test asserting cross-tenant and cross-role rea
 
 The unavoidable cost of adoption is **data entry**. Reducing it is the highest-leverage work in the product.
 
-1. **Setup Flow** (§14.6) — the form-shaped part in one screen, because a dozen chat round-trips is a dozen small waits. Business name, category, venues, operating pattern, cancellation window. **It opens inside WhatsApp; the admin never leaves the chat.** Once, ever.
+1. **The setup ladder** (§14.6) — business name, category, venues, operating pattern, cancellation window, asked in the chat. This was a one-screen form and the form is gone, so the cost to beat is the dozen small waits a naive ladder would spend: **assume what can be assumed and say so, take everything a sentence gives, and stop as soon as there is enough to create a class.** The rest is filled in when it matters. `set_up_business` is safe to call repeatedly, so a fact learned is a fact written.
 2. **Bring the timetable in one message, however messy** (§14.5). "Mon & Wed 6:30 beginners at Green Park, Sat 8am juniors" — no punctuation needed, every class at once. The bot parses, reads back, creates on a tap. **This is the single biggest friction reducer in the product**, and since §14.5 was repealed it is the only one: a photo of the whiteboard is answered with an apology and this sentence.
 3. **Coaches** — §8.1. Three facts each, then invites.
 4. **Families** — §9.1. Contacts shared, roster built, nobody messaged.
@@ -578,7 +568,7 @@ A ladder of single questions, each at its right time, one at a time.
 2. **T-60 — "Coming?"** [`CO-COMING`] `[Yes, I'm coming]` `[Can't make it]` `[Directions]`.
 3. **T-30 — one nudge** [`CO-NUDGE`], only if still silent, saying the quiet part out loud: the admin gets alerted shortly if we still don't know.
 4. **T-15 — the admin is told**, if still uncovered. The coach is not chased further.
-5. **After class — the register** [`CO-REGISTER`]. `[All present]` is a chat button, because that is the majority case and one tap beats opening anything. `[Take register]` opens the **register Flow** (§14.6), inside WhatsApp.
+5. **After class — the register** [`CO-REGISTER`]. `[All present]` is a chat button, because that is the majority case and one tap beats opening anything. `[Take register]` asks for it in the chat (§14.6).
 
    **The register is inverted, and that is the design.** It does not ask for a decision per player; **absences are sparse**, so it asks *who wasn't here*, then *who was late*, as two multi-select lists over the roster, with a note field. A twelve-player class where everyone came is one tap; where one child is missing it is two. Asking twelve three-state questions to learn one fact is the shape that makes coaches stop marking registers.
 
@@ -917,7 +907,7 @@ Seven generic primitives, not a catalog of hand-built features:
 - **Transact** — several writes and their consequences composed by the model into one atomic step (§14.2.1).
 - **Message** — compose and send freely (§14.4).
 - **Money** — payment links, mandates, reconciliation, adjustments.
-- **UI** — buttons, lists, Flows, and rendered images (§14.6).
+- **UI** — buttons, lists, and rendered images (§14.6).
 - **Schedule** — the bot enqueues work for itself (§13.1).
 
 Safety is **structural, not behavioral.** The floor being solid is what lets the model be free above it.
@@ -1039,51 +1029,30 @@ If a sentence is ambiguous the bot says so plainly rather than guessing — §2.
 ### 14.6 UI kit
 
 - **Every link is a button.** Nothing URL-shaped is pasted into message text.
-- **UI is an offer, never a gate.** Never *require* a form for something chat could do. The correct shape: *"Done — Aarav's out Tuesday. Want to set up the rest of his absences? `[Open form]` — or just tell me."* Both paths work; the form is a shortcut, never a toll.
-- **Every form is a Flow.** The business shape, a class, the register. A form that takes somebody out of WhatsApp and into a phone browser is a worse form, and every tap out of the chat is a completion lost. A form is never *required* for something a sentence could do (§14.6's second rule), and the copy says so every time.
+- **The affordances are buttons, a list, and the words.** That is the whole kit. There is no form on this surface and no browser behind it, so anything that needs several facts is *asked for* — see the ladder below.
 - **Anything spatial or dense is aggregated into the message.** A week's timetable, a month of tally lines, a trend: the short version in words, with the numbers, and the offer to break it down further. **A picture would be better and is not built** — rendering a PNG needs a rasteriser this repo does not carry, so it is honestly deferred rather than quietly assumed. Until it exists the ceiling in §15 is the real one, and it is chat.
 
-**Static Flows only, and that is what makes them affordable.** The objection this section used to carry — RSA keypair, an encrypted `/data` endpoint, published versioned artifacts, a whole encryption surface — is **true of endpoint-powered Flows and of nothing else**. A *static* Flow, where every screen and every value is known at send time and `flow_action` is `navigate`, needs no keypair, no endpoint and no encryption; Meta's own guidance is to avoid an endpoint when you do not need one. What remains is publishing and versioning, which is an account operation performed rarely, not a runtime one.
+**Form-shaped work is a ladder, not a form.**
 
-**What that buys, beyond the avoided tap:**
+Three things in this product are form-shaped — the shape of the business, a class, the register — and all three used to be a **WhatsApp Flow**: a published artifact, one screen, every field at once. Static Flows were genuinely cheap (no keypair, no `/data` endpoint, no encryption) and they genuinely saved round trips. They are gone anyway, and the reason is not cost.
 
-- **The response is bound to the conversation** (§6.5). A signed link was bearer auth — anyone holding the URL held that person's session until it expired, and a forwarded register link is an open attendance sheet. A Flow has nothing to forward.
-- **It works out of window.** A Flow can be delivered inside a template, so the register can reach a coach who has not messaged all day. A link could too, but only by pasting a URL into a template body, which is the pattern Meta scrutinises hardest.
-- **One rendering surface to be honest about.** §17's rule is that anything that cannot render in the emulator does not ship. Two surfaces meant proving that twice.
+**A form cannot ask what it was not built to ask.** Its questions, and the order of its questions, are fixed at publish time. It cannot skip the field it can already see, follow the answer that turns out to matter, or take the correction typed one second after Save. The register is the case that decides it: a `data-source` renders tonight's twelve names and next week's nine from one artifact, which is impressive, and it still has no answer for *"Aarav left at half time and Meera's dad says she's out all month."* A conversation absorbs that without being redesigned. **Every form-shaped need becomes a chat ladder, which is what this section already prescribed for everything a Flow could not cover; the set it could not cover turned out to be everything that matters.**
 
-**Flows are a catalog, not a compose surface. The model never authors Flow JSON.**
+**What was given up, stated plainly.** Onboarding asks eight or nine things, and a form collected them in one exchange. A ladder cannot, so it costs round trips — that is the trade, and it is only worth it if the ladder is cheap. Three rules make it cheap:
 
-This is the same rule as §14.2's named operations and §16.2's templates, and for the same reason. A Flow is a **published, versioned artifact** — publishing is an account operation (`POST /{WABA}/flows`, `/assets`, `/publish`) done at build time, rarely, by us. What happens at runtime is that the model **picks one and fills its parameters**, exactly as it picks an operation and supplies its arguments:
+1. **Never ask what you can already see, or safely assume.** Read the row first and say what is being assumed rather than asking: *"I have you down as Asia/Kolkata and a 24-hour cancellation notice — say if not."* A question whose answer is already in the database is pure friction.
+2. **Take everything a sentence gives you.** People answer three questions at once. The ladder must absorb all of it and never re-ask what was just said — which is the failure that makes ladders feel like forms.
+3. **Stop as soon as you have enough to act.** The rest gets filled in when it matters. A business that can create a class does not need a UPI handle yet.
 
-```
-flow('register', {
-  session:  <resolved>,
-  roster:   [ … twelve players, names and ids … ],
-  note_hint: "anything the parents told you at the court?"
-})
-```
+**One open invitation beats a chain of closed ones.** *"Tell me the timetable however it comes out — all of it in one message is fine"* gets a whole week in a breath; *"what day?"* gets one day and five more round trips. This is §7.1's biggest friction reducer and it is now the only one. Read back what was understood, put the commit behind a button, and let a correction be typed — a typed correction is cheaper than any form, because it can say the thing no form had a field for.
 
-**The dynamic part is the data, not the structure.** A static Flow declares its screens once; `${data.x}` reads what was passed in at send time and `${form.x}` reads what the human typed. So the register Flow is *one* artifact that renders tonight's twelve names, and the setup Flow is *one* artifact that renders this academy's category list — no endpoint, no per-conversation publish, no versioning churn. **Parameterised, not generated.**
+**The register is still inverted, and that is structural rather than stylistic.** It asks who was *not* there. Asking twelve players three-state questions to learn one fact is what makes coaches stop marking registers, and an unmarked register is a session that never bills — a money defect wearing a UX complaint's clothes. As a form that inversion was two multi-select lists. As a ladder it is one question, *"anyone missing?"*, whose commonest true answer is "no" and whose answer is a sentence: *"just Aarav, and Kiran was twenty minutes late."* `[All present]` stays a chat button, because one tap still beats typing when nothing happened.
 
-**The catalog, and it is meant to stay this short:**
+**What was actually lost with the artifact, and what was not.** No write path was lost: setup ran the one builder in `lib/setup-plan.ts`, a class ran `create_class`, the register ran `mark_attendance`, and all three are reached by a sentence exactly as they were reached by a submission. What went is the collection surface. What also went is a real security property worth naming — a Flow response was bound to the conversation and could not be detached from it — but that property was only ever needed to beat the signed link §15 removed, and a typed sentence is bound to the conversation just as tightly.
 
-| Flow | Takes | Used for |
-|---|---|---|
-| `business_setup` | every field, prefilled from the row | §7.1 step 1, and every later edit of the business shape |
-| `add_class` | whatever was read off their sentence, however partial | §7.1 step 2, the timetable and its corrections |
-| `register` | session, roster as a dynamic option list, note | §8.2 step 5, the inverted register |
+**The costs that came off with it.** No published, versioned artifacts; no `POST /{WABA}/flows` / `/assets` / `/publish` at build time; no business-verification gate blocking publish ("Blocked by Integrity"); no draft-versus-published send mode; no second thing the emulator has to render honestly (§17). Adding a form used to be a deploy. Asking a new question is now a sentence.
 
-**Three, not five.** `coach_confirm` and `client_details` were specified here and are deliberately not built. Both are *one question*, and a form is the wrong shape for one question: §8.1's *"is this right?"* is two reply buttons and a list of the four things that are ever actually wrong, and §9.1's missing details arrive during the conversation that is already happening (§10.1's rule — answer first, ask never). A form for a yes/no costs a tap to open, a tap to answer and a tap to submit, to collect what one button already collects. `roster_repair` is not built for a different and harder reason, below.
-
-**One screen each, deliberately.** Meta supports multi-screen static Flows and a four-screen setup wizard reads well on paper. It is worse in the hand: four *Continue* taps instead of one *Save*, and every screen boundary is a place to abandon. A Flow screen scrolls, so each form here is one screen carrying every field, and the grouping a wizard would do with screens is done with subheadings.
-
-**The register is inverted, and that is structural rather than stylistic.** It asks who was *not* there. A twelve-name roster with four radio buttons each is forty-eight taps to say the commonest true thing — everyone came — and a register that costs forty-eight taps stops being filled in by week three. An unmarked register is a session that never bills, so this is a money defect wearing a UX complaint's clothes. It also happens to be the only shape that works: a **static Flow cannot draw a variable-length roster**, but a `CheckboxGroup` whose `data-source` is `${data.roster}` renders tonight's twelve and next week's nine from one published artifact.
-
-**What the dynamic `data-source` buys, and its limit.** `${data.x}` parameterises *options*, not *structure*. So a roster of any size is one artifact, and a venue list of any size is one artifact — but a page of N differently-shaped repair rows is not expressible at all. That is why `roster_repair` is absent: the "two Meeras, one Kiran in two classes, six unnamed numbers" page has a different control per ambiguity, and there is no static JSON that renders it. **That case is a chat ladder**, which is what this section already prescribes when no Flow fits.
-
-**Adding a Flow is a deploy, and that is the cost.** It is the same cost as adding a template and it is paid the same way: a small fixed set covering *categories of form*, not a screen per situation. If a form-shaped need arises that no Flow covers, **the answer is a chat ladder**, not a new artifact minted mid-conversation — which is not something Meta permits and not something this product would want if it did.
-
-**Where a Flow does not fit at all, the answer is chat.** A Flow is a form, not an app: no charts, no free navigation, no long tables. If the thing wanted is a *view* rather than an *input*, it is prose — aggregated, with the numbers in the message body. **This is a real ceiling and it is accepted deliberately** (§15).
+**Where a ladder does not fit, the answer is still chat.** If the thing wanted is a *view* rather than an *input*, it is prose — aggregated, with the numbers in the message body. **This is a real ceiling and it is accepted deliberately** (§15).
 
 ### 14.7 Window and templates
 
@@ -1109,8 +1078,8 @@ The idea was a rendering surface the bot linked into with a signed short-TTL JWT
 
 **Why it went, in the order the reasons actually bite:**
 
-1. **Every form was better as a Flow.** Setup and the register were the only two things that *had* to exist, and both are forms. A form that takes somebody out of WhatsApp into a phone browser is a worse form. The objection that had kept Flows out was re-derived and found to be wrong on the facts: three of its four costs apply only to endpoint-powered Flows (§14.6).
-2. **The link was bearer auth.** Whoever held the URL held that person's session. A coach forwarding a register link hands out an open attendance sheet; a parent forwarding a tally into a family group leaks it. Short TTLs narrow that window, they never close it. A Flow response is bound to the conversation and cannot be detached from it.
+1. **The link was bearer auth.** Whoever held the URL held that person's session. A coach forwarding a register link hands out an open attendance sheet; a parent forwarding a tally into a family group leaks it. Short TTLs narrow that window, they never close it. This is the reason that survives everything else on this list, and it applies to any link, for any purpose, however short-lived.
+2. **A form was the wrong shape for the two things that had to exist.** Setup and the register were the whole case for a web surface, and both are form-shaped. They were briefly answered by a WhatsApp Flow — the same fields with no browser and no bearer token — and then by neither, because a form of any kind can only ask what it was built to ask (§14.6). **Both are conversations now**, which is a surface this product already had.
 3. **Once the forms left, the remainder did not pay for itself.** What was left was the admin's spatial and exploratory work — a calendar, a chart, a long table. That is a real thing to want and it is **one audience, occasionally**, against a component registry, a view-spec grammar, a JWT surface, a second renderer and a second thing the emulator has to be honest about (§17).
 4. **Every answer had two implementations and a decision.** The model had to choose, on every question, between saying it and rendering it. That choice was itself a source of wrongness, and it never got cheaper.
 
@@ -1118,7 +1087,7 @@ The idea was a rendering surface the bot linked into with a signed short-TTL JWT
 
 | Was going to be | Is now |
 |---|---|
-| `form` — setup, the register | A **Flow** (§14.6) — `business_setup`, `add_class`, `register` |
+| `form` — setup, the register | **Chat** (§14.6) — asked as a ladder, one question at a time, skipping what is already known |
 | `calendar` — the week, the month | Chat: the days that are not routine, not the grid |
 | `chart` — trends worth plotting | Chat: the shape in a sentence, with the numbers |
 | `table` — everything else | Chat, aggregated — a total and the three lines that explain it |
@@ -1214,7 +1183,6 @@ Real WhatsApp is hostile to develop against: real numbers, approved templates, t
 
 - If a message cannot render in the emulator, it does not ship
 - Message length, button counts and list limits obey the real API's limits, so something that works here works there. **Rejected, never truncated** — cutting a 21-character button title to 20 ships the bug instead of finding it
-- **Flows render and respond here too**, and `validateFlowJson` re-checks the rules Meta applies at publish, because a Flow that would fail publish cannot ship no matter how well it renders locally
 - Template-vs-in-window, and which sender number went out, are always visible
 
 The visual question is answered once, cheaply, by phase 1's acceptance criterion — the same message rendered to a real test number.
@@ -1225,7 +1193,7 @@ The visual question is answered once, cheaply, by phase 1's acceptance criterion
 
 Most coaching businesses in India are one person: one `person` with both `academy_admin` and `coach` rows. **This is not the multi-coach product at n=1.** Asking someone to confirm attendance at their own class is absurd, and it is week-one churn.
 
-| Flow | Solo |
+| Journey | Solo |
 |---|---|
 | Coach onboarding (§8.1) | **Gone.** They onboarded as the admin |
 | `CO-COMING` / `CO-NUDGE` | **Gone.** They know |
@@ -1248,9 +1216,9 @@ Implemented there, the solo case falls out for free — **and so do the cases a 
 
 The derived condition — exactly one `active` coach whose `person_id` is also in `academy_admin` — is still worth computing, but for **shaping** rather than gating: merging the coach day into the morning brief, and not offering cover to a set of one. Recompute on coach add/end; never cache it in settings.
 
-**Why the model is multi-coach anyway:** a coach *set* and derived coverage cost nearly nothing to build and cannot be retrofitted. Solo is a strict subset — flows hide; a coordination layer cannot be added later to a model that assumed one coach.
+**Why the model is multi-coach anyway:** a coach *set* and derived coverage cost nearly nothing to build and cannot be retrofitted. Solo is a strict subset — journeys hide; a coordination layer cannot be added later to a model that assumed one coach.
 
-**This is not a phase.** It is a condition checked in phases 4–8 as they are built. Retrofitting means auditing every flow twice.
+**This is not a phase.** It is a condition checked in phases 4–8 as they are built. Retrofitting means auditing every journey twice.
 
 ---
 
@@ -1263,13 +1231,13 @@ Each phase has an acceptance criterion. Do not start a phase before its predeces
 | 0 | **Foundations** | Schema (§6). RLS policies + pgTAP regression tests. `job` table and runner with a drivable clock. Transport interface. Sender routing table | Cross-tenant and cross-role reads return zero rows. Build fails if any table lacks RLS. A job enqueued twice runs once |
 | 1 | **Emulator** | §17 — world, contact tray, arbitrary panes, live updates, clock, event log, seeds, recording, failure injection | A message renders correctly in the emulator and on a real test number. Clock advance fires a scheduled job. A run replays deterministically |
 | 2 | **Agent loop** | Primitives (§14.1), `transaction(steps[])` (§14.2.1), `agent_task` (§13.1), action minting incl. `operation` and `steps` kinds, write-diff preview, layered context (§4), memory store and hot set (§5) | A tap executes with no model call. An expired action refuses. A multi-row write shows its diff before commit. **A rolled-back transaction has messaged nobody.** A self-scheduled task fires, runs under its minter's RLS, and expires |
-| 3 | **Catalog & sessions** | Classes, slots, enrollments, all four `rate_unit`s incl. per-enrollment overrides, `materialize_sessions`, the `onboarding_setup` Flow | A class created from the setup Flow produces correct sessions three weeks out, and editing a slot rematerialises future sessions without losing cancellations or marked attendance. A per-session drop-in inside a monthly class bills correctly |
-| 4 | **Coach day** | §8.2 ladder with per-person timings, the inverted register Flow, coverage derivation, cover offers, unprompted actions | Full ladder observable by advancing the clock. Uncovered escalation fires. A confirmed coach is never asked twice. "I'm here" works with no prompt. A per-person override changes when a prompt fires. A twelve-player class with nobody absent is one tap |
+| 3 | **Catalog & sessions** | Classes, slots, enrollments, all four `rate_unit`s incl. per-enrollment overrides, `materialize_sessions`, the setup ladder | A class created through the setup conversation produces correct sessions three weeks out, and editing a slot rematerialises future sessions without losing cancellations or marked attendance. A per-session drop-in inside a monthly class bills correctly |
+| 4 | **Coach day** | §8.2 ladder with per-person timings, the inverted register, coverage derivation, cover offers, unprompted actions | Full ladder observable by advancing the clock. Uncovered escalation fires. A confirmed coach is never asked twice. "I'm here" works with no prompt. A per-person override changes when a prompt fires. A twelve-player class with nobody absent is one tap |
 | 5 | **Client day** | Reminders, cancel with scope, outcomes, class-starting relay | Cancel inside window writes `cancelled_timely`, outside writes `absent`. Mis-tap protection confirmed |
 | 6 | **Onboarding funnels** | Coach invite (§8.1), client Steps 1–3 (§9.1), staged first contact, templates submitted | Deep link → prefilled send → resolve on sight → `CO-INVITE-CONFIRM`. Staging halts on a bad signal |
 | 7 | **Money** | Rates, tally lines, adjustments, Rail 1 links, reconciliation, dunning | A month of mixed per-session and per-month enrollments produces a correct line-by-line tally with a waiver applied |
 | 8 | **Admin day** | Brief and digest as synthesis (§10.2), NL CLI, follow-up buttons, delivery-status answers, audit and undo | *"Did Meera get the reminder?"* answers from real status. Undoing a messaging operation sends corrections to exactly the people who were told. Every number in a generated digest traces to a query result in its payload |
-| 9 | **Flows & images** | Flow JSON artifacts, `flow_send`, response validation, publish/version handling, the image renderer (timetable, month grid, trend line) | A Flow response writes with no model call and a stale `flow_token` refuses. A Flow that would fail Meta's publish rules fails locally first. A week's timetable renders to an image that is legible on a phone |
+| 9 | ~~**Flows**~~ — **removed** (§14.6) · **images** | Flows were to be published JSON artifacts with `flow_send`, response validation and publish/version handling. All of it is gone: form-shaped work is asked for in the chat, which needs no phase of its own because it is the phase-2 agent loop doing its ordinary job. What remains here is the image renderer (timetable, month grid, trend line) | A week's timetable renders to an image that is legible on a phone. **For the work that used to be this phase, the test is a conversation:** a coach who says "everyone except Aarav, and Kiran was late" gets a correctly marked register, and an owner who says two facts about their business has both written without being asked for the other seven |
 | 10 | ~~**Multimodal**~~ — **repealed** (§14.5) | The client is text-only. What remains: media *arrives* and is answered in words by the runtime, never dropped | A voice note gets a designed reply naming what cannot be done and the road that works. A Hinglish sentence *typed* resolves a player name against the roster — the same test, minus the microphone |
 | 11 | **Prospect funnel** | Cold inbound (§10.1), auto-confirmed trials, admin undo | A stranger with a QR link books a trial end to end; the admin can undo it |
 | 12 | **Agent simulation** | Personas, goals, judge agent, diffable runs (§17) | Ten seeded persona runs complete and produce a judge report. The same seed replays identically. A deliberately introduced regression shows up in a run diff |
@@ -1288,8 +1256,7 @@ Each phase has an acceptance criterion. Do not start a phase before its predeces
 | Capacity limits and waitlists | Sound essential, almost never fire in a well-run academy |
 | Skill levels | A class is a time, a place and people. Levels are the admin's naming |
 | Split households | One player, two accounts, split payment. Real but rare — **and a schema retrofit** (`player.account_id` becomes a join table), so §18's argument for building the coach *set* up front partly applies. Deferred with that cost named rather than hidden |
-| The web surface | **Removed, not deferred** (§15). Forms are Flows, spatial things are images, and the remainder did not pay for a registry, a JWT surface and a second renderer |
-| Endpoint-powered Flows | Static Flows cover every form this product has. An RSA keypair and an encrypted `/data` endpoint buy dynamic screens nothing currently needs (§14.6) |
+| The web surface | **Removed, not deferred** (§15). Forms are conversations, spatial things are images, and the remainder did not pay for a registry, a JWT surface and a second renderer |
 | Admin exploration — pivot, drill, sort | The honest cost of removing the web surface (§15). Revisit when a real admin with real data is demonstrably blocked, not because a dashboard demos well |
 | Explicit prompt-cache handles | Implicit caching until phase 8's instrumentation shows the spend (§4.4) |
 | Parent feedback ratings | The admin sees every parent at pickup. A coach's note on attendance already carries the signal, and a rating prompt spends frequency budget to learn what a conversation would tell you |
@@ -1309,6 +1276,6 @@ Each phase has an acceptance criterion. Do not start a phase before its predeces
 1. **Final name.** "Class Manager" is the name every parent sees in their chat header — a branding decision, not config. Its one real virtue: it says *class*, not *academy*.
 2. **The sender number's country code.** A local number is materially better for first-contact trust; it also carries KYC and local-entity requirements. **Gates parent-funnel conversion, so decide before phase 6.**
 3. **Category scope at launch.** The model — classes, sessions, players, rates — generalizes past sport to music, dance and tuition without change. How much genericizing before tenant #2 rather than after is open. **"Academy" is the word that does not generalize, which is why it appears nowhere a user can see it.**
-4. **Model tiering — and it has already drifted, so decide it properly.** The presumed split was a cheaper model for clients and coaches, the strong one for admins. **That cuts against the product:** parents and coaches are ~95% of the humans this talks to and are where "it feels like a bot" gets decided, while the admin — who has menus, buttons and Flows — needs the model least. What is actually running is a different split: one model for every conversation, a stronger one for synthesis (`MODEL_MAIN` / `MODEL_SYNTH`). That is probably the right axis, and it happened without being decided. **Ratify it or change it against phase 2's cost data**, and if a per-persona split ever does happen, keep the strong model on first contact, the prospect conversation (§10.1), and anyone unhappy.
+4. **Model tiering — and it has already drifted, so decide it properly.** The presumed split was a cheaper model for clients and coaches, the strong one for admins. **That cuts against the product:** parents and coaches are ~95% of the humans this talks to and are where "it feels like a bot" gets decided, while the admin — who has menus and buttons — needs the model least. What is actually running is a different split: one model for every conversation, a stronger one for synthesis (`MODEL_MAIN` / `MODEL_SYNTH`). That is probably the right axis, and it happened without being decided. **Ratify it or change it against phase 2's cost data**, and if a per-persona split ever does happen, keep the strong model on first contact, the prospect conversation (§10.1), and anyone unhappy.
 5. **Children's data.** Every player in this system is a minor, and the product stores their names, attendance, coach notes on their progress, and their parents' numbers and payment records. India's DPDP Act treats children's personal data as a special category with its own consent requirements. **Nothing in this spec addresses it.** Get advice before tenant #2, not after — the answer shapes onboarding consent, retention, what a coach's note may say, and what leaves the country. Flagged here rather than guessed at.
 6. **Model-provider data residency — the one gate that was declared and then not met.** DeepSeek processes on servers in China under no DPA, and every turn sends it children's names, family phone numbers and payment context. The migration plan named a **written residency sign-off as a hard cutover gate**; cutover happened on 15 Aug 2026 without it. That is recorded here as a live gap, not a closed decision. It is the operational half of item 5 and inherits its deadline: settle it in writing before tenant #2, or move `MODEL_MAIN` to a provider that can be diligenced — the client speaks the OpenAI dialect, so that is a base-URL and model-name change, not a rewrite.

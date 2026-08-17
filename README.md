@@ -145,15 +145,18 @@ plan, captures before/after images through a snapshot trigger, and rolls back. T
 blast radius instead of estimating it. **Messages are staged until commit** — a rolled-back
 transaction has messaged nobody.
 
-**Onboarding is one exchange, not six (§14.6).** A new business is asked for its name, what
-it teaches, where it plays, the cancellation notice and its UPI handle in a single WhatsApp
-Flow — a form inside the chat, no browser and no login. It is a **static** Flow, so there is
-no RSA keypair, no data-exchange endpoint and no encryption anywhere in this product; the
-artifact and the rules Meta applies at publish are in `lib/messaging/flows.ts`. The
-`flow_token` is an `action` row id, so a submission inherits expiry, single consumption and
-the minted-for-contact check from §2.2 rather than inventing a session concept. It commits
-through the same plan builder the setup screen uses, because a second implementation of one
-event is the defect this repo has hit most often.
+**Onboarding is a conversation, and that is a deliberate downgrade (§14.6).** A new business
+is asked for its name, what it teaches, where it plays, the cancellation notice and its UPI
+handle — in the chat, one question at a time. This used to be a single WhatsApp Flow: a
+static form inside the chat, all nine fields in one exchange. **Flows are gone from this
+product entirely.** A form collects more per round trip and buys that by fixing every
+question, and the order of every question, at publish time — so it cannot skip what it can
+already see, follow the answer that turns out to matter, or take the correction typed one
+second after Save. What makes the ladder pay for itself is that it does all three: it assumes
+what it can and says so, absorbs everything a single sentence gives it, and stops as soon as
+it has enough to create a class. It commits through `set_up_business`, which runs the one
+plan builder in `lib/setup-plan.ts` — a second implementation of one event is the defect this
+repo has hit most often, and it is why that builder outlived the form that used to call it.
 
 **One send path (§16.3).** Gates in order: opt-out, the two §18 suppression rules, the lint
 pass, pre-launch silence, the repeat gate, API limits, per-recipient frequency, per-tenant
@@ -195,10 +198,10 @@ scripts/drive.ts          the harness — talk to it, then read the tables back
 ## Known gaps
 
 - **Meta Cloud API is not connected**, by design. `transport-cloud.ts` and `app/api/webhook`
-  are written and correct but never exercised. That includes publishing the onboarding Flow:
-  `validateFlowJson` re-checks what Meta checks at publish, and nothing here has ever called
-  the Flows API — creating and publishing a Flow is an account operation, and it belongs with
-  the other Meta calls when this connects to a real number.
+  are written and correct but never exercised. There is no longer a Flows API call among them:
+  publishing artifacts, `validateFlowJson` and the whole create/upload/publish dance went with
+  the forms (§14.6), which is one fewer account operation standing between this and a real
+  number.
 - **Inbound media is never fetched, and no longer needs to be.** A Meta media id becomes a
   placeholder string; nothing downstream resolves it, because the model is text-only (§14.5).
   What matters now is that an attachment is *answered* rather than dropped, and that path is

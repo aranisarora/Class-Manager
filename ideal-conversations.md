@@ -20,7 +20,7 @@ Wherever the bot offers a choice, the road not taken is shown as **◇ Instead �
 
 **The week** — Beginners Mon/Wed/Fri 6:30 · Intermediate Mon/Wed/Fri 7:30 · Advanced Sat 8:00 · Sub Junior Sat 10:00
 
-`[ Button ]` is tapped. `▤ Flow` is a form inside WhatsApp. `≡ List` is a picker.
+`[ Button ]` is tapped. `≡ List` is a picker. **There is no form** — anything form-shaped is asked for in the chat (§14.6).
 
 ---
 ---
@@ -40,19 +40,18 @@ Hi
 
 **Taps `[ Set up my classes ]`**
 
-▤ **Flow · Set up Ace TT · 4 screens**
+> Two things to start: **what the business is called**, and **where you teach**. Both in one message is fine.
 
-**1 · Your business** — Business name → *Ace TT Academy* · What you teach → *Table tennis* · Timezone → *India (IST)*
+**SHARWIN**
+Ace TT Academy, green park indoor stadium court 3 (opposite the pool gate). table tennis
 
-**2 · Where** — Venue → *Green Park Indoor Stadium* · Address → *Court 3, opposite the pool gate* · ☐ I teach at more than one place
+> **Ace TT Academy** — table tennis at **Green Park Indoor Stadium**, Court 3, opposite the pool gate. Saved.
+>
+> I've assumed **India (IST)**, **24 hours'** notice to cancel, a morning brief at **7:00** and an evening summary at **9:00**. Say the word if any of those are wrong — otherwise that's the business done.
+>
+> Now the part that usually takes an hour — your timetable. Type the whole week in one go, however messy: "Mon & Wed 6:30 beginners at Green Park, Sat 8am juniors".
 
-**3 · How you charge** — Mostly → *Per month* · Notice needed to cancel → *24 hours*
-
-**4 · Your rhythm** — Morning brief at → *7:00 am* · Evening summary at → *9:00 pm*
-
-**Submits**
-
-> Got it. **Ace TT Academy**, Green Park, 24 hours' notice, brief at 7.
+> **◇ Why it reads like that —** four questions were asked as one, and four more were *assumed out loud* rather than asked. That is the whole discipline of §14.6: a ladder that asks nine questions in nine messages is worse than the form it replaced, and a ladder that asks two and states its assumptions is better than the form ever was — because the assumptions are correctable in the same breath, and a form's defaults never were.
 >
 > Now the part that usually takes an hour — your timetable. Type the whole week in one go, however messy: "Mon & Wed 6:30 beginners at Green Park, Sat 8am juniors".
 >
@@ -75,11 +74,10 @@ mon wed fri 6.30 beginners then 7.30 intermediate, sat 8-10 advanced, all green 
 
 **Taps `[ Fix the 4th ]`**
 
-▤ **Flow · Add a class** — *already filled in with what I could get*
+> The Saturday one — I have **"Sub Jr", Sat, around 10:00, Green Park, ₹2,500/month**. What I don't have is when it ends. Tell me that and anything else I've got wrong.
 
-Class name → **Sub Jr** · Days → **Sat** ☑ · Starts → **10:00 am** · Ends → **11:00 am** · Venue → **Green Park** · Rate → **2500** · Per → **Month**
-
-**Changes the name to "Sub Junior", submits.**
+**SHARWIN**
+sub junior, 10 to 11
 
 > Four classes in. Advanced is ₹2,500 like the rest — is that right?
 
@@ -90,9 +88,11 @@ advanced is 3500
 >
 > Coaches next. **Names and numbers in one message** is fine — I'll sort them out.
 
-> **◇ Instead —** had he typed the week as four separate messages, or asked for a form, the bot would have offered the same **Add a class** Flow, prefilled with whatever it had. Every route ends at the same read-back.
+> **◇ Instead —** had he typed the week as four separate messages, or asked for a form, he would have got the same thing: the read-back, and a question naming exactly what was missing. Every route ends at the same read-back.
 >
-> **◇ Changed 15 Aug 2026 —** this scene used to open with a photograph of the whiteboard, and the read-back was of a cut-off fourth row. The model is text-only now (§14.5), so what arrives is one messy sentence instead. Everything after it — the partial read named exactly, the prefilled Flow, the tap — is unchanged, which is the point: the read-back was always the load-bearing part. Had he sent the photo anyway, he would have been told plainly that it cannot be read, and asked for this sentence.
+> **◇ Changed 15 Aug 2026 —** this scene used to open with a photograph of the whiteboard, and the read-back was of a cut-off fourth row. The model is text-only now (§14.5), so what arrives is one messy sentence instead.
+>
+> **◇ Changed 18 Aug 2026 —** the two forms in this scene are gone (§14.6). Setup was a four-screen Flow and the fourth class was fixed in a prefilled **Add a class** Flow; both are now asked for in the chat. What is worth noticing is how little of the scene moved: the read-back, the refusal to guess a class into existence, and the correction were always the load-bearing parts, and none of them needed a form. What the form was doing was collecting the *fields* — and the ladder collects them in two messages by assuming the six that are guessable and asking for the one that is not.
 
 ---
 
@@ -431,16 +431,12 @@ reached
 >
 > `[ All present ]`  `[ Take register ]`
 
-**Taps `[ Take register ]`** — the roster opens on one page
+**Taps `[ Take register ]`**
 
-| Player | Present | Late | Absent | Note |
-|---|---|---|---|---|
-| Aarav K | ○ | ○ | **●** | |
-| Meera R | **●** | ○ | ○ | |
-| Kiran S | ○ | **●** | ○ | *10 min late* |
-| *…9 more, all present* | | | | |
+> Who wasn't there? Names are enough — everyone you don't mention is marked present.
 
-**Submits**
+**ARJUN**
+aarav didnt come, kiran was 10 min late
 
 > Marked: 10 present, 1 late, 1 absent.
 >
@@ -454,7 +450,9 @@ reached
 >
 > If parents tell you things like this at the court, just type it here whenever. You don't have to wait for the register.
 
-> **◇ Instead —** `[ All present ]` on a normal night is one tap and the register never opens: *"Marked, all 12. Parents get the outcome tonight."*
+> **◇ Instead —** `[ All present ]` on a normal night is one tap and nothing is asked: *"Marked, all 12. Parents get the outcome tonight."*
+>
+> **◇ Changed 18 Aug 2026 —** this was a Flow: a twelve-row page of radio buttons, and it is gone (§14.6). The inversion survived it — the question is still *who wasn't there*, because absences are sparse and asking twelve three-state questions to learn one fact is what makes coaches stop marking registers. What changed is that the answer is now a sentence, which is strictly wider than the form: *"aarav didnt come, kiran was 10 min late"* is one message, and so is *"aarav left at half time and meera's dad says she's out all month"* — the second of which the Flow had no field for and could not have been given one without a deploy.
 
 ## 7:36 pm · 📱 Latha
 

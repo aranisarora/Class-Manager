@@ -257,8 +257,7 @@ Three more, found while re-driving after the F-A/F-B fixes:
 - **One advance cancellation suppresses the whole register.** `post_class_register`
   skipped Friday's Beginners with *"register already marked"* because Meera's
   `cancelled_timely` row existed — so the coach was never asked about the other two
-  players, and the register Flow could never be sent (`drive register` then reports "no
-  register form has been sent"). The "already marked" predicate needs to mean *every
+  players, and the register was never asked for at all. The "already marked" predicate needs to mean *every
   enrolled player resolved* (or session `completed`), not *any attendance row exists*.
   R7: the skip succeeds, and nobody would find out. The chat path still works and was
   driven to completion — the inverted register and the retro-timely question both
@@ -791,13 +790,17 @@ and `tn-3am` shows it composing a four-join query with a correlated subquery unp
 failure nobody has seen is the speculative generality this repo keeps paying for. Revisit if a drive
 shows it composing the coach-time join badly.
 
-**Why `lib/agent/clash.ts` survives the prefix fix.** Not as belt-and-braces on the model path,
-where it is untested. `lib/agent/loop.ts:550` — the **Add a class** Flow — builds a `create_class`
-plan from form fields (days, start, end, venue) and calls `executePlan` directly. **There is no
-model in that path.** No doctrine applies to a form, so nothing else will ever notice a coach booked
-twice through it, and that is the one path where the check is the only thing there is. Note also
-what it can and cannot do there: `executePlan` commits first and names the overlap in the receipt,
-so on the form path it reports rather than prevents. Closing that is the deferred-constraint
+**Why `lib/agent/clash.ts` survives the prefix fix — and the argument has changed.** It used to be
+this: the **Add a class** Flow built a `create_class` plan from form fields and called `executePlan`
+directly, so **there was no model in that path**, no doctrine applied to a form, and the check was
+the only thing that would ever notice a coach booked twice. **That path is gone with the forms
+(§14.6)**, and every route to `create_class` now runs through the model — which means the check is
+no longer the *only* thing there is, and the original justification no longer holds on its own terms.
+It stays anyway, for a weaker but still real reason: a whole timetable typed in one messy sentence
+commits as a single plan, which is exactly where two 7am Mondays get in, and doctrine over a
+five-class sentence is a thinner guarantee than a join. Note what it can and cannot do:
+`executePlan` commits first and names the overlap in the receipt, so it reports rather than
+prevents. Closing that is the deferred-constraint
 question, still open.
 
 ### F-AV · A partial stop request writes nothing, and the invariant then passes for the wrong reason
