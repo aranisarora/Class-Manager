@@ -531,33 +531,56 @@ async function executeAction(
     if (payload.flow === ADD_CLASS.id) {
       const v = parsed.values as AddClassValues
       /**
-       * The venue arrives as a NAME, because that is what a person picks from a list,
-       * and `create_class` takes an id. Resolved here rather than passed through: zod
-       * strips an unknown key silently, so a `venue_name` handed to the operation would
-       * have produced a class at no venue at all — and the first anybody would know is a
-       * parent asking where to go.
+       * The venue arrives as a NAME, because that is what a person picks from a
+       * list, and every id in this plan has to be an id. Resolved here rather
+       * than interpolated blind: a venue that does not exist must produce a class
+       * at no venue rather than a statement that fails, because the class is the
+       * thing the person asked for.
        */
       let venueId: string | null = null
       if (v.venue) {
         const hit = await modelQuery(session, `select id from venue where name = ${lit(v.venue)} limit 1`)
         venueId = hit.error ? null : ((hit.rows[0]?.id as string) ?? null)
       }
+      /**
+       * **A class is its rows.**
+       *
+       * This built a `create_class` step, and `create_class` was the operation
+       * whose consequence line said it was "the only thing that schedules the
+       * sessions" — which is why removing it needed the trigger in 0033 first.
+       * A slot implies its sessions now, on this path and on the model's and on
+       * one nobody has written, so the form writes exactly what a class is made
+       * of and the rest follows from the world.
+       *
+       * The class is selected back by name for the slots, because a plan cannot
+       * know the id of a row it just inserted. `class_academy_name_open_key` is
+       * what makes that safe: a second open class of the same name does not
+       * exist, so the subquery matches exactly one row or the insert that would
+       * have created the ambiguity was already refused.
+       */
+      const today = inZone(await now(identity.academyId), identity.academy.timezone || 'Asia/Kolkata').date
+      const cls = `(select id from class where name = ${lit(v.name)} and academy_id = app.academy_id() and active and ends_on is null)`
       const res = await executePlan(
         session,
         [
           {
-            operation: {
-              name: 'create_class' as OperationName,
-              args: {
-                name: v.name,
-                starts_on: inZone(await now(identity.academyId), identity.academy.timezone || 'Asia/Kolkata').date,
-                slots: v.days.map((d) => ({ weekday: d, start_time: v.starts, end_time: v.ends })),
-                ...(venueId ? { venue_id: venueId } : {}),
-                ...(v.rate !== undefined ? { rate_amount: v.rate } : {}),
-                ...(v.rate_unit ? { rate_unit: v.rate_unit } : {}),
-              },
-            },
+            write:
+              `insert into class (academy_id, name, starts_on` +
+              `${venueId ? ', venue_id' : ''}${v.rate !== undefined ? ', rate_amount' : ''}` +
+              `${v.rate_unit ? ', rate_unit' : ''})` +
+              ` values (app.academy_id(), ${lit(v.name)}, date ${lit(today)}` +
+              `${venueId ? `, ${uid(venueId)}` : ''}${v.rate !== undefined ? `, ${v.rate}` : ''}` +
+              `${v.rate_unit ? `, ${lit(v.rate_unit)}` : ''})`,
           } as PlanStep,
+          ...v.days.map(
+            (d) =>
+              ({
+                write:
+                  `insert into class_slot (academy_id, class_id, weekday, start_time, end_time)` +
+                  ` values (app.academy_id(), ${cls}, ${d}, time ${lit(v.starts)}, time ${lit(v.ends)})`,
+              }) as PlanStep,
+          ),
+          { note: `${v.name}, ${v.days.length} time(s) a week` } as PlanStep,
         ],
         `Add ${v.name} from the form`,
         audienceFor(identity),

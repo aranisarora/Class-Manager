@@ -427,12 +427,9 @@ function num(v: string | number | null | undefined): number {
 
 export type OperationName =
   | 'end_coach'
-  | 'end_enrollment'
-  | 'end_client'
   | 'cancel_session'
   | 'move_class'
   | 'reschedule_session'
-  | 'waive'
   | 'book_trial'
   | 'mark_attendance'
   | 'confirm_coach'
@@ -441,21 +438,11 @@ export type OperationName =
   | 'claim_cover'
   | 'client_cancel'
   | 'convert_trial'
-  | 'record_payment'
-  | 'request_payment'
-  | 'confirm_payment'
   | 'opt_out'
-  | 'set_timing'
-  | 'create_class'
-  | 'close_class'
-  | 'add_coach'
-  | 'add_family'
   | 'send_invite_draft'
   | 'undo'
-  | 'set_onboarding_state'
   | 'remember'
   | 'forget'
-  | 'list_watches'
   | 'drop_watch'
 
 export type OperationDef = {
@@ -849,238 +836,6 @@ function deactivateStrandedPlayers(ctx: SessionCtx, playerIds: string[], tz: str
   ]
 }
 
-const endEnrollment: OperationDef = {
-  name: 'end_enrollment',
-  description:
-    'Stop a player in one class (or in every class) from a date. Keeps their history, stops the billing and the reminders, '
-    + 'and reads back what is still owed. Use this when a family says a child is stopping.',
-  destructive: true,
-  params: z.object({
-    player_id: uuid,
-    class_id: uuid.nullish(),
-    end_date: z.string().nullish(),
-    reason: z.string().nullish(),
-  }),
-  async build(ctx, args) {
-    const a = await academyOf(ctx)
-    const endIso = isoDate(args.end_date ?? (await now(ctx.academyId)).toISOString(), a.timezone)
-
-    const live = await liveEnrollments(
-      ctx,
-      `e.player_id = ${uid(args.player_id)}` +
-        (args.class_id ? ` and e.class_id = ${uid(args.class_id)}` : ''),
-      endIso,
-      a.timezone,
-    )
-    if (!live.length) {
-      // Not an error: R7 says doing nothing must not read as success, and the honest
-      // answer is that there was nothing to end.
-      throw new Error(
-        args.class_id
-          ? 'that player is not currently enrolled in that class, so there is nothing to end'
-          : 'that player has no live enrolments, so there is nothing to end',
-      )
-    }
-
-    const name = live[0].player_name
-    const classes = [...new Set(live.map((l) => l.class_name))]
-    const missed = live.reduce((n, l) => n + num(l.upcoming), 0)
-    const owed = await accountBalance(ctx, live[0].account_id)
-    const when = zoned(endIso, a.timezone).toFormat('d LLL')
-
-    /**
-     * A family can always leave — but the WRITE is the admin's. RLS lets no
-     * holder update `enrollment`, so a family-initiated end used to die as
-     * `PRECONDITION_FAILED: the world moved` — the world had not moved; the
-     * writer was not allowed, and the misdiagnosis sent every probe and the
-     * month drive into byte-identical retries (F-K #1/#5). Same shape as a
-     * waiver: propose the exact change and ROUTE it. The admin's tap replays
-     * this operation under a session that can write; the family hears the
-     * honest state now and the outcome when it lands (rule 15).
-     */
-    // Route only for a real non-admin person. `service` is the runtime's own
-    // hand (the driver, a tap replay, a job) — is_admin() is false there by
-    // exemption, not by authority, and routing the runtime to itself would
-    // strand every programmatic end.
-    const [actorIsAdmin] = await q<{ ok: boolean }>(ctx, `select app.is_admin() as ok`)
-    if (ctx.role === 'user' && !actorIsAdmin?.ok) {
-      const stopping =
-        `${name} stops ${classes.length === 1 ? classes[0] : `all ${classes.length} classes`} after ${when}` +
-        (owed > 0 ? ` — ${formatINR(owed)} still open on the account` : '')
-      const steps: PlanStep[] = [{ note: `${name}'s leave, routed to the admin to make official` }]
-      for (const adminPerson of await adminPersonIds(ctx)) {
-        steps.push({
-          message: {
-            to_person_id: adminPerson,
-            is_escalation: true,
-            body:
-              `${live[0].holder_name ?? 'The family'} says ${stopping}. ` +
-              `One tap makes it official — their spot runs as normal until then.`,
-            buttons: [
-              {
-                title: `End on ${when}`,
-                action: { kind: 'operation', op: 'end_enrollment', args: { ...args } },
-              },
-            ],
-          },
-        })
-      }
-      steps.push({
-        message: {
-          // Inside the routed branch the caller is always a person ('user'),
-          // so this is their own chat.
-          to_contact_id: ctx.contactId,
-          body:
-            `Noted — ${name} stops after ${when}. I've sent it to the owner to make official, ` +
-            `and I'll confirm here once it's done. Classes and billing carry on as normal until then.`,
-        },
-      })
-      /**
-       * Rule 15's return trip, kept by machinery rather than by the sentence
-       * above promising it. "I'll confirm here once it's done" is a runtime
-       * sentence with — until this step — nothing behind it: if the admin never
-       * taps, the enrolment keeps billing past the date the family named, and
-       * the promise is exactly the "worst sentence you can send" the doctrine
-       * describes, written by the runtime itself (arc finding, client-leaves).
-       * The watch checks in two days whether the end date landed; silence when
-       * it has, one nudge to the admin when it has not. The family stays quiet
-       * either way until it is done — they were promised the outcome, not the
-       * status. Deduped on player+date, so re-raising the same leave does not
-       * stack watches.
-       */
-      const nowAt = await now(ctx.academyId)
-      const slug = `end-enrollment-${args.player_id.slice(0, 8)}-${endIso}`
-      steps.push({
-        schedule: {
-          kind: 'agent_task',
-          run_at: new Date(nowAt.getTime() + 48 * 3600_000).toISOString(),
-          dedupe_key: dedupe.agentTask(ctx.academyId, slug),
-          payload: {
-            slug,
-            instruction:
-              `${live[0].holder_name ?? 'The family'} asked to end ${name}'s ` +
-              `${classes.length === 1 ? classes[0] : `${classes.length} classes`} enrolment on ${endIso}. ` +
-              `It was routed to the admin to make official, and this person was promised they would hear once it is done. ` +
-              `The context rows show whether the end date has landed. If ended_on is set, the loop is closed — do nothing; ` +
-              `silence is the result. If ended_on is still null, the admin has not acted and billing is still running: send ` +
-              `the admin ONE reminder (reply with to_contact_id 'admin') carrying a button ` +
-              `{kind:'operation', op:'end_enrollment', args:{player_id:'${args.player_id}'` +
-              `${args.class_id ? `, class_id:'${args.class_id}'` : ''}, end_date:'${endIso}'}} so their tap makes it official. ` +
-              `Do not message this person either way — they hear when it lands, not that it has not.`,
-            context:
-              `select e.id as enrollment_id, c.name as class, e.ended_on from enrollment e ` +
-              `join class c on c.id = e.class_id where e.player_id = '${args.player_id}'` +
-              (args.class_id ? ` and e.class_id = '${args.class_id}'` : ''),
-            minted_by_contact_id: ctx.contactId,
-            expires_at: new Date(zoned(endIso, a.timezone).toJSDate().getTime() + 7 * 86_400_000).toISOString(),
-          },
-        },
-      })
-      return steps
-    }
-
-    const steps: PlanStep[] = [
-      {
-        note:
-          `${name} stops ${classes.length === 1 ? `${classes[0]}` : `all ${classes.length} classes`} on ` +
-          `${when}` +
-          (missed ? `, coming off ${missed} scheduled session${missed === 1 ? '' : 's'}` : '') +
-          (owed > 0 ? `, with ${formatINR(owed)} still open on the account` : ''),
-      },
-      {
-        write: `update enrollment set ended_on = date ${lit(endIso)}
-                 where id in (${live.map((l) => uid(l.enrollment_id)).join(',')})
-                   and academy_id = ${uid(ctx.academyId)} and ended_on is null`,
-        requireRows: live.length,
-      },
-      // The family asked to leave (or is being ended); either way an ended
-      // enrolment is a change FOR THEM, and the one message that closes the
-      // loop is the one that says it is done (rule 15 — a handoff with no
-      // return trip is indistinguishable from being ignored).
-      {
-        message: {
-          to_person_id: live[0].holder_person_id,
-          body:
-            `${a.name}: ${name} is out of ${classes.length === 1 ? classes[0] : `all ${classes.length} classes`} ` +
-            `after ${when} — done and confirmed. ` +
-            (owed > 0 ? `${formatINR(owed)} is still open on the account. ` : '') +
-            `Attendance and progress stay on record if you ever want them.`,
-        },
-      },
-    ]
-    steps.push(...deactivateStrandedPlayers(ctx, [args.player_id], a.timezone))
-    return steps
-  },
-}
-
-const endClient: OperationDef = {
-  name: 'end_client',
-  description:
-    'Close a whole family: ends every enrolment for every child on the account from a date, keeps their history, '
-    + 'and reads back the closing balance. Use this when a family is leaving altogether.',
-  destructive: true,
-  params: z.object({
-    account_id: uuid,
-    end_date: z.string().nullish(),
-    reason: z.string().nullish(),
-  }),
-  async build(ctx, args) {
-    const a = await academyOf(ctx)
-    const endIso = isoDate(args.end_date ?? (await now(ctx.academyId)).toISOString(), a.timezone)
-
-    const [account] = await q<{ id: string; display_name: string | null; holder_name: string }>(
-      ctx,
-      `select ac.id, ac.display_name, pe.full_name as holder_name
-         from account ac join person pe on pe.id = ac.holder_person_id
-        where ac.id = ${uid(args.account_id)} and ac.academy_id = ${uid(ctx.academyId)}`,
-    )
-    if (!account) throw new Error('I cannot see that family')
-
-    const live = await liveEnrollments(
-      ctx,
-      `pl.account_id = ${uid(args.account_id)}`,
-      endIso,
-      a.timezone,
-    )
-    const owed = await accountBalance(ctx, args.account_id)
-    const who = account.display_name || account.holder_name
-    const players = [...new Set(live.map((l) => l.player_name))]
-
-    const steps: PlanStep[] = [
-      {
-        note:
-          `${who} leaves on ${zoned(endIso, a.timezone).toFormat('d LLL')}` +
-          (players.length
-            ? `, ending ${live.length} enrolment${live.length === 1 ? '' : 's'} for ${players.join(' and ')}`
-            : ', with no live enrolments to end') +
-          (owed > 0
-            ? `. ${formatINR(owed)} is still open and this does not write it off — waive it separately if that is what you meant.`
-            : '.'),
-      },
-    ]
-
-    if (live.length) {
-      steps.push({
-        write: `update enrollment set ended_on = date ${lit(endIso)}
-                 where id in (${live.map((l) => uid(l.enrollment_id)).join(',')})
-                   and academy_id = ${uid(ctx.academyId)} and ended_on is null`,
-        requireRows: live.length,
-      })
-      steps.push(...deactivateStrandedPlayers(ctx, [...new Set(live.map((l) => l.player_id))], a.timezone))
-    }
-
-    // The account row itself is kept, deliberately. It carries the tally lines and
-    // the payments, so deleting or hiding it would take the money history with it —
-    // and a family that comes back is the same account, the way a returning coach is
-    // the same coach row with a new status.
-    return steps
-  },
-}
-
-/* =========================================================================== *
- * cancel_session
- * =========================================================================== */
-
 const cancelSession: OperationDef = {
   name: 'cancel_session',
   description:
@@ -1376,59 +1131,6 @@ const rescheduleSession: OperationDef = {
 
 /* =========================================================================== *
  * waive — §6.4. Adjustments are ONE primitive, not six features.
- * =========================================================================== */
-
-const waive: OperationDef = {
-  name: 'waive',
-  description:
-    'Write an adjustment: a waiver, a credit, a pro-rate, a sibling discount, goodwill. One primitive, a reason and an approver.',
-  params: z.object({
-    account_id: uuid,
-    player_id: uuid.nullish(),
-    amount: z.number(),
-    reason: z.string().min(1),
-    period: z.string().nullish(),
-    description: z.string().nullish(),
-    notify: z.boolean().optional().default(true),
-  }),
-  async build(ctx, args, id) {
-    const a = await academyOf(ctx)
-    const period = args.period ? periodOf(args.period, a.timezone) : periodOf(await now(ctx.academyId), a.timezone)
-    // Waiving is a credit. A positive number here means "take this much off",
-    // which is what an admin says out loud; the line itself is negative.
-    const amount = args.amount > 0 ? -Math.abs(args.amount) : args.amount
-    const [acct] = await q<{ holder_person_id: string; display_name: string | null }>(
-      ctx,
-      `select holder_person_id, display_name from account where id = ${uid(args.account_id)}`,
-    )
-    const steps: PlanStep[] = [
-      { note: `${formatINR(Math.abs(amount))} off ${monthLabel(period, a.timezone)} — ${args.reason}` },
-      {
-        adjust: {
-          account_id: args.account_id,
-          player_id: args.player_id ?? null,
-          amount,
-          reason: args.reason,
-          period,
-          description: args.description ?? `Adjustment — ${args.reason}`,
-        },
-      },
-    ]
-    if (args.notify && acct) {
-      steps.push({
-        message: {
-          to_person_id: acct.holder_person_id,
-          body: `${a.name}: I've taken ${formatINR(Math.abs(amount))} off your ${monthLabel(period, a.timezone)} tally — ${args.reason}. It'll show as a line on the tally.`,
-          buttons: [{ title: 'See the lines', action: { kind: 'reply', text: 'Show me my tally lines' } }],
-        },
-      })
-    }
-    return steps
-  },
-}
-
-/* =========================================================================== *
- * book_trial — §10.1 step 4. Auto-confirmed, no admin gate.
  * =========================================================================== */
 
 const bookTrial: OperationDef = {
@@ -2489,238 +2191,6 @@ const clientCancel: OperationDef = {
  * Money — record_payment / request_payment
  * =========================================================================== */
 
-const recordPayment: OperationDef = {
-  name: 'record_payment',
-  description: 'Record a payment against an account (rail 1: the admin attests, or a screenshot was read back).',
-  params: z.object({
-    account_id: uuid,
-    amount: z.number().positive(),
-    method: z.string().nullish(),
-    reference: z.string().nullish(),
-    evidence_url: z.string().nullish(),
-    notify: z.boolean().optional().default(true),
-  }),
-  async build(ctx, args, id) {
-    const a = await academyOf(ctx)
-    const [acct] = await q<{ holder_person_id: string }>(
-      ctx,
-      `select holder_person_id from account where id = ${uid(args.account_id)}`,
-    )
-    /**
-     * **Settle the outstanding request, or insert a new payment. Never both.**
-     *
-     * This did both, unconditionally: it inserted a fresh `confirmed` row and then
-     * flipped every matching `requested` row to `confirmed`. So attesting a ₹2,400
-     * request booked ₹4,800 and read the family ₹2,400 in credit — and the state it
-     * misfires on is exactly the one the product manufactures, because
-     * `request_payment` writes the `requested` row and `AD-RECONCILE` exists to ask
-     * the admin to attest it. The first Rail 1 attestation this product ever
-     * performed would have been wrong, in the direction nobody checks: money the
-     * business is owed, silently written off.
-     *
-     * The old UPDATE also matched *every* requested row of that amount and carried
-     * no reference, no attester and no evidence, so the audit trail for a settled
-     * request was empty.
-     */
-    const [outstanding] = await q<{ id: string }>(
-      svc(ctx),
-      `select id from payment
-        where academy_id = ${uid(ctx.academyId)} and account_id = ${uid(args.account_id)}
-          and status = 'requested' and amount = ${moneyLit(args.amount)}
-        order by requested_at nulls last, created_at
-        limit 1`,
-    )
-    const attester = ctx.role === 'user' ? uid(ctx.personId) : 'null'
-
-    const steps: PlanStep[] = [
-      { note: `${formatINR(args.amount)} recorded` },
-      outstanding
-        ? {
-            // `requireRows` makes two admins attesting the same request in the same
-            // second abort the second plan rather than double-credit it — which is
-            // the same conditional-UPDATE trick that makes the cover race correct.
-            write: `update payment
-                       set status = 'confirmed',
-                           confirmed_at = app.now(),
-                           confirmed_by = ${attester},
-                           method = coalesce(${lit(args.method ?? null)}, method),
-                           reference = coalesce(${lit(args.reference ?? null)}, reference),
-                           evidence_url = coalesce(${lit(args.evidence_url ?? null)}, evidence_url)
-                     where id = ${uid(outstanding.id)}
-                       and status = 'requested'`,
-            requireRows: 1,
-          }
-        : {
-            write: `insert into payment (academy_id, account_id, amount, rail, method, reference, status, confirmed_at, confirmed_by, evidence_url)
-                    values (${uid(ctx.academyId)}, ${uid(args.account_id)}, ${moneyLit(args.amount)}, ${lit(a.rail)},
-                            ${lit(args.method ?? 'upi')}, ${lit(args.reference ?? null)}, 'confirmed', app.now(),
-                            ${attester}, ${lit(args.evidence_url ?? null)})`,
-          },
-    ]
-    if (args.notify && acct) {
-      steps.push({
-        message: {
-          to_person_id: acct.holder_person_id,
-          catalog_id: 'CL-RECEIPT',
-          fixed: true,
-          body: `${a.name}: received ${formatINR(args.amount)}${args.reference ? `, ref ${args.reference}` : ''}. Thank you.`,
-          buttons: [{ title: 'See the lines', action: { kind: 'reply', text: 'Show me my tally' } }],
-        },
-      })
-    }
-    return steps
-  },
-}
-
-const requestPayment: OperationDef = {
-  name: 'request_payment',
-  description: "Ask an account for what's outstanding, with the UPI handle and a reconcile check-back.",
-  params: z.object({
-    account_id: uuid,
-    amount: z.number().nullish(),
-    period: z.string().nullish(),
-    note: z.string().nullish(),
-  }),
-  async build(ctx, args, id) {
-    const a = await academyOf(ctx)
-    const nowD = await now(ctx.academyId)
-    const period = args.period ? periodOf(args.period, a.timezone) : periodOf(nowD, a.timezone)
-    const [acct] = await q<{ holder_person_id: string }>(
-      ctx,
-      `select holder_person_id from account where id = ${uid(args.account_id)}`,
-    )
-    const [bal] = await q<{ due: string }>(
-      ctx,
-      `select coalesce((select sum(amount) from tally_line
-                         where account_id = ${uid(args.account_id)} and period <= date ${lit(period)}), 0)
-            - coalesce((select sum(amount) from payment
-                         where account_id = ${uid(args.account_id)} and status = 'confirmed'), 0) as due`,
-    )
-    const amount = args.amount ?? num(bal?.due)
-    if (amount <= 0) return [{ note: 'nothing is outstanding on that account' }]
-
-    const paymentId = newId()
-    const steps: PlanStep[] = [
-      { note: `${formatINR(amount)} requested for ${monthLabel(period, a.timezone)}` },
-      {
-        write: `insert into payment (id, academy_id, account_id, amount, rail, method, status, requested_at)
-                values (${uid(paymentId)}, ${uid(ctx.academyId)}, ${uid(args.account_id)}, ${moneyLit(amount)},
-                        ${lit(a.rail)}, 'upi', 'requested', app.now())`,
-      },
-    ]
-    if (acct) {
-      steps.push({
-        message: {
-          to_person_id: acct.holder_person_id,
-          catalog_id: 'CL-TALLY',
-          fixed: true,
-          body:
-            `${a.name}: ${formatINR(amount)} is due for ${monthLabel(period, a.timezone)}.` +
-            (a.upi_handle ? `\nUPI: ${a.upi_handle}` : '') +
-            (args.note ? `\n${args.note}` : ''),
-          buttons: [
-            {
-              title: 'Pay now',
-              action: {
-                kind: 'noop',
-                ack: a.upi_handle
-                  ? `Pay ${formatINR(amount)} to ${a.upi_handle} from any UPI app, then tell me and I'll mark it.`
-                  : `Ask ${a.name} for their UPI handle — I don't have one on file yet.`,
-              },
-            },
-            { title: 'Already paid', action: { kind: 'reply', text: `I have already paid ${formatINR(amount)}` } },
-            { title: 'See the lines', action: { kind: 'reply', text: 'Show me the lines behind that' } },
-          ],
-        },
-      })
-    }
-    steps.push({
-      schedule: {
-        kind: 'reconcile',
-        run_at: new Date(nowD.getTime() + 48 * 3_600_000).toISOString(),
-        dedupe_key: dedupe.reconcile(paymentId, 1),
-        payload: { payment_id: paymentId, account_id: args.account_id, period },
-      },
-    })
-    return steps
-  },
-}
-
-/**
- * `confirm_payment` — the Rail 1 attestation, addressed to one row.
- *
- * §11.5 is two arrows: `requested ──[Yes]──> confirmed`. Nothing in the product
- * could draw the first one. `AD-RECONCILE` minted its `[Yes]` as
- * `{kind:'reply', text:"Yes — Meera's ₹2,400 came in, confirm it"}` — a sentence
- * handed back to the model to re-interpret — so **a money state transition was
- * decided at tap time by inference**, which is the one thing §2.2 exists to
- * prevent, on the one table where being wrong costs the business money. The only
- * operation the model could then reach for was `record_payment(account_id,
- * amount)`, which is amount-matched and was double-crediting.
- *
- * The payment id is known at mint time — `request_payment` generates it and the
- * reconcile job carries it in its payload — so the button can carry the row. No
- * inference, no amount matching, no second confirmed row.
- */
-const confirmPayment: OperationDef = {
-  name: 'confirm_payment',
-  description:
-    'Confirm one specific payment the business asked for — the Rail 1 attestation. Takes the payment id from the reconcile prompt, never an amount.',
-  params: z.object({
-    payment_id: uuid,
-    reference: z.string().nullish(),
-    evidence_url: z.string().nullish(),
-    notify: z.boolean().optional().default(true),
-  }),
-  async build(ctx, args, _id) {
-    const a = await academyOf(ctx)
-    const [p] = await q<{ account_id: string; amount: string; status: string; holder_person_id: string }>(
-      svc(ctx),
-      `select p.account_id, p.amount, p.status, ac.holder_person_id
-         from payment p join account ac on ac.id = p.account_id
-        where p.id = ${uid(args.payment_id)} and p.academy_id = ${uid(ctx.academyId)}`,
-    )
-    if (!p) throw new Error('that payment is not one I can see')
-    if (p.status === 'confirmed') {
-      // Said plainly rather than written twice. A second attestation is not a
-      // no-op on a money table, it is a second credit.
-      throw new Error('that payment is already confirmed — nothing to do')
-    }
-
-    const amount = num(p.amount)
-    const steps: PlanStep[] = [
-      { note: `${formatINR(amount)} confirmed` },
-      {
-        write: `update payment
-                   set status = 'confirmed',
-                       confirmed_at = app.now(),
-                       confirmed_by = ${ctx.role === 'user' ? uid(ctx.personId) : 'null'},
-                       reference = coalesce(${lit(args.reference ?? null)}, reference),
-                       evidence_url = coalesce(${lit(args.evidence_url ?? null)}, evidence_url)
-                 where id = ${uid(args.payment_id)}
-                   and status <> 'confirmed'`,
-        requireRows: 1,
-      },
-    ]
-    if (args.notify) {
-      steps.push({
-        message: {
-          to_person_id: p.holder_person_id,
-          catalog_id: 'CL-RECEIPT',
-          fixed: true,
-          body: `${a.name}: received ${formatINR(amount)}${args.reference ? `, ref ${args.reference}` : ''}. Thank you.`,
-          buttons: [{ title: 'See the lines', action: { kind: 'reply', text: 'Show me my tally' } }],
-        },
-      })
-    }
-    return steps
-  },
-}
-
-/* =========================================================================== *
- * opt_out — §16.3. Confirmed, per-academy, and the admin is told.
- * =========================================================================== */
-
 const optOut: OperationDef = {
   name: 'opt_out',
   description:
@@ -2812,548 +2282,6 @@ const TIMING_KEY = z.enum([
   TIMING_KEYS.clientReminderMuted,
   TIMING_KEYS.clientOutcomeMuted,
 ])
-
-const setTiming: OperationDef = {
-  name: 'set_timing',
-  ownScope: true,
-  description:
-    "Override one person's prompt timing (how far ahead they're asked, how much notice they want), or mute a category for them — client_reminder_muted / client_outcome_muted with value true are the structural home of \"just the bill\" and \"stop the recaps\": a preference stored only as a memory fact stops nothing. Defaults live on the academy; this is the per-person override.",
-  params: z.object({
-    person_id: uuid.nullish(),
-    key: TIMING_KEY,
-    value: z.union([z.number(), z.string(), z.boolean(), z.null()]),
-    reason: z.string().nullish(),
-  }),
-  async build(ctx, args, id) {
-    const personId = args.person_id ?? id.person.id
-    const settings: Record<string, unknown> = { [args.key]: args.value }
-    if (args.reason) settings[`${args.key}_why`] = args.reason
-    return [
-      {
-        note: `${args.key.replace(/_/g, ' ')} for this person is now ${args.value ?? 'the academy default'}`,
-        personal: `${args.key.replace(/_/g, ' ')} for you is now ${args.value ?? 'the usual'}`,
-      },
-      {
-        write: `update person set settings = coalesce(settings, '{}'::jsonb) || ${jsonLit(settings)}
-                 where id = ${uid(personId)} and academy_id = ${uid(ctx.academyId)}`,
-        requireRows: 1,
-      },
-    ]
-  },
-}
-
-/* =========================================================================== *
- * Catalog building — create_class / add_coach / add_family. Messages nobody.
- * =========================================================================== */
-
-const createClass: OperationDef = {
-  name: 'create_class',
-  description: 'Create a class with its weekly slots, rate and coaches, and materialise its sessions.',
-  params: z.object({
-    name: z.string().min(1),
-    venue_id: uuid.nullish(),
-    rate_amount: z.number().nullish(),
-    rate_unit: z.enum(['per_session', 'per_month', 'per_term', 'per_package']).nullish(),
-    rate_count: z.number().int().nullish(),
-    starts_on: z.string(),
-    ends_on: z.string().nullish(),
-    slots: z
-      .array(z.object({ weekday: z.number().int().min(0).max(6), start_time: z.string(), end_time: z.string() }))
-      .min(1),
-    coach_ids: z.array(uuid).optional().default([]),
-  }),
-  async build(ctx, args, id) {
-    const a = await academyOf(ctx)
-    const classId = newId()
-    /**
-     * A class begins on one of its own weekdays, or it does not begin.
-     *
-     * Asked on a Thursday for "saturday open play 9-11am", the model wrote
-     * `starts_on: 2026-08-16` — a **Sunday** — for a class whose only slot is
-     * `weekday = 6`. `materialize_sessions` walks forward from `starts_on` looking
-     * for matching weekdays, so it correctly produced a first session on Sat 22 Aug
-     * and silently skipped Sat 15 Aug. A whole week of a batch did not exist, the
-     * admin's calendar looked right (the class was there, the slot was right, the
-     * price was right), and the only evidence was the absence of a session on a
-     * date nobody thought to check.
-     *
-     * Model weekday arithmetic is unreliable — the same round set a "remind me on
-     * friday" task three weeks out — and nothing downstream compared the date it
-     * produced against the weekdays it produced in the same breath. Both values are
-     * in scope here, ten lines apart, so the comparison is free.
-     *
-     * It moves the date forward rather than refusing. Refusing would be honest and
-     * would cost a round: the model would have to be told, re-derive the date, and
-     * call again, and it has already demonstrated it is bad at exactly that sum.
-     * The intent ("start it Saturday") is unambiguous — only the arithmetic was
-     * wrong — so the smallest correct start date consistent with both is the one
-     * the person meant. A note goes on the plan so the preview says what happened,
-     * because a silent correction is how the next wrong date gets missed.
-     */
-    const requested = isoDate(args.starts_on, a.timezone)
-    const weekdays = new Set<number>(
-      (args.slots as { weekday: number }[]).map((s) => Number(s.weekday)),
-    )
-    const startsOn = firstMatchingWeekday(requested, weekdays)
-    const moved = startsOn !== requested
-    const steps: PlanStep[] = [
-      {
-        note:
-          `${args.name}, ${args.slots.length} slot${args.slots.length === 1 ? '' : 's'} a week` +
-          (moved ? `, starting ${startsOn} — the first ${WEEKDAY_NAMES[dowOf(startsOn)]} on or after ${requested}` : ''),
-      },
-      {
-        write: `insert into class (id, academy_id, name, venue_id, rate_amount, rate_unit, rate_count, starts_on, ends_on)
-                values (${uid(classId)}, ${uid(ctx.academyId)}, ${lit(args.name)},
-                        ${args.venue_id ? uid(args.venue_id) : 'null'},
-                        ${args.rate_amount === null || args.rate_amount === undefined ? 'null' : moneyLit(args.rate_amount)},
-                        ${lit(args.rate_unit ?? null)}, ${lit(args.rate_count ?? null)},
-                        date ${lit(startsOn)}, ${args.ends_on ? `date ${lit(isoDate(args.ends_on, a.timezone))}` : 'null'})`,
-      },
-    ]
-    for (const s of args.slots) {
-      steps.push({
-        write: `insert into class_slot (academy_id, class_id, weekday, start_time, end_time)
-                values (${uid(ctx.academyId)}, ${uid(classId)}, ${lit(s.weekday)},
-                        time ${lit(s.start_time)}, time ${lit(s.end_time)})`,
-      })
-    }
-    for (const c of args.coach_ids) {
-      steps.push({
-        write: `insert into class_coach (academy_id, class_id, coach_id)
-                values (${uid(ctx.academyId)}, ${uid(classId)}, ${uid(c)})
-                on conflict (class_id, coach_id) do nothing`,
-      })
-    }
-    steps.push({
-      schedule: {
-        kind: 'materialize_sessions',
-        // See `client_cancel`: host now and domain now are different timelines. This one
-        // is the worse of the two to get wrong — it is what turns a newly created class
-        // into actual sessions, so a class created while the domain clock trails the host
-        // gets no sessions at all, and nothing anywhere reports it.
-        run_at: (await now(ctx.academyId)).toISOString(),
-        dedupe_key: dedupe.materializeSessions(classId, startsOn),
-        payload: { class_id: classId, academy_id: ctx.academyId },
-      },
-    })
-    return steps
-  },
-}
-
-/**
- * `close_class` — retire a batch, and give its name back.
- *
- * **This exists because a previous fix created the gap.** 0021 made class names
- * unique among classes that are still OPEN (`active and ends_on is null`), which
- * is what makes the model's own lookups correct — it reads classes by name, with
- * `limit 1`, so two open "Evening Fitness" rows silently made every one of those
- * lookups a coin flip. The migration wrote down what it cost: "the way to reuse a
- * name is to close the old class, and there is currently no operation that does
- * so." R9 — an optimisation that removed a capability nobody was measuring, and
- * the one root you are most likely to create yourself.
- *
- * Closing is an END DATE, never a delete. §6.3 keeps ended classes for ever: last
- * season's roster, its registers and its money all still have to resolve, and a
- * deleted class takes its sessions' history with it.
- *
- * **What it deliberately does, beyond setting the date.** A class with no end date
- * is a class the rest of the product still plans for — `plan_ahead` materialises
- * its sessions, the coach ladder chases its registers, and `monthly_lines` bills
- * its enrolments on the 1st. Setting `ends_on` alone and calling it closed would
- * leave a retired batch quietly billing families, which is the exact shape of R6:
- * a record narrower than the change it stands for. So the enrolments end on the
- * same date and the sessions after it are cancelled, in one plan, previewable as
- * one thing.
- *
- * It does NOT message the families. Ending a batch is a conversation the business
- * has, and what to say about it differs every time — a merge, a coach leaving, a
- * season ending. The note says how many people are affected so the admin knows
- * what they are about to owe an explanation to, and `end_enrollment`'s own
- * messaging is not duplicated here.
- */
-const closeClass: OperationDef = {
-  name: 'close_class',
-  description:
-    'Retire a class from a date: stops its sessions and enrolments, keeps all its history, and frees its name for reuse. '
-    + 'Use when a batch is ending, merging, or being replaced by one with the same name.',
-  destructive: true,
-  params: z.object({
-    class_id: uuid,
-    end_date: z.string().nullish(),
-    reason: z.string().nullish(),
-  }),
-  async build(ctx, args) {
-    const a = await academyOf(ctx)
-    const endIso = isoDate(args.end_date ?? (await now(ctx.academyId)).toISOString(), a.timezone)
-
-    const [cls] = await q<{ id: string; name: string; ends_on: string | null }>(
-      ctx,
-      `select id, name, ends_on::text as ends_on from class
-        where id = ${uid(args.class_id)} and academy_id = ${uid(ctx.academyId)}`,
-    )
-    if (!cls) throw new Error('that is not a class I can see')
-    // R7: doing nothing must not read as success. A class that is already closed
-    // is not a no-op to report as done — it is a question the admin asked whose
-    // answer is "that already happened", and the date is the useful half.
-    if (cls.ends_on) {
-      throw new Error(`${cls.name} already closed on ${zoned(cls.ends_on, a.timezone).toFormat('d LLL yyyy')}`)
-    }
-
-    const live = await liveEnrollments(ctx, `e.class_id = ${uid(args.class_id)}`, endIso, a.timezone)
-    const [ahead] = await q<{ n: string }>(
-      ctx,
-      `select count(*) as n from session
-        where class_id = ${uid(args.class_id)} and status = 'scheduled'
-          and (starts_at at time zone ${lit(a.timezone)})::date > date ${lit(endIso)}`,
-    )
-    const upcoming = num(ahead?.n)
-
-    const steps: PlanStep[] = [
-      {
-        note:
-          `${cls.name} closes on ${zoned(endIso, a.timezone).toFormat('d LLL')}`
-          + (live.length ? `, ending ${live.length} enrolment${live.length === 1 ? '' : 's'}` : '')
-          + (upcoming ? ` and cancelling ${upcoming} scheduled session${upcoming === 1 ? '' : 's'}` : '')
-          + (args.reason ? ` — ${args.reason}` : '')
-          + '. The name is free to use again',
-      },
-      {
-        write: `update class set ends_on = date ${lit(endIso)}
-                 where id = ${uid(args.class_id)} and academy_id = ${uid(ctx.academyId)}
-                   and ends_on is null`,
-        requireRows: 1,
-      },
-    ]
-
-    if (live.length) {
-      steps.push({
-        write: `update enrollment set ended_on = date ${lit(endIso)}
-                 where id in (${live.map((l) => uid(l.enrollment_id)).join(',')})
-                   and academy_id = ${uid(ctx.academyId)} and ended_on is null`,
-        requireRows: live.length,
-      })
-    }
-
-    if (upcoming) {
-      // Only sessions AFTER the end date. A class closing on the 31st still ran on
-      // the 30th, and cancelling that session would rewrite a register that was
-      // already marked and money that was already billed against it.
-      steps.push({
-        write: `update session set status = 'cancelled'
-                 where class_id = ${uid(args.class_id)} and academy_id = ${uid(ctx.academyId)}
-                   and status = 'scheduled'
-                   and (starts_at at time zone ${lit(a.timezone)})::date > date ${lit(endIso)}`,
-        requireRows: upcoming,
-      })
-    }
-
-    steps.push(...deactivateStrandedPlayers(ctx, [...new Set(live.map((l) => l.player_id))], a.timezone))
-    return steps
-  },
-}
-
-const addCoach: OperationDef = {
-  name: 'add_coach',
-  description: 'Add a coach: contact, classes, pay rate. Three facts, and it messages nobody.',
-  params: z.object({
-    full_name: z.string().min(1),
-    phone_e164: phoneE164,
-    pay_amount: z.number().nullish(),
-    pay_unit: z.enum(['per_session', 'per_hour', 'per_month']).nullish(),
-    class_ids: z.array(uuid).optional().default([]),
-  }),
-  async build(ctx, args, id) {
-    const phone = args.phone_e164.replace(/[^\d+]/g, '')
-    // One phone is one human here — see `resolvePersonByPhone` for the two Ravi Menons
-    // this produced on a live drive.
-    const existingPersonId = await resolvePersonByPhone(ctx, phone)
-    const personId = existingPersonId ?? newId()
-    const coachId = newId()
-
-    if (existingPersonId) {
-      const [already] = await q<{ id: string; status: string; full_name: string }>(
-        ctx,
-        `select c.id, c.status, p.full_name from coach c join person p on p.id = c.person_id
-          where c.academy_id = ${uid(ctx.academyId)} and c.person_id = ${uid(existingPersonId)}
-          limit 1`,
-      )
-      // Refusing beats silently making a second one. The admin who says "add Ravi"
-      // twice is not asking for two Ravis, and the model cannot tell the difference
-      // from a tool result that says `ok: true` either way.
-      if (already) {
-        throw new Error(
-          `add_coach: ${already.full_name} is already a coach here (${already.status}), on that same number. ` +
-            `Do not add them again — that would be a second person behind one phone. ` +
-            `If they need inviting, use send_invite_draft with coach_id ${already.id}. ` +
-            `If they left and are coming back, say so and change that coach's status instead.`,
-        )
-      }
-    }
-
-    const steps: PlanStep[] = [
-      { note: `${args.full_name} added as a coach — nobody is messaged yet` },
-      // Only when this phone is nobody yet. Reusing the person who already owns it is
-      // what keeps one human from becoming two.
-      ...(existingPersonId
-        ? []
-        : ([
-            {
-              write: `insert into person (id, academy_id, full_name)
-                values (${uid(personId)}, ${uid(ctx.academyId)}, ${lit(args.full_name)})`,
-              requireRows: 1,
-            },
-            {
-              // No `on conflict do nothing`. It is what turned "this phone is already
-              // somebody" into silence, and left a coach with no way to be reached.
-              // We have just established the phone is free; if it is not, the world
-              // moved under this plan and the plan must fail rather than orphan a row.
-              write: `insert into contact (academy_id, person_id, phone_e164, state, role_hint)
-                values (${uid(ctx.academyId)}, ${uid(personId)}, ${lit(phone)}, 'registered', 'coach')`,
-              requireRows: 1,
-            },
-          ] as PlanStep[])),
-      {
-        write: `insert into coach (id, academy_id, person_id, pay_amount, pay_unit, status)
-                values (${uid(coachId)}, ${uid(ctx.academyId)}, ${uid(personId)},
-                        ${args.pay_amount === null || args.pay_amount === undefined ? 'null' : moneyLit(args.pay_amount)},
-                        ${lit(args.pay_unit ?? null)}, 'added')`,
-        requireRows: 1,
-      },
-    ]
-    for (const c of args.class_ids) {
-      steps.push({
-        write: `insert into class_coach (academy_id, class_id, coach_id)
-                values (${uid(ctx.academyId)}, ${uid(c)}, ${uid(coachId)})
-                on conflict (class_id, coach_id) do nothing`,
-      })
-      steps.push({
-        write: `insert into session_coach (academy_id, session_id, coach_id)
-                select ${uid(ctx.academyId)}, s.id, ${uid(coachId)} from session s
-                 where s.class_id = ${uid(c)} and s.status = 'scheduled' and s.starts_at > app.now()
-                   and not exists (select 1 from session_coach x where x.session_id = s.id and x.coach_id = ${uid(coachId)})`,
-      })
-    }
-    return steps
-  },
-}
-
-const addFamily: OperationDef = {
-  name: 'add_family',
-  description: 'Add a family and their players from shared contacts or a photographed register. Messages nobody.',
-  params: z.object({
-    holder_name: z.string().min(1),
-    phone_e164: phoneE164,
-    players: z
-      .array(
-        z.object({
-          name: z.string().min(1),
-          class_id: uuid.nullish(),
-          rate_amount: z.number().nullish(),
-          rate_unit: z.enum(['per_session', 'per_month', 'per_term', 'per_package']).nullish(),
-          /**
-           * Months in the term, or sessions in the pack. Required by 0025 for
-           * those two units, and this operation could not express it at all —
-           * it wrote `rate_unit` and omitted the count, so "Neha bought a
-           * ten-class pack" produced an enrolment the billing job had to guess
-           * at, and its three readers guessed 1, 1 and 10. `add_family` is the
-           * acquisition path — it is how a photographed register is loaded — so
-           * being structurally unable to state the count was not an edge case.
-           */
-          rate_count: z.number().int().positive().nullish(),
-          started_on: z.string().nullish(),
-        }),
-      )
-      .min(1),
-  }),
-  async build(ctx, args, id) {
-    const a = await academyOf(ctx)
-    const today = zoned(await now(ctx.academyId), a.timezone).toFormat('yyyy-MM-dd')
-    const phone = args.phone_e164.replace(/[^\d+]/g, '')
-    // The same question `add_coach` was not asking. A parent added twice — from a
-    // photographed register and then by hand, which is the normal way this happens —
-    // became two people behind one phone, one of them holding the money.
-    const existingPersonId = await resolvePersonByPhone(ctx, phone)
-    const holderPersonId = existingPersonId ?? newId()
-    const accountId = newId()
-    const steps: PlanStep[] = [
-      {
-        // Distinct children, not array entries: "Aarav in beginners and fitness"
-        // is two entries and one player, and the note is the read-back.
-        note: `${args.holder_name} and ${new Set(args.players.map((p: { name: string }) => normalName(p.name))).size} player${
-          new Set(args.players.map((p: { name: string }) => normalName(p.name))).size === 1 ? '' : 's'
-        } — nobody is messaged (§2.6)`,
-      },
-      ...(existingPersonId
-        ? []
-        : ([
-            {
-              write: `insert into person (id, academy_id, full_name)
-                values (${uid(holderPersonId)}, ${uid(ctx.academyId)}, ${lit(args.holder_name)})`,
-              requireRows: 1,
-            },
-            {
-              // See `add_coach`: `on conflict do nothing` here is how a household ends
-              // up with an account nobody can be reached about.
-              write: `insert into contact (academy_id, person_id, phone_e164, state, role_hint)
-                values (${uid(ctx.academyId)}, ${uid(holderPersonId)}, ${lit(phone)}, 'registered', 'account_holder')`,
-              requireRows: 1,
-            },
-          ] as PlanStep[])),
-      {
-        // An account per holder, not per call. Adding a second player later must land
-        // in the household that already exists rather than opening a rival one that
-        // splits the balance in half.
-        write: `insert into account (id, academy_id, holder_person_id, display_name)
-                select ${uid(accountId)}, ${uid(ctx.academyId)}, ${uid(holderPersonId)}, ${lit(args.holder_name)}
-                 where not exists (select 1 from account
-                                    where academy_id = ${uid(ctx.academyId)}
-                                      and holder_person_id = ${uid(holderPersonId)})`,
-      },
-    ]
-    /**
-     * One child, one player — however many entries carry their name.
-     *
-     * "Aarav in beginners and fitness" arrives, naturally, as two entries both
-     * called Aarav (one per class), and this loop used to mint a person and a
-     * player PER ENTRY: the month drive's Aarav existed twice, with two person
-     * ids, until his family's leave failed on "needed 2 rows and matched 0"
-     * and the duplicate surfaced in the repair reads. §10.1's one hard rule is
-     * never to create a second person for someone already in the roster —
-     * within a single call, that means grouping by the same `normalName` this
-     * operation already trusts for the holder; across calls, it means reusing
-     * a same-name player already on this household's account rather than
-     * opening a rival copy of the child (same reasoning as the account
-     * subquery below, one row up the tree).
-     */
-    const groups = new Map<string, { name: string; entries: typeof args.players }>()
-    for (const p of args.players) {
-      const g = groups.get(normalName(p.name))
-      if (g) g.entries.push(p)
-      else groups.set(normalName(p.name), { name: p.name, entries: [p] })
-    }
-    const existingPlayers = existingPersonId
-      ? await q<{ id: string; full_name: string; active: boolean }>(
-          svc(ctx),
-          `select pl.id, p.full_name, pl.active
-             from player pl
-             join person p on p.id = pl.person_id
-             join account ac on ac.id = pl.account_id
-            where ac.academy_id = ${uid(ctx.academyId)}
-              and ac.holder_person_id = ${uid(holderPersonId)}`,
-        )
-      : []
-
-    for (const g of groups.values()) {
-      // The self-paying adult is holder_person_id = player.person_id. Not a
-      // second case — the same objects at n=1.
-      //
-      // Through `normalName` so this path and `book_trial`'s answer the question the
-      // same way. It was `trim().toLowerCase()` here, which is a comparison on
-      // unnormalised values (R5): "Deepa  Nair" against "Deepa Nair" is two humans by
-      // that test and one by any other. The two operations disagreeing about what a
-      // person is, in either direction, is the defect — not which rule wins.
-      const samePerson = normalName(g.name) === normalName(args.holder_name)
-      const already = existingPlayers.find((e) => normalName(e.full_name) === normalName(g.name))
-      const playerPersonId = samePerson ? holderPersonId : newId()
-      const playerId = already?.id ?? newId()
-      if (already && !already.active) {
-        // A returning child. Reusing the row without waking it would hang the
-        // new enrollments on a player every roster, reminder and billing read
-        // filters out — the operation reporting success over an invisible
-        // child (review find).
-        steps.push({
-          write: `update player set active = true
-                   where id = ${uid(playerId)} and not active`,
-          requireRows: 0,
-        })
-      }
-      if (!already) {
-        if (!samePerson) {
-          steps.push({
-            write: `insert into person (id, academy_id, full_name)
-                    values (${uid(playerPersonId)}, ${uid(ctx.academyId)}, ${lit(g.name)})`,
-          })
-        }
-        steps.push({
-          // The account is read back rather than assumed: when the holder was already
-          // here, the row above inserted nothing and `accountId` names no account. Same
-          // subquery `book_trial` uses, so both paths land in one household.
-          write: `insert into player (id, academy_id, account_id, person_id)
-                  select ${uid(playerId)}, ${uid(ctx.academyId)},
-                         (select id from account
-                           where academy_id = ${uid(ctx.academyId)}
-                             and holder_person_id = ${uid(holderPersonId)}
-                           order by created_at limit 1),
-                         ${uid(playerPersonId)}`,
-          requireRows: 1,
-        })
-      }
-      const seenClasses = new Set<string>()
-      for (const p of g.entries) {
-        if (!p.class_id || seenClasses.has(p.class_id)) continue
-        seenClasses.add(p.class_id)
-        /**
-         * A live TRIAL in this class upgrades instead of blocking. The admin
-         * typing a child into the roster IS the decision a trial waits for —
-         * a not-exists guard alone turned that into a silent no-op: the trial
-         * row stayed `is_trial`, never billed, and the plan reported success
-         * (review find). The update converts it with the entry's own rate
-         * fields; the guarded insert below then correctly sees a live
-         * enrollment and stands down.
-         */
-        steps.push({
-          write: `update enrollment
-                     set is_trial = false
-                         ${p.rate_amount === null || p.rate_amount === undefined ? '' : `, rate_amount = ${moneyLit(p.rate_amount)}`}
-                         ${p.rate_unit ? `, rate_unit = ${lit(p.rate_unit)}` : ''}
-                         ${p.rate_count ? `, rate_count = ${lit(p.rate_count)}` : ''}
-                   where class_id = ${uid(p.class_id)} and player_id = ${uid(playerId)}
-                     and is_trial and ended_on is null`,
-          // Usually matches nothing — there is no trial to upgrade. requireRows 0
-          // keeps a deliberate maybe out of the "matched no rows" warning.
-          requireRows: 0,
-        })
-        steps.push({
-          write: `insert into enrollment (academy_id, class_id, player_id, rate_amount, rate_unit, rate_count, started_on)
-                  select ${uid(ctx.academyId)}, ${uid(p.class_id)}, ${uid(playerId)},
-                          ${p.rate_amount === null || p.rate_amount === undefined ? 'null' : moneyLit(p.rate_amount)},
-                          ${lit(p.rate_unit ?? null)},
-                          ${lit(p.rate_count ?? null)},
-                          date ${lit(p.started_on ? isoDate(p.started_on, a.timezone) : today)}
-                   where not exists (select 1 from enrollment e
-                                      where e.class_id = ${uid(p.class_id)}
-                                        and e.player_id = ${uid(playerId)}
-                                        and e.ended_on is null)`,
-          // Zero rows here means a live enrollment (the upgraded trial included)
-          // already covers this class — the guard standing down, not a miss.
-          requireRows: 0,
-        })
-      }
-    }
-    return steps
-  },
-}
-
-/* =========================================================================== *
- * onboard_coach — §8.1 step 3 / §11.3. `invited ──([Looks right])──> active`.
- *
- * The transition existed in the state machine, in the spec and in the behavior
- * module — "`Looks right` has to actually make them active; a button that only
- * writes down that they agreed changes nothing: they stay un-onboarded, the admin
- * is still told nobody has confirmed, and the coach thinks they are done" — and
- * there was no operation that performed it. Nothing in the registry moved a coach
- * out of `invited`.
- *
- * So the model minted the nearest-sounding name it could find. Watched, on a
- * coach's first ever message: `[Looks right]` carried `confirm_coach`, which is
- * about a *session* and requires a `session_id`, and it died at the tap. The
- * coach was told "that didn't go through" and stayed invited forever.
- *
- * A capability with no way to reach it is indistinguishable, from outside, from a
- * model that never wants it — and the model wanted it badly enough to reach for
- * the wrong verb rather than none.
- * =========================================================================== */
 
 const onboardCoach: OperationDef = {
   name: 'onboard_coach',
@@ -3637,58 +2565,6 @@ const undo: OperationDef = {
  * =========================================================================== */
 
 
-const setOnboardingState: OperationDef = {
-  name: 'set_onboarding_state',
-  description:
-    "Move the academy through setup → roster → ready → live. Nothing is sent to anyone until it is 'live' (§2.6). "
-    + 'Going live needs at least one active class — a class created earlier in the same plan counts.',
-  params: z.object({ state: z.enum(['setup', 'roster', 'ready', 'live']) }),
-  async build(ctx, args) {
-    if (args.state !== 'live') {
-      return [
-        { note: `onboarding moves to ${args.state} — still messaging nobody` },
-        {
-          write: `update academy set onboarding_state = ${lit(args.state)} where id = ${uid(ctx.academyId)}`,
-          requireRows: 1,
-        },
-      ]
-    }
-
-    /**
-     * The precondition rides IN the statement, not in a read taken before the plan.
-     *
-     * It was a build-time query, and `build()` runs before any of the plan's steps do —
-     * so it saw the world as it was, not as the plan was about to leave it. Driven:
-     * asked to "set the UPI to probe@upi and switch it on", the model composed one plan
-     * whose first step set the handle and whose second went live, and the receipt read
-     * *"messages start flowing — note there is still no UPI handle, so nobody can pay"*
-     * about a plan that had just set one. The same staleness made the hard block worse
-     * than wrong: "add a class and go live" in a single plan would have been REFUSED for
-     * having no classes, moments before creating one.
-     *
-     * As an `exists` inside the UPDATE it is evaluated where the plan already is —
-     * inside the transaction, after the earlier steps — so a class created a step ago
-     * counts. `requireRows: 1` turns "no class" into a precondition failure that aborts
-     * the whole plan rather than a silent no-op, which is what `requireRows` is for.
-     *
-     * The "what is still missing" list is gone with the read that produced it. It was
-     * never a check — the admin census carries the same facts every turn, computed fresh
-     * — and the one thing it added over the census was the chance to be out of date at
-     * the exact moment somebody was fixing it.
-     */
-    return [
-      { note: 'messages start flowing from now on' },
-      {
-        write: `update academy set onboarding_state = 'live'
-                 where id = ${uid(ctx.academyId)}
-                   and exists (select 1 from class
-                                where academy_id = ${uid(ctx.academyId)} and active)`,
-        requireRows: 1,
-      },
-    ]
-  },
-}
-
 const remember: OperationDef = {
   name: 'remember',
   ownScope: true,
@@ -3749,45 +2625,6 @@ const forget: OperationDef = {
   },
 }
 
-const listWatches: OperationDef = {
-  name: 'list_watches',
-  ownScope: true,
-  description: 'Show everything I am watching for this academy, with a way to drop any of them.',
-  params: z.object({}),
-  async build(ctx, args, id) {
-    const a = await academyOf(ctx)
-    const today = zoned(await now(ctx.academyId), a.timezone)
-    const rows = await liveAgentTasks(ctx.academyId)
-    if (!rows.length) {
-      return [
-        {
-          message: {
-            to_contact_id: ctx.role === 'service' ? undefined : ctx.contactId,
-            to_person_id: ctx.role === 'service' ? id.person?.id : undefined,
-            body: "Nothing on my watch list right now. Ask me to keep an eye on something and it'll show up here.",
-          },
-        },
-      ]
-    }
-    const lines = rows.map(
-      (r, i) => `${i + 1}. ${String(r.instruction || r.slug).slice(0, 120)} — ${whenLabel(r.run_at, a.timezone, today)}`,
-    )
-    return [
-      {
-        message: {
-          to_contact_id: ctx.role === 'service' ? undefined : ctx.contactId,
-          to_person_id: ctx.role === 'service' ? id.person?.id : undefined,
-          body: `Watching ${rows.length} thing${rows.length === 1 ? '' : 's'}:\n${lines.join('\n')}`,
-          buttons: rows.slice(0, 3).map((r, i) => ({
-            title: `Drop ${i + 1}`,
-            action: { kind: 'operation' as const, op: 'drop_watch', args: { slug: r.slug } },
-          })),
-        },
-      },
-    ]
-  },
-}
-
 const dropWatch: OperationDef = {
   name: 'drop_watch',
   ownScope: true,
@@ -3819,14 +2656,55 @@ const dropWatch: OperationDef = {
 
 /* ------------------------------------------------------------------------- */
 
+/**
+ * **What is left, and why exactly this.**
+ *
+ * ARCHITECTURE.md layer 2: *"Wrapper operations do not exist in this shape. An
+ * operation that was a prewritten plan — CRUD plus notes — is gone, because
+ * layers 0 and 1 hold its invariants and the prefix holds its knowledge."*
+ *
+ * Thirteen went: `end_enrollment`, `end_client`, `waive`, `record_payment`,
+ * `request_payment`, `confirm_payment`, `set_timing`, `create_class`,
+ * `close_class`, `add_coach`, `add_family`, `set_onboarding_state`,
+ * `list_watches`. Every one of them was rows plus a sentence. The invariants they
+ * carried did not go with them: dedupe lives on `tally_line.dedupe_key`, the
+ * class name's uniqueness on an index, materialisation on a trigger (0033) so a
+ * slot implies its sessions whatever wrote the slot, the double-booking check and
+ * the affected-but-untold census inside the transaction, and the consequences —
+ * what follows what, what a cancelled session owes back, how money moves in two
+ * rows — in `SCHEMA_DOC`, where an author of SQL can actually read them.
+ *
+ * The evidence for going is the model's own behaviour: it already routed around
+ * opaque operations and composed the rows itself, correctly, while this layer is
+ * where the wrong explanations concentrated — the schema the declaration showed
+ * disagreeing with the schema the write demanded (F-AG), a permission refusal
+ * reported as a race (F-AX), solo activation depending on which tool was reached
+ * for (F-AY), a button minted with a job kind that does not exist (F-AW), and an
+ * ack that said "0 in, 0 out" over a register that wrote three rows. Two
+ * documents describing one truth always drift; the shape keeps one.
+ *
+ * What stays is what has no SQL sentence:
+ *
+ *   THE TWO-TAP CONFIRMATIONS — `opt_out`, `confirm_coach`/`decline_coach`,
+ *   `client_cancel`, `claim_cover`. Each puts a question on a person's screen
+ *   where only THEIR tap may answer it, and no statement expresses that.
+ *
+ *   `undo` — reversing a committed plan from its captured diffs.
+ *
+ *   THE ELEVATION POINTS — `mark_attendance` (the billing line is the runtime's
+ *   consequence, not the coach's write), `book_trial` (a stranger has no
+ *   permission at all), `onboard_coach` (a coach who could set their own status
+ *   could set their own pay), `send_invite_draft`, `remember`, `forget`,
+ *   `drop_watch`, and the ending operations whose reassignment and credit-back
+ *   run as the service role. Each is a permission grant wearing a function's
+ *   clothes, and each stays only until its RLS question is answered properly in
+ *   layer 0.
+ */
 export const OPERATIONS: Record<OperationName, OperationDef> = {
   end_coach: endCoach,
-  end_enrollment: endEnrollment,
-  end_client: endClient,
   cancel_session: cancelSession,
   move_class: moveClass,
   reschedule_session: rescheduleSession,
-  waive,
   book_trial: bookTrial,
   convert_trial: convertTrial,
   mark_attendance: markAttendance,
@@ -3835,21 +2713,11 @@ export const OPERATIONS: Record<OperationName, OperationDef> = {
   decline_coach: declineCoach,
   claim_cover: claimCover,
   client_cancel: clientCancel,
-  record_payment: recordPayment,
-  request_payment: requestPayment,
-  confirm_payment: confirmPayment,
   opt_out: optOut,
-  set_timing: setTiming,
-  create_class: createClass,
-  close_class: closeClass,
-  add_coach: addCoach,
-  add_family: addFamily,
   send_invite_draft: sendInviteDraft,
   undo,
-  set_onboarding_state: setOnboardingState,
   remember,
   forget,
-  list_watches: listWatches,
   drop_watch: dropWatch,
 }
 

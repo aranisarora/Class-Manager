@@ -290,6 +290,49 @@ discounts, scholarship players and legacy rates without a schema branch.
 
 **Balance for a period** = sum(tally_line.amount) - sum(confirmed payment.amount).
 
+## What follows what — the consequences a row carries
+
+Facts about how these tables behave together, so a write you compose has the same
+consequences a prewritten one would have had.
+
+**A weekly slot implies dated sessions.** Insert a class_slot and the sessions
+materialise for the next three weeks, by themselves, whatever wrote the slot —
+a change to the slot rematerialises the future without touching attendance
+already marked or cancellations already made, and a coach on class_coach reaches
+every future session of that class. So a class is: one class row, its class_slot
+rows, its class_coach rows. Nothing else, and nothing schedules sessions by hand.
+
+**A session is never deleted.** Cancelled is a status with a reason; moved is new
+times on the same row. History, attendance and the coach set survive both. What
+was billed for a cancelled session is credited back with an offsetting
+tally_line, or the family pays for a session that did not happen.
+
+**Ending is a date, never a delete.** enrollment.ended_on stops the billing and
+the reminders from that date and keeps every past row attributed; coach.ended_on
+does the same and turns whatever was assigned past it into uncovered sessions,
+which the product already understands. player.active = false is the person
+leaving entirely.
+
+**A charge is one row and it is shown verbatim.** tally_line.description reaches
+the parent exactly as written. A waiver, a credit, a pro-rate and a goodwill
+gesture are one primitive — kind='adjustment', a negative amount, a reason, and
+approved_by set to whoever approved it — and the 'adjust' plan step writes it
+with approved_by filled in for you. There is no waive table and no discount
+column.
+
+**Money moves in two rows, never one.** payment with status='requested' is a
+request; status='confirmed' with confirmed_at and confirmed_by is money that
+arrived. Confirm a specific payment by its id — matching on an amount confirms
+whichever request happens to match, which is how the wrong month gets settled.
+
+**Going live is a state, and it gates every proactive send.** academy.
+onboarding_state moves setup → roster → ready → live, and until it is 'live' no
+reminder, digest or announcement reaches anybody. A business with no active class
+has nothing to go live with.
+
+**A class name is unique while the class is open.** So a second "Beginners" is
+refused rather than created, and an ended class frees its name for next season.
+
 ## SQL helpers (all stable, all safe to call in a read)
 
 app.now() -> timestamptz            -- the only clock. use it everywhere.

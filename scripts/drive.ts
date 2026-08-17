@@ -481,6 +481,12 @@ async function accountFor(academyId: string, holderContactId?: string): Promise<
  * it, so the plan runs down `executePlan` with the same atomicity, the same diff and the
  * same staged messages. It runs as the person tapping, so RLS still caps it at what they
  * could have done by hand — which is why these are minted for the admin.
+ *
+ * **Seven more commands came here when the wrapper operations went.** `create_class`,
+ * `add_coach`, `add_family`, `waive`, `request_payment`, `confirm_payment` and
+ * `set_timing` were all a transaction of statements plus a note, and layers 0 and 1 hold
+ * what they guaranteed. So this stopped being the path for the things nobody had built a
+ * wrapper for, and became the path — which is what the product is doing too.
  */
 async function drivePlan(o: {
   contactId: string
@@ -1018,34 +1024,74 @@ async function main(): Promise<void> {
         const admin = await adminContactOf(academyId)
         const phone = flag('phone') ?? `+9199${String(Math.floor(Date.now() / 1000) % 100000000).padStart(8, '0')}`
         console.log(c.dim(`  ${name} · ${role} · ${cls.name} · ${phone}`))
+        /**
+         * The rows a coach is, and the rows a family is.
+         *
+         * `add_coach` and `add_family` were the operations these called. Both
+         * were inserts plus a note, and both went — the invariants they carried
+         * live below them now: the phone is normalised by a trigger (0012) and a
+         * placeholder is refused by a constraint (0033), `session_coach` is
+         * back-filled from `class_coach` by the materialiser the trigger fires,
+         * and a coach who is already an admin is activated on insert rather than
+         * waiting for an invite they would have to send themselves.
+         */
+        const person = `(select id from person where academy_id = app.academy_id() and full_name = ${sql(name)} order by created_at desc limit 1)`
         if (role === 'coach') {
-          await driveOperation({
-            contactId: admin.contactId, academyId, op: 'add_coach',
-            args: {
-              full_name: name, phone_e164: phone, class_ids: [cls.id],
-              ...(flag('rate') ? { pay_amount: Number(flag('rate')) } : {}),
-              ...(flag('unit') ? { pay_unit: flag('unit') } : {}),
-            },
-            match: { full_name: name },
+          const rate = flag('rate') ? Number(flag('rate')) : null
+          const unit = flag('unit') ?? null
+          await drivePlan({
+            contactId: admin.contactId, academyId,
+            summary: `add ${name} as a coach on ${cls.name}`,
             label: `Add ${name} as a coach`,
+            steps: [
+              { write: `insert into person (academy_id, full_name) values (app.academy_id(), ${sql(name)})` },
+              { write: `insert into contact (academy_id, person_id, phone_e164) values (app.academy_id(), ${person}, ${sql(phone)})` },
+              {
+                write:
+                  `insert into coach (academy_id, person_id, status${rate !== null ? ', pay_amount' : ''}${unit ? ', pay_unit' : ''})` +
+                  ` values (app.academy_id(), ${person}, 'added'${rate !== null ? `, ${rate}` : ''}${unit ? `, ${sql(unit)}` : ''})`,
+              },
+              {
+                write:
+                  `insert into class_coach (academy_id, class_id, coach_id)` +
+                  ` values (app.academy_id(), ${sql(cls.id)}::uuid,` +
+                  ` (select id from coach where person_id = ${person} and academy_id = app.academy_id()))`,
+              },
+              { note: `${name} is on ${cls.name}` },
+            ],
           })
         } else {
-          await driveOperation({
-            contactId: admin.contactId, academyId, op: 'add_family',
-            args: {
-              holder_name: name, phone_e164: phone,
-              players: [
-                {
-                  name: flag('player') ?? name,
-                  class_id: cls.id,
-                  ...(flag('rate') ? { rate_amount: Number(flag('rate')) } : {}),
-                  ...(flag('unit') ? { rate_unit: flag('unit') } : {}),
-                  ...(flag('since') ? { started_on: flag('since') } : {}),
-                },
-              ],
-            },
-            match: { holder_name: name },
+          const rate = flag('rate') ? Number(flag('rate')) : null
+          const unit = flag('unit') ?? null
+          const since = flag('since') ?? null
+          const playerName = flag('player') ?? name
+          const account = `(select id from account where academy_id = app.academy_id() and holder_person_id = ${person} order by created_at desc limit 1)`
+          const player = `(select pl.id from player pl join person pe on pe.id = pl.person_id where pl.academy_id = app.academy_id() and pe.full_name = ${sql(playerName)} order by pl.created_at desc limit 1)`
+          await drivePlan({
+            contactId: admin.contactId, academyId,
+            summary: `add ${name}'s family, with ${playerName} in ${cls.name}`,
             label: `Add ${name}'s family`,
+            steps: [
+              { write: `insert into person (academy_id, full_name) values (app.academy_id(), ${sql(name)})` },
+              { write: `insert into contact (academy_id, person_id, phone_e164) values (app.academy_id(), ${person}, ${sql(phone)})` },
+              { write: `insert into account (academy_id, holder_person_id, display_name) values (app.academy_id(), ${person}, ${sql(name)})` },
+              ...(playerName === name
+                ? []
+                : [{ write: `insert into person (academy_id, full_name) values (app.academy_id(), ${sql(playerName)})` }]),
+              {
+                write:
+                  `insert into player (academy_id, account_id, person_id) values (app.academy_id(), ${account},` +
+                  ` (select id from person where academy_id = app.academy_id() and full_name = ${sql(playerName)} order by created_at desc limit 1))`,
+              },
+              {
+                write:
+                  `insert into enrollment (academy_id, class_id, player_id, started_on${rate !== null ? ', rate_amount' : ''}${unit ? ', rate_unit' : ''})` +
+                  ` values (app.academy_id(), ${sql(cls.id)}::uuid, ${player},` +
+                  ` ${since ? `date ${sql(since)}` : '(app.now() at time zone (select timezone from academy where id = app.academy_id()))::date'}` +
+                  `${rate !== null ? `, ${rate}` : ''}${unit ? `, ${sql(unit)}` : ''})`,
+              },
+              { note: `${playerName} is enrolled in ${cls.name}` },
+            ],
           })
         }
         const made = await q<any>(
@@ -1451,20 +1497,44 @@ async function main(): Promise<void> {
         c.dim(`  ${name} · ${weekdays.map((w) => DAYS[w]).join('/')} ${span[1]}-${span[2]} · from ${startsOn}` +
           (coachIds.length ? ` · ${coachIds.length} coach(es)` : ' · no coach')),
       )
-      await driveOperation({
-        contactId: (await adminContactOf(academyId)).contactId,
-        academyId, op: 'create_class',
-        args: {
-          name,
-          starts_on: startsOn,
-          slots: weekdays.map((w) => ({ weekday: w, start_time: `${span[1]}:00`, end_time: `${span[2]}:00` })),
-          ...(flag('rate') ? { rate_amount: Number(flag('rate')) } : {}),
-          ...(flag('unit') ? { rate_unit: flag('unit') } : {}),
-          coach_ids: coachIds,
-        },
-        match: { name },
-        label: `Create ${name}`,
-      })
+      /**
+       * A class is a class row, its weekly slots and its coaches. Nothing else.
+       *
+       * `create_class` did this and then enqueued the materialiser, which is why
+       * the prompt used to say it was "the only thing that schedules the
+       * sessions". A slot now implies its sessions by trigger (0033), so this is
+       * every row a class is made of and the sessions follow from the world.
+       */
+      {
+        const cls = `(select id from class where name = ${sql(name)} and academy_id = app.academy_id() and active and ends_on is null)`
+        const rate = flag('rate') ? Number(flag('rate')) : null
+        const unit = flag('unit') ?? null
+        await drivePlan({
+          contactId: (await adminContactOf(academyId)).contactId,
+          academyId,
+          summary: `create ${name}`,
+          label: `Create ${name}`,
+          steps: [
+            {
+              write:
+                `insert into class (academy_id, name, starts_on${rate !== null ? ', rate_amount' : ''}${unit ? ', rate_unit' : ''})` +
+                ` values (app.academy_id(), ${sql(name)}, date ${sql(startsOn)}` +
+                `${rate !== null ? `, ${rate}` : ''}${unit ? `, ${sql(unit)}` : ''})`,
+            },
+            ...weekdays.map((w) => ({
+              write:
+                `insert into class_slot (academy_id, class_id, weekday, start_time, end_time)` +
+                ` values (app.academy_id(), ${cls}, ${w}, time ${sql(`${span[1]}:00`)}, time ${sql(`${span[2]}:00`)})`,
+            })),
+            ...coachIds.map((id) => ({
+              write:
+                `insert into class_coach (academy_id, class_id, coach_id)` +
+                ` values (app.academy_id(), ${cls}, ${sql(id)}::uuid)`,
+            })),
+            { note: `${name}, ${weekdays.length} time(s) a week` },
+          ],
+        })
+      }
       const made = await q<any>(
         `select cl.name, count(s.id)::int as sessions, min(s.starts_at) as first
            from class cl left join session s on s.class_id = cl.id and s.status = 'scheduled'
@@ -1627,11 +1697,28 @@ async function main(): Promise<void> {
       const academyId = await academyOfContact(contactId)
       const parsed = /^(none|null)$/i.test(value) ? null : Number(value)
       if (parsed !== null && !Number.isFinite(parsed)) die(c.red(`--value wants a number or "none" (got "${value}")`))
-      await driveOperation({
-        contactId, academyId, op: 'set_timing',
-        args: { key, value: parsed, reason: flag('reason') ?? null },
-        match: { key },
+      /**
+       * A per-person timing override is one jsonb key on `person.settings`, and
+       * that is all `set_timing` ever was. Its other half — the two mute keys —
+       * became `comm_preference` rows in 0032, because a mute the standing jobs
+       * cannot read is a promise nothing keeps.
+       */
+      await drivePlan({
+        contactId, academyId,
+        summary: `${key} = ${parsed ?? 'default'} for this person`,
         label: `${key} = ${parsed ?? 'default'}`,
+        steps: [
+          {
+            write:
+              parsed === null
+                ? `update person set settings = settings - ${sql(key)}` +
+                  ` where id = (select person_id from contact where id = ${sql(contactId)}::uuid)`
+                : `update person set settings = coalesce(settings, '{}'::jsonb) || jsonb_build_object(${sql(key)}, ${parsed})` +
+                  ` where id = (select person_id from contact where id = ${sql(contactId)}::uuid)`,
+            requireRows: 1,
+          },
+          { note: `${key} is ${parsed ?? 'back on the business default'} for them` },
+        ],
       })
       const back = await q<any>(
         `select p.settings from contact c join person p on p.id = c.person_id where c.id = '${contactId}'::uuid`,
@@ -1693,16 +1780,33 @@ async function main(): Promise<void> {
         const asker = flag('as') ?? (await adminContactOf(academyId)).contactId
         const amount = flag('amount')
         console.log(c.dim(`  ${account.name}${amount ? ` · ${money(amount)}` : ' · whatever is outstanding'}`))
-        await driveOperation({
-          contactId: asker, academyId, op: 'request_payment',
-          args: {
-            account_id: account.id,
-            ...(amount ? { amount: Number(amount) } : {}),
-            ...(flag('note') ? { note: flag('note') } : {}),
-          },
-          match: { account_id: account.id },
-          label: `Ask ${account.name} for what's owed`,
-        })
+        /**
+         * A request is a `payment` row at status 'requested', and a check-back so
+         * it does not sit there forever. `request_payment` was those two steps
+         * plus the sentence to the family — which the model composes, because
+         * what to say about money is a judgement and a wrapper's constant was
+         * never going to make it.
+         */
+        {
+          const owed = amount
+            ? String(Number(amount))
+            : `greatest(0, app.account_balance(${sql(account.id)}::uuid, null))`
+          await drivePlan({
+            contactId: asker, academyId,
+            summary: `ask ${account.name} for ${amount ? money(amount) : "what's outstanding"}`,
+            label: `Ask ${account.name} for what's owed`,
+            steps: [
+              {
+                write:
+                  `insert into payment (academy_id, account_id, amount, rail, status, requested_at)` +
+                  ` select app.academy_id(), ${sql(account.id)}::uuid, ${owed}, a.rail, 'requested', app.now()` +
+                  ` from academy a where a.id = app.academy_id() and ${owed} > 0`,
+                requireRows: 1,
+              },
+              { note: `asked ${account.name} for ${amount ? money(amount) : 'the outstanding balance'}` },
+            ],
+          })
+        }
         break
       }
 
@@ -1728,11 +1832,27 @@ async function main(): Promise<void> {
         paymentId = String(rows[0].id)
         console.log(c.dim(`  ${rows[0].display_name} · ${money(rows[0].amount)}`))
       }
-      await driveOperation({
-        contactId: admin, academyId, op: 'confirm_payment',
-        args: { payment_id: paymentId, ...(flag('ref') ? { reference: flag('ref') } : {}) },
-        match: { payment_id: paymentId },
+      /**
+       * By ID and never by amount — the reason `confirm_payment` was a distinct
+       * operation at all was that amount-matching double-credited. The statement
+       * says the same thing more plainly, and `requireRows: 1` is the
+       * precondition: a payment somebody else confirmed since this was listed
+       * aborts rather than reporting success over a row it did not change.
+       */
+      await drivePlan({
+        contactId: admin, academyId,
+        summary: `confirm the payment ${paymentId}`,
         label: 'Yes, received',
+        steps: [
+          {
+            write:
+              `update payment set status = 'confirmed', confirmed_at = app.now(), confirmed_by = app.person_id()` +
+              (flag('ref') ? `, reference = ${sql(flag('ref') as string)}` : '') +
+              ` where id = ${sql(paymentId)}::uuid and status = 'requested'`,
+            requireRows: 1,
+          },
+          { note: 'the payment they asked for has been confirmed' },
+        ],
       })
       break
     }
@@ -1915,12 +2035,33 @@ async function main(): Promise<void> {
         playerId = String(hit[0].player_id)
       }
       console.log(c.dim(`  ${account.name} · ${money(amount)} off ${period} · ${reason}`))
-      await driveOperation({
+      /**
+       * `adjust` is a first-class plan step, and `waive` was a one-step wrapper
+       * around it that also filled in `approved_by`. The step still does that —
+       * `runSteps` stamps the acting person — so the wrapper was carrying nothing
+       * of its own. A waiver, a credit, a pro-rate and a goodwill gesture are one
+       * primitive, which is the whole point of there being no waive table.
+       */
+      await drivePlan({
         contactId: (await adminContactOf(academyId)).contactId,
-        academyId, op: 'waive',
-        args: { account_id: account.id, player_id: playerId, amount, reason, period },
-        match: { account_id: account.id },
+        academyId,
+        summary: `credit ${money(amount)} to ${account.name}`,
         label: `Waive ${money(amount)}`,
+        steps: [
+          {
+            adjust: {
+              account_id: account.id,
+              player_id: playerId,
+              // A waiver is a CREDIT, so the sign is set here rather than left to
+              // whoever typed the number: `drive waive --amount 1200` means 1,200
+              // off, and an adjustment that added 1,200 would be the opposite act.
+              amount: -Math.abs(amount),
+              reason,
+              period,
+            },
+          },
+          { note: `${money(amount)} credited to ${account.name} for ${period}` },
+        ],
       })
       const lines = await q<any>(
         `select kind, description, amount, period::text as period from tally_line

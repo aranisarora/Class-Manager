@@ -697,17 +697,35 @@ export async function reconcile(job: Job): Promise<void> {
       ),
       buttons: [
         {
-          // §2.2 — minted resolved, replayed verbatim. This was
-          // `{kind:'reply', text:"Yes — …'s ₹X came in, confirm it"}`: a sentence
-          // handed back to the model to re-interpret, which made **a money state
-          // transition a tap-time inference** on the one table where being wrong
-          // costs the business real money. The payment id is right here; the
-          // button carries the row.
+          /**
+           * §2.2 — minted resolved, replayed verbatim. This was
+           * `{kind:'reply', text:"Yes — …'s ₹X came in, confirm it"}`: a
+           * sentence handed back to the model to re-interpret, which made **a
+           * money state transition a tap-time inference** on the one table where
+           * being wrong costs the business real money. The payment id is right
+           * here; the button carries the row.
+           *
+           * It carried `{kind:'operation', op:'confirm_payment'}` until the
+           * wrapper operations went. The statement is what the operation was —
+           * confirm THIS request, never one matching an amount — and `steps` is
+           * the shape that carries a statement. `requireRows: 1` is the part that
+           * matters: a payment already confirmed, or confirmed by somebody else
+           * between the ask and the tap, aborts rather than silently doing
+           * nothing, and the tap path reports it as a race rather than as done.
+           */
           title: buttonTitle('Yes, received'),
           action: {
-            kind: 'operation',
-            op: 'confirm_payment',
-            args: { payment_id: paymentId },
+            kind: 'steps',
+            summary: `confirm the ${formatINR(num(pay.amount))} from ${pay.holder_name}`,
+            steps: [
+              {
+                write:
+                  `update payment set status = 'confirmed', confirmed_at = app.now()` +
+                  ` where id = '${paymentId}'::uuid and status = 'requested'`,
+                requireRows: 1,
+              },
+              { note: `${formatINR(num(pay.amount))} from ${pay.holder_name} confirmed` },
+            ],
           },
         },
         { title: buttonTitle('Not yet'), action: { kind: 'noop', ack: "Left as requested — I'll ask again." } },

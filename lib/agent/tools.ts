@@ -275,13 +275,23 @@ const STEPS_PARAM = {
     'If that matches nothing, the class does not exist yet — create it rather than widening the ' +
     'lookup until something comes back.\n' +
     'Better still, if the row already exists, `read` its id first and pass the id itself.\n' +
-    '  {"operation":{"name":"create_class","args":{"venue_id":"(select id from venue where name = ' +
-    "'Green Park' and academy_id = app.academy_id())\", …}}}\n" +
-    'Reach for the operation rather than raw INSERTs. An operation carries consequences the SQL ' +
-    'does not — create_class is the only thing that schedules the sessions, and a class inserted ' +
-    'by hand has weekly times and no sessions that will ever happen.\n' +
-    'Example: [{"operation":{"name":"create_class","args":{"name":"Evening","starts_on":"2026-08-20",' +
-    '"slots":[{"weekday":1,"start_time":"18:00","end_time":"19:00"}]}}}]',
+    // "Reach for the operation rather than raw INSERTs, because create_class is the
+    // only thing that schedules the sessions" stood here. It was an instruction
+    // standing in for a property — and half false besides, since the planner
+    // materialised every class on every tick anyway. The property is true now: a
+    // class_slot implies its sessions by construction, whatever wrote the slot
+    // (0033). What an operation used to carry that a statement cannot is the
+    // half the schema still cannot say — what follows what — and that lives in
+    // SCHEMA_DOC, where somebody writing SQL can read it.
+    'The operations that remain are the ones with no SQL sentence: a question only THIS ' +
+    "person's own tap may answer, an undo, and the few writes needing a permission the person " +
+    'you are serving does not have. Everything else is rows, and the rows are yours to write.\n' +
+    'Example, a class and its weekly time:\n' +
+    '  [{"write":"insert into class (academy_id, name, starts_on) values (app.academy_id(), ' +
+    "'Evening', date '2026-08-20')\"},\n" +
+    '   {"write":"insert into class_slot (academy_id, class_id, weekday, start_time, end_time) ' +
+    "values (app.academy_id(), (select id from class where name = 'Evening' and academy_id = " +
+    "app.academy_id() and active and ends_on is null), 1, time '18:00', time '19:00')\"}]",
 }
 
 /**

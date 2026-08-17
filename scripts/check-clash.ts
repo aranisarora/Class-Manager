@@ -133,22 +133,37 @@ const world = await withSession(ctx, async (tx) => {
 
 /* -- the cases ------------------------------------------------------------- */
 
-const addClass = (name: string, weekday: number, start: string, end: string): PlanStep[] => [
-  {
-    operation: {
-      name: 'create_class',
-      args: {
-        name,
-        venue_id: world.gym,
-        rate_amount: 900,
-        rate_unit: 'per_session',
-        starts_on: new Date().toISOString().slice(0, 10),
-        slots: [{ weekday, start_time: start, end_time: end }],
-        coach_ids: [world.coachId],
-      },
+/**
+ * A class, as the rows a class is.
+ *
+ * This called `create_class`, and the point of the test is stronger without it.
+ * The header below says the check does not ask what the caller intended — it asks
+ * the database what the world BECAME, which is what makes it cover routes nobody
+ * has written yet. Driving it through raw statements is that claim under test
+ * rather than asserted: no named operation is anywhere near this, and the clash
+ * is still found.
+ */
+const addClass = (name: string, weekday: number, start: string, end: string): PlanStep[] => {
+  const today = new Date().toISOString().slice(0, 10)
+  const cls = `(select id from class where name = '${name}' and academy_id = app.academy_id() and active and ends_on is null)`
+  return [
+    {
+      write:
+        `insert into class (academy_id, name, venue_id, rate_amount, rate_unit, starts_on)` +
+        ` values (app.academy_id(), '${name}', '${world.gym}'::uuid, 900, 'per_session', date '${today}')`,
     },
-  },
-]
+    {
+      write:
+        `insert into class_slot (academy_id, class_id, weekday, start_time, end_time)` +
+        ` values (app.academy_id(), ${cls}, ${weekday}, time '${start}', time '${end}')`,
+    },
+    {
+      write:
+        `insert into class_coach (academy_id, class_id, coach_id)` +
+        ` values (app.academy_id(), ${cls}, '${world.coachId}'::uuid)`,
+    },
+  ]
+}
 
 console.log('\ncheck-clash — a coach is one person\n')
 

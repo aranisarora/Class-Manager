@@ -633,12 +633,15 @@ async function census(id: Identity): Promise<string | null> {
       const outbound = n(row, 'outbound_to_others')
       const sent = n(row, 'sent_to_others')
       /**
-       * R8 — a door with no sign. `set_onboarding_state` was the only writer of the
-       * most consequential value in the product, reachable only if the model happened
-       * to choose it, and nothing anywhere named the moment that calls for it. So an
-       * academy with a full roster could sit in `setup` indefinitely while every
-       * proactive path silently suppressed — no error on either side, just a business
-       * that never started.
+       * R8 — a door with no sign. `onboarding_state` is the most consequential
+       * value in the product and for a long time the only thing that wrote it was
+       * an operation the model had to happen to choose, with nothing anywhere
+       * naming the moment that calls for it. So an academy with a full roster
+       * could sit in `setup` indefinitely while every proactive path silently
+       * suppressed — no error on either side, just a business that never started.
+       * The operation is gone (it was one UPDATE and a note) and its one real
+       * precondition is a trigger now, so the door is a plain write with a guard
+       * behind it; this line is still what puts the sign on it.
        *
        * It goes FIRST because it changes what every line under it means: "12 sessions
        * scheduled ahead" reads as a working business, and until this flips, not one of

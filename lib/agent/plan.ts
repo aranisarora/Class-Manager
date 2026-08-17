@@ -1988,19 +1988,24 @@ async function recordAudit(
 const MONEY_TABLES = new Set(['payment', 'tally_line'])
 /** The business's own controls: its settings, its number's credentials, who is an admin. */
 const CONTROL_TABLES = new Set(['academy', 'sender', 'academy_admin'])
-const MONEY_OPS = new Set<OperationName>([
-  'waive',
-  'record_payment',
-  'request_payment',
-  // Converting a trial is the decision that STARTS billing — a money decision
-  // wearing an enrollment update's clothes, so it reads back before it runs
-  // whoever asked and however quietly.
-  'convert_trial',
-  // A tap never re-previews (the preview already happened at mint), so this only
-  // binds when the model reaches for it directly — which is exactly when a money
-  // state transition should be read back before it commits.
-  'confirm_payment',
-])
+/**
+ * The money operations that survived the wrapper cull, and why this list is now
+ * nearly empty rather than gone.
+ *
+ * `waive`, `record_payment`, `request_payment` and `confirm_payment` were here.
+ * They were also, every one of them, a write to `payment` or `tally_line` — and
+ * `MONEY_TABLES` below catches those from the diff, whoever composed the
+ * statement. So the list was doing no work the census was not already doing, on
+ * the paths it covered, and none at all on the path the product is moving
+ * towards: the model composing the SQL itself. `hasAdjust` covers what `waive`
+ * used to declare.
+ *
+ * `convert_trial` stays because it is the one money decision whose diff does not
+ * look like money: it updates an ENROLLMENT, and what makes it consequential is
+ * that it starts the billing. A gate that reads only the tables touched cannot
+ * see that, which is exactly what this set is for.
+ */
+const MONEY_OPS = new Set<OperationName>(['convert_trial'])
 
 /**
  * A plan big enough that "I created some things" stops being a sentence anyone

@@ -1,7 +1,6 @@
 import { z } from 'zod'
 
-import { OPERATIONS, type OperationDef, type OperationName } from '@/lib/agent/operations'
-import { executePlan } from '@/lib/agent/plan'
+import { executePlan, type PlanStep } from '@/lib/agent/plan'
 import { withSession, type SessionCtx, type Tx } from '@/lib/db'
 import { requireSandboxAcademy } from '@/lib/ops-guard'
 import { worldAcademyIds } from '@/lib/seed'
@@ -219,8 +218,8 @@ export async function GET(req: Request): Promise<Response> {
         paid: accounts.reduce((n, a) => n + a.paid, 0),
         outstanding: accounts.reduce((n, a) => n + Math.max(0, a.balance), 0),
       },
-      /** So the control can name the operation it is about to run rather than implying one. */
-      attestOperation: attestOperationName(true),
+      /** So the control can name the act it is about to run rather than implying one. */
+      attestOperation: 'confirm',
     })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
@@ -229,42 +228,52 @@ export async function GET(req: Request): Promise<Response> {
 }
 
 /**
- * Which operation carries this attestation.
+ * The two acts, as the statements they always were.
  *
- * The two controls are two different acts and they are not interchangeable. Confirming a row
- * the business already asked for is §11.5's one transition and belongs to `confirm_payment`,
- * which takes the payment id and never an amount — the point of it being a distinct operation
- * is that amount-matching was double-crediting. Recording money nobody asked for has no
- * requested row to point at, so it is `record_payment` and always was.
+ * `confirm_payment` and `record_payment` were named operations; both were CRUD
+ * plus a note, and both went with the rest of the wrappers. What made them worth
+ * distinguishing survives, because it was never in the wrapper — it is in the
+ * statement. Confirming a row the business already asked for names the PAYMENT
+ * ID and never an amount, because amount-matching was double-crediting. Recording
+ * money nobody asked for has no requested row to point at, so it inserts one
+ * already confirmed.
  *
- * `confirm_payment` is resolved by name rather than imported so this route also works against
- * a build that does not have it yet, and the answer is reported to the caller either way: an
- * emulator that quietly does something adjacent to what the button says is worse than one
- * that cannot do it at all (§2.4).
+ * `requireRows: 1` on the confirm is what the operation's precondition used to
+ * be: a payment already confirmed, or confirmed by somebody else since the panel
+ * loaded, aborts the plan rather than reporting success over a row it did not
+ * change.
  */
-function attestOperationName(hasRequestedRow: boolean): OperationName {
-  const registry = OPERATIONS as Record<string, OperationDef | undefined>
-  if (hasRequestedRow && registry.confirm_payment) return 'confirm_payment' as OperationName
-  return 'record_payment' as OperationName
-}
-
-/**
- * Only the arguments the chosen operation actually declares.
- *
- * The two operations do not take the same shape — one confirms a payment id, the other
- * records an amount against an account — and zod's object parser is strict enough that
- * passing a key it does not know is a failed turn rather than a harmless extra. Reading the
- * declared keys off the schema means this control keeps working across the operation being
- * added, renamed or given another parameter.
- */
-function argsFor(def: OperationDef, bag: Record<string, unknown>): Record<string, unknown> {
-  const shape = (def.params as { shape?: Record<string, unknown> }).shape
-  if (!shape) return bag
-  const out: Record<string, unknown> = {}
-  for (const key of Object.keys(shape)) {
-    if (bag[key] !== undefined && bag[key] !== null) out[key] = bag[key]
+function attestSteps(o: {
+  paymentId: string | null
+  accountId: string
+  amount: number
+  method: string
+  reference: string | null
+}): PlanStep[] {
+  const ref = o.reference ? `'${o.reference.replace(/'/g, "''")}'` : 'null'
+  if (o.paymentId) {
+    return [
+      {
+        write:
+          `update payment set status = 'confirmed', confirmed_at = app.now(),` +
+          ` confirmed_by = app.person_id(), method = '${o.method.replace(/'/g, "''")}',` +
+          ` reference = coalesce(${ref}, reference)` +
+          ` where id = '${o.paymentId}'::uuid and status = 'requested'`,
+        requireRows: 1,
+      },
+      { note: `confirmed the payment that was already requested` },
+    ]
   }
-  return out
+  return [
+    {
+      write:
+        `insert into payment (academy_id, account_id, amount, rail, method, reference,` +
+        ` status, confirmed_at, confirmed_by)` +
+        ` values (app.academy_id(), '${o.accountId}'::uuid, ${o.amount}, 'rail1',` +
+        ` '${o.method.replace(/'/g, "''")}', ${ref}, 'confirmed', app.now(), app.person_id())`,
+    },
+    { note: `recorded a payment nobody had requested` },
+  ]
 }
 
 /**
@@ -359,37 +368,28 @@ export async function POST(req: Request): Promise<Response> {
       )
     }
 
-    const name = attestOperationName(Boolean(paymentId))
-    const def = (OPERATIONS as Record<string, OperationDef | undefined>)[name]
-    if (!def) {
-      return Response.json({ ok: false, error: `no operation named ${name} in this build` }, { status: 501 })
-    }
-
-    const args = argsFor(def, {
-      payment_id: paymentId ?? null,
-      account_id: accountId,
-      amount,
-      method: body.method ?? 'upi',
-      reference,
-      notify: true,
-      confirmed: true,
-    })
-
     const result = await executePlan(
       ctx,
-      [{ operation: { name, args } }],
+      attestSteps({
+        paymentId: paymentId ?? null,
+        accountId,
+        amount,
+        method: body.method ?? 'upi',
+        reference,
+      }),
       `emulator: ${viewer.name} attests ${amount} on rail 1`,
     )
 
     return Response.json({
       ok: result.ok,
-      operation: name,
-      // A confirm routed through `record_payment` is a different act with a similar outcome,
-      // and the driver has to be told which one ran (§2.4).
-      note:
-        name === 'record_payment' && paymentId
-          ? 'this build has no confirm_payment operation — the attestation ran through record_payment, which writes a fresh payment row as well as confirming the requested one'
-          : null,
+      operation: paymentId ? 'confirm' : 'record',
+      // Which act ran, said plainly. An emulator that quietly does something
+      // adjacent to what the button says is worse than one that cannot do it at
+      // all (§2.4) — and confirming a request and recording a fresh payment are
+      // adjacent acts with different consequences.
+      note: paymentId
+        ? 'confirmed the requested payment by its id — no second row'
+        : 'recorded a new payment; nothing had been requested to confirm',
       summary: result.summary,
       error: result.error ?? null,
       messages: result.stagedMessages,
