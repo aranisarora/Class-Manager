@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from 'next'
 import type { ReactNode } from 'react'
 
+import { DELETION_URL, OPERATOR, PRIVACY_URL } from '@/lib/legal'
+
 /**
  * The privacy policy, and the one page on this deployment that is written for
  * somebody outside the building.
@@ -25,30 +27,13 @@ import type { ReactNode } from 'react'
  * chooses. `app/page.tsx` is the opposite of this by design; that is why that
  * one is gated and this one is not.
  *
- * WHAT TO EDIT BEFORE SUBMITTING: `OPERATOR` below, and nothing else.
+ * WHAT TO EDIT BEFORE SUBMITTING: `lib/legal.ts`, and nothing else. Everything
+ * else in this document describes what `supabase/migrations`, `lib/messaging`
+ * and `lib/agent` actually do, so it should be edited when they change and not
+ * before.
  */
 
-// ---------------------------------------------------------------------------
-// The only facts here that are not derivable from the code. Everything else in
-// this document describes what `supabase/migrations`, `lib/messaging` and
-// `lib/agent` actually do, so it should be edited when they change and not
-// before.
-// ---------------------------------------------------------------------------
-const OPERATOR = {
-  /** The product name a parent sees. Keep it identical to the WhatsApp display name. */
-  service: 'Class Manager',
-  /** The legal entity or individual answerable for the data. */
-  entity: 'Class Manager',
-  /** Reachable, monitored, and the same address given to Meta. */
-  email: 'aa5925@ic.ac.uk',
-  /** Named contact for grievances — the DPDP Act expects a person, not a queue. */
-  grievanceOfficer: 'Aranis Arora',
-  jurisdiction: 'India',
-  effective: '18 August 2026',
-  updated: '18 August 2026',
-} as const
-
-const CANONICAL = 'https://class-manager-gilt.vercel.app/privacy'
+const CANONICAL = PRIVACY_URL
 
 export const metadata: Metadata = {
   title: `Privacy Policy · ${OPERATOR.service}`,
@@ -214,6 +199,36 @@ export default function PrivacyPolicy() {
             no UPI PIN. Payments happen in your own banking or UPI app; what reaches us is a record
             that one occurred.
           </p>
+
+          {/*
+            Meta's reviewers check one thing above all others: that the policy covers the data
+            reached by each permission the app requests, by name. A policy that describes its data
+            in the abstract is the commonest content rejection, so the mapping is stated outright
+            rather than left to be inferred from the table above.
+          */}
+          <div className="mt-4 rounded-panel border border-line bg-surface p-5">
+            <h3 className="text-base font-medium text-ink">
+              The Meta permissions we use, and what each one touches
+            </h3>
+            <p className="mt-3 text-[0.9375rem] leading-relaxed text-dim">
+              This service is built on the WhatsApp Business Platform (Cloud API). It requests two
+              permissions and no others, and it reaches no Facebook or Instagram data of any kind.
+            </p>
+            <div className="mt-3">
+              <Row
+                what="whatsapp_business_messaging"
+                why="Sends and receives messages on the academy's WhatsApp number. Through it we handle your phone number, your WhatsApp ID and profile name, the content of messages in both directions, button and form responses, and delivery/read status. This is the permission that carries every item in the table above marked as coming from WhatsApp."
+              />
+              <Row
+                what="whatsapp_business_management"
+                why="Manages the academy's own WhatsApp Business Account — registering the webhook and submitting and reading the pre-approved message templates. It touches business configuration, not personal data: no message content and no personal data of any recipient is accessed through it."
+              />
+            </div>
+            <p className="mt-3 text-[0.9375rem] leading-relaxed text-dim">
+              We do not use Facebook Login, and we hold no Facebook or Instagram profile, friend,
+              page or advertising data. We do not request permissions for data we do not need.
+            </p>
+          </div>
         </Section>
 
         <Section id="why" n="3" title="Why we use it, and on what basis">
@@ -389,6 +404,12 @@ export default function PrivacyPolicy() {
               fee receipts, principally — are kept for the period in §9 and then deleted; we will
               tell you which ones those are. Deleting your data ends the service for you: the
               academy will no longer be able to message you through it.
+            </p>
+            <p className="mt-3 text-[0.9375rem] leading-relaxed text-dim">
+              These instructions also stand on their own page:{' '}
+              <a className="text-accent underline underline-offset-2" href={DELETION_URL}>
+                {DELETION_URL}
+              </a>
             </p>
           </div>
         </Section>
