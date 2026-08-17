@@ -15,6 +15,7 @@
     "probe": "tsx scripts/probe-model.ts",
     "ask": "tsx scripts/probe-ask.ts",
     "surface": "tsx scripts/probe-surface.ts",
+    "guards": "tsx scripts/guard-value.ts",
     "verify:static": "node scripts/verify-static.mjs"
   },
   "dependencies": {
