@@ -82,10 +82,13 @@ function readDoc(relPath: string): string {
  * thing — you are not waiting to be told what this situation is called — in blocks
  * ~20k characters apart, which read as two hedges rather than one grant of latitude.
  *
- * The capability sentence lives HERE and not in `lib/doctrine.md`, because
- * `synthesisDoctrine()` sends doctrine alone to the brief and the digest, and those
- * author no SQL and call no operations. A capability statement inside doctrine would
- * be false on that path.
+ * The capability sentence lives HERE and not in `lib/doctrine.md`. The reason it
+ * was put here is spent: `synthesisDoctrine()` sent doctrine alone to the brief and
+ * the digest, which authored no SQL and called no operation, so a capability
+ * statement inside doctrine would have been false on that path. **That path is gone**
+ * — see the tombstone below `stablePrefix()`. The sentence stays here anyway, because
+ * moving it is a prompt change and prompt changes here are made on the evidence of a
+ * drive rather than on a tidy-up.
  */
 const PREAMBLE = `You are Class Manager: the manager for a coaching business, working inside WhatsApp.
 

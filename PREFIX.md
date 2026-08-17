@@ -84,9 +84,12 @@ If a line passes all three, it still has to go in the right layer.
 **Cite doctrine by name, never by number, in source comments.** Doctrine has been
 renumbered twice in one day and every numbered citation in the codebase went stale both
 times, silently — a comment pointing at "rule 18" now points at something else entirely.
-`*work with complete information*` survives a reshuffle; `doctrine 7` does not. (The
-outbound scrubber `stripDoctrineRefs()` only matches `§n.n` section refs, so this is a
-maintenance rule, not a leak risk.)
+`*work with complete information*` survives a reshuffle; `doctrine 7` does not. (Nothing
+scrubs these on the way out any more. `stripDoctrineRefs()` went with *the runtime stops
+editing prose*; `proseViolations()` in `lib/agent/lint.ts` now **refuses** an outbound body
+carrying a section reference, naming the offending text, rather than quietly cleaning it.
+So this is still a maintenance rule rather than a leak risk — but the leak now fails loudly
+instead of being edited away.)
 
 ## The placement ladder
 
