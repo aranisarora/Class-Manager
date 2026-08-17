@@ -30,7 +30,6 @@ import {
 } from '@/lib/emulator/state'
 import { Bubble } from './Bubble'
 import { Composer } from './Composer'
-import { FlowSheet } from './FlowSheet'
 import { Icon } from './icons'
 import { MemoryPanel } from './MemoryPanel'
 import { MoneyPanel } from './MoneyPanel'
@@ -458,10 +457,8 @@ export function Pane({
                   meta={eventsByMessage.get(m.id) ?? null}
                   senderFallback={academy?.senderPhone ?? null}
                   busyTap={(actionId) => !!state.busy[`tap:${actionId}`]}
-                  busyFlow={(flowToken) => !!state.busy[`flow:${flowToken}`]}
                   onTap={(actionId, label) => void actions.tapAction(contactId, actionId, label)}
                   onOpenList={setSheet}
-                  onOpenFlow={setFormSheet}
                   onAdvanceStatus={(messageId, status) => void actions.advanceStatus(contactId, messageId, status)}
                 />
               ))}
@@ -512,18 +509,6 @@ export function Pane({
         />
       ) : null}
 
-      {formSheet?.flow ? (
-        <FlowSheet
-          flow={formSheet.flow}
-          nowIso={nowIso}
-          busy={!!state.busy[`flow:${formSheet.flow.flowToken}`]}
-          onClose={() => setFormSheet(null)}
-          onSubmit={(responseJson, summary) => {
-            setFormSheet(null)
-            void actions.submitFlow(contactId, formSheet.flow!.flowToken, responseJson, summary)
-          }}
-        />
-      ) : null}
     </div>
   )
 }

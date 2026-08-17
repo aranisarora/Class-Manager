@@ -47,7 +47,7 @@ const Create = z.object({
    *
    * It has to be sayable, because in production this route is the ONLY way an academy is
    * created: `createAcademy` has exactly two callers, this and `scripts/drive.ts`, and the
-   * onboarding Flow only ever moves `onboarding_state` on a tenant that already exists. So
+   * onboarding conversation only ever moves `onboarding_state` on a tenant that exists. So
    * the operator's first real customer is born here too, and inferring "sandbox" from
    * "hosted" would quietly mark that customer destructible — the one thing this whole
    * mechanism exists to prevent.

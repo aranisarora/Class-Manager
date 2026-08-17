@@ -23,6 +23,9 @@
 
 import { serviceFrom, withSession } from '@/lib/db'
 import type { SessionCtx, Tx } from '@/lib/db'
+// The pending question expires when its button does, and the fallback has to be
+// the one `mintAction` uses — not a second copy of 1440 that can drift from it.
+import { DEFAULT_ACTION_TTL_MINUTES } from '@/lib/actions'
 import { encodeForWhatsApp } from '@/lib/agent/lint'
 import { inZone, isQuietHour } from '@/lib/clock'
 import { CATALOG, isCatalogId, MUTE_SCOPE } from './catalog'
@@ -316,11 +319,6 @@ function asTemplateMessage(
     header: undefined,
     footer: undefined,
     list: undefined,
-    // A template's action is fixed at approval, so a Flow cannot ride one out of window
-    // any more than a `cta_url` can. Left set, the stored row still advertised a form
-    // the wire was not carrying, and the minted `flow_token` reached nobody — a live
-    // action row for a control that was never printed.
-    flow: undefined,
     // A template's buttons are fixed at approval, so a `cta_url` cannot ride one out of
     // window. The link is not lost — the template is a window-opener (§14.7), and the
     // rich interaction happens in-window, for free, after one tap.
@@ -358,11 +356,10 @@ function messagePayload(msg: OutboundMessage, extra: Record<string, unknown>): s
     footer: msg.footer ?? null,
     buttons: msg.buttons ?? null,
     list: msg.list ?? null,
-    link: msg.link ?? null,
     // The emulator's panes, the thread endpoint and the event log all read this row —
     // it is the store — so an affordance missing here is an affordance nobody can see
     // or tap, however correctly it went over the wire.
-    flow: msg.flow ?? null,
+    link: msg.link ?? null,
     media: msg.media ?? null,
     subject_person_ids: msg.subjectPersonIds ?? [],
     is_confirmation_request: Boolean(msg.isConfirmationRequest),
@@ -667,8 +664,8 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
 
     // ── Gate 4 · §2.6 ─────────────────────────────────────────────────────────
     // "Nothing is sent during onboarding until the admin says go. Building the roster
-    // messages nobody." Flows that legitimately message before launch — the admin's own
-    // setup conversation, the coach invite read-back — set `preLaunchOk`.
+    // messages nobody." The journeys that legitimately message before launch — the admin's
+    // own setup conversation, the coach invite read-back — set `preLaunchOk`.
     //
     // The admin is that first exception by definition, not by remembering a flag. Leaving
     // it to callers meant the owner of a brand-new academy could not be answered at all:
@@ -976,12 +973,33 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
            and kind = ${kind}
            and subject = ${subject || row.contact_id}
            and resolved_at is null`
+      /**
+       * **`expires_at` was left NULL on every row, and that made the sweep dead
+       * code.** `plan-ahead.ts` resolves stale questions with `expires_at is not
+       * null and expires_at < app.now()` — correct SQL that could never match,
+       * because nothing on any path ever set the column. So "asked and
+       * unanswered" was a state with no way to end: the tail went on reporting a
+       * question about a session that had already run, and two rows were still
+       * open at the close of the stress week.
+       *
+       * The lifetime is the BUTTON's, not a number chosen here. Once the action
+       * has expired there is no tap left that could answer the question, so any
+       * other figure would be this file inventing a policy. `DEFAULT_ACTION_TTL_MINUTES`
+       * is the same fallback `mintAction` applies, imported rather than repeated
+       * — two copies of one number is how the two writers of a billing key came
+       * to disagree.
+       */
+      const ttl = Number.isFinite(msg.actionTtlMinutes)
+        ? Number(msg.actionTtlMinutes)
+        : DEFAULT_ACTION_TTL_MINUTES
       await tx`
         insert into pending_request
-          (academy_id, contact_id, person_id, kind, subject, question, message_id, asked_turn_id)
+          (academy_id, contact_id, person_id, kind, subject, question, message_id, asked_turn_id,
+           expires_at)
         values (${row.academy_id}, ${row.contact_id}, ${row.person_id}, ${kind},
                 ${subject || row.contact_id}, ${question || '(a confirmation)'}, ${messageId},
-                nullif(current_setting('app.turn_id', true), '')::uuid)`
+                nullif(current_setting('app.turn_id', true), '')::uuid,
+                app.now() + make_interval(mins => ${ttl}::int))`
     }
 
     return {

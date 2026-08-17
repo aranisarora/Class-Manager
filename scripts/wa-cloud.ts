@@ -35,28 +35,21 @@ loadEnvFiles()
 
 import { closePool, unsafeQuery, withSession } from '@/lib/db'
 import type { SessionCtx } from '@/lib/db'
-import { FLOWS, FORM_IDS, validateFlowJson } from '@/lib/messaging/flows'
 import { TEMPLATES, TEMPLATE_NAMES } from '@/lib/messaging/templates'
 import type { TemplateName } from '@/lib/messaging/templates'
 import {
   configureWebhook,
-  createFlow,
   debugToken,
   deleteTemplate,
   describePhoneNumber,
-  isIntegrityBlock,
-  listFlows,
   listSubscribedApps,
   listTemplates,
   provisionTemplates,
-  publishFlow,
   readWebhookConfig,
   sendHelloWorld,
   subscribeApp,
   templateSubmission,
-  uploadFlowJson,
 } from '@/lib/messaging/transport-cloud'
-import type { FlowRegistry } from '@/lib/messaging/transport-cloud'
 
 // `academyId: ''` — the sender table is global and its cm_service policy is
 // `using (true)`, so the tenant this session is pinned to is irrelevant. Same
@@ -258,116 +251,6 @@ async function link(config: Config): Promise<void> {
   // still be referenced by a tenant this script cannot see. Naming them is enough.
   for (const s of senders) {
     if (s.id !== senderId) console.log(info(`other sender row left in place: ${s.phone_e164} (${s.id})`))
-  }
-}
-
-// -----------------------------------------------------------------------------
-// flows — create the three forms as Meta assets, upload their JSON, publish what
-// can be published, and record the asset ids where the send path will find them.
-//
-// The ids go into `sender.credentials.flows`, beside the rest of the per-sender
-// configuration (§16.3), because a Flow is a WABA asset and the credentials are
-// the WABA's row. `resetWorld()` deletes senders, so this is re-run after a seed
-// exactly as `link` is — and it is idempotent, matching existing flows by name.
-// -----------------------------------------------------------------------------
-
-async function provisionFlows(config: Config): Promise<void> {
-  const existing = await listFlows(config.wabaId, config.accessToken)
-  if (!existing.ok) {
-    console.log(bad(existing.error))
-    process.exitCode = 1
-    return
-  }
-  const byName = new Map(existing.data.map((f) => [f.name ?? '', f]))
-  const registry: FlowRegistry = {}
-  let integrityBlocked = false
-
-  for (const key of FORM_IDS) {
-    const def = FLOWS[key]
-
-    // Never upload JSON the local validator already rejects — `flows.ts` checks
-    // the same rules Meta applies at publish, and finding out from a 400 costs a
-    // round trip and reads worse.
-    const problems = validateFlowJson(def.json)
-    if (problems.length) {
-      console.log(bad(`${key} — local validation failed: ${problems.join('; ')}`))
-      process.exitCode = 1
-      continue
-    }
-
-    let flowId = byName.get(def.name)?.id
-    if (flowId) {
-      console.log(info(`${key} — exists (${flowId})`))
-    } else {
-      const created = await createFlow(config.wabaId, config.accessToken, def.name, def.categories)
-      if (!created.ok) {
-        console.log(bad(`${key} — create failed: ${created.error}`))
-        process.exitCode = 1
-        continue
-      }
-      flowId = created.data.id
-      console.log(ok(`${key} — created (${flowId})`))
-    }
-
-    const uploaded = await uploadFlowJson(flowId, config.accessToken, def.json)
-    if (!uploaded.ok) {
-      console.log(bad(`${key} — JSON upload failed: ${uploaded.error}`))
-      process.exitCode = 1
-      continue
-    }
-    console.log(ok(`${key} — JSON uploaded`))
-
-    const status = byName.get(def.name)?.status
-    if (status === 'PUBLISHED') {
-      registry[key] = { id: flowId, published: true }
-      console.log(ok(`${key} — already PUBLISHED`))
-      continue
-    }
-
-    const published = await publishFlow(flowId, config.accessToken)
-    if (published.ok) {
-      registry[key] = { id: flowId, published: true }
-      console.log(ok(`${key} — PUBLISHED`))
-      continue
-    }
-
-    registry[key] = { id: flowId, published: false }
-    if (isIntegrityBlock(published.error)) {
-      integrityBlocked = true
-      console.log(warn(`${key} — DRAFT (publishing blocked by business verification)`))
-    } else {
-      console.log(bad(`${key} — publish failed: ${published.error}`))
-    }
-  }
-
-  if (Object.keys(registry).length === 0) {
-    console.log(bad('nothing registered'))
-    process.exitCode = 1
-    return
-  }
-
-  // Merge, never overwrite: the row already holds the token and app secret, and
-  // rewriting it wholesale from this command would drop them.
-  const senders = await readSenders()
-  const target = senders.find((s) => last10(s.phone_e164) === last10(config.senderPhone))
-  if (!target) {
-    console.log(bad(`no sender row on ${config.senderPhone} — run: npm run wa -- link`))
-    process.exitCode = 1
-    return
-  }
-  await withSession(BOOTSTRAP, async (tx) => {
-    await tx.unsafe(
-      `update sender set credentials = credentials || $2::text::jsonb where id = $1::uuid`,
-      [target.id, JSON.stringify({ flows: registry })] as never[],
-    )
-  })
-  console.log(ok(`registered ${Object.keys(registry).length} flow ids on sender ${target.phone_e164}`))
-
-  if (integrityBlocked) {
-    console.log()
-    console.log(warn('Publishing is gated on Meta Business Verification — "Blocked by Integrity" (139000/4233020).'))
-    console.log(info('Created and uploaded are unaffected; the flows exist and are sendable as DRAFT to a test number.'))
-    console.log(info('Verify the business portfolio, then re-run this command to publish them.'))
   }
 }
 
@@ -644,24 +527,6 @@ async function status(config: Config, missing: string[]): Promise<void> {
     if (others.length) console.log(info(`also on this WABA: ${others.map((t) => t.name).join(', ')}`))
   }
 
-  heading('flows')
-  const flows = await listFlows(config.wabaId, config.accessToken)
-  if (!flows.ok) {
-    console.log(bad(flows.error))
-  } else {
-    const byName = new Map(flows.data.map((f) => [f.name ?? '', f]))
-    for (const key of FORM_IDS) {
-      const def = FLOWS[key]
-      const f = byName.get(def.name)
-      if (!f) {
-        console.log(bad(`${key} ("${def.name}") — not created. Run: npm run wa -- flows`))
-        continue
-      }
-      const line = `${key} — ${f.status ?? '?'} (${f.id})`
-      console.log(f.status === 'PUBLISHED' ? ok(line) : warn(`${line} — sendable only as draft, to a test number`))
-    }
-  }
-
   heading('database')
   const senders = await readSenders()
   if (senders.length === 0) {
@@ -738,7 +603,7 @@ async function main(): Promise<void> {
   const command = argv[0] ?? 'status'
   const { config, missing } = readConfig()
 
-  const needsGraph = ['subscribe', 'templates', 'templates:replace', 'flows', 'send-test'].includes(command)
+  const needsGraph = ['subscribe', 'templates', 'templates:replace', 'send-test'].includes(command)
   if (needsGraph && missing.length && command !== 'templates:preview') {
     console.log(bad(`missing ${missing.join(', ')} in .env.local`))
     process.exitCode = 1
@@ -882,8 +747,6 @@ async function main(): Promise<void> {
       break
     }
 
-    case 'flows':
-      await provisionFlows(config)
       break
 
     case 'admin': {
@@ -919,7 +782,7 @@ async function main(): Promise<void> {
       console.log(`unknown command: ${command}`)
       console.log(
         '  status | link | subscribe | webhook <url> | templates | templates:replace <name…> |\n' +
-          '  templates:preview | flows | admin <phone> <name> | send-test <phone>',
+          '  templates:preview | admin <phone> <name> | send-test <phone>',
       )
       process.exitCode = 1
   }

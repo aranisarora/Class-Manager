@@ -1,8 +1,8 @@
 /**
  * lib/setup-plan.ts — the shape of the business, written once.
  *
- * There are several ways to tell this product what the business is: the
- * `business_setup` form, a sentence typed in the chat, and whatever comes next.
+ * There are several ways to tell this product what the business is: a sentence
+ * typed in the chat, an answer to something it asked, and whatever comes next.
  * There must not be several ways to WRITE it. That rule is not abstract here — the
  * register screen wrote `attendance` with its own SQL for most of the product's
  * life, twenty lines above a handler that ran the named operation properly, and the
@@ -18,13 +18,18 @@
  * Everything is optional except the name, because callers supply different subsets.
  * **A field left `undefined` is left alone; a field set to `null` is cleared.** That
  * distinction is the difference between "they did not say" and "they said none", and
- * getting it wrong is not cosmetic: the setup form offers *Don't send one* against
- * the morning brief, and a builder that treats that answer as "unset" leaves the old
+ * getting it wrong is not cosmetic: somebody who says *don't send me a morning brief*
+ * has said something, and a builder that treats that answer as "unset" leaves the old
  * 7am time in place and sends the message they just declined — for ever, with no way
  * to tell from the outside that the answer was ignored.
+ *
+ * The subsets got smaller when the setup Flow went (§14.6). A form arrived with all
+ * nine fields at once, so "left alone" was rare; a ladder arrives with two, then
+ * three more when they come up, so it is now the common case rather than the edge —
+ * which is why `set_up_business` is safe to call repeatedly as the conversation goes.
  */
 
-import { jsonLit, lit, uid } from '@/lib/agent/operations'
+import { jsonLit, lit, uid } from '@/lib/agent/sql'
 import type { PlanStep } from '@/lib/agent/plan'
 
 export type SetupVenue = { id?: string | null; name: string; address?: string | null }
@@ -102,8 +107,8 @@ export function buildSetupSteps(academyId: string, v: SetupValues): PlanStep[] {
             requireRows: 1,
           }
         : {
-            // Idempotent on the name key 0014 added: a Flow re-submitted after a
-            // dropped connection must not open a second copy of the same hall.
+            // Idempotent on the name key 0014 added: somebody naming the same hall
+            // twice as the conversation goes must not open a second copy of it.
             write: `insert into venue (academy_id, name, address)
                     values (${uid(academyId)}, ${lit(name)}, ${lit(clean(venue.address))})
                     on conflict (academy_id, name) do update set address = excluded.address`,

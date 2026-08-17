@@ -1440,10 +1440,11 @@ export async function executePlan(
       /**
        * Asked here as well as in the preview, so the property is the plan's
        * rather than the previewed plan's. Every model-authored write is gated
-       * by `needsPreview` before it reaches this function, but a Flow
-       * submission is not — the setup form writes a whole week in one plan,
-       * which is exactly where two 7am Mondays get typed — and a receipt that
-       * names the overlap is the only warning that path has.
+       * by `needsPreview` before it reaches this function, but not every write
+       * reaching it came through a preview — a whole timetable typed in one
+       * messy sentence commits as one plan, which is exactly where two 7am
+       * Mondays get in — and a receipt that names the overlap is the only
+       * warning that path has.
        */
       return {
         diffs,
@@ -1953,7 +1954,30 @@ async function flushOutbox(
         templateName: entry ? entry.template : null,
         idempotencyKey: idem('plan', auditId, String(i)),
         subjectPersonIds: m.subject_person_ids,
-        isConfirmationRequest: m.is_confirmation_request,
+        /**
+         * The second door a routed question can leave by.
+         *
+         * An operation that stages its own confirmation sets this explicitly and
+         * that always wins — `??` rather than `||`, so a deliberate `false` from
+         * a protocol is respected. What is being caught is the model-authored
+         * message step, which has no way to set it: the declared `{"message":…}`
+         * shape carries `body`, `catalog_id`, `subject_person_ids` and `buttons`
+         * and nothing else, by design. Same reasoning as the `reply` executor —
+         * a committing button on a message to somebody other than the person
+         * whose turn this is asks a question only their tap can answer, and the
+         * runtime is the only party here that can know it.
+         */
+        isConfirmationRequest:
+          m.is_confirmation_request ??
+          (('contactId' in ctx && ctx.contactId !== m.toContactId) &&
+            (m.buttons ?? []).some(
+              (b) =>
+                b.action?.kind === 'steps' ||
+                // `String(op)` deliberately: commit is a TOOL, not an operation,
+                // so it is not in `OperationName` and a typed comparison never
+                // matches. Same idiom as `tools.ts`'s action reader.
+                (b.action?.kind === 'operation' && String(b.action.op) === 'commit'),
+            )),
         isEscalation: m.is_escalation,
         fixed: m.fixed ?? entry?.fixed ?? false,
         preLaunchOk: m.pre_launch_ok,

@@ -16,19 +16,6 @@ import { resolveIdentity } from '@/lib/identity'
 import { consumeAction, type ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { LIMITS, type SendOutcome } from '@/lib/messaging/types'
-import {
-  ADD_CLASS,
-  BUSINESS_SETUP,
-  FORM_INTRO,
-  parseFlowResponse,
-  REGISTER,
-  type AddClassValues,
-  type BusinessSetupValues,
-  type FormId,
-  type RegisterValues,
-} from '@/lib/messaging/flows'
-import { formFor } from '@/lib/messaging/forms'
-import { buildSetupSteps, summariseSetup } from '@/lib/setup-plan'
 import type { Identity, Job, Role } from '@/lib/types'
 import { generate, type Msg } from './deepseek'
 import { stablePrefix, variableTail } from './context'
@@ -51,12 +38,6 @@ export type TurnInput = {
   text?: string
   media?: { url: string; mimeType: string }[]
   actionId?: string
-  /**
-   * The answers from a completed WhatsApp Flow, with `actionId` carrying its
-   * `flow_token`. Present only on a Flow submission, which is a tap that arrives
-   * with data — so it consumes its action exactly like any other tap.
-   */
-  flowData?: Record<string, unknown>
   source: 'inbound' | 'job' | 'sim'
   /** Runtime-internal: a self-scheduled task's instruction and its data (§13.1). */
   task?: { instruction: string; queryResults?: unknown }
@@ -184,7 +165,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         // as stored, which is exactly the distinction `message.origin` exists to
         // record. Same person, same turn id, different act.
         const tapSession = sessionOf(identity, turnId, 'tap', consumed.payload.kind)
-        const res = await executeAction(tapSession, identity, consumed.payload, turnId, input.flowData)
+        const res = await executeAction(tapSession, identity, consumed.payload, turnId)
         outcomes.push(...res.outcomes)
         replyText = res.summary
         trace.push({
@@ -315,16 +296,10 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     }
   }
 
-  // §5 — "the bot writes facts asynchronously after a turn, never blocking a reply."
-  // This runs after everything has been sent, so nobody is waiting on it.
-  if (!error) {
-    const reflected = await reflect(session, identity, turnId, {
-      said: input.text ?? (input.actionId ? '(tapped a button)' : ''),
-      replied: replyText,
-      trace,
-    }).catch(() => null)
-    if (reflected?.length) trace.push(...reflected)
-  }
+  // §5's pass — "the bot writes facts asynchronously after a turn, never
+  // blocking a reply" — used to run here as a second model call. It is the
+  // turn's last ROUND now, inside the model loop where the schema, the tools and
+  // its own trace are still in context. See the note above the `return` there.
 
   await writeTurn({
     turnId,
@@ -429,309 +404,25 @@ async function executeAction(
   identity: Identity,
   payload: ActionPayload,
   turnId: string,
-  flowData?: Record<string, unknown>,
 ): Promise<{ outcomes: SendOutcome[]; summary: string }> {
   const outcomes: SendOutcome[] = []
 
   /**
-   * A completed WhatsApp Flow.
+   * THE FORM SUBMISSION BRANCH IS GONE, AND SO IS THE FORM (§14.6).
    *
-   * What a submission DOES is decided here, by flow id, and never carried in the
-   * action payload — so a form can only ever reach work the runtime chose to put
-   * behind it, the same way `write.service` and `requireRows` are runtime-only
-   * fields. The answers themselves are untrusted input: they are parsed by the
-   * flow's own schema and then run as a plan under the submitter's own RLS
-   * session, which is what makes a Flow no more privileged than a typed sentence.
+   * A `flow` payload used to arrive here carrying a completed WhatsApp Flow: parse
+   * the response against the artifact's schema, then dispatch on flow id to one of
+   * three handlers — the business shape, a class, the register. All three wrote
+   * through the same named paths a typed sentence reaches (`buildSetupSteps`,
+   * `create_class`, `mark_attendance`), which is exactly why removing the form cost
+   * no write path: what went was the collection surface, not the work behind it.
+   *
+   * What replaces it is that the same three things are ASKED. That is more round
+   * trips and it is the trade this product chose: a published artifact can only ever
+   * return the fields it was published with, so the register form could render any
+   * roster and still had no answer for "Aarav left at half time". The ladder does,
+   * because the ladder is just the model reading a sentence.
    */
-  if (payload.kind === 'flow') {
-    const parsed = parseFlowResponse(payload.flow, flowData ?? {})
-    if (!parsed.ok) {
-      outcomes.push(
-        await composeAndSend(session, {
-          toContactId: identity.contact.id,
-          body: `That form didn't come through cleanly — ${parsed.error}. Tell me the details here instead and I'll set it up.`,
-        }),
-      )
-      return { outcomes, summary: `flow ${payload.flow} rejected: ${parsed.error}` }
-    }
-
-    if (payload.flow === BUSINESS_SETUP.id) {
-      const v = parsed.values as BusinessSetupValues
-      // The same builder every other setup path runs. A form is a different way to
-      // reach the setup plan, never a second implementation of it.
-      const venues = v.venue ? [{ name: v.venue, address: v.address || null }] : []
-      const setup = {
-        name: v.name,
-        category: v.category || null,
-        timezone: v.timezone || null,
-        cancellationWindowHours: v.cancellation_window_hours,
-        // Three answers, not two. "Don't send one" is `null` and clears the column;
-        // a time is itself; a blank field is `undefined` and leaves what is there.
-        // Collapsing the last two would mean an owner who edited their UPI handle
-        // silently lost the brief they had already set.
-        morningBriefAt: v.morning_brief_at === 'off' ? null : v.morning_brief_at || undefined,
-        eveningDigestAt: v.evening_digest_at === 'off' ? null : v.evening_digest_at || undefined,
-        upiHandle: v.upi_handle || null,
-        venues,
-      }
-      const steps = buildSetupSteps(identity.academyId, setup)
-      /**
-       * The default charging basis rides in `settings`, not on a column of its own.
-       *
-       * It is not a property of the business the way its timezone is — it is what to
-       * assume when a class arrives with no price on it, which is every class read off
-       * a photo. Putting it here keeps `class.rate_unit` the only place a real rate
-       * lives, so nothing downstream can mistake a default for a decision.
-       */
-      if (v.rate_unit) {
-        steps.push({
-          write: `update academy set settings = coalesce(settings, '{}'::jsonb)
-                    || jsonb_build_object('default_rate_unit', ${lit(v.rate_unit)})
-                  where id = ${uid(identity.academyId)}`,
-        })
-      }
-      const res = await executePlan(session, steps, 'Business set up from the form', audienceFor(identity))
-      if (!res.ok) {
-        outcomes.push(
-          await composeAndSend(session, {
-            toContactId: identity.contact.id,
-            body: /PRECONDITION_FAILED|CHANGED_NOTHING/.test(res.error ?? '')
-              ? 'Only the owner can change the business settings, so I left everything as it was.'
-              : `That didn't save: ${res.error ?? 'something went wrong'}. Nothing was changed.`,
-          }),
-        )
-        return { outcomes, summary: `form ${payload.flow} failed: ${res.error ?? 'unknown'}` }
-      }
-
-      const summary = summariseSetup(setup)
-      /**
-       * Straight into the timetable, naming the way it can arrive.
-       *
-       * This is the one message in the product where saying what is possible is worth
-       * more than saying what happened: what people expect is one form per class, and
-       * `onboarding.md` calls the timetable the biggest single saving here. A person
-       * who does not know they can type the whole week in one messy sentence fills in
-       * four forms by hand, or stops.
-       *
-       * It used to offer a photo of the whiteboard and a voice note. The model is
-       * text-only now (`deepseek.ts`), so that would be an invitation to send
-       * something that comes back apologised for — the worst possible first
-       * impression, caused by the message meant to save them the most work.
-       */
-      outcomes.push(
-        await composeAndSend(session, {
-          toContactId: identity.contact.id,
-          preLaunchOk: true,
-          body:
-            `${summary}\n\n`
-            + 'Now the part that usually takes an hour — your timetable. '
-            + 'Type the whole week in one go, however messy: "Mon & Wed 6:30 beginners at Green Park, '
-            + 'Sat 8am juniors". I\'ll read it back before I create anything.',
-          buttons: [
-            // 19 chars. "Add classes one by one" is 22, and `fitTitle` cut it at the word
-            // boundary to "Add classes one by" — a dangling preposition that shipped.
-            { title: 'Add them one by one', action: { kind: 'form', form: 'add_class' } },
-          ],
-        }),
-      )
-      return { outcomes, summary }
-    }
-
-    /**
-     * A class, from the form.
-     *
-     * Committed rather than previewed, because this is the one write in the product
-     * whose read-back the person has literally just done: the form showed them every
-     * field and they pressed Add. A confirmation step on top of that is asking the same
-     * question twice, which `bulk-change.md` names as pure friction on a single row in
-     * your own scope.
-     */
-    if (payload.flow === ADD_CLASS.id) {
-      const v = parsed.values as AddClassValues
-      /**
-       * The venue arrives as a NAME, because that is what a person picks from a
-       * list, and every id in this plan has to be an id. Resolved here rather
-       * than interpolated blind: a venue that does not exist must produce a class
-       * at no venue rather than a statement that fails, because the class is the
-       * thing the person asked for.
-       */
-      let venueId: string | null = null
-      if (v.venue) {
-        const hit = await modelQuery(session, `select id from venue where name = ${lit(v.venue)} limit 1`)
-        venueId = hit.error ? null : ((hit.rows[0]?.id as string) ?? null)
-      }
-      /**
-       * **A class is its rows.**
-       *
-       * This built a `create_class` step, and `create_class` was the operation
-       * whose consequence line said it was "the only thing that schedules the
-       * sessions" — which is why removing it needed the trigger in 0033 first.
-       * A slot implies its sessions now, on this path and on the model's and on
-       * one nobody has written, so the form writes exactly what a class is made
-       * of and the rest follows from the world.
-       *
-       * The class is selected back by name for the slots, because a plan cannot
-       * know the id of a row it just inserted. `class_academy_name_open_key` is
-       * what makes that safe: a second open class of the same name does not
-       * exist, so the subquery matches exactly one row or the insert that would
-       * have created the ambiguity was already refused.
-       */
-      const today = inZone(await now(identity.academyId), identity.academy.timezone || 'Asia/Kolkata').date
-      const cls = `(select id from class where name = ${lit(v.name)} and academy_id = app.academy_id() and active and ends_on is null)`
-      const res = await executePlan(
-        session,
-        [
-          {
-            write:
-              `insert into class (academy_id, name, starts_on` +
-              `${venueId ? ', venue_id' : ''}${v.rate !== undefined ? ', rate_amount' : ''}` +
-              `${v.rate_unit ? ', rate_unit' : ''})` +
-              ` values (app.academy_id(), ${lit(v.name)}, date ${lit(today)}` +
-              `${venueId ? `, ${uid(venueId)}` : ''}${v.rate !== undefined ? `, ${v.rate}` : ''}` +
-              `${v.rate_unit ? `, ${lit(v.rate_unit)}` : ''})`,
-          } as PlanStep,
-          ...v.days.map(
-            (d) =>
-              ({
-                write:
-                  `insert into class_slot (academy_id, class_id, weekday, start_time, end_time)` +
-                  ` values (app.academy_id(), ${cls}, ${d}, time ${lit(v.starts)}, time ${lit(v.ends)})`,
-              }) as PlanStep,
-          ),
-          { note: `${v.name}, ${v.days.length} time(s) a week` } as PlanStep,
-        ],
-        `Add ${v.name} from the form`,
-        audienceFor(identity),
-      )
-      outcomes.push(...res.outcomes)
-      const failed = res.ok ? null : (res.error ?? 'something went wrong')
-      outcomes.push(
-        await composeAndSend(session, {
-          toContactId: identity.contact.id,
-          preLaunchOk: true,
-          body: failed
-            ? `I couldn't add that class — ${failed}. Nothing was changed; tell me here and I'll sort it.`
-            : `${v.name} is in. Another one, or is that the week?`,
-          buttons: failed
-            ? undefined
-            : [
-                { title: 'Add another', action: { kind: 'form', form: 'add_class' } },
-                { title: "That's the week", action: { kind: 'reply', text: "that's my whole timetable" } },
-              ],
-        }),
-      )
-      return { outcomes, summary: failed ? `add_class failed: ${failed}` : `class ${v.name} created` }
-    }
-
-    /**
-     * The register, inverted: the form named the exceptions, so everyone else is present.
-     *
-     * The roster is re-read HERE rather than trusted from the submission, because the
-     * submission carries only who was ticked. Deriving "present" from what was NOT
-     * ticked against a roster the runtime reads itself is the difference between a
-     * register and a list of names a form happened to send back.
-     */
-    if (payload.flow === REGISTER.id) {
-      const v = parsed.values as RegisterValues
-      // Same exclusion the form was built with: present-by-default applies to
-      // the unresolved roster only, or a family's earlier cancellation is
-      // overwritten by a blanket "everyone else came" (F-I).
-      const roster = await modelQuery(
-        session,
-        `select player_id from app.session_roster r where session_id = ${uid(v.session_id)}
-            and not exists (select 1 from attendance a
-                             where a.session_id = r.session_id and a.player_id = r.player_id)`,
-      )
-      if (roster.error || !roster.rows.length) {
-        outcomes.push(
-          await composeAndSend(session, {
-            toContactId: identity.contact.id,
-            body: "I couldn't read that roster, so I haven't marked anything. Tell me who missed it and I'll do it here.",
-          }),
-        )
-        return { outcomes, summary: 'register: roster unreadable' }
-      }
-      const absent = new Set(v.absent)
-      const late = new Set(v.late)
-      const entries = (roster.rows as { player_id: string }[]).map((r) => {
-        const id = String(r.player_id)
-        return {
-          player_id: id,
-          // Ticked in both boxes means they turned up late, which is the reading that
-          // does not lose the session: `absent` bills without coaching, `late` does both.
-          status: late.has(id) ? 'late' : absent.has(id) ? 'absent' : 'present',
-          ...(v.note && !absent.has(id) ? { note: v.note } : {}),
-        }
-      })
-      const res = await executePlan(
-        session,
-        [
-          {
-            operation: {
-              name: 'mark_attendance' as OperationName,
-              args: { session_id: v.session_id, entries },
-            },
-          } as PlanStep,
-        ],
-        'Register, from the form',
-        audienceFor(identity),
-      )
-      outcomes.push(...res.outcomes)
-      const failed = res.ok ? null : (res.error ?? 'something went wrong')
-      if (failed) {
-        outcomes.push(
-          await composeAndSend(session, {
-            toContactId: identity.contact.id,
-            body: `That register didn't save — ${failed}. Nothing was marked.`,
-          }),
-        )
-        return { outcomes, summary: `register failed: ${failed}` }
-      }
-      const inCount = entries.filter((e) => e.status !== 'absent').length
-      /**
-       * The money question, asked at the register rather than discovered on the bill.
-       *
-       * An absence with no cancellation on record is the single most common true
-       * billing dispute in this product (`money-dispute.md`), and it is always
-       * discovered a month later, by a parent, in an argument. The coach knows the
-       * answer right now — somebody told them at the court — and the answer is one tap.
-       * Asking here turns next month's dispute into tonight's correction.
-       */
-      const unexplained = entries.filter((e) => e.status === 'absent')
-      outcomes.push(
-        await composeAndSend(session, {
-          toContactId: identity.contact.id,
-          body:
-            `Marked — ${inCount} in, ${unexplained.length} out.`
-            + (unexplained.length
-              ? `\n\nOne thing before I bill it: ${unexplained.length === 1 ? 'that absence has' : 'those absences have'} `
-                + 'no cancellation on record. Did anyone tell you in advance?'
-              : ''),
-          buttons: unexplained.length
-            ? [
-                {
-                  title: 'Told in advance',
-                  action: {
-                    kind: 'operation' as const,
-                    op: 'mark_attendance' as OperationName,
-                    args: {
-                      session_id: v.session_id,
-                      retro_timely_player_ids: unexplained.map((e) => e.player_id),
-                    },
-                  },
-                },
-                { title: 'No, just no-shows', action: { kind: 'noop', ack: 'Noted — charged as absent.' } },
-              ]
-            : undefined,
-        }),
-      )
-      return { outcomes, summary: `register marked: ${inCount} in, ${unexplained.length} out` }
-    }
-
-    // Deliberately loud rather than silent if a form is ever added without a consumer —
-    // which is the exact shape that produced the recipe feature.
-    return { outcomes, summary: `form ${payload.flow} has no handler` }
-  }
 
   if (payload.kind === 'noop') {
     outcomes.push(await composeAndSend(session, { toContactId: identity.contact.id, body: payload.ack }))
@@ -752,47 +443,6 @@ async function executeAction(
   if (payload.kind === 'menu') {
     outcomes.push(...(await sendMenu(session, identity, payload.menu)))
     return { outcomes, summary: `menu:${payload.menu}` }
-  }
-
-  /**
-   * A button that sends a form.
-   *
-   * Prefilled at TAP time, not at mint time, which is the whole reason this is an
-   * action rather than a Flow attached to the original message. `[Set up my classes]`
-   * tapped tomorrow opens a form showing what is true tomorrow, and `[Take register]`
-   * tapped after the class opens tonight's roster rather than the one that existed
-   * when the reminder was composed.
-   *
-   * The body says what the form is and, always, that they can say the same thing here
-   * instead. A form is an offer and never a toll — the rule now lives on the `reply`
-   * declaration's `form` parameter, where the model decodes against it rather than
-   * reading it as prose 40k characters upstream — and the one place it is most easily
-   * broken is the runtime's own copy, which no model reviews.
-   */
-  if (payload.kind === 'form') {
-    const built = await formFor(session, identity, payload.form as FormId, {
-      toContactId: identity.contact.id,
-      sessionId: payload.sessionId,
-      prefill: payload.prefill,
-    })
-    if ('error' in built) {
-      outcomes.push(
-        await composeAndSend(session, {
-          toContactId: identity.contact.id,
-          body: `I couldn't open that form — ${built.error}. Tell me here instead and I'll do it the same way.`,
-        }),
-      )
-      return { outcomes, summary: `form ${payload.form} refused: ${built.error}` }
-    }
-    outcomes.push(
-      await composeAndSend(session, {
-        toContactId: identity.contact.id,
-        preLaunchOk: true,
-        body: FORM_INTRO[payload.form as FormId] ?? 'Here it is.',
-        flow: built,
-      }),
-    )
-    return { outcomes, summary: `form ${payload.form}` }
   }
 
   if (payload.kind === 'reply') {
@@ -1760,6 +1410,138 @@ async function modelTurn(
     text = outgoing
   }
 
+  /* ----------------------------------------------------------------------- *
+   * §5 — what the turn learned, asked as the turn's LAST ROUND.
+   *
+   * This was a second model call with its own ~300-token system prompt, no
+   * stable prefix, no schema and two tools. ARCHITECTURE.md had already deleted
+   * a component of that exact shape and written down why: *"There is no separate
+   * synthesis path — no bespoke model call, no dearer model, no toolless prompt
+   * fed pre-queried rows... As a turn it has tools, which fixes a real defect
+   * class: the old synth was spoon-fed query results it could not verify or
+   * widen."* `MODEL_SYNTH` died for that; reflection was the same shape and
+   * survived the pass.
+   *
+   * What being a round buys, in defects rather than tidiness:
+   *
+   *  - **`context_query` stops being imagination.** The separate call had never
+   *    been shown the schema and had no `read`, so naming a table after the
+   *    concept was the only move available to it — driven twice in one week,
+   *    `FROM booking` and `FROM register`, neither a table. F-AP's mint-time
+   *    check refused both and there was no round in which to recover, so both
+   *    watches were lost silently; one of them was the only thing that would
+   *    have chased a parent's session move. Here the schema is already in
+   *    context and a refusal has a round to be fixed in, like every other.
+   *  - **The slot filter is deleted rather than adjusted.** The old pass was
+   *    denied `schedule` if the main loop had CALLED it — bookkeeping that
+   *    inverted on the case that mattered, because a loop which reasoned its way
+   *    to "no second watch here" and called nothing left the slot open and got
+   *    offered the tool anyway. A round can see its own trace and its own
+   *    reasoning, so there is nothing to bookkeep.
+   *  - **Everything before it is a cache hit.** Rounds append rather than
+   *    rebuild, so this shares a byte-identical opening with the round before
+   *    it. The old call's claim to be cheaper rested on skipping a prefix that
+   *    is the discounted part.
+   *
+   * **C30's counter-evidence, kept in view.** An extra round after the reply was
+   * removed once for producing `STOP · 0 output tokens` at the cost of a full
+   * prefix. That round asked nothing; this one asks two named questions, which
+   * is the whole difference — and if a drive shows it earning nothing, it goes
+   * the same way and this comment is the record of what was tried.
+   *
+   * Nobody is waiting: the reply is already on their phone.
+   * ----------------------------------------------------------------------- */
+  if (!forcedError && (text.trim() || spoke())) {
+    try {
+      // Belt and braces. The declarations below make `reply` unreachable, and
+      // this makes the one-message-per-person guard refuse it too if that ever
+      // stops being true — the same guard the main loop uses, not a second rule.
+      toolCtx.repliedTo?.add(identity.contact.id)
+
+      messages.push({
+        role: 'user',
+        content:
+          '[The reply has gone and nobody is waiting. Two questions are left open; anything not listed ' +
+          'here was handled during the turn and must not be repeated. "Neither" is the common and correct ' +
+          'answer, and calling nothing at all is the system working.\n\n' +
+          '1. Is there a fact worth carrying? Vocabulary they use, a habit, a preference, something about ' +
+          'how this person works. Facts, not transcripts. Facts, not rows — a rate, a schedule, a balance, ' +
+          'who pays for whom: the database holds those and a memory copy of a row is a future wrong answer. ' +
+          'A fact comes from what THEY said or what a row held, NEVER from a sentence you wrote: a policy ' +
+          'invented mid-conversation and then remembered acquires the authority of one the owner stated. ' +
+          'How the business is run belongs in business_rule, stated by the owner.\n\n' +
+          '2. Did they ask you to look at something later, or did you promise to come back to something? ' +
+          'That is a `schedule`. You can see what you are already watching at the top of this conversation — ' +
+          'a second watch on the same subject replaces the first, so restating one is safe and duplicating ' +
+          'it is not possible. A promise the standing jobs already keep is not a watch: reminders, register ' +
+          'chases, briefs, the monthly bill and the dunning ladder all run without you.\n\n' +
+          `${turnState(toolCtx)}]`,
+      })
+
+      const ref = await generate({
+        system,
+        messages,
+        // The same declarations the loop uses, filtered — so they cannot drift
+        // from the ones the model has been reading all turn.
+        tools: toolDecls().filter((t) => t.name === 'remember' || t.name === 'schedule'),
+        model: env.MODEL_MAIN,
+        temperature: 0.2,
+        thinking: 'low',
+        maxOutputTokens: 2048,
+      })
+      promptTokens += ref.usage.promptTokens
+      outputTokens += ref.usage.outputTokens
+      cachedTokens += ref.usage.cachedTokens
+
+      if (typeof ref.assistant?.reasoning_content === 'string' && ref.assistant.reasoning_content.trim()) {
+        trace.push({
+          round: rounds + 1,
+          name: '(reflection)',
+          ms: ref.ms,
+          reasoning: evidence(ref.assistant.reasoning_content, REASONING_TRACE_CAP),
+        })
+      }
+
+      for (const call of ref.functionCalls.slice(0, 4)) {
+        if (call.name !== 'remember' && call.name !== 'schedule') continue
+        // The name keeps its `reflect:` prefix: `recentActions` skips these when
+        // it replays a turn's actions into the next one's tail, and a rename here
+        // would quietly start feeding bookkeeping back as context.
+        if (call.parseError) {
+          trace.push({
+            round: rounds + 1,
+            name: `reflect:${call.name}`,
+            ms: 0,
+            error: `MALFORMED_FUNCTION_CALL: ${call.parseError}`,
+          })
+          continue
+        }
+        const startedAt = Date.now()
+        try {
+          const r = await runTool(call.name, call.args, toolCtx)
+          trace.push({
+            round: rounds + 1,
+            name: `reflect:${call.name}`,
+            ms: Date.now() - startedAt,
+            args: evidence(call.args, 1000),
+            result: evidence(r.result, 800),
+          })
+        } catch (e) {
+          trace.push({
+            round: rounds + 1,
+            name: `reflect:${call.name}`,
+            ms: Date.now() - startedAt,
+            args: evidence(call.args, 1000),
+            error: e instanceof Error ? e.message : String(e),
+          })
+        }
+      }
+    } catch {
+      // Nothing here may cost a person their reply, and the reply has already
+      // been sent — so a failure is recorded by its absence and the turn ends.
+    }
+  }
+
   /**
    * R10's shadow report, on the flight recorder and nowhere else.
    *
@@ -2016,178 +1798,6 @@ async function recentActions(identity: Identity): Promise<string | undefined> {
   }
 }
 
-/* ------------------------------------------------------------------------- *
- * §5 — the pass that writes down what the turn learned
- * ------------------------------------------------------------------------- */
-
-/**
- * **The two most discretionary tools in the product had nowhere to be called from.**
- *
- * The main loop ends the turn the moment a reply lands (C30, and it was right to —
- * the extra round produced `STOP · 0 output tokens` and cost a full prefix). But the
- * variable tail tells the model, in as many words, *"write new facts after replying,
- * never instead of replying"* — a sequence the break makes structurally impossible.
- * The only surviving path was a parallel `remember` emitted in the same breath as
- * `reply`, decided with no deliberation at all. Measured over 93 driven turns: **3
- * memory facts and zero `schedule` calls, ever.**
- *
- * That is not a model that dislikes remembering. It is a slot that does not exist.
- *
- * §5 already says where it belongs — *"the bot writes facts asynchronously after a
- * turn, never blocking a reply"* — so this runs once the message is out and nobody
- * is waiting. Three properties make it cheap enough to always run:
- *
- *  - **It does not carry the stable prefix.** Deciding "is there a fact here?" needs
- *    the conversation, not the schema, the catalog or the domain facts. ~300
- *    tokens instead of ~16k, which is why this costs less than the round C30 removed.
- *  - **Two tools, so there is no tool to get wrong.** The declarations are the same
- *    objects the main loop uses, filtered, so they cannot drift.
- *  - **Silence is the expected answer** and is stated as such. Most turns contain
- *    nothing worth keeping, and a reflection pass that always finds something is a
- *    diary (§5), which is the failure this is meant to avoid.
- *
- * Failures are swallowed by the caller: nothing here may cost a person their reply.
- */
-async function reflect(
-  session: SessionCtx,
-  identity: Identity,
-  turnId: string,
-  turn: { said: string; replied: string; trace: ToolTrace[] },
-): Promise<ToolTrace[] | null> {
-  if (!turn.said.trim() && !turn.replied.trim()) return null
-
-  /**
-   * **Only offer what the turn did not already do.**
-   *
-   * Caught on the first live turn after this pass was added: the admin said "remind me
-   * on Friday to chase the fees", the main loop scheduled `admin-fees-chase-friday`,
-   * and reflection then scheduled `chase-fees-badminton-beginners` for the same thing.
-   * One request, two watches, and the person gets chased twice — a new defect created
-   * by the fix for an old one.
-   *
-   * The instructional version of this fix ("don't duplicate what you already did") is
-   * the version that fails intermittently, because it depends on the model reading its
-   * own trace correctly. The structural version cannot: if `schedule` already ran this
-   * turn, reflection is not given `schedule`. The slot exists for the tools that had
-   * nowhere to be called from, so once one has been called there is nothing left for it
-   * to fix. `dedupe_key` stops two *identical* watches; nothing stopped two differently
-   * named watches for one intent, and nothing at the schema layer could.
-   */
-  // A call that was REFUSED did not do the thing, so it does not fill the slot:
-  // a remember bounced by the placement gate ("keep the preference, drop the
-  // figure") leaves the legitimate half of the fact unstored, and reflection is
-  // exactly where the cleaned version gets its chance (review find — the old
-  // set counted refused calls as done).
-  const already = new Set(turn.trace.filter((t) => !t.error).map((t) => t.name))
-  const decls = toolDecls().filter(
-    (t) => (t.name === 'remember' || t.name === 'schedule') && !already.has(t.name),
-  )
-  if (!decls.length) return null
-
-  // Names alone cannot tell an attempt from an outcome, so a refused call
-  // reached reflection looking exactly like a thing that happened. Whether each
-  // one actually ran travels with it — the same distinction the tail's actions
-  // block makes for the main loop (F-K).
-  const did = turn.trace
-    .filter((t) => !t.name.startsWith('(') && t.name !== 'read')
-    .map((t) => (t.error ? `${t.name} (refused — it did not happen)` : t.name))
-  const at = await now(identity.academyId)
-
-  const system = `You have just finished a turn as Class Manager, the manager for ${identity.academy.name}. It is already sent; you are not talking to anybody now.
-
-Below are the only questions left open — anything not listed here was already handled during the turn and must not be repeated.
-
-"Neither" is the common and correct answer:
-
-1. **Is there a fact worth carrying?** Vocabulary they use, a habit, a preference, something about how this person works. Facts, not transcripts — "prefers voice notes" is a fact, "asked about fees" is a log line. And facts, not rows: a rate, a schedule, a venue, a phone number, who pays for whom, a balance — the database holds those, and a memory copy of a row is a future wrong answer, so if a table holds it, do not write it. One instance is never a policy: store what happened and for whom, never a rule you inferred from it. A fact that changes no future behaviour was not worth storing. Correct an existing fact by superseding it, never by writing a contradiction.
-   **A fact comes from what THEY said or what a row held — never from a sentence you wrote.** You are not shown your own reply below, and that is deliberate: a policy invented mid-conversation, then remembered, acquires the authority of memory and is indistinguishable from one the owner stated. If the only evidence for something is that you said it, there is no evidence. How the business is run belongs in \`business_rule\`, stated by the owner, and an unstated policy is theirs to decide rather than yours to record.
-2. **Did they ask you to look at something later, or is there something you said you would come back to?** "Check if she's paid by Friday", "keep an eye on Saturday", "remind me Thursday", or a promise you made in the reply. That is a \`schedule\` — it runs later as an ordinary turn under this person's own permissions, and deciding to do nothing then is fine. \`expires_at\` is required. Know what already runs without you: standing jobs remind every family before every session, chase every unmarked register, send each coach their day and the owner their brief and digest, bill the month, and chase every unpaid bill (a dunning ladder: a few spaced nudges, then it puts the bill in front of the admin — so "make sure they get a nudge about the bill" is already kept). A promise the standing machinery already keeps is not a schedule call — a watch duplicating one sends somebody the same thing twice.
-
-Do not invent work. Do not schedule a watch nobody asked for and you did not promise. If neither applies, call nothing at all and say nothing — that is the system working.
-
-Their id, for \`subject_id\`: person = ${identity.person.id}, business = ${identity.academyId}. It is ${at.toISOString()} now.`
-
-  const res = await generate({
-    system,
-    messages: [
-      {
-        role: 'user',
-        /**
-         * The reply stays, and it is labelled for the one question it may answer.
-         *
-         * It is the evidence for a PROMISE — "I'll check back Friday" is a
-         * commitment to a person and the watch is how it is kept, which is F-AO's
-         * whole finding — so removing it would close one hole by opening another.
-         * It is not evidence for a FACT, and that is where the refund invention
-         * came from: the model answered a prospect with a pro-rata rule nobody had
-         * stated, reflection read its own sentence back, and wrote it down.
-         *
-         * The prompt says so, and the write refuses it independently
-         * (`policyShapedFact`) — because a rule about how the business runs has a
-         * home now, with provenance, and it is not this one.
-         */
-        content:
-          `They said: ${turn.said || '(nothing — a tap)'}\n\n` +
-          `You replied (evidence for question 2 ONLY — a promise here is a promise to keep; ` +
-          `nothing in it is evidence for a fact, because you wrote it): ` +
-          `${turn.replied || '(nothing)'}\n\n` +
-          `What you ran this turn: ${did.length ? did.join(', ') : 'nothing'}`,
-      },
-    ],
-    tools: decls,
-    model: env.MODEL_MAIN,
-    temperature: 0.2,
-    // A pure judgement over two flat schemas — the same low the rest of the
-    // model path runs at, stated here so nobody has to chase the default.
-    thinking: 'low',
-    maxOutputTokens: 2048,
-  })
-
-  if (!res.functionCalls.length) return null
-
-  const ctx: ToolCtx = {
-    session,
-    identity,
-    turnId,
-    pendingPlans: new Map(),
-    outcomes: [],
-    // A reflection may not talk to anybody. `repliedTo` is pre-loaded with this
-    // contact so that anything which tries is refused by the same guard the main
-    // loop uses, rather than by a rule written twice.
-    repliedTo: new Set<string>([identity.contact.id]),
-  }
-
-  const out: ToolTrace[] = []
-  for (const call of res.functionCalls.slice(0, 4)) {
-    if (call.name !== 'remember' && call.name !== 'schedule') continue
-    // Nobody is waiting on a reflection, and there is no round in which to ask
-    // again — a call whose arguments did not parse is simply not made.
-    if (call.parseError) {
-      out.push({ round: 0, name: `reflect:${call.name}`, ms: 0, error: `MALFORMED_FUNCTION_CALL: ${call.parseError}` })
-      continue
-    }
-    const startedAt = Date.now()
-    try {
-      const r = await runTool(call.name, call.args, ctx)
-      out.push({
-        round: 0,
-        name: `reflect:${call.name}`,
-        ms: Date.now() - startedAt,
-        args: evidence(call.args, 1000),
-        result: evidence(r.result, 800),
-      })
-    } catch (e) {
-      out.push({
-        round: 0,
-        name: `reflect:${call.name}`,
-        ms: Date.now() - startedAt,
-        args: evidence(call.args, 1000),
-        error: e instanceof Error ? e.message : String(e),
-      })
-    }
-  }
-  return out.length ? out : null
-}
 
 /* ------------------------------------------------------------------------- *
  * §14.8 — two failed turns is an automatic trigger, not a judgement call.

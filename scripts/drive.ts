@@ -846,7 +846,6 @@ const HELP: [string, string][] = [
   ['pay attest <holderContactId> [--ref] [--media]', 'the family says they have paid'],
   ['pay confirm [adminContactId] [--payment]', 'the admin says it came in (Rail 1)'],
   ['register <coachContactId> [--absent "A,B"] [--late "C"] [--note "…"]', 'take a register without hand-writing JSON'],
-  ["form <contactId> <business_setup|add_class|register> --json '{...}'", 'fill in a form the bot sent'],
   ['clock +2h | --to <iso> | --next | --reset', 'move domain time, then run what is due'],
   ['tick', 'run due jobs without moving time'],
   ['month [--period 2026-07] [--academy X]', 'close a period: lines, tally, dunning'],
@@ -2156,104 +2155,37 @@ async function main(): Promise<void> {
       }
 
       /**
-       * Submitted as a Flow, down the road a real submission travels.
+       * Said in the chat, down the road a real coach's answer travels.
        *
-       * This used to POST to the web surface's own submit route behind a signed JWT,
-       * and that surface no longer exists. Reaching for the form instead is not a
-       * workaround — it is the point: the register IS a form now, so a driver posting
-       * anything else would be proving something about a path nobody takes.
+       * This used to POST a completed Flow: find the register form the bot had sent,
+       * take its live `flow_token`, and submit the ticked boxes as the literal
+       * `nfm_reply.response_json`. Forms are gone (§14.6) and so is that path.
        *
-       * The token has to be a LIVE `flow_token` the product itself minted, because a
-       * submission is a tap that carries answers and the action row is what binds it to
-       * one contact. So this finds the register the bot actually sent rather than
-       * fabricating one — which makes the command an honest test of whether
-       * `CO-REGISTER` reached the coach at all, instead of hiding that it never did.
+       * What replaces it is the sentence a coach would actually type. That is a
+       * stronger test rather than a weaker one: the Flow submission executed with no
+       * model in the loop, so it proved the write path and nothing about whether the
+       * product can UNDERSTAND "everyone except Aarav". This exercises the resolution
+       * — names against the roster, absent versus late — which is now the only way a
+       * register gets marked and therefore the only thing worth driving.
+       *
+       * It deliberately does not check that CO-REGISTER was sent first. A coach can
+       * say this unprompted, and §8.2 says "I'm here" has to work with no prompt.
        */
-      const pending = await q<any>(
-        // The stored payload is camelCase — `flowId`/`flowToken` (lib/messaging/types.ts);
-        // only transport-cloud rewrites them to snake_case for Meta's wire. Reading only
-        // the wire spelling matched nothing, so this command answered "no register form
-        // has been sent" about registers that had been sent. Accept both, the way
-        // `lib/emulator/state.ts` already does.
-        `select coalesce(payload->'flow'->>'flowToken', payload->'flow'->>'flow_token') as token
-           from message
-          where contact_id = '${contactId}'::uuid and direction = 'outbound'
-            and suppressed_reason is null
-            and coalesce(payload->'flow'->>'flowId', payload->'flow'->>'flow_id') = 'register'
-          order by created_at desc limit 1`,
-        academyId,
-      )
-      const token = pending[0]?.token
-      if (!token) {
-        die(
-          c.red('no register form has been sent to that contact.'),
-          c.dim('  `drive clock --next` past a session end so CO-REGISTER fires, or ask them for it in chat.'),
-        )
-      }
-      const at = await cursorNow()
-      // The literal `nfm_reply.response_json`: a JSON string, as the wire sends it, with
-      // only the exceptions named — everyone else defaults to present.
-      await api('/api/emulator/inbound', {
-        contactId,
-        flowResponse: JSON.stringify({
-          flow_token: token,
-          session_id: sessionId,
-          absent: marks.filter((m: any) => m.status === 'absent').map((m: any) => m.playerId),
-          late: marks.filter((m: any) => m.status === 'late').map((m: any) => m.playerId),
-          note: flag('note') ?? '',
-        }),
-      })
-      await showTurn(contactId, at, {})
-      break
-    }
+      const absentNames = roster.filter((r: any, i: number) => marks[i].status === 'absent').map((r: any) => String(r.full_name))
+      const lateNames = roster.filter((r: any, i: number) => marks[i].status === 'late').map((r: any) => String(r.full_name))
+      const said = absentNames.length === 0 && lateNames.length === 0
+        ? 'Take the register for that session — everyone was here.'
+        : [
+            'Take the register for that session.',
+            absentNames.length ? `${absentNames.join(' and ')} ${absentNames.length > 1 ? 'were' : 'was'} not there.` : '',
+            lateNames.length ? `${lateNames.join(' and ')} ${lateNames.length > 1 ? 'were' : 'was'} late.` : '',
+            flag('note') ? String(flag('note')) : '',
+          ].filter(Boolean).join(' ')
 
-    /**
-     * **Fill in a form the bot actually sent.**
-     *
-     * The generic half of `register`. It finds the newest form of the kind you name,
-     * takes its `flow_token`, and posts your answers as the literal
-     * `nfm_reply.response_json` a handset would.
-     *
-     * It deliberately will not fabricate a token. A form nobody was sent is a form
-     * nobody can fill in, and a driver that manufactured one would report a working
-     * onboarding for a business whose owner never received anything — which is the
-     * exact failure the old link-minting command hid for months.
-     */
-    case 'form': {
-      const contactId = positional[0]
-      const which = flag('form') ?? positional[1] ?? ''
-      const payload = flag('json')
-      if (!contactId || !which || !payload) {
-        die(
-          c.red(`drive form <contactId> <business_setup|add_class|register> --json '{"name":"…"}'`),
-          c.dim('  posts the answers against the newest form of that kind'),
-        )
-      }
-      const rows = await q<any>(
-        // See the note in `register`: the stored spelling is camelCase, the wire spelling
-        // is snake_case, and this read only ever matched the wire.
-        `select coalesce(payload->'flow'->>'flowToken', payload->'flow'->>'flow_token') as token
-           from message
-          where contact_id = '${contactId}'::uuid and direction = 'outbound'
-            and suppressed_reason is null
-            and coalesce(payload->'flow'->>'flowId', payload->'flow'->>'flow_id') = '${which}'
-          order by created_at desc limit 1`,
-        await academyOfContact(contactId),
-      )
-      const token = rows[0]?.token
-      if (!token) die(c.red(`no ${which} form has been sent to that contact.`))
-      let answers: Record<string, unknown> = {}
-      try {
-        answers = JSON.parse(payload)
-      } catch (e) {
-        die(c.red(`--json is not valid JSON: ${e instanceof Error ? e.message : String(e)}`))
-      }
+      console.log(c.dim(`  saying: ${said}`))
       const at = await cursorNow()
-      await api('/api/emulator/inbound', {
-        contactId,
-        flowResponse: JSON.stringify({ ...answers, flow_token: token }),
-      })
-      await showTurn(contactId, at, { full: has('full') })
+      await api('/api/emulator/inbound', { contactId, text: said })
+      await showTurn(contactId, at, {})
       break
     }
 

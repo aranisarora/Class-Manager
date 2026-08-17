@@ -22,7 +22,6 @@
 import { z } from 'zod'
 
 import { LIMITS } from '@/lib/messaging/types'
-import { isFlowId } from '@/lib/messaging/flows'
 // Imported from `./kinds` rather than `@/lib/jobs`, whose barrel pulls in the
 // runner and the planner: this module is loaded by the tool declarations, and a
 // wider import edge there is what made the operation registry evaluate empty.
@@ -75,20 +74,12 @@ export const ActionPayloadSchema: z.ZodTypeAny = z.lazy(() =>
       steps: StepsField(),
       summary: z.string(),
     }),
+    // The form-shaped button (§14.6). A `form` kind used to sit beside this one and
+    // open a WhatsApp Flow; it is gone, and what took its place is the sentence the
+    // person would have typed. `[Take register]` replays "Take the register for
+    // Evening Fitness, 6:30pm" and the agent ladders from there — which is why this
+    // needs no registry check: there is no artifact whose name could be wrong.
     z.object({ kind: z.literal('reply'), text: z.string().min(1) }),
-    // A button that sends a form. Checked against the registry at MINT time as well
-    // as at tap, because a button naming a form that does not exist is a dead end
-    // discovered by the person, on their phone, with no way back.
-    //
-    // The prefill and the session ride along so the form the tap opens is the form
-    // the sentence promised: `[Fix the 4th]` has to reopen the row that was
-    // half-read, not a blank one.
-    z.object({
-      kind: z.literal('form'),
-      form: z.string().refine(isFlowId, { message: 'unknown form' }),
-      sessionId: z.string().optional(),
-      prefill: z.record(z.unknown()).optional(),
-    }),
     z.object({ kind: z.literal('menu'), menu: z.string().min(1) }),
     z.object({ kind: z.literal('noop'), ack: z.string() }),
     // §14.8's escape hatch, as a button. The model kept minting
@@ -98,13 +89,6 @@ export const ActionPayloadSchema: z.ZodTypeAny = z.lazy(() =>
     // person. Refusing it dropped the button and left the coach with a
     // confirmation they could only agree to.
     z.object({ kind: z.literal('handoff'), reason: z.string().min(1), summary: z.string().min(1) }),
-    // A WhatsApp Flow submission. Checked against the registry for the same reason
-    // an operation name is: the action is replayed with no model in the loop, so a
-    // flow name that does not exist is a form somebody filled in for nothing.
-    z.object({
-      kind: z.literal('flow'),
-      flow: z.string().refine(isFlowId, { message: 'unknown flow' }),
-    }),
   ]),
 )
 

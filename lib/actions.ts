@@ -37,29 +37,24 @@ import { checkActionPayload } from '@/lib/agent/steps'
 export type ActionPayload =
   | { kind: 'operation'; op: OperationName; args: Record<string, unknown> }
   | { kind: 'steps'; steps: PlanStep[]; summary: string }
-  | { kind: 'reply'; text: string } // replays as if the user typed it — goes back through the agent
   /**
-   * A button that SENDS a form. The tap composes the next message with the Flow
-   * attached, prefilled from the database at tap time rather than at mint time — so
-   * `[Set up my classes]` tapped tomorrow opens a form showing what is true tomorrow.
+   * Replays as if the user typed it — goes back through the agent.
    *
-   * Distinct from `flow` below, which is the form coming back. This one goes out.
+   * This is what a form-shaped button is now (§14.6). There used to be a `form` kind
+   * that opened a WhatsApp Flow, and a `flow` kind for the submission coming back;
+   * both are gone. `[Take register]` mints `{kind:'reply', text:'Take the register
+   * for Evening Fitness, 6:30pm'}` — the words the person would have typed — and the
+   * agent asks for what it still needs, in order, skipping what it can already see.
+   *
+   * The trade is deliberate: a Flow returned every field in one exchange, and could
+   * only ever return the fields it was published with. A ladder costs round trips and
+   * takes the answer nobody anticipated, including the one that arrives as *"and
+   * Meera's out all month"* halfway through.
    */
-  | { kind: 'form'; form: string; sessionId?: string; prefill?: Record<string, unknown> }
+  | { kind: 'reply'; text: string }
   | { kind: 'menu'; menu: 'root' | string }
   | { kind: 'noop'; ack: string }
   | { kind: 'handoff'; reason: string; summary: string }
-  /**
-   * A form the person fills in inside WhatsApp, coming back. The action is minted
-   * with the message, exactly like a button, and the Flow carries its id as
-   * `flow_token`; the submission arrives later and replays it with the answers
-   * attached. That is what lets a Flow inherit expiry, single consumption and the
-   * minted-for-contact check rather than needing a session concept of its own.
-   *
-   * Only the flow's NAME travels, never a plan: what a submission does is the
-   * runtime's decision, not something a model may author into a button.
-   */
-  | { kind: 'flow'; flow: string }
 
 export const DEFAULT_ACTION_TTL_MINUTES = 1440
 

@@ -289,7 +289,7 @@ export async function requireSandboxAcademy(academyId: string | null | undefined
  *   seed      the reseed / reset-world control                POST /api/emulator/seed
  *   clock     advance, jump to next event, set, reset         POST /api/emulator/clock
  *   fault     arming failure injection (listing stays)        POST /api/emulator/fault
- *   inbound   the composer, reply taps and Flow submits       POST /api/emulator/inbound
+ *   inbound   the composer, reply taps and media sends        POST /api/emulator/inbound
  *   delivery  the bulk ladder and the auto-delivery timer     POST /api/emulator/delivery
  *   read      the per-message tick marks                      POST /api/emulator/read
  *   academy   create and drop a business                      POST/DELETE .../academy

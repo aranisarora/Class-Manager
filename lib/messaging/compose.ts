@@ -20,7 +20,6 @@ import type { SessionCtx } from '@/lib/db'
 import { idem, newId } from '@/lib/ids'
 import { CATALOG, isCatalogId } from './catalog'
 import type { CatalogId } from './catalog'
-import { FLOWS } from './flows'
 import { send } from './send'
 import type { Button, LinkButton, ListRow, ListSection, OutboundMessage, SendOutcome } from './types'
 import { validateOutbound } from './types'
@@ -40,13 +39,6 @@ export type ComposeSpec = {
    * Exclusive with `buttons` and `list`, because the wire's `cta_url` is.
    */
   link?: LinkButton
-  /**
-   * A form the person fills in inside WhatsApp. Give the flow's registry id; the
-   * CTA, the entry screen and the response schema all come from the definition, and
-   * the `flow_token` is the `action` row minted here — the same mint-once,
-   * replay-verbatim path every button takes (§2.2).
-   */
-  flow?: { flow: string; data?: Record<string, unknown> }
   catalogId?: CatalogId | null
   fixed?: boolean
   subjectPersonIds?: string[]
@@ -135,28 +127,16 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
     templateParams: spec.templateParams,
     stateKey: spec.stateKey,
     confirmation: spec.confirmation,
+    // The same TTL the buttons are minted with, further down. Carried so `send`
+    // can give the pending question the lifetime of the tap that answers it.
+    actionTtlMinutes: spec.ttlMinutes ?? entry?.actionTtlMinutes,
   }
 
   // Validate the shape BEFORE minting: an unrenderable message must not leave a trail of
   // live action rows behind it. The placeholder ids stand in for the ones we would mint, so
   // the check sees the message it would actually have produced.
-  const flowDef = spec.flow ? FLOWS[spec.flow.flow] : undefined
-  if (spec.flow && !flowDef) {
-    console.error(`[compose] no flow called ${spec.flow.flow}`)
-  }
-
   const provisional: OutboundMessage = {
     ...base,
-    flow: flowDef
-      ? {
-          cta: flowDef.cta,
-          flowId: flowDef.id,
-          flowToken: 'pending-flow',
-          screen: flowDef.entryScreen,
-          data: spec.flow?.data,
-          mode: 'published',
-        }
-      : undefined,
     buttons: spec.buttons?.map((b, i) => ({ actionId: `pending-${i}`, title: b.title })),
     list: spec.list
       ? {
@@ -223,28 +203,7 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
     list = { buttonText: spec.list.buttonText, sections }
   }
 
-  let flow: OutboundMessage['flow']
-  if (flowDef) {
-    // The Flow's `flow_token` IS the action id, so a submission arrives as a tap
-    // that happens to carry answers — and inherits expiry, single consumption and
-    // the minted-for-contact check without any of them being written twice.
-    const actionId = await mintAction(ctx, {
-      payload: { kind: 'flow', flow: flowDef.id },
-      forContactId: spec.toContactId,
-      ttlMinutes,
-    })
-    minted.push(actionId)
-    flow = {
-      cta: flowDef.cta,
-      flowId: flowDef.id,
-      flowToken: actionId,
-      screen: flowDef.entryScreen,
-      data: spec.flow?.data,
-      mode: 'published',
-    }
-  }
-
-  const outcome = await send(ctx, { ...base, buttons, list, flow })
+  const outcome = await send(ctx, { ...base, buttons, list })
   // Close the family before returning. Until this lands, every button on this message is an
   // independent row live for its own TTL — which is how tapping `[Do it]` and then `[Cancel]`
   // on the same card committed a plan and then said "Left as it was — nothing changed."

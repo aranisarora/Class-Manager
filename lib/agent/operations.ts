@@ -43,71 +43,12 @@ import { DateTime } from 'luxon'
 import { z } from 'zod'
 import { rowShapedFact } from './memory'
 import type { PlanStep } from './plan'
+import { isIdSubquery, jsonLit, lit, moneyLit, uid, UUID_RE } from './sql'
+import { buildSetupSteps, summariseSetup } from '@/lib/setup-plan'
 
-/* ------------------------------------------------------------------------- *
- * SQL literals. Operations compose statements; every value that reaches one
- * goes through these, and every id is checked against the uuid shape before it
- * is allowed near a query.
- * ------------------------------------------------------------------------- */
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-export function lit(v: string | number | boolean | null | undefined): string {
-  if (v === null || v === undefined) return 'null'
-  if (typeof v === 'number') {
-    if (!Number.isFinite(v)) throw new Error('sql: non-finite number')
-    return String(v)
-  }
-  if (typeof v === 'boolean') return v ? 'true' : 'false'
-  return `'${v.replace(/'/g, "''")}'`
-}
-
-/**
- * A row this plan created a step ago, named by the only thing that can name it.
- *
- * An id argument is normally a uuid the model has read. Inside a `transaction(steps[])`
- * there is a case where no such uuid can exist: step 1 inserts the venue, step 2 creates
- * the class in it, and the id is assigned by the database between them. `STEPS_PARAM`
- * already says "select it back" — but it says so about `write` steps, and the model
- * reached for the same idea in an *operation* argument, which refused it.
- *
- * What that refusal cost is not obvious and is severe. `create_class` is the only thing
- * in the product that enqueues `materialize_sessions`, so a model pushed off the
- * operation and onto raw `insert into class` produces a business with classes, weekly
- * slots, and **no sessions that will ever happen** — no reminders, no registers, nothing
- * for a coach or a parent to be told about. Driven end to end, that is exactly what
- * happened: 3 classes, 6 slots, 0 sessions, and an admin told "I've set up your three
- * classes with their weekly timings".
- *
- * So the instinct is right and the encoding is now legal. Bounded hard: one parenthesised
- * SELECT, no semicolon, no statement chaining, nothing that writes. It runs inside the
- * plan's own transaction, under the plan author's RLS, so it can reach exactly what a
- * `write` step in the same plan could reach and no further.
- */
-const ID_SUBQUERY = /^\(\s*select\s[\s\S]+\)$/i
-
-export function isIdSubquery(v: unknown): v is string {
-  const s = String(v ?? '').trim()
-  if (!ID_SUBQUERY.test(s)) return false
-  if (s.includes(';')) return false
-  return !/\b(insert|update|delete|drop|alter|truncate|grant|revoke|create|copy|do|call)\b/i.test(s)
-}
-
-export function uid(v: string): string {
-  const s = String(v ?? '').trim()
-  if (isIdSubquery(s)) return `(${s.replace(/^\(|\)$/g, '')})::uuid`
-  if (!UUID_RE.test(s)) throw new Error(`sql: "${v}" is not an id`)
-  return `'${s}'::uuid`
-}
-
-export function moneyLit(n: number): string {
-  if (!Number.isFinite(n)) throw new Error('sql: non-finite money')
-  return `${n.toFixed(2)}::numeric`
-}
-
-export function jsonLit(v: unknown): string {
-  return `${lit(JSON.stringify(v ?? null))}::jsonb`
-}
+// Re-exported so the many call sites that already import these from here keep
+// working; they are DEFINED in ./sql now, which is what breaks the cycle.
+export { isIdSubquery, jsonLit, lit, moneyLit, uid }
 
 const svc = serviceFrom
 
@@ -444,6 +385,7 @@ export type OperationName =
   | 'remember'
   | 'forget'
   | 'drop_watch'
+  | 'set_up_business'
 
 export type OperationDef = {
   name: OperationName
@@ -2431,11 +2373,37 @@ const onboardCoach: OperationDef = {
 const sendInviteDraft: OperationDef = {
   name: 'send_invite_draft',
   ownScope: true,
+  /**
+   * **This is the family invite as well as the coach one, and nothing said so.**
+   *
+   * The operation has always served §9.1 step 2 — it takes `person_id`, resolves
+   * the name and mints the same `wa.me` deep link — but the declaration named
+   * neither id and the description implied a coach. The catalog, meanwhile,
+   * asserts the parent deep link twice as a trigger (CL-INTRO, CL-FIRST-CONTACT)
+   * without naming the tool that mints it. So the model was told the mechanism
+   * exists, given no way to reach it, and did the only thing left: it described
+   * the link in prose. Driven, `st-solo-setup`: *"share an invite link with them
+   * — a parent taps it, books a trial"*, and one message later its own reasoning
+   * worked out that *"there isn't an explicit operation for family invites in the
+   * tools besides send_invite_draft (coach)"* — a correct reading of what it had
+   * been shown.
+   *
+   * The general lesson is PREFIX.md's trap in the mirror: that document warns to
+   * look for capabilities the runtime built that the prompt never mentions, and
+   * this one was hiding behind a tool the model could already see. A parameter
+   * with no description is a capability with no advertisement.
+   */
   description:
-    'Draft the invite the ADMIN forwards from their own number, carrying a wa.me deep link with prefilled text. The bot never sends it. The draft itself carries the [Sent it] button that records the forward — never compose your own.',
+    'Draft the invite the ADMIN forwards from their own number, carrying a wa.me deep link with prefilled text. Works for a COACH or a FAMILY — it is the only invite in the product, and there is no other route a parent can be brought in by. The bot never sends it. The draft itself carries the [Sent it] button that records the forward — never compose your own.',
   params: z.object({
-    coach_id: uuid.nullish(),
-    person_id: uuid.nullish(),
+    coach_id: uuid
+      .nullish()
+      .describe('The coach being invited. Pass this OR person_id, never both.'),
+    person_id: uuid
+      .nullish()
+      .describe(
+        'For a FAMILY invite: the parent, by their person id. Same draft, same deep link — a parent who taps it opens the window from their side, which is what CL-INTRO fires on.',
+      ),
     mark_sent: z.boolean().optional().default(false),
   }),
   async build(ctx, args, id) {
@@ -2719,6 +2687,59 @@ const forget: OperationDef = {
   },
 }
 
+/* =========================================================================== *
+ * set_up_business — §7.1 step 1, as a conversation.
+ *
+ * This used to be a WhatsApp Flow: one screen, nine fields, one Save. The Flow is
+ * gone (§14.6) and the ladder that replaced it needs somewhere to land, because
+ * `lib/setup-plan.ts` exists to enforce "there must not be several ways to WRITE
+ * the business" — and with the form removed, its only caller went with it. Left
+ * alone, the model would have hand-written `update academy set …` steps, which is
+ * exactly the several-ways-to-write this product has already been bitten by (the
+ * register screen wrote `attendance` with its own SQL for most of the product's
+ * life and produced no money for any of it).
+ *
+ * So the builder stays and gets a named operation in front of it. What changed is
+ * only how the values arrive: nine at once off a form, or two now and three more
+ * when they are mentioned. `buildSetupSteps` already distinguishes "they did not
+ * say" (`undefined`, leave it) from "they said none" (`null`, clear it), which is
+ * precisely the distinction a ladder needs and a form never had to make.
+ * =========================================================================== */
+
+const setUpBusiness: OperationDef = {
+  name: 'set_up_business',
+  description:
+    'Write what you have learned about the business — any subset, as often as you like. Pass ONLY the fields they have actually told you: an omitted field is left exactly as it is, and null clears one (that is how "don\'t send me a morning brief" turns the brief off, and it is different from not asking). Safe to call again as more comes out, so write the two facts you have rather than holding them until you have nine.',
+  params: z.object({
+    name: z.string().min(1),
+    category: z.string().nullish(),
+    timezone: z.string().nullish(),
+    cancellation_window_hours: z.number().int().min(0).max(720).nullish(),
+    morning_brief_at: z.string().nullish(),
+    evening_digest_at: z.string().nullish(),
+    upi_handle: z.string().nullish(),
+    venues: z
+      .array(z.object({ name: z.string().min(1), address: z.string().nullish() }))
+      .nullish(),
+  }),
+  async build(ctx, args, id) {
+    if (!id.roles.includes('admin')) {
+      throw new Error('the shape of the business is the owner’s to set — pass anything they told you on to the admin instead')
+    }
+    const steps = buildSetupSteps(ctx.academyId, {
+      name: String(args.name),
+      category: args.category,
+      timezone: args.timezone,
+      cancellationWindowHours: args.cancellation_window_hours,
+      morningBriefAt: args.morning_brief_at,
+      eveningDigestAt: args.evening_digest_at,
+      upiHandle: args.upi_handle,
+      venues: args.venues ?? undefined,
+    })
+    return [{ note: `setting the business up: ${summariseSetup({ name: String(args.name) })}` }, ...steps]
+  },
+}
+
 const dropWatch: OperationDef = {
   name: 'drop_watch',
   ownScope: true,
@@ -2813,6 +2834,7 @@ export const OPERATIONS: Record<OperationName, OperationDef> = {
   remember,
   forget,
   drop_watch: dropWatch,
+  set_up_business: setUpBusiness,
 }
 
 /* ------------------------------------------------------------------------- *
