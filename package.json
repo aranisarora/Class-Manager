@@ -16,6 +16,7 @@
     "ask": "tsx scripts/probe-ask.ts",
     "surface": "tsx scripts/probe-surface.ts",
     "guards": "tsx scripts/guard-value.ts",
+    "judge": "node scripts/judge.mjs",
     "verify:static": "node scripts/verify-static.mjs"
   },
   "dependencies": {
