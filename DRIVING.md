@@ -25,7 +25,7 @@ npm run drive -- reset            # empty world, no fixture
 npm run drive -- academy "X" --admin "Y"
 npm run drive -- say <contact> "hi"
 npm run drive -- stranger +91… "hi is this the badminton academy?"
-npm run drive -- score            # before and after, both in your findings
+npm run drive -- evidence         # what the seven axes are judged on, before and after
 ```
 
 `say` and `tap` print the reply, the buttons, and the flight recorder for that turn —
@@ -98,14 +98,15 @@ tears its academy down unless you pass `--keep`.
 **Driving the ledger.** `--suite stress` is the regression drive: a month in a SOLO business
 (the admin is the only coach), thirty-two turns, eight on each of the four personas, and every
 turn re-stages a scenario that has already produced a finding — with the checks written to
-catch that finding specifically. `node scripts/stress-report.mjs` renders it as a recurrence
-ledger: one row per finding, and a verdict computed from the turn's own checks rather than
-from anybody's reading of the transcript.
+catch that finding specifically. `npm run report` renders the run as a page: every turn opened
+up, its reasoning, every statement it sent and what came back. The verdict is not computed —
+it is written by a reader into `judgement.json` beside the record. See [`JUDGING.md`](./JUDGING.md).
 
 ```bash
 TRANSPORT=emulator npm run probe -- --suite stress --models deepseek-v4-flash \
   --out .probe/runs/$(date +%Y-%m-%d-%H%M)-stress-month
-node scripts/stress-report.mjs
+npm run report                    # the newest run, as one page
+npm run runs                      # which runs exist, and which are judged
 ```
 
 `TRANSPORT=emulator` is not optional garnish: `.env.local` ships `TRANSPORT=cloud`, and a drive

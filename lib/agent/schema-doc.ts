@@ -17,6 +17,23 @@
  * prefix pays for it on every uncached round. What is left is what an SQL author
  * cannot get anywhere else: the tables, the columns, the FK graph, the derived
  * expressions and the billing rules that decide which rows exist.
+ *
+ * **The permission matrix is here for the same reason** (added 17 Aug 2026). It
+ * is a fact about the data model, which is PREFIX.md's rung 2, and it is the one
+ * class of fact the model has no way to derive: policies are invisible from
+ * inside a session, so the boundary could only be found by crossing it. This
+ * block used to say the boundary "is not listed here because it is enforced per
+ * row rather than per table" — true, and it cost a round every time it mattered.
+ * The model planned writes a coach or a family cannot make, was refused mid-plan
+ * (or, worse, silently matched nothing), rediscovered the shape, and re-planned;
+ * on a hard turn that is a timeout rather than a wrong answer. A grid of who may
+ * do what trades bytes in the CACHED block — where a hit costs 3.2% of a miss —
+ * against whole rounds on the wire, which are billed at full price and paid for
+ * again in latency.
+ *
+ * It is kept honest by `npm run check:rls-doc`, which reads the grid and asks
+ * pg_policies, in both directions. Two authors of one truth always drift; this
+ * one is made to read the other.
  */
 export const SCHEMA_DOC = `# Schema
 
@@ -57,40 +74,76 @@ Postgres. You author SQL against these tables directly.
   is drivable; sql now() ignores it and produces answers that are wrong in test and
   subtly wrong in production. These are refused before the database sees them.
 
-## What you may write, and what is not yours to write
+## Who may read and write what — the permission matrix
 
-Not every table in this document is one you can change, and two of them are not
-even ones you can read. Postgres does not warn you: a read you have no policy for
-returns **zero rows**, and a write you have no policy for is refused mid-plan and
-takes every correct step beside it down with it.
+**The table does not decide whether a write lands. WHO you are serving does.**
+The same request from an owner and from a parent are two different plans, and
+the difference is knowable before you write a line of SQL rather than after
+Postgres has refused it.
 
-- **Not yours at all — job, audit_entry, turn.** These are the runtime's own
-  books, and they are closed in BOTH directions. A select returns zero rows in
-  every session including the owner's, so never answer "nothing is scheduled" or
-  "nothing changed" from one — what you have scheduled is a thing to say from
-  what you did, not to look up. And an UPDATE or DELETE here changes nothing and
-  says nothing: cancelling a standing reminder is not a row you edit. Use
-  drop_watch for a watch, and leave the rest to the runtime — it already drops
-  the prompts a cancellation makes moot.
-- **Yours to read, never to write — memory_fact, message, pending_request,
-  action, row_snapshot.** Each has a tool or a runtime path that writes it:
-  \`remember\` writes memory_fact (including a correction — pass supersedes, do not
-  compose the INSERT yourself), \`reply\` writes message and action, and asking a
-  question that only one person's tap can answer is what writes pending_request.
-  An INSERT here fails; an UPDATE here matches nothing and says nothing.
-- **academy — update only.** You may change the business's own settings. There is
-  no route to a second academy and no reason to look for one.
-- **Everything else you may write — but WHO you are serving decides it, not the
-  table.** The admin can write all of it. A coach and a family can write very
-  little of it, and the boundary is not listed here because it is enforced per
-  row rather than per table. Two consequences, and they are the two failure
-  modes above in miniature: an INSERT the policy refuses raises an error you can
-  read and act on, and an UPDATE it refuses matches nothing and stays silent. So
-  when you are acting for anyone but the owner, expect the write to be the part
-  that fails, read back what you changed, and route it to the admin rather than
-  reporting it done.
-- Money is numeric(10,2), rupees. Timestamps are timestamptz; render in the
-  academy's timezone, never raw.
+In one sentence: **the admin writes the business; a coach writes the register
+for their own sessions and their own answer to one; a family writes their own
+contact details and what they want to hear about; nobody writes anything else.**
+
+\`all\` is anybody in this business, including a stranger who has just messaged.
+\`family\` is the account holder and their own players. \`-\` is nobody, in every
+session including the owner's. **A role the cell does not name has no policy
+there** — their read is zero rows and their write does not land, so there is
+nothing to try and nothing to learn by trying.
+
+| table | select | insert | update | delete |
+| --- | --- | --- | --- | --- |
+| academy | all | - | admin | - |
+| venue · class · class_slot | all | admin | admin | admin |
+| coach | admin · coach, their own row | admin | admin | admin |
+| class_coach | admin · coach, their own | admin | admin | admin |
+| academy_admin | admin · their own row | admin | - | admin |
+| person | admin · themselves · their own family · players and coaches on sessions of theirs | admin | admin · themselves | admin |
+| contact | admin · their own · their own family's | admin | admin · their own person's | admin |
+| account | admin · family, their own | admin | admin | admin |
+| player | admin · family, their own · coach, players on their sessions | admin | admin | admin |
+| enrollment | admin · family, their own · coach, on their sessions' classes | admin | admin | admin |
+| session | admin · coach, assigned · family, enrolled | admin | admin | admin |
+| session_coach | admin · coach, their own · anyone on a session of theirs | admin | admin · coach, their own row | admin |
+| attendance | admin · family, their own · coach, their sessions | admin · coach, their sessions | admin · coach, their sessions | admin |
+| tally_line · payment | admin · family, their own accounts | admin | admin | admin |
+| business_rule | admin · the shared ones | admin | admin | - |
+| comm_preference | admin · their own | admin · their own | admin · their own | - |
+| memory_fact | admin · their own person facts | - | - | - |
+| message | admin · their own thread | - | - | - |
+| pending_request | admin · their own | - | - | - |
+| action | their own | - | their own | - |
+| row_snapshot | all | - | - | - |
+| job · audit_entry · turn · sender | - | - | - | - |
+
+What the grid cannot say:
+
+- **The runtime's own books — job, audit_entry, turn — are closed in both
+  directions.** So never answer "nothing is scheduled" or "nothing changed" from
+  one: what you have scheduled is a thing to say from what you did, not to look
+  up. Cancelling a standing reminder is not a row you edit — use drop_watch for
+  a watch, and leave the rest to the runtime, which already drops the prompts a
+  cancellation makes moot.
+- **Each read-only table has the tool that writes it.** \`remember\` writes
+  memory_fact (a correction passes supersedes — do not compose the INSERT
+  yourself), \`reply\` writes message and action, and asking a question that only
+  one person's tap can answer is what writes pending_request.
+- **tally_line and payment are invisible to anybody who holds no account of
+  their own.** A coach who is not also a parent reads zero rows in both, whoever
+  the row belongs to — that is policy, not absence. Their own pay is on their
+  coach row instead.
+- **The views inherit the reader.** session_coverage, uncovered_session and
+  app.session_roster run with the permissions of the person you are serving, so
+  a register read in a family's session is their own children and nothing else,
+  and a coach's coverage is their own sessions. coach_public is the exception:
+  it is every coach in the business, to anybody who asks.
+- **academy is update only.** You may change the business's own settings. There
+  is no route to a second academy and no reason to look for one.
+
+When the cell is not yours, the plan is not "try it and see": it is to say what
+you can do and route the rest to the admin, in the same message. Money is
+numeric(10,2), rupees. Timestamps are timestamptz; render in the academy's
+timezone, never raw.
 
 ## Tenancy and place
 

@@ -49,6 +49,8 @@ const { createAcademy, createTestContact, dropAcademy, inboundFromContact, world
   await import('@/lib/seed')
 const { withSession } = await import('@/lib/db')
 const { captureSql } = await import('@/lib/agent/sql-trace')
+const { captureFullTrace } = await import('@/lib/agent/turn-trace')
+const { runDir, saveRun } = await import('./_capture')
 type SqlRecord = import('@/lib/agent/sql-trace').SqlRecord
 const clock = await import('@/lib/clock')
 const { HANDLERS, JobSkip, planAheadFor } = await import('@/lib/jobs')
@@ -412,10 +414,21 @@ async function main(): Promise<void> {
       let tapped: string | null = null
       let error: string | null = null
       try {
-        const { sql } = await captureSql({ rows: false }, async () => {
-          await inboundFromContact({ contactId: contactOf[beat.who], text: beat.say })
-          if (beat.tap !== false) tapped = await tapStaged(contactOf[beat.who])
-        })
+        /**
+         * Full visibility, and no flag to turn it down.
+         *
+         * `rows: true` keeps the bodies a read came back with, and
+         * `captureFullTrace` lifts the flight recorder's 4,000-character cap so a
+         * six-write `plan` is stored whole rather than ending mid-step. Both used
+         * to be the expensive option nobody chose; a run recorded any smaller has
+         * to be re-run to be judged, and a re-run is never the same run.
+         */
+        const { sql } = await captureSql({ rows: true }, () =>
+          captureFullTrace(async () => {
+            await inboundFromContact({ contactId: contactOf[beat.who], text: beat.say })
+            if (beat.tap !== false) tapped = await tapStaged(contactOf[beat.who])
+          }),
+        )
         captured = sql
       } catch (e) {
         error = e instanceof Error ? (e.stack ?? e.message) : String(e)
@@ -529,7 +542,52 @@ async function report(
            (select count(*) from comm_preference where released_at is null) mutes,
            (select count(*) from job where status='failed') job_failures`)
 
-  await writeFile(`.probe/week/${stamp}.json`, JSON.stringify({ model: env.MODEL_MAIN, academyId, turns, days, world: world[0] }, null, 2))
+  /**
+   * One run, one directory, the same shape every instrument writes.
+   *
+   * `.probe/week/` was this driver's own corner and had its own reader. There is
+   * one reader now (`scripts/report.mjs`) and it finds a run by sorting
+   * `.probe/runs/`, so a week and an arc and a toolless ask are all openable the
+   * same way — and a judgement written against one is written the same way as a
+   * judgement against another.
+   */
+  const dir = await runDir('week')
+  await saveRun(dir, {
+    suite: 'week',
+    model: env.MODEL_MAIN,
+    startedAt: new Date().toISOString(),
+    academyId,
+    note:
+      'One settled week at Ace Tennis Academy, personas balanced by construction. The owner ' +
+      'coaches: Rahul holds an academy_admin row and a coach row over one person.',
+    turns: turns.map((t, i) => ({
+      n: i + 1,
+      id: `d${t.day}-${t.at}-${t.who}`,
+      at: t.at,
+      day: t.day,
+      who: t.who,
+      persona: t.persona,
+      say: t.say,
+      rounds: t.rounds,
+      sql: t.sql,
+      messages: [],
+      reply: t.reply,
+      buttons: t.buttons,
+      tapped: t.tapped,
+      jobs: [],
+      tokens: t.tokens,
+      inr: costInr(env.MODEL_MAIN, t.tokens.prompt, t.tokens.cached, t.tokens.output),
+      ms: t.ms,
+      turnIds: [],
+      wrote: t.sql.filter((x) => x.kind !== 'read' && (x.rowCount ?? 0) > 0).length,
+      sent: t.reply ? 1 : 0,
+      error: t.error,
+    })),
+    world: world[0] as Record<string, unknown>,
+    days,
+  })
+  console.log(`
+  record: ${dir}/record.json`)
 
   const allSql = turns.flatMap((t) => t.sql)
   const L: string[] = []

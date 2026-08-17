@@ -19,7 +19,17 @@
  *   npm run drive -- tick                        # run what is due, without moving time
  *   npm run drive -- thread <contactId> [--turns] [--full]
  *   npm run drive -- cost [contactId]            # tokens, latency, cache, per turn
- *   npm run drive -- score [contactId]           # the seven axes, as numbers
+ *   npm run drive -- evidence [contactId]        # what the seven axes are judged on
+ *
+ * Every drive records everything, and there is no flag for it. The turn runs inside
+ * the dev server, so the switch is on the server rather than here:
+ *
+ *     PROBE_FULL_TRACE=1 npm run dev
+ *
+ * That lifts the flight recorder's 4,000-character cap, so `turn.tool_calls` holds
+ * the whole of every argument and every result rather than the first four thousand
+ * characters of the ones that matter most. `drive thread --full` and `drive turn`
+ * then show what actually happened instead of what fitted.
  *
  * The money half (§6.4, §8.2) had no driver at all, which is why none of it had ever
  * run: not one `session_coach` row in any world had ever been confirmed by anybody,
@@ -173,7 +183,7 @@ const sql = (s: string) => `'${String(s).replace(/'/g, "''")}'`
 /**
  * Which businesses a read covers.
  *
- * `cost`, `score` and `money` fell back to `anyAcademyId()` whenever no contact was
+ * `cost`, `evidence` and `money` fell back to `anyAcademyId()` whenever no contact was
  * given — the FIRST id `app.list_academies()` happened to return, which carries no
  * ordering guarantee. So "the world's money" was one unnamed tenant's money and which
  * tenant it was could change between two runs of the same command. A number you cannot
@@ -800,7 +810,7 @@ async function cursorNow(): Promise<string> {
 /**
  * Every subcommand, in the shape you type it.
  *
- * `link`, `register` and `score` all shipped and then appeared in no help text, so the
+ * `link`, `register` and `evidence` all shipped and then appeared in no help text, so the
  * only way to find out they existed was to read this file — which, for anyone driving
  * the product rather than editing it, is the same as their not existing. The `case`
  * labels in `main` are the truth; this list is checked against them by
@@ -845,7 +855,7 @@ const HELP: [string, string][] = [
   ['thread <contactId> [--others] [--full]', 'the conversation + flight recorder'],
   ['turn [contactId] [--n 3] [--academy X]', 'inside the last N turns: every round, what it wrote, what it cost'],
   ['cost [contactId] [--academy X]', 'tokens, cache ratio, latency per turn'],
-  ['score [contactId] [--academy X]', 'the seven axes, as numbers'],
+  ['evidence [contactId] [--academy X]', 'what the seven axes are judged on — no verdicts'],
   ['money [contactId] [--academy X] [--period 2026-07|all]', 'billed vs confirmed vs awaiting vs failed'],
 ]
 
@@ -2740,32 +2750,34 @@ async function main(): Promise<void> {
     }
 
     /**
-     * **The seven axes, as numbers rather than impressions.**
+     * **The evidence the seven axes are judged on — measurements, not a score.**
      *
-     * FINDINGS names this as one of two cheap things nobody has taken, and the argument
-     * for it is that the axes it covers are one SQL statement each over `message`,
-     * `action` and `turn` — so "the bot feels wordy this week" becomes a figure, and a
-     * regression in affordance or plainness shows up without anybody noticing it by eye.
-     * Two of the entries in that ledger were found only because somebody happened to
-     * count by hand.
+     * This was `drive score`, and it printed a scoreboard: an "unbacked claim" count
+     * from a past-tense regex over the reply, a red `with a uuid`, a red `invented
+     * vocabulary` from a word list, a yellow `never once: schedule`. Every one of
+     * those is a verdict computed from a pattern, and the ledger of what patterns
+     * over prose cost this repo is written out in `scripts/probe-ask.ts` and in
+     * `lib/agent/tools.ts`: the overclaim counter read 0 on a drive containing
+     * exactly one, and the jargon list fired six times on an arc with no defect in
+     * it, on words the product's own ideal conversations use.
      *
-     * Axis 1 (Truth) is the one that matters most and was not queryable at all until
-     * `audit_entry.turn_id` existed (0015). It is queryable now, and it is the first
-     * thing printed: **a reply that claimed a completed action, with no write from that
-     * turn behind it.** Past-tense detection is a heuristic and is labelled as one —
-     * the point is not a perfect count, it is that an unbacked claim stops being
-     * invisible.
+     * The axes survive, because they are the right seven things to look at. What is
+     * gone is the pretence that a query can answer them. So each heading now prints
+     * the numbers a judge needs and stops, and the judging is written down by a
+     * person in `judgement.json` — see **JUDGING.md**.
      *
-     * Deliberately not a pass/fail. Nothing here knows what good looks like for a
-     * particular business; a person reading two runs side by side does.
+     * The one thing worth keeping from the old Truth axis is not the regex: it is
+     * the join. `audit_entry.turn_id` (0015) makes "how many rows did THIS turn
+     * write" a fact, so a reply and its footprint can be read side by side. The
+     * reading is the judgement; the numbers are the evidence.
      */
-    case 'score': {
+    case 'evidence': {
       const contactId = positional[0]
       const n = Number(flag('turns') ?? '200')
       const forContact = contactId ? `and t.contact_id = '${contactId}'::uuid` : ''
       const msgFilter = contactId ? `and m.contact_id = '${contactId}'::uuid` : ''
 
-      // Per business, not "whichever tenant came back first". Two businesses score
+      // Per business, not "whichever tenant came back first". Two businesses read
       // differently for real reasons — one is three days old, one has a solo operator —
       // and a single merged figure hides exactly the difference worth reading.
       for (const business of await academiesInScope(contactId)) {
@@ -2775,36 +2787,33 @@ async function main(): Promise<void> {
       const one = async <T = any>(stmt: string): Promise<T> => (await q<T>(stmt, academyId))[0] as T
 
       // --- 1 · Truth -------------------------------------------------------------
-      const truth = await one(`
-        with recent as (
-          select t.id, t.output->>'reply' as reply
-            from turn t
-           where t.created_at > app.now() - interval '30 days' ${forContact}
-           order by t.created_at desc limit ${n}
-        ),
-        claimed as (
-          select id, reply from recent
-           where reply ~* '\\y(i(''| ha)ve |i just )?(added|created|cancelled|canceled|moved|updated|removed|sent|booked|marked|set up|saved|waived|recorded|enrolled|scheduled)\\y'
-        )
-        select (select count(*) from recent) as turns,
-               (select count(*) from claimed) as claims,
-               (select count(*) from claimed cl
-                 where not exists (select 1 from audit_entry a
-                                    where a.turn_id = cl.id and a.diff is not null)) as unbacked`)
+      // The reply and its footprint, side by side, for every turn that said anything.
+      // Nothing here decides whether a turn with no writes was lying: answering a
+      // question from a read is exactly this shape and is correct.
+      const spoke = await q<any>(
+        `select t.id::text,
+                left(coalesce(t.output->>'reply', ''), 160) as reply,
+                (select count(*) from audit_entry a where a.turn_id = t.id and a.diff is not null) as wrote,
+                (select count(*) from message m2 where m2.turn_id = t.id
+                   and m2.direction = 'outbound' and m2.suppressed_reason is null)                as reached
+           from turn t
+          where t.created_at > app.now() - interval '30 days' ${forContact}
+            and coalesce(t.output->>'reply', '') <> ''
+          order by t.created_at desc limit ${n}`,
+        academyId,
+      )
 
       /**
        * --- 2 · Correctness -------------------------------------------------------
        *
        * Whether the thing done was the RIGHT thing is not derivable and this does not
        * pretend otherwise — it prints what has to be read, which is the diff against what
-       * was asked, and it was printing nothing at all. "Read `audit_entry`" in a document
-       * nobody has open is the same as no axis: two of the axes here exist because
-       * somebody counted by hand, and this is the one that still needs a person.
+       * was asked.
        *
-       * The one part that IS a query is worth having on its own: a committed plan whose
+       * The one part that IS a fact is worth having on its own: a committed plan whose
        * diff touched no rows. Postgres does not consider an `update … where` matching
-       * nothing an error, so the reply says it is done and the tables disagree — R7, the
-       * only root whose failures a reader of the transcript scores as a pass.
+       * nothing an error, so the reply says it is done and the tables disagree — the only
+       * failure shape a reader of the transcript alone scores as a pass.
        */
       const forAudit = contactId ? `and ae.turn_id in (select t.id from turn t where t.contact_id = '${contactId}'::uuid)` : ''
       const correct = await one(`
@@ -2835,8 +2844,7 @@ async function main(): Promise<void> {
       // --- 4 · Affordance --------------------------------------------------------
       // Every one of these was `payload ? '<key>'`, which asks whether the KEY is present —
       // and the send path writes all of them on every message, most as JSON null. So the
-      // affordance rate read 100% on a world where nothing carried a button at all, and
-      // the note below about a 100% rate being unremarkable was reading that artefact.
+      // affordance rate read 100% on a world where nothing carried a button at all.
       // `jsonb_typeof` asks the question that was meant: is there anything in there?
       const afford = await one(`
         select count(*) as outbound,
@@ -2871,10 +2879,21 @@ async function main(): Promise<void> {
         academyId,
       )
 
+      // --- 6 · Plainness ---------------------------------------------------------
+      // Length, and nothing else. The uuid and jargon counters that stood here were
+      // patterns over prose; the word list fired on `roster` and `record`, which are
+      // the vocabulary the spec's own ideal conversations use in outbound messages.
+      const plain = await one(`
+        select round(avg(array_length(regexp_split_to_array(trim(m.body), '\\s+'), 1)), 1) as avg_words,
+               max(array_length(regexp_split_to_array(trim(m.body), '\\s+'), 1)) as max_words,
+               count(*) filter (where array_length(regexp_split_to_array(trim(m.body), '\\s+'), 1) > 60) as over_60
+          from message m
+         where m.direction = 'outbound' and m.body is not null and m.suppressed_reason is null
+           and m.queued_at > app.now() - interval '30 days' ${msgFilter}`)
+
       // --- 7 · Cost --------------------------------------------------------------
-      // `drive cost` prints the per-turn table; this is the one number you put next to
-      // the other six. Rounds are the driver — the stable prefix is paid on every
-      // uncached round, so a turn that went round twice cost twice.
+      // Rounds are the driver — the stable prefix is paid on every uncached round, so
+      // a turn that went round twice cost twice.
       const spend = await one(`
         select count(*) as turns,
                coalesce(sum(prompt_tokens), 0) as tin,
@@ -2885,40 +2904,26 @@ async function main(): Promise<void> {
                count(*) filter (where rounds > 2) as over_two
           from turn t where t.created_at > app.now() - interval '30 days' ${forContact}`)
 
-      // --- 6 · Plainness ---------------------------------------------------------
-      const plain = await one(`
-        select round(avg(array_length(regexp_split_to_array(trim(m.body), '\\s+'), 1)), 1) as avg_words,
-               count(*) filter (where array_length(regexp_split_to_array(trim(m.body), '\\s+'), 1) > 60) as over_60,
-               count(*) filter (where m.body ~ '[0-9a-f]{8}-[0-9a-f]{4}-') as with_uuid,
-               count(*) filter (where m.body ~* '\\y(academy|roster|onboarding|setup phase|the system)\\y') as jargon
-          from message m
-         where m.direction = 'outbound' and m.body is not null and m.suppressed_reason is null
-           and m.queued_at > app.now() - interval '30 days' ${msgFilter}`)
-
       const pct = (a: any, b: any) => (Number(b) ? `${Math.round((100 * Number(a)) / Number(b))}%` : '—')
       const h = (s: string) => console.log(`\n${c.bold(s)}`)
 
-      h(`1 · truth      ${c.dim('— did it actually do what it said?')}`)
-      console.log(
-        `  ${String(truth.claims)} of ${truth.turns} replies claimed something was done · ` +
-          (Number(truth.unbacked) > 0
-            ? c.red(`${truth.unbacked} with NO write from that turn behind it`)
-            : c.dim('all backed by a write from that turn')),
-      )
-      console.log(c.dim('  (past-tense detection is a heuristic — read the flagged turns, do not trust the count)'))
+      h(`1 · truth      ${c.dim('— did it do what it said? Read the reply against its footprint.')}`)
+      console.log(c.dim(`  ${'wrote'.padStart(5)} ${'sent'.padStart(4)}  reply`))
+      for (const s of spoke.slice(0, 12)) {
+        console.log(
+          `  ${String(s.wrote).padStart(5)} ${String(s.reached).padStart(4)}  ${clip(String(s.reply).replace(/\s+/g, ' '), 96)}`,
+        )
+      }
+      if (spoke.length > 12) console.log(c.dim(`  … ${spoke.length - 12} more turns, all of them in the record`))
 
       h(`2 · correctness ${c.dim('— was it the right thing, done right? (not derivable — read these)')}`)
       console.log(
-        `  ${correct.writes} committed plan(s) · ` +
-          (Number(correct.touched_nothing) > 0
-            ? c.red(`${correct.touched_nothing} whose diff touched no rows`)
-            : c.dim('every one of them touched at least one row')) +
-          ` · ${correct.undone} undone`,
+        `  ${correct.writes} committed plan(s) · ${correct.touched_nothing} whose diff touched no rows · ${correct.undone} undone`,
       )
       for (const w of lastWrites) {
         console.log(
           `    ${c.dim(new Date(w.created_at).toISOString().slice(5, 16))} ${clip(w.intent, 46).padEnd(48)} ` +
-            (Number(w.tables) === 0 ? c.red('touched nothing') : c.dim(String(w.touched))),
+            (Number(w.tables) === 0 ? 'touched nothing' : c.dim(String(w.touched))),
         )
       }
 
@@ -2935,14 +2940,13 @@ async function main(): Promise<void> {
       )
       console.log(`  ${taps.taps} taps vs ${taps.typed} typed inbound (${pct(taps.taps, Number(taps.taps) + Number(taps.typed))} tapped)`)
       for (const k of byKind) {
-        const rate = pct(k.tapped, k.minted)
         console.log(
-          `    ${String(k.kind ?? '?').padEnd(10)} ${String(k.minted).padStart(4)} minted  ${String(k.tapped).padStart(4)} tapped  ${rate.padStart(5)}`,
+          `    ${String(k.kind ?? '?').padEnd(10)} ${String(k.minted).padStart(4)} minted  ${String(k.tapped).padStart(4)} tapped  ${pct(k.tapped, k.minted).padStart(5)}`,
         )
       }
       console.log(
         c.dim(
-          '  a 100% affordance rate is not a win on its own — the runtime bolts a menu button onto anything bare,\n' +
+          '  a high affordance rate is not a win on its own — the runtime bolts a menu button onto anything bare,\n' +
             '  so read the per-kind tap rates: they say whether the affordance was worth offering.',
         ),
       )
@@ -2950,21 +2954,14 @@ async function main(): Promise<void> {
       h(`5 · capability ${c.dim('— what did it actually reach for?')}`)
       const shown = tools.filter((t: any) => !String(t.tool).startsWith('('))
       console.log(`  ${shown.map((t: any) => `${t.tool} ${t.n}`).join(' · ') || c.dim('nothing')}`)
-      for (const want of ['schedule', 'view', 'remember', 'handoff']) {
-        if (!shown.some((t: any) => t.tool === want)) {
-          console.log(c.yellow(`  never once: ${want}`))
-        }
-      }
-      const silent = tools.find((t: any) => String(t.tool).includes('returned nothing'))
-      if (silent) console.log(c.yellow(`  ${silent.n} rounds produced neither a call nor a word`))
+      console.log(c.dim('  what is ABSENT from that list is the reading worth making — a tool never once reached for'))
+      console.log(c.dim('  is either unnecessary or invisible, and only the turns can say which.'))
 
       h(`6 · plainness  ${c.dim('— would this read as English to someone who has never used software?')}`)
       console.log(
-        `  ${plain.avg_words ?? '—'} words avg · ${plain.over_60} over 60 words · ` +
-          (Number(plain.with_uuid) ? c.red(`${plain.with_uuid} with a uuid`) : c.dim('no uuids')) +
-          ' · ' +
-          (Number(plain.jargon) ? c.red(`${plain.jargon} with invented vocabulary`) : c.dim('no invented vocabulary')),
+        `  ${plain.avg_words ?? '—'} words avg · ${plain.max_words ?? '—'} longest · ${plain.over_60} over 60 words`,
       )
+      console.log(c.dim('  length is the only part of plainness a query can see. Read the bodies for the rest.'))
 
       h(`7 · cost       ${c.dim('— seconds and tokens, and rounds are the driver')}`)
       console.log(
@@ -2972,11 +2969,10 @@ async function main(): Promise<void> {
           `${Number(spend.tout).toLocaleString()} out · ${(Number(spend.ms) / 1000).toFixed(0)}s total · ${spend.secs ?? '—'}s avg`,
       )
       console.log(
-        (Number(spend.over_two) > 0
-          ? c.yellow(`  ${spend.over_two} turn(s) went more than two rounds`)
-          : c.dim('  no turn went more than two rounds')) +
+        `  ${spend.over_two} turn(s) went more than two rounds` +
           c.dim('  · WhatsApp cannot stream, so these seconds are seconds of silence'),
       )
+      console.log(c.dim('\n  Nothing above is a verdict. Write one: JUDGING.md'))
       console.log()
       }
       break
@@ -3038,7 +3034,7 @@ async function main(): Promise<void> {
             `  ${name.padEnd(Math.max(...HELP.map(([n]) => n.length)) + 2)}${c.dim(blurb)}`,
           ),
           '',
-          c.dim('  --academy "<name>"  scopes cost / score / money to one business (default: all of them)'),
+          c.dim('  --academy "<name>"  scopes cost / evidence / money to one business (default: all of them)'),
           c.dim('  --full              whole bodies and whole tool traces, not clipped'),
           '',
         ].join('\n'),

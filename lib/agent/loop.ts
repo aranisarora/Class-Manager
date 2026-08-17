@@ -34,6 +34,7 @@ import { generate, type Msg } from './deepseek'
 import { stablePrefix, variableTail } from './context'
 import { proseViolations, violationMessage } from './lint'
 import { traceabilityNote } from './traceability'
+import { fullTraceOn } from './turn-trace'
 import { hotSet } from './memory'
 import { audienceFor, executePlan, type PlanStep } from './plan'
 import { jsonLit, lit, uid, type OperationName } from './operations'
@@ -190,8 +191,8 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
           round: 0,
           name: `tap:${consumed.payload.kind}`,
           ms: Date.now() - tappedAt,
-          args: traceValue(consumed.payload, 4000),
-          result: traceValue({ summary: res.summary, sent: res.outcomes.map((o) => o.status) }, 2000),
+          args: evidence(consumed.payload, 4000),
+          result: evidence({ summary: res.summary, sent: res.outcomes.map((o) => o.status) }, 2000),
         })
       }
     }
@@ -224,7 +225,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         round: 0,
         name: '(media: text-only model, answered in words)',
         ms: 0,
-        args: traceValue(input.media.map((m) => m.mimeType), 500),
+        args: evidence(input.media.map((m) => m.mimeType), 500),
       })
     }
 
@@ -1027,6 +1028,24 @@ function traceValue(v: unknown, limit: number): unknown {
   }
 }
 
+/**
+ * A value on its way INTO the flight recorder, as opposed to one on its way back
+ * to the model.
+ *
+ * The distinction is the whole point of the wrapper. Production keeps the cap it
+ * always kept — these rows are stored on every turn forever. While an instrument
+ * holds a capture open (`lib/agent/turn-trace.ts`) nothing is clipped, because a
+ * harness asking "what did it actually send" cannot be answered with the first
+ * four thousand characters of the answer.
+ *
+ * Every recorder site below goes through this. The one site that must NOT is the
+ * history builder near the bottom of the file, which uses `traceValue` directly:
+ * what the model is shown has to be identical whether or not anybody is watching.
+ */
+function evidence(v: unknown, limit: number): unknown {
+  return traceValue(v, fullTraceOn() ? Number.POSITIVE_INFINITY : limit)
+}
+
 async function modelTurn(
   session: SessionCtx,
   identity: Identity,
@@ -1215,8 +1234,8 @@ async function modelTurn(
       name: TRACE_MARKER,
       ms: res.ms,
       args: prose.trim()
-        ? traceValue(prose, 4000)
-        : { returnedNothing: true, message: traceValue(res.assistant, 2000) },
+        ? evidence(prose, 4000)
+        : { returnedNothing: true, message: evidence(res.assistant, 2000) },
       // Every round that deliberated, not only the ones that came back empty.
       // See `ToolTrace.reasoning` for what this replaces and why it is a
       // separate field. The cap is generous rather than absent: the longest
@@ -1225,7 +1244,7 @@ async function modelTurn(
       // does bind, `traceValue` says so in the value rather than ending
       // mid-token and looking complete.
       ...(typeof res.assistant.reasoning_content === 'string' && res.assistant.reasoning_content.trim()
-        ? { reasoning: traceValue(res.assistant.reasoning_content, REASONING_TRACE_CAP) }
+        ? { reasoning: evidence(res.assistant.reasoning_content, REASONING_TRACE_CAP) }
         : {}),
       result: {
         in: res.usage.promptTokens,
@@ -1268,7 +1287,7 @@ async function modelTurn(
           round: round + 1,
           name: call.name,
           ms: 0,
-          args: { malformed: true, raw: traceValue(call.raw ?? '', 2000) },
+          args: { malformed: true, raw: evidence(call.raw ?? '', 2000) },
           error: `MALFORMED_FUNCTION_CALL: ${call.parseError}`,
         })
         responses.push({
@@ -1308,7 +1327,7 @@ async function modelTurn(
           round: round + 1,
           name: call.name,
           ms: 0,
-          args: traceValue(call.args, 500),
+          args: evidence(call.args, 500),
           error: `blocked: identical call already failed ${priorFailures}x this turn`,
         })
         responses.push({ role: 'tool', tool_call_id: call.id, content: toolContent(out.result) })
@@ -1350,8 +1369,8 @@ async function modelTurn(
         round: round + 1,
         name: call.name,
         ms: Date.now() - calledAt,
-        args: traceValue(call.args, 4000),
-        result: traceValue(out.result, 4000),
+        args: evidence(call.args, 4000),
+        result: evidence(out.result, 4000),
         // `error` marks a call that did not happen, and refusals in this product
         // RETURN rather than throw — the commit gate, RLS denials, every tool's
         // `{error}` result. The fuller notion is computed as `failed` above; the
@@ -1536,11 +1555,11 @@ async function modelTurn(
         round: rounds + 1,
         name: TRACE_MARKER,
         ms: forced.ms,
-        args: text.trim() ? traceValue(text, 4000) : { returnedNothing: true, recovery: true },
+        args: text.trim() ? evidence(text, 4000) : { returnedNothing: true, recovery: true },
         // The recovery round deliberates too, and it is the round that runs when
         // the turn has already gone wrong — the last place to be missing a why.
         ...(typeof forced.assistant?.reasoning_content === 'string' && forced.assistant.reasoning_content.trim()
-          ? { reasoning: traceValue(forced.assistant.reasoning_content, REASONING_TRACE_CAP) }
+          ? { reasoning: evidence(forced.assistant.reasoning_content, REASONING_TRACE_CAP) }
           : {}),
         result: {
           in: forced.usage.promptTokens,
@@ -1601,7 +1620,7 @@ async function modelTurn(
    * with a trace entry so a drive can still see what the model was thinking.
    */
   if (text.trim() && !spoke() && input.source === 'job') {
-    trace.push({ round: rounds, name: '(job turn: trailing prose discarded, tools are how a job speaks)', ms: 0, args: traceValue(text, 2000) })
+    trace.push({ round: rounds, name: '(job turn: trailing prose discarded, tools are how a job speaks)', ms: 0, args: evidence(text, 2000) })
     text = ''
   }
 
@@ -1618,7 +1637,7 @@ async function modelTurn(
       round: rounds,
       name: '(trailing prose discarded: a confirmation from this turn is already on their screen)',
       ms: 0,
-      args: traceValue(text, 2000),
+      args: evidence(text, 2000),
     })
     text = ''
   }
@@ -1679,7 +1698,7 @@ async function modelTurn(
         round: rounds,
         name: '(trailing message refused: machinery in the prose)',
         ms: 0,
-        args: traceValue({ violations, draft: outgoing }, 2000),
+        args: evidence({ violations, draft: outgoing }, 2000),
       })
       try {
         const again = await generate({
@@ -1705,9 +1724,9 @@ async function modelTurn(
           round: rounds + 1,
           name: TRACE_MARKER,
           ms: again.ms,
-          args: traceValue(again.text ?? '', 4000),
+          args: evidence(again.text ?? '', 4000),
           ...(typeof again.assistant?.reasoning_content === 'string' && again.assistant.reasoning_content.trim()
-            ? { reasoning: traceValue(again.assistant.reasoning_content, REASONING_TRACE_CAP) }
+            ? { reasoning: evidence(again.assistant.reasoning_content, REASONING_TRACE_CAP) }
             : {}),
           result: { in: again.usage.promptTokens, cached: again.usage.cachedTokens, out: again.usage.outputTokens, calls: [], finish: again.finishReason ?? 'unknown', repair: true },
         })
@@ -1754,7 +1773,7 @@ async function modelTurn(
       round: rounds,
       name: '(R10 shadow: numbers with no read behind them)',
       ms: 0,
-      args: traceValue(toolCtx.untraced, 4000),
+      args: evidence(toolCtx.untraced, 4000),
     })
   }
 
@@ -1799,7 +1818,7 @@ function flattenToolTurns(messages: Msg[]): Msg[] {
     if (m.role === 'assistant' && m.tool_calls?.length) {
       for (const c of m.tool_calls) names.set(c.id, c.function.name)
       const lines = m.tool_calls.map(
-        (c) => `[you called ${c.function.name} with ${traceValue(c.function.arguments ?? '{}', 1500)}]`,
+        (c) => `[you called ${c.function.name} with ${evidence(c.function.arguments ?? '{}', 1500)}]`,
       )
       const said = (m.content ?? '').trim()
       // The reasoning is deliberately dropped rather than flattened. It belongs to
@@ -2154,15 +2173,15 @@ Their id, for \`subject_id\`: person = ${identity.person.id}, business = ${ident
         round: 0,
         name: `reflect:${call.name}`,
         ms: Date.now() - startedAt,
-        args: traceValue(call.args, 1000),
-        result: traceValue(r.result, 800),
+        args: evidence(call.args, 1000),
+        result: evidence(r.result, 800),
       })
     } catch (e) {
       out.push({
         round: 0,
         name: `reflect:${call.name}`,
         ms: Date.now() - startedAt,
-        args: traceValue(call.args, 1000),
+        args: evidence(call.args, 1000),
         error: e instanceof Error ? e.message : String(e),
       })
     }

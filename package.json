@@ -20,9 +20,11 @@
     "guards": "tsx scripts/guard-value.ts",
     "check:world": "tsx scripts/check-world.ts",
     "check:schema-doc": "tsx scripts/check-schema-doc.ts",
+    "check:rls-doc": "tsx scripts/check-rls-doc.ts",
     "check:clash": "tsx scripts/check-clash.ts",
     "judge": "node scripts/judge.mjs",
-    "report:sql": "node scripts/sql-report.mjs",
+    "report": "node scripts/report.mjs",
+    "runs": "node scripts/report.mjs --list",
     "verify:static": "node scripts/verify-static.mjs"
   },
   "dependencies": {

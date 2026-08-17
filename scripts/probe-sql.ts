@@ -65,6 +65,8 @@ const { withSession } = await import('@/lib/db')
 const { HANDLERS, JobSkip, planAheadFor } = await import('@/lib/jobs')
 const { msOf } = await import('@/lib/jobs/util')
 const { captureSql } = await import('@/lib/agent/sql-trace')
+const { captureFullTrace } = await import('@/lib/agent/turn-trace')
+const { runDir, saveRun } = await import('./_capture')
 type SqlRecord = import('@/lib/agent/sql-trace').SqlRecord
 const { costInr } = await import('@/lib/pricing')
 const { env } = await import('@/lib/env')
@@ -1009,7 +1011,8 @@ async function main(): Promise<void> {
     let captured: SqlRecord[] = []
     let threw: string | null = null
     try {
-      const { sql } = await captureSql({ rows: WANT_ROWS }, async () => {
+      const { sql } = await captureSql({ rows: true }, () =>
+        captureFullTrace(async () => {
         await inboundFromContact({ contactId: contacts[kase.persona], text: kase.text })
         // Tapped by DEFAULT, because a person does. Where the model correctly
         // refused, or routed to somebody else, or asked a question, there is
@@ -1017,7 +1020,8 @@ async function main(): Promise<void> {
         // testing a refusal need no opt-out, and a case where the model staged
         // something it should not have is caught rather than excused.
         if (kase.tap !== false) await tapStagedPlan(contacts[kase.persona])
-      })
+        }),
+      )
       captured = sql
     } catch (e) {
       threw = e instanceof Error ? (e.stack ?? e.message) : String(e)
@@ -1149,6 +1153,57 @@ async function report(results: Result[], academyId: string): Promise<void> {
   const mdPath = `.probe/sql/${stamp}.md`
 
   await writeFile(jsonPath, JSON.stringify({ model: env.MODEL_MAIN, academyId, results }, null, 2))
+
+  /**
+   * The same record every other instrument writes, so the one reader can open it.
+   *
+   * `.probe/sql/` was this probe's own corner with its own renderer, and the
+   * renderer is gone — there is one now (`scripts/report.mjs`), and it finds a run
+   * by sorting `.probe/runs/`. The suite-shaped files above are kept because the
+   * per-case ladder is genuinely this probe's own question.
+   *
+   * **This probe still carries per-case `check` closures, and they are the last
+   * deterministic verdicts left in the instrument.** They are deliberately NOT
+   * copied into the record: the record holds evidence, and a verdict written into
+   * it is a verdict the next reader cannot argue with. Judge it from JUDGING.md
+   * like anything else, and read `verdict`/`why` in the file above as one earlier
+   * reader's opinion rather than as a result.
+   */
+  const dir = await runDir('sql')
+  await saveRun(dir, {
+    suite: 'sql',
+    model: env.MODEL_MAIN,
+    startedAt: new Date().toISOString(),
+    academyId,
+    note:
+      'The SQL ladder. Since the wrapper operations were deleted, nearly every write in this ' +
+      'product is SQL the model composed itself; this drives one sentence per case and records ' +
+      'every statement byte for byte, the refused ones included.',
+    turns: results.map((r, i) => ({
+      n: i + 1,
+      id: r.id,
+      at: new Date().toISOString(),
+      who: r.persona,
+      persona: r.persona,
+      say: r.text,
+      rounds: r.rounds ?? [],
+      sql: r.sql ?? [],
+      messages: [],
+      reply: r.reply,
+      buttons: r.buttons ?? [],
+      tapped: null,
+      jobs: [],
+      tokens: { prompt: r.tokens?.prompt ?? 0, cached: r.tokens?.cached ?? 0, output: r.tokens?.output ?? 0 },
+      inr: costInr(env.MODEL_MAIN, r.tokens?.prompt ?? 0, r.tokens?.cached ?? 0, r.tokens?.output ?? 0),
+      ms: r.ms,
+      turnIds: [],
+      wrote: (r.sql ?? []).filter((x) => x.kind !== 'read' && (x.rowCount ?? 0) > 0).length,
+      sent: r.reply ? 1 : 0,
+      error: r.verdict === 'error' ? r.why : null,
+    })),
+    world: { note: `${results.filter((r) => r.verdict === 'pass').length}/${results.length} cases left the world as the case author expected — see the ladder file for which` },
+  })
+  console.log(`\n  record: ${dir}/record.json`)
 
   const L: string[] = []
   L.push(`# probe-sql — ${stamp}`)

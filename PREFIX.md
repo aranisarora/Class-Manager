@@ -99,8 +99,8 @@ constraint allows.**
    5,789 characters of prose in the prefix, tens of thousands of characters upstream of the
    decode point, in the one form a function-call decoder cannot apply.
 2. **A fact about the data model → `SCHEMA_DOC`.** Tables, columns, the FK graph, derived
-   expressions, the billing rules that decide which rows exist. Schema and only schema; it
-   grew a behavior layer once and it was cut back out.
+   expressions, the billing rules that decide which rows exist, and who may read or write
+   each row. Schema and only schema; it grew a behavior layer once and it was cut back out.
 3. **A fact about the surface → `PLATFORM`.** What WhatsApp and this runtime will and will
    not do. The test is whether it changes what is worth *attempting*.
 4. **A rule of the business → `DOMAIN_FACTS`.** How money, schedules and people behave, and
@@ -165,6 +165,7 @@ Measurement, not taste. Four tools, in the order you should reach for them:
 npm run surface          # everything the model is shown, in one greppable file
 npm run ask              # ask the model what it understood; ~₹1 a run
 npm run check:schema-doc # does the schema block still describe the real database?
+npm run check:rls-doc    # does the permission matrix still describe the real policies?
 npx tsx scripts/probe-sql.ts        # can it actually WRITE the SQL? real rows, real verdicts
 npx tsx scripts/probe-prefix.ts     # where the bytes go, block by block
 npx tsx scripts/probe-ceiling.ts    # what the whole cached block costs
@@ -194,6 +195,17 @@ direction no reading of the document can catch, because absence has nothing to
 point at. It also refuses a view under the wrong schema, which is how
 `app.session_coverage` reached a live turn. It does not check prose; nothing can.
 
+**`check:rls-doc` is the same idea pointed at the permission matrix**, and it exists because
+the matrix is the one block in the prefix that is a second copy of something the database
+already states. It reads the grid and asks `pg_policies`, in both directions: a cell that
+says nobody may write must have no policy, a cell naming a role must have the helper that
+backs it, and — the direction a reading cannot catch — **a policy naming a role the cell
+does not mention is a permission nothing tells the model it has.** It does not check prose;
+whether *"their own family's"* fairly describes a five-clause `EXISTS` is a reading. Its own
+first run found two defects in itself (`\bcoach\b` does not match *coaches*; `my_session_ids()`
+hides the family branch inside a SECURITY DEFINER function), which is the argument for
+mutating the grid and watching it go red before trusting a green.
+
 `probe-prefix.ts` is the source of truth for size — this document deliberately quotes no byte
 counts, because a number written here goes stale exactly the way a count in the prompt does.
 
@@ -217,8 +229,8 @@ sufficient, not that the behaviour happens — looking is free here and costs a 
 turn, and prose still has to become valid tool calls. A bad answer is conclusive and cheap; a
 good one still needs the drive.
 
-For behavior: **drive the same arc twice, one variable apart**, and read
-`scripts/arc-report.mjs`. That is how the eleven modules were retired — truth tied 253/261 in
+For behavior: **drive the same arc twice, one variable apart**, and read both with
+`npm run report`. That is how the eleven modules were retired — truth tied 253/261 in
 both arms, the module-free arm's replies were plainer, its two best moments were *derived*
 from doctrine rather than prescribed, and the prescriptions were implicated in their own
 arm's two worst behaviors. It is the only evidence that justifies adding anything back.
@@ -237,6 +249,16 @@ find a structural home, write the finding down without a fix rather than writing
 that makes the problem feel handled.
 
 ---
+
+## What was added, and the argument for it
+
+Recorded for the reason the graveyard is: the next reader has to be able to tell a line that
+earned its place from one that grew back. An addition here means the admission test was run
+in public and the answer written down — not that the block is now open.
+
+| Added | When | Why |
+| --- | --- | --- |
+| **The permission matrix** — who may select, insert, update and delete each table — in `SCHEMA_DOC` | 17 Aug 2026 | Rung 2, and it passes the first test in the only way that matters: **policies are invisible from inside a session, so the boundary can only be found by crossing it.** The block previously said, in as many words, that the boundary "is not listed here because it is enforced per row rather than per table" — true, and it was paid for in rounds. The model planned writes a coach or a family cannot make, was refused mid-plan (or worse, silently matched nothing on an UPDATE), rediscovered the shape and re-planned; and the cost is not the tokens, it is the round — latency on every turn where it happens, and on a hard turn the rounds budget itself, which is a timeout rather than a wrong answer. It also poisoned the *plan*: a preview built around a step the person may not run is a promise already broken. The trade is bytes in the cached block, where a hit costs 3.2% of a miss, against whole rounds on the wire at full price. Kept honest by `check:rls-doc`, because a grid in a string and the policies in `0003_rls.sql` are the trap ARCHITECTURE.md calls **two authors of one truth** — so one is made to read the other. |
 
 ## The graveyard
 

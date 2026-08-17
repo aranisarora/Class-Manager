@@ -109,7 +109,7 @@ Open a pane per contact from the tray, then:
 npm run typecheck             # tsc --noEmit
 node scripts/rls-check.mjs    # the security boundary
 node scripts/verify-static.mjs # four absolutes, as a build failure rather than a note
-npm run drive -- score        # all seven axes, straight off the tables
+npm run drive -- evidence     # what the seven axes are judged on, straight off the tables
 npx tsx scripts/probe-model.ts   # the real loop through a scripted arc, plus SQL invariants
 node scripts/q.mjs --academy "Ace" "select …"   # ask the database what actually happened
 ```
@@ -119,9 +119,9 @@ zero rows, and the build fails if any table has RLS disabled. **Seed a fixture b
 it** — with an empty world it skips its cross-role and family-privacy sections and still reports
 "0 failed".
 
-`drive score` prints axes 1 and 3–6; axis 7 is `drive cost`, and axis 2 — was it the *right*
-thing, done right? — is not derivable and has to be read out of `audit_entry`. What the seven
-axes are and what each one fails to cover is [`DRIVING.md`](./DRIVING.md).
+`drive evidence` prints the measurements each axis is judged on and stops — it computes no
+score, because nothing in a query knows what good looks like. The axes, the 0–10 calibration
+and where the verdict goes are [`JUDGING.md`](./JUDGING.md).
 
 ---
 
@@ -221,8 +221,9 @@ scripts/drive.ts          the harness — talk to it, then read the tables back
   than something we were buying.
 - **There is no agent-simulation harness**, and the README used to claim one. Personas, a judge
   agent and diffable runs (§17, phase 12) were built and removed as over-engineered; `npm run
-  drive` is the harness now, and a person driving it is the eval. `drive score` and
-  [`DRIVING.md`](./DRIVING.md) are what turn that from an impression into numbers.
+  drive` is the harness now, and a person driving it is the eval. `drive evidence`,
+  `npm run report` and [`JUDGING.md`](./JUDGING.md) are what turn that from an impression
+  into a written verdict.
 - **Recipes (§14.3) were deleted, not deferred** — the table, `lib/agent/recipes.ts`, the capture
   site and the prompt fragment are gone as of `0017_drop_recipe.sql`. Capture, generalisation and
   matching were each written and each correct, and never joined: `applyRecipe` — the only thing

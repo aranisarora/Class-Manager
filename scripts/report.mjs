@@ -1,0 +1,545 @@
+/**
+ * report — one reader for every run this repo produces.
+ *
+ *   node scripts/report.mjs                          # the newest run in .probe/runs
+ *   node scripts/report.mjs --run .probe/runs/2026-08-17-13-09-arc
+ *   node scripts/report.mjs --out .probe/reports/my-name.html
+ *   node scripts/report.mjs --list                   # what runs exist
+ *
+ * WHY THERE IS ONLY ONE OF THESE NOW
+ * -----------------------------------------------------------------------------
+ * There were six: `adv-report`, `arc-report`, `fo-report`, `sql-report`,
+ * `stress-report` and `tennis-report`, ~250KB of them, one per suite. They shared
+ * a stylesheet by copy and nothing else, so a thing worth showing had to be
+ * written six times and was usually written once. `arc-report` showed the model's
+ * reasoning; `sql-report` showed the statements; neither showed both, and the
+ * turn where those two disagree is the turn worth reading.
+ *
+ * Every instrument writes one shape now (`scripts/_capture.ts`), so there is one
+ * reader. A suite is a field on the record, not a program.
+ *
+ * WHAT IT RENDERS
+ * -----------------------------------------------------------------------------
+ * The page `.probe/reports/2026-08-17-stress-month-analysis.html` is the model,
+ * because it is the only report in this repo that anybody read twice. Three
+ * things made it work and all three are structural rather than decorative:
+ *
+ *   - **The verdict is one sentence, at the top.** Not a number.
+ *   - **The pattern is found by SPLITTING, not by averaging.** Scores by persona
+ *     turned a list of incidents into one finding: every catastrophic turn in the
+ *     month was a client turn, and the same month weighted toward the operator
+ *     scores 8.2 and reads as fine.
+ *   - **Every turn is opened up, not a hand-picked few** — reasoning, statements,
+ *     rows, reply. A report that shows outcomes and hides the inside of the turn
+ *     cannot tell a model that did not know from one that knew and could not.
+ *
+ * COUNTED AND ARGUED ARE KEPT APART
+ * -----------------------------------------------------------------------------
+ * Everything from `record.json` is measurement and is labelled as such. Everything
+ * from `judgement.json` is somebody's reading and is labelled with their name. The
+ * page never computes a score, and where no judgement exists it says so and
+ * renders the evidence anyway — an unjudged run is a run waiting for a reader, not
+ * an error.
+ *
+ * NOTHING IS TRUNCATED SILENTLY. Where a slice is applied it is large, and it says
+ * how much it dropped.
+ */
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import { join, basename } from 'node:path'
+
+const args = process.argv.slice(2)
+const flag = (n) => {
+  const i = args.findIndex((a) => a === `--${n}` || a.startsWith(`--${n}=`))
+  if (i === -1) return undefined
+  const f = args[i]
+  return f.includes('=') ? f.slice(f.indexOf('=') + 1) : args[i + 1]
+}
+
+const RUNS = join('.probe', 'runs')
+
+/**
+ * Runs newest first.
+ *
+ * The date-stamped directory name is the whole ordering scheme, and it is
+ * deliberate: a default that names one frozen path is wrong the moment the next
+ * run lands, and it fails in the worst direction — the script succeeds and
+ * renders stale evidence. `adv-report`'s hardcoded default had already rotted to
+ * a filename that did not exist.
+ */
+function allRuns() {
+  if (!existsSync(RUNS)) return []
+  return readdirSync(RUNS)
+    .map((d) => join(RUNS, d))
+    .filter((d) => existsSync(join(d, 'record.json')))
+    .sort()
+    .reverse()
+}
+
+if (args.includes('--list')) {
+  const runs = allRuns()
+  if (!runs.length) console.log('  no runs in .probe/runs')
+  for (const r of runs) {
+    const rec = JSON.parse(readFileSync(join(r, 'record.json'), 'utf8'))
+    const judged = existsSync(join(r, 'judgement.json')) ? 'judged' : 'unjudged'
+    console.log(
+      `  ${basename(r).padEnd(34)} ${String(rec.suite ?? '?').padEnd(8)} ` +
+        `${String(rec.turns?.length ?? 0).padStart(3)} turns  ${judged}`,
+    )
+  }
+  process.exit(0)
+}
+
+const runPath = flag('run') ?? allRuns()[0]
+if (!runPath) {
+  console.error('  no run to render. Drive something first, or pass --run <dir>.')
+  process.exit(1)
+}
+if (!existsSync(join(runPath, 'record.json'))) {
+  console.error(`  no record.json in ${runPath}`)
+  process.exit(1)
+}
+
+const rec = JSON.parse(readFileSync(join(runPath, 'record.json'), 'utf8'))
+const judgePath = join(runPath, 'judgement.json')
+const judgement = existsSync(judgePath) ? JSON.parse(readFileSync(judgePath, 'utf8')) : null
+
+/* -------------------------------------------------------------------------- *
+ * Rendering helpers
+ * -------------------------------------------------------------------------- */
+
+const esc = (s) =>
+  String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+/** A long value, kept whole where it can be and honest about it where it cannot. */
+const CAP = 40_000
+const capped = (s) => {
+  const str = typeof s === 'string' ? s : JSON.stringify(s, null, 2) ?? ''
+  if (str.length <= CAP) return esc(str)
+  return `${esc(str.slice(0, CAP))}\n\n… [+${(str.length - CAP).toLocaleString()} more characters — the whole value is in record.json]`
+}
+
+const n2 = (x) => (Number.isFinite(x) ? Math.round(x * 10) / 10 : '—')
+const inr = (x) => (Number.isFinite(x) ? `₹${x.toFixed(2)}` : '—')
+
+/** A judged turn, by its position in the run. */
+const judged = new Map((judgement?.turns ?? []).map((t) => [Number(t.n), t]))
+const scoreOf = (t) => {
+  const j = judged.get(t.n)
+  return typeof j?.score === 'number' ? j.score : null
+}
+const band = (s) => (s === null ? '' : s >= 8 ? 'good' : s >= 6 ? 'mid' : 'bad')
+
+const AXES = [
+  ['truth', 'did it do what it said?'],
+  ['correctness', 'was it the right thing?'],
+  ['friction', 'how much work did the person do?'],
+  ['affordance', 'could they act, or must they type?'],
+  ['capability', 'did it reach sideways, or only forward?'],
+  ['plainness', 'would a busy person understand it on one read?'],
+  ['cost', 'rounds and rupees against what the turn was worth'],
+  ['consequence', 'did it leave the world in a state tomorrow can rely on?'],
+  ['sideways', 'did anything else have a claim on what it changed?'],
+]
+
+const turns = rec.turns ?? []
+const scored = turns.map(scoreOf).filter((s) => s !== null)
+const mean = scored.length ? scored.reduce((a, b) => a + b, 0) / scored.length : null
+
+/* -------------------------------------------------------------------------- *
+ * The page
+ * -------------------------------------------------------------------------- */
+
+let body = ''
+
+const suite = rec.suite ?? 'run'
+
+/**
+ * The name of the run, and a judged run gets to name itself.
+ *
+ * A generated title is a label; a written one is a claim. The month report worth
+ * reading was called *"The month it told her she was unsubscribed"*, which is a
+ * finding in five words and does more work than any date could. So `judgement.json`
+ * may set `title`, and the fallback is the plain fact of what was driven and when.
+ */
+const stampOf = basename(runPath).replace(/-[a-z]+$/, '').replace(/-(\d{2})-(\d{2})$/, ' $1:$2')
+const title = judgement?.title ?? `${suite} · ${stampOf}`
+
+body += `<h1>${esc(title)}</h1>`
+body += `<p class="sub">${esc(rec.note ?? '')}</p>`
+body += `<p class="dim">${esc(basename(runPath))} · suite <code>${esc(suite)}</code> · model <code>${esc(rec.model ?? '?')}</code> · ${turns.length} turns · ${
+  judgement ? `read and scored by hand${judgement.judge ? ` — ${esc(judgement.judge)}` : ''}` : 'not yet judged'
+}</p>`
+
+/* --- the verdict ---------------------------------------------------------- */
+
+if (judgement?.verdict) {
+  body += `<div class="lead"><b>The verdict in one line:</b> ${esc(judgement.verdict)}</div>`
+} else {
+  body += `<div class="lead"><b>Nothing here is scored.</b> This page is evidence — every turn, everything it
+  thought, every statement it sent and what came back. The verdict is written by a reader into
+  <code>${esc(join(runPath, 'judgement.json'))}</code>; <b>JUDGING.md</b> is how. Re-run this after and the
+  scores appear beside the turns.</div>`
+}
+
+/* --- the numbers ---------------------------------------------------------- */
+
+const totalInr = turns.reduce((a, t) => a + (Number(t.inr) || 0), 0)
+const totalSent = turns.reduce((a, t) => a + (Number(t.sent) || 0), 0)
+const totalWrote = turns.reduce((a, t) => a + (Number(t.wrote) || 0), 0)
+const allSql = turns.flatMap((t) => t.sql ?? [])
+const refused = allSql.filter((s) => s.error)
+const emptyWrites = allSql.filter((s) => s.kind !== 'read' && s.rowCount === 0)
+const silent = turns.filter((t) => !t.reply)
+const days = new Set(turns.map((t) => t.day).filter((d) => d !== undefined))
+
+body += `<div class="stats">
+  ${mean === null ? '' : `<div class="stat"><b>${n2(mean)}<span style="font-size:1rem"> /10</span></b><span>mean, ${scored.length} scored turns</span></div>`}
+  <div class="stat"><b>${turns.length}</b><span>turns${days.size ? ` over ${days.size} days` : ''}</span></div>
+  <div class="stat"><b>${totalSent}</b><span>messages sent</span></div>
+  <div class="stat"><b>${totalWrote}</b><span>rows written</span></div>
+  <div class="stat"><b>${allSql.length}</b><span>statements${refused.length ? `, ${refused.length} refused` : ''}</span></div>
+  <div class="stat"><b>${inr(totalInr)}</b><span>the whole run</span></div>
+</div>`
+
+/* --- the split ------------------------------------------------------------ */
+
+const personas = [...new Set(turns.map((t) => t.persona))].filter(Boolean)
+if (personas.length > 1) {
+  body += `<h2>The split</h2>
+  <p>Averaging a run hides the only thing worth knowing about it. Split by whose phone the message came
+  from and a list of incidents becomes a finding — the previous month's every-catastrophic-turn-is-a-client-turn
+  was invisible in its mean and obvious in this table.</p>
+  <div class="scroll"><table><thead><tr><th>persona</th><th>turns</th>${mean === null ? '' : '<th>mean</th><th>worst</th>'}<th>rows written</th><th>sent</th><th>refused SQL</th><th>cost</th></tr></thead><tbody>`
+  for (const p of personas) {
+    const mine = turns.filter((t) => t.persona === p)
+    const ss = mine.map(scoreOf).filter((s) => s !== null)
+    const sql = mine.flatMap((t) => t.sql ?? [])
+    body += `<tr><td><b>${esc(p)}</b></td><td>${mine.length}</td>${
+      mean === null
+        ? ''
+        : `<td>${ss.length ? n2(ss.reduce((a, b) => a + b, 0) / ss.length) : '—'}</td><td>${ss.length ? Math.min(...ss) : '—'}</td>`
+    }<td>${mine.reduce((a, t) => a + (Number(t.wrote) || 0), 0)}</td><td>${mine.reduce((a, t) => a + (Number(t.sent) || 0), 0)}</td><td>${
+      sql.filter((s) => s.error).length
+    }</td><td>${inr(mine.reduce((a, t) => a + (Number(t.inr) || 0), 0))}</td></tr>`
+  }
+  body += `</tbody></table></div>`
+}
+
+/* --- what the instrument can see on its own ------------------------------- */
+
+body += `<h2>What the instrument can see on its own</h2>
+<p>Three shapes are facts rather than readings, and each one is invisible in a transcript. They are not
+verdicts — a write that matched nothing can be a correct no-op — but every instance of the failure they
+name lives inside them, so they are worth reading first.</p>`
+
+if (refused.length) {
+  body += `<h3>Statements Postgres refused <span class="dim">— ${refused.length}</span></h3>
+  <p class="dim">Each one cost a round, and inside a plan each one takes every correct step beside it down with it.</p>`
+  for (const s of refused) {
+    body += `<div class="stmt"><div class="hd">refused as <code>${esc(s.role)}</code></div><pre>${esc(s.sql)}</pre><div class="err">${esc(s.error)}</div></div>`
+  }
+} else if (allSql.length) {
+  body += `<h3>Statements Postgres refused <span class="dim">— none</span></h3>`
+}
+
+if (emptyWrites.length) {
+  body += `<h3>Writes that matched nothing and raised nothing <span class="dim">— ${emptyWrites.length}</span></h3>
+  <p class="dim">The dangerous half. Postgres reports success on an <code>update … where</code> that matches no rows,
+  so the reply says it is done and the tables disagree. Only a read-back can tell.</p>`
+  for (const s of emptyWrites) {
+    body += `<div class="stmt"><div class="hd">${esc(s.kind)} · 0 rows</div><pre>${esc(s.sql)}</pre></div>`
+  }
+}
+
+if (silent.length) {
+  body += `<h3>Turns that said nothing <span class="dim">— ${silent.length}</span></h3>
+  <p class="dim">${silent.map((t) => `#${t.n} ${esc(t.id)}`).join(' · ')}</p>`
+}
+
+/* --- every turn, scored --------------------------------------------------- */
+
+body += `<h2>Every turn</h2>`
+if (!judgement) {
+  body += `<p class="dim">Unscored — the score column fills in once <code>judgement.json</code> exists beside the record.</p>`
+}
+body += `<div class="scroll"><table><thead><tr><th>#</th><th>turn</th><th>who</th>${
+  mean === null ? '' : '<th>score</th>'
+}<th>rounds</th><th>r/w</th><th>rows</th><th>sent</th><th>secs</th>${mean === null ? '' : '<th>the reason</th>'}</tr></thead><tbody>`
+for (const t of turns) {
+  const s = scoreOf(t)
+  const j = judged.get(t.n)
+  const sql = t.sql ?? []
+  body += `<tr class="${band(s)}"><td>${t.n}</td><td><a href="#t${t.n}">${esc(t.id)}</a></td><td>${esc(t.persona)}</td>${
+    mean === null ? '' : `<td><b>${s ?? '—'}</b></td>`
+  }<td>${(t.rounds ?? []).filter((r) => r.name === '(model)').length || (t.rounds ?? []).length}</td><td>${
+    sql.filter((x) => x.kind === 'read').length
+  }/${sql.filter((x) => x.kind !== 'read').length}</td><td>${t.wrote ?? 0}</td><td>${t.sent ?? 0}</td><td>${
+    ((t.ms ?? 0) / 1000).toFixed(1)
+  }</td>${mean === null ? '' : `<td>${esc(j?.reason ?? '')}</td>`}</tr>`
+}
+body += `</tbody></table></div>`
+
+/* --- the seven axes ------------------------------------------------------- */
+
+if (judgement?.turns?.some((t) => t.axes)) {
+  body += `<h2>The seven axes</h2>
+  <p>Seven for a turn, plus the two only a driven arc can ask. Definitions and the 0–10 calibration are in
+  <b>JUDGING.md</b>.</p>
+  <div class="scroll"><table><thead><tr><th>axis</th><th>mean</th><th>worst</th><th>where it went</th></tr></thead><tbody>`
+  for (const [key, gloss] of AXES) {
+    const vals = (judgement.turns ?? []).map((t) => t.axes?.[key]).filter((v) => typeof v === 'number')
+    if (!vals.length) continue
+    const worstAt = (judgement.turns ?? [])
+      .filter((t) => t.axes?.[key] === Math.min(...vals))
+      .map((t) => `#${t.n} ${t.id ?? ''}`)
+      .join(', ')
+    body += `<tr><td><b>${esc(key)}</b><br><span class="dim">${esc(gloss)}</span></td><td>${n2(
+      vals.reduce((a, b) => a + b, 0) / vals.length,
+    )}</td><td>${Math.min(...vals)}</td><td class="dim">${esc(worstAt)}</td></tr>`
+  }
+  body += `</tbody></table></div>`
+}
+
+/* --- cost ----------------------------------------------------------------- */
+
+const tin = turns.reduce((a, t) => a + (t.tokens?.prompt ?? 0), 0)
+const tcache = turns.reduce((a, t) => a + (t.tokens?.cached ?? 0), 0)
+const tout = turns.reduce((a, t) => a + (t.tokens?.output ?? 0), 0)
+const totalMs = turns.reduce((a, t) => a + (t.ms ?? 0), 0)
+
+body += `<h2>What it cost</h2>
+<div class="scroll"><table><thead><tr><th>turns</th><th>prompt</th><th>cached</th><th>output</th><th>mean latency</th><th>total</th></tr></thead>
+<tbody><tr><td>${turns.length}</td><td>${tin.toLocaleString()}</td><td>${
+  tin ? Math.round((100 * tcache) / tin) : 0
+}%</td><td>${tout.toLocaleString()}</td><td>${turns.length ? (totalMs / turns.length / 1000).toFixed(1) : '—'}s</td><td>${inr(
+  totalInr,
+)}</td></tr></tbody></table></div>
+<p class="dim">Rounds are the driver: the stable prefix is paid on every uncached round, so a turn that went
+round twice cost twice. WhatsApp cannot stream, so the seconds above are seconds of silence.</p>`
+
+/* --- the inside of every turn --------------------------------------------- */
+
+body += `<h2>Inside every turn</h2>
+<p>All of them, not a hand-picked few. A report that shows outcomes and hides the inside of the turn cannot
+tell a model that did not know from a model that knew and could not.</p>`
+
+let day = null
+for (const t of turns) {
+  if (t.day !== undefined && t.day !== day) {
+    day = t.day
+    body += `<h3>Day ${day}</h3>`
+  }
+  const s = scoreOf(t)
+  const j = judged.get(t.n)
+  const sql = t.sql ?? []
+  const modelSql = sql.filter((x) => !String(x.note ?? '').startsWith('harness'))
+
+  body += `<details class="turn ${band(s)}" id="t${t.n}"><summary>`
+  if (s !== null) body += `<span class="score">${s}</span>`
+  body += `<b>#${t.n} ${esc(t.id)}</b> <span class="tag">${esc(t.persona)}</span> <span class="tag">${esc(t.who)}</span>`
+  if (j?.finding) body += ` <span class="tag">${esc(j.finding)}</span>`
+  body += `<div class="who">${esc(String(t.say ?? '').slice(0, 150))}</div></summary>`
+
+  if (j?.reason) body += `<blockquote><p><b>Read as:</b> ${esc(j.reason)}</p></blockquote>`
+  if (j?.axes) {
+    body += `<p class="dim">${AXES.filter(([k]) => typeof j.axes[k] === 'number')
+      .map(([k]) => `${k} ${j.axes[k]}`)
+      .join(' · ')}</p>`
+  }
+
+  body += `<h4>What they typed</h4><blockquote><p>${esc(t.say)}</p></blockquote>`
+
+  /* the thinking */
+  const rounds = t.rounds ?? []
+  const thinking = rounds.filter((r) => r.reasoning)
+  if (thinking.length) {
+    body += `<h4>What it was thinking <span class="dim">— ${thinking.length} round${thinking.length === 1 ? '' : 's'}</span></h4>`
+    for (const r of thinking) {
+      body += `<div class="think"><div class="hd">round ${r.round}</div><pre>${capped(r.reasoning)}</pre></div>`
+    }
+  } else if (rounds.length) {
+    body += `<h4>What it was thinking</h4><p class="dim">No reasoning recorded on any round. If the model
+    deliberated, the instrument did not see it — check the run, not the model.</p>`
+  }
+
+  /* the tool calls */
+  const calls = rounds.filter((r) => r.name && !String(r.name).startsWith('('))
+  if (calls.length) {
+    body += `<h4>What it reached for <span class="dim">— ${calls.map((r) => r.name).join(', ')}</span></h4>`
+    for (const r of calls) {
+      body += `<div class="stmt"><div class="hd">round ${r.round} · <code>${esc(r.name)}</code> · ${r.ms}ms${
+        r.error ? ' · <span class="bad">error</span>' : ''
+      }</div><pre>${capped(r.args)}</pre>`
+      if (r.result !== undefined && r.result !== null) body += `<div class="hd">came back</div><pre>${capped(r.result)}</pre>`
+      if (r.error) body += `<div class="err">${esc(r.error)}</div>`
+      body += `</div>`
+    }
+  }
+
+  /* the statements */
+  if (modelSql.length) {
+    body += `<h4>What it sent to Postgres <span class="dim">— ${modelSql.length} statement${
+      modelSql.length === 1 ? '' : 's'
+    }, ${modelSql.filter((x) => x.kind === 'read').length} read, ${modelSql.filter((x) => x.kind !== 'read').length} write${
+      modelSql.filter((x) => x.error).length ? `, ${modelSql.filter((x) => x.error).length} refused` : ''
+    }</span></h4>`
+    for (const x of modelSql) {
+      const head = x.error
+        ? `<span class="bad">refused</span> as <code>${esc(x.role)}</code>`
+        : `<span class="${x.kind === 'read' ? 'read' : 'write'}">${esc(x.kind)}</span> · ${x.rowCount} row${
+            x.rowCount === 1 ? '' : 's'
+          }${x.truncated ? ' <span class="bad">(TRUNCATED at the cap)</span>' : ''}${
+            x.kind !== 'read' && x.rowCount === 0 ? ' <span class="amber">— matched nothing, raised nothing</span>' : ''
+          }`
+      body += `<div class="stmt"><div class="hd">${head}</div><pre>${esc(x.sql)}</pre>`
+      if (x.error) body += `<div class="err">${esc(x.error)}</div>`
+      if (x.rows?.length) body += `<div class="hd">came back</div><pre>${capped(x.rows)}</pre>`
+      body += `</div>`
+    }
+  }
+
+  /* what moved */
+  const moved = worldDiff(t.beforeTap, t.afterTap)
+  body += `<h4>What it did</h4><p>Wrote <b>${t.wrote ?? 0}</b> audited row${
+    (t.wrote ?? 0) === 1 ? '' : 's'
+  } and reached <b>${t.sent ?? 0}</b> ${(t.sent ?? 0) === 1 ? 'phone' : 'phones'}.${
+    moved.length ? ` Moved: ${moved.map((m) => `<code>${esc(m)}</code>`).join(', ')}.` : ''
+  }</p>`
+  if (t.jobs?.length) body += `<p class="dim">Queue: ${esc(t.jobs.join(' · '))}</p>`
+
+  /* what they read */
+  body += `<h4>What the person read</h4><pre>${esc(t.reply ?? '(nothing was sent)')}</pre>`
+  if (t.buttons?.length) body += `<p>${t.buttons.map((b) => `<span class="btn">${esc(b)}</span>`).join(' ')}</p>`
+  if (t.tapped) body += `<p class="dim">The harness tapped <b>${esc(t.tapped)}</b>.</p>`
+  const suppressed = (t.messages ?? []).filter((m) => m.suppressedReason)
+  if (suppressed.length) {
+    body += `<p class="dim">${suppressed.length} message${suppressed.length === 1 ? '' : 's'} stopped before sending: ${esc(
+      [...new Set(suppressed.map((m) => m.suppressedReason))].join(', '),
+    )}</p>`
+  }
+
+  body += `<p class="dim">${((t.ms ?? 0) / 1000).toFixed(1)}s · ${(t.tokens?.prompt ?? 0).toLocaleString()} in / ${(
+    t.tokens?.output ?? 0
+  ).toLocaleString()} out · ${inr(Number(t.inr))}</p>`
+  if (t.error) body += `<div class="err">${esc(t.error)}</div>`
+  body += `</details>`
+}
+
+/** Which counts changed either side of the tap. Only the ones that moved. */
+function worldDiff(before, after) {
+  if (!before || !after) return []
+  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+  const out = []
+  for (const k of keys) {
+    if (String(before[k] ?? '') === String(after[k] ?? '')) continue
+    out.push(`${k} ${before[k] ?? '—'} → ${after[k] ?? '—'}`)
+  }
+  return out
+}
+
+/* --- the world it left ---------------------------------------------------- */
+
+if (rec.world && Object.keys(rec.world).length) {
+  body += `<h2>The world it left behind</h2>
+  <p class="dim">Consequence is the axis every other axis can pass while failing. This is what a judge checks
+  a promise against.</p><div class="scroll"><table><tbody>`
+  for (const [k, v] of Object.entries(rec.world)) {
+    body += `<tr><td>${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`
+  }
+  body += `</tbody></table></div>`
+}
+
+body += `<footer>Rendered from <code>${esc(join(runPath, 'record.json'))}</code>${
+  judgement ? ` and <code>judgement.json</code>` : ''
+}. Everything counted comes from the record; everything argued comes from the judgement. Nothing on this page
+was scored by a program — see <b>JUDGING.md</b>.</footer>`
+
+/* -------------------------------------------------------------------------- *
+ * Standalone by construction: no CDN, no font, no script from anywhere. It is
+ * meant to be opened from disk, and a page that needs a network is a page that
+ * stops working the day somebody reads it on a train.
+ * -------------------------------------------------------------------------- */
+
+const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(title)}</title><style>
+:root {
+  --bg:#fbfaf8; --fg:#1c1a17; --dim:#6b6459; --line:#e2ddd4; --card:#fff;
+  --green:#1a7f4b; --amber:#a86a00; --red:#b3261e; --accent:#2b4c7e;
+  --codebg:#f3f0ea; --quote:#f2eefb; --quoteline:#6b4fa8;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg:#16151a; --fg:#e9e6e1; --dim:#9d968c; --line:#2e2c33; --card:#1e1d23;
+  --green:#4ac585; --amber:#e0a33a; --red:#f0837a; --accent:#8fb2e8;
+  --codebg:#26252b; --quote:#241f31; --quoteline:#b79ce8;
+} }
+:root[data-theme="dark"] {
+  --bg:#16151a; --fg:#e9e6e1; --dim:#9d968c; --line:#2e2c33; --card:#1e1d23;
+  --green:#4ac585; --amber:#e0a33a; --red:#f0837a; --accent:#8fb2e8;
+  --codebg:#26252b; --quote:#241f31; --quoteline:#b79ce8;
+}
+* { box-sizing:border-box; }
+body { background:var(--bg); color:var(--fg); margin:0;
+  font:16px/1.65 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+.wrap { max-width:980px; margin:0 auto; padding:44px 20px 110px; }
+h1 { font-size:2.2rem; margin:0 0 8px; letter-spacing:-0.02em; line-height:1.15; }
+h2 { font-size:1.4rem; margin:56px 0 14px; padding-bottom:7px; border-bottom:1px solid var(--line); }
+h3 { font-size:1.06rem; margin:30px 0 6px; }
+h4 { font-size:.78rem; text-transform:uppercase; letter-spacing:.06em; color:var(--dim);
+  margin:20px 0 4px; font-weight:700; }
+.sub { color:var(--dim); margin:0 0 10px; font-size:1.02rem; }
+.dim { color:var(--dim); }
+.bad { color:var(--red); } .amber { color:var(--amber); }
+.read { color:var(--dim); } .write { color:var(--amber); }
+a { color:var(--accent); }
+blockquote { margin:12px 0; padding:11px 15px; background:var(--quote);
+  border-left:3px solid var(--quoteline); border-radius:0 8px 8px 0; font-style:italic; }
+blockquote p { margin:0; }
+pre { background:var(--codebg); border-radius:8px; padding:11px 13px; overflow-x:auto; margin:8px 0;
+  font:.8rem/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; word-break:break-word; }
+code { font:.86em ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--codebg);
+  padding:1px 5px; border-radius:4px; }
+pre code { background:none; padding:0; }
+.scroll { overflow-x:auto; }
+table { border-collapse:collapse; width:100%; font-size:.92rem; margin:14px 0; }
+th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--dim); font-weight:600; font-size:.78rem; text-transform:uppercase; letter-spacing:.04em; }
+tr.bad td { background:color-mix(in srgb,var(--red) 8%,transparent); }
+tr.mid td { background:color-mix(in srgb,var(--amber) 7%,transparent); }
+.stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:24px 0; }
+.stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:13px 15px; }
+.stat b { display:block; font-size:1.6rem; line-height:1.2; }
+.stat span { color:var(--dim); font-size:.79rem; }
+.lead { border:1px solid var(--line); border-left:5px solid var(--accent); background:var(--card);
+  border-radius:10px; padding:17px 19px; margin:22px 0; }
+.turn { background:var(--card); border:1px solid var(--line); border-radius:11px;
+  padding:15px 18px; margin:14px 0; }
+.turn > summary { cursor:pointer; font-size:.95rem; }
+.turn.good { border-left:5px solid var(--green); }
+.turn.mid  { border-left:5px solid var(--amber); }
+.turn.bad  { border-left:5px solid var(--red); }
+.score { float:right; font-size:1.5rem; font-weight:800; line-height:1; }
+.good .score { color:var(--green); } .mid .score { color:var(--amber); } .bad .score { color:var(--red); }
+.who { color:var(--dim); font-size:.83rem; margin:6px 0 0; }
+.tag { font-size:.72rem; color:var(--dim); border:1px solid var(--line); border-radius:99px;
+  padding:.05em .6em; margin:0 .2em; }
+.btn { display:inline-block; border:1px solid var(--line); border-radius:99px; padding:.1em .8em;
+  font-size:.8rem; color:var(--dim); margin:.15em .1em; }
+.stmt, .think { margin:10px 0; }
+.stmt .hd, .think .hd { font-size:.78rem; color:var(--dim); }
+.err { color:var(--red); font:.78rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+  padding:6px 13px; }
+footer { margin-top:70px; color:var(--dim); font-size:.83rem; border-top:1px solid var(--line); padding-top:15px; }
+</style></head><body><div class="wrap">${body}</div></body></html>`
+
+const out = flag('out') ?? join('.probe', 'reports', `${basename(runPath)}.html`)
+mkdirSync(join('.probe', 'reports'), { recursive: true })
+writeFileSync(out, html)
+
+const size = statSync(out).size
+console.log(`\n  ${out}  ${(size / 1024).toFixed(0)} KB`)
+console.log(`  run:       ${runPath}`)
+console.log(`  judgement: ${judgement ? judgePath : `none yet — write one (JUDGING.md), then re-run this`}\n`)

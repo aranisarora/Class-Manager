@@ -121,11 +121,13 @@ export async function captureSql<T>(
 ): Promise<{ value: T; sql: SqlRecord[] }> {
   const priorSink = sink
   const priorRows = withRows
+  const priorLive = live
   const collected: SqlRecord[] = []
   sink = (r) => {
     collected.push(r)
     priorSink?.(r)
   }
+  live = collected
   withRows = opts.rows ?? false
   try {
     const value = await fn()
@@ -133,5 +135,28 @@ export async function captureSql<T>(
   } finally {
     sink = priorSink
     withRows = priorRows
+    live = priorLive
   }
+}
+
+/** What the innermost open capture has collected so far. Empty when none is open. */
+let live: SqlRecord[] | null = null
+
+/**
+ * Take everything the open capture has collected since the last drain.
+ *
+ * A driver that walks many turns under ONE capture needs to attribute statements
+ * to the turn that produced them, and there is deliberately no timestamp on a
+ * record to do it with (see the type above). Draining at a turn boundary is the
+ * attribution: the array is append-only and in order, so everything since the
+ * last drain belongs to the turn that just finished.
+ *
+ * Nesting a capture per turn would do the same job, but only where the turn is a
+ * single callback. `probe-model` drives a turn in two pieces — the message, then
+ * the thumb on the button, with world reads between them — and wrapping both in
+ * one callback would have meant restructuring the loop to suit the instrument.
+ */
+export function drainSql(): SqlRecord[] {
+  if (!live) return []
+  return live.splice(0, live.length)
 }
