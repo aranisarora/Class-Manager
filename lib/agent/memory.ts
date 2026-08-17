@@ -132,6 +132,43 @@ const WEEKDAY_RE = /\b(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(day)?\b/gi
 const CLOCK_RE = /\b\d{1,2}([:.]\d{2})\s*(am|pm)?\b|\b\d{1,2}\s*(am|pm)\b/i
 const DAY_DATE_RE = /\b\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i
 
+/**
+ * A rule about how the business runs, which has a table of its own now.
+ *
+ * **"The existence of policy" is on the never-trust list, and memory is where it
+ * used to get in.** The model invented a pro-rata refund policy for a prospect,
+ * remembered itself saying it, and the invention acquired the authority of a
+ * fact — indistinguishable, from the next turn on, from something the owner had
+ * stated. The same shape in the driven record: *"Tasks involving 'ensuring a
+ * brief is triggered' are considered complete once the message has been sent"* —
+ * a rule the product wrote about itself, kept as though somebody had decided it.
+ *
+ * 0032 gives the real thing a row: `business_rule`, carrying the owner's own
+ * words, provenance (stated versus merely observed), and whether anything
+ * actually enforces it. An observation is a suggestion there until the owner
+ * blesses it, which is what the two-tap protocol exists for — and that is a
+ * different fact from a preference, which memory keeps happily.
+ *
+ * Deliberately narrow, like the gate above it. Universals about the BUSINESS,
+ * not about a person: "she always asks on a Monday" is a habit and passes;
+ * "we always refund the unused weeks" is a policy and does not.
+ */
+const POLICY_SUBJECT =
+  /\b(?:we|our|the (?:business|academy|club|centre|center|school)|policy|rule)\b/i
+const POLICY_FORCE =
+  /\b(?:always|never|automatically|by default|as a rule|standard practice|every time|whenever|entitled to|must be|are not allowed|do not allow|policy is|refunds?|pro-?rata|waivers? are)\b/i
+
+export function policyShapedFact(fact: string): string | null {
+  const f = String(fact ?? '')
+  if (!POLICY_SUBJECT.test(f) || !POLICY_FORCE.test(f)) return null
+  return (
+    'it reads as a rule about how the business runs, and that is not a memory fact — it is a business_rule ' +
+    'row, with the owner\'s own words and provenance on it. If the owner stated it, put it there as ' +
+    'owner_stated. If you noticed it, it is a suggestion until they bless it, and it must never be stored ' +
+    'as though it were settled. If the only reason it seems true is that you said it, it is not true yet.'
+  )
+}
+
 export function rowShapedFact(fact: string): string | null {
   const f = String(fact ?? '')
   if (/₹\s*\d|\brs\.?\s*\d|\binr\s*\d/i.test(f)) {
@@ -168,7 +205,7 @@ export async function writeFact(
   if (!fact) fail('memory_empty_fact', 'writeFact called with an empty fact')
   // The placement gate holds at the record, not only at the tool — a future
   // caller that skips the tool's own check still cannot poison the store.
-  const rowShaped = rowShapedFact(fact)
+  const rowShaped = rowShapedFact(fact) ?? policyShapedFact(fact)
   if (rowShaped) fail('memory_row_shaped', `not stored: ${rowShaped}`)
   if (f.subjectKind === 'academy' && f.subjectId !== ctx.academyId) {
     fail('memory_wrong_tenant', 'an academy fact must be about the acting academy')
@@ -335,6 +372,11 @@ Rules:
   who pays for whom — the database holds those, and a memory copy goes stale the day
   the row changes. Drop any line that restates one, however confidently it was stored,
   and keep only the half the schema cannot hold.
+- Facts, not policy. A rule about how the business runs — refunds, age limits, what
+  is always or never done — belongs in business_rule with the owner's own words and
+  its provenance on it, not here. Drop any line of that shape, and drop it hardest
+  when it reads as something the product decided about itself: a rule nobody stated,
+  kept as memory, becomes indistinguishable from one the owner set.
 - Keep only facts that change behavior: vocabulary, timing preferences, policies,
   standing constraints, what this person routinely asks for, how they like to be
   contacted. A fact that changes nothing is a diary entry — drop it.

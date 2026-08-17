@@ -851,6 +851,97 @@ async function census(id: Identity): Promise<string | null> {
 }
 
 /**
+ * The states this person is standing in, which the model must never have to
+ * infer.
+ *
+ * **Reconstruction is where the false unsubscribe confirmation came from.** A
+ * woman asked to be left alone, the confirmation went on her screen, she did not
+ * tap it, and the next turn — with nothing anywhere recording the ask — answered
+ * her with a full itemised balance and no reference to the request at all. Worse
+ * happened the other way: a staged opt-out rendered as "done" in a later turn's
+ * context and the model faithfully repeated the lie to the person it was about.
+ * Both are the same defect, which is that a state layer 0 stores was not shown.
+ *
+ * One line each, only when set, so a person with nothing outstanding costs
+ * nothing. Every line says what it LICENSES, because a label is prompt and a
+ * label nobody reviews as prompt is how "uncovered" told an owner four times
+ * that his only coach was unassigned.
+ *
+ * Never a precondition: if this fails the turn continues without it. It runs
+ * under the person's own session like everything else here.
+ */
+async function standing(id: Identity): Promise<string[]> {
+  const ctx: SessionCtx = {
+    role: 'user',
+    academyId: id.academyId,
+    personId: id.person.id,
+    contactId: id.contact.id,
+  }
+  const out: string[] = []
+  try {
+    const [pending, mutes] = await Promise.all([
+      modelQuery(
+        ctx,
+        `select kind, subject, question,
+                to_char(created_at, 'YYYY-MM-DD') as asked_on,
+                (expires_at is not null and expires_at < app.now()) as past_expiry
+           from pending_request
+          where contact_id = '${id.contact.id}'::uuid and resolved_at is null
+          order by created_at desc limit 5`,
+      ),
+      modelQuery(
+        ctx,
+        `select scope, stated, to_char(until, 'YYYY-MM-DD') as until
+           from comm_preference
+          where contact_id = '${id.contact.id}'::uuid and released_at is null
+            and (until is null or until >= (app.now() at time zone '${(id.academy.timezone || 'Asia/Kolkata').replace(/'/g, '')}')::date)
+          order by scope`,
+      ),
+    ])
+
+    // The opt-out, and the half of it that used to evaporate. `opted_out_at` is
+    // a decision; an unanswered stop request is not one, and the difference is
+    // the whole of F-AF — describing the second as the first is the worst
+    // sentence this product has ever sent.
+    if (id.contact.opted_out_at) {
+      out.push(
+        `They have opted out of everything from this business. Nothing reaches them at all — not a reminder, ` +
+          `not a bill, not an answer you compose unprompted. Their own message still gets a reply.`,
+      )
+    }
+
+    if (!pending.error) {
+      for (const r of pending.rows as Record<string, unknown>[]) {
+        const q = String(r.question ?? '').replace(/\s+/g, ' ').slice(0, 160)
+        out.push(
+          `ASKED AND UNANSWERED (${String(r.kind)} · ${String(r.subject)}, put to them on ${String(r.asked_on)}` +
+            `${r.past_expiry ? ', now past its expiry' : ''}): "${q}" — they have NOT answered. That is not a no ` +
+            `and it is not a yes: nothing behind it has happened. Never describe it as done, and do not ask it ` +
+            `a second way — one question on a screen is answered by one tap.`,
+        )
+      }
+    }
+
+    if (!mutes.error) {
+      for (const r of mutes.rows as Record<string, unknown>[]) {
+        const scope = String(r.scope)
+        out.push(
+          scope === 'all'
+            ? `They asked for nothing unprompted at all${r.until ? ` until ${String(r.until)}` : ''}` +
+              `${r.stated ? ` — their words: "${String(r.stated)}"` : ''}. Answers to what they say still reach them.`
+            : `They asked to hear nothing about ${scope}${r.until ? ` until ${String(r.until)}` : ''}` +
+              `${r.stated ? ` — their words: "${String(r.stated)}"` : ''}. The standing jobs read this, so it ` +
+              `actually stops; everything outside that scope still reaches them.`,
+        )
+      }
+    }
+  } catch {
+    return out
+  }
+  return out
+}
+
+/**
  * Layer 4 + the situation. Never cached, and everything time-shaped or
  * tenant-shaped lives here rather than in the prefix.
  */
@@ -867,10 +958,11 @@ export async function variableTail(
   const tz = id.academy.timezone || 'Asia/Kolkata'
   const at = await now(id.academyId)
   const local = inZone(at, tz)
-  const [academyMemory, personMemory, whatExists] = await Promise.all([
+  const [academyMemory, personMemory, whatExists, standingStates] = await Promise.all([
     hotSet('academy', id.academyId, id.academyId),
     hotSet('person', id.person.id, id.academyId),
     census(id),
+    standing(id),
   ])
 
   const out: string[] = []
@@ -898,6 +990,11 @@ export async function variableTail(
       : `Money is NOT visible to this person. Tally lines, payments and balances never route here — do not quote a balance, a rate or a due amount to them.`,
   )
   if (id.person.notes) who.push(`Notes on file: ${id.person.notes}`)
+  // The standing states, last in this block because they outrank everything above
+  // them: what somebody asked for and has not had is the first fact about them.
+  if (standingStates.length) {
+    who.push('', ...standingStates.map((s) => `- ${s}`))
+  }
   out.push(who.join('\n'))
 
   // --- ids, for SQL only -----------------------------------------------------

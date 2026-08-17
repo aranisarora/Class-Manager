@@ -21,7 +21,7 @@ export {
 
 export {
   enqueue, enqueueMany, cancelByPrefix, cancelSessionJobs,
-  liveAgentTasks, dropAgentTask, type JobSpec,
+  liveAgentTasks, dropAgentTask, watchSubjectKey, type JobSpec,
 } from './enqueue'
 
 export { HANDLERS, runDueJobs, type RunReport } from './runner'

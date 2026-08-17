@@ -22,6 +22,18 @@ export type JobSpec = {
   dedupeKey: string
   payload: Record<string, unknown>
   academyId?: string
+  /**
+   * What this job is WATCHING, normalised (0032). A second job with the same
+   * subject supersedes the first instead of sitting beside it.
+   *
+   * `dedupeKey` answers "is this the same job"; it cannot answer "is this the
+   * same thing being watched", because the model mints a fresh slug every time.
+   * F-C is what that costs: seven watches about the same two unmarked registers,
+   * seven near-identical messages to one coach in three minutes — and then the
+   * frequency cap dropping the one message that mattered, a parent's cancellation
+   * reaching nobody.
+   */
+  subjectKey?: string
 }
 
 function toRow(spec: JobSpec) {
@@ -31,8 +43,28 @@ function toRow(spec: JobSpec) {
     kind: spec.kind,
     run_at: spec.runAt.toISOString(),
     dedupe_key: spec.dedupeKey,
+    subject_key: spec.subjectKey ?? null,
     payload: JSON.stringify(payload),
   }
+}
+
+/**
+ * The subject key for a watch: the academy, then the subject as the model stated
+ * it, normalised.
+ *
+ * Normalising a DECLARED key is not the runtime reading prose — it is the same
+ * operation `tally_line.dedupe_key` performs on billing identity, and for the
+ * same reason: a shared literal stops two writers drifting, and only a constraint
+ * stops a third writer nobody has written yet. Lower-cased, punctuation-collapsed
+ * so "Meera's unpaid fee" and "meera unpaid fee" are one subject.
+ */
+export function watchSubjectKey(academyId: string, subject: string): string {
+  const norm = String(subject ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+  return `agent:${academyId}:${norm}`
 }
 
 /**
@@ -75,26 +107,49 @@ export async function enqueue(
   dedupeKey: string,
   payload: Record<string, unknown>,
   academyId?: string,
-): Promise<string> {
+  subjectKey?: string,
+): Promise<{ id: string; superseded: number }> {
   if (!isJobKind(kind)) throw new Error(`unknown job kind: ${kind}`)
   if (!dedupeKey || dedupeKey.trim() === '') throw new Error('every job needs a dedupe_key (§13)')
   if (kind === 'agent_task') await guardAgentTask(payload, academyId)
 
-  const row = toRow({ kind, runAt, dedupeKey, payload, academyId })
+  const row = toRow({ kind, runAt, dedupeKey, payload, academyId, subjectKey })
 
   return withInfra(async (tx) => {
+    /**
+     * A newer watch on the same subject REPLACES the older one.
+     *
+     * Superseded rather than cancelled, because those are different facts and the
+     * next reader of this table should not have to guess which: cancelled is
+     * somebody dropping a watch, superseded is this one being restated. The
+     * partial unique index on (subject_key) where status in ('pending','running')
+     * is what makes the replacement true rather than intended — it refuses the
+     * insert if this update somehow misses.
+     */
+    let superseded = 0
+    if (row.subject_key) {
+      const gone = await tx<{ id: string }[]>`
+        update job set status = 'superseded'
+         where subject_key = ${row.subject_key}
+           and status in ('pending', 'running')
+        returning id
+      `
+      superseded = gone.length
+    }
+
     const inserted = await tx<{ id: string }[]>`
-      insert into job (kind, run_at, dedupe_key, payload)
-      values (${row.kind}, ${row.run_at}::timestamptz, ${row.dedupe_key}, ${row.payload}::text::jsonb)
+      insert into job (kind, run_at, dedupe_key, subject_key, payload)
+      values (${row.kind}, ${row.run_at}::timestamptz, ${row.dedupe_key}, ${row.subject_key},
+              ${row.payload}::text::jsonb)
       on conflict (dedupe_key) do nothing
       returning id
     `
-    if (inserted.length > 0) return inserted[0].id
+    if (inserted.length > 0) return { id: inserted[0].id, superseded }
     const [existing] = await tx<{ id: string }[]>`
       select id from job where dedupe_key = ${row.dedupe_key}
     `
     if (!existing) throw new Error(`enqueue lost a race on ${row.dedupe_key}`)
-    return existing.id
+    return { id: existing.id, superseded }
   })
 }
 

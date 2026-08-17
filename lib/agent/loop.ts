@@ -33,6 +33,7 @@ import type { Identity, Job, Role } from '@/lib/types'
 import { generate, generateJson, type Msg } from './deepseek'
 import { mixInstruction, stablePrefix, synthesisDoctrine, variableTail } from './context'
 import { proseViolations, violationMessage } from './lint'
+import { traceabilityNote } from './traceability'
 import { hotSet } from './memory'
 import { audienceFor, executePlan, type PlanStep } from './plan'
 import { jsonLit, lit, uid, type OperationName } from './operations'
@@ -1022,15 +1023,22 @@ async function modelTurn(
     repliedTo: new Set<string>(),
     confirmationAskedTo: new Set<string>(),
     saidToUser: [],
+    // The R10 evidence set and its shadow findings. Both are recorded and
+    // neither steers anything — see `./traceability`.
+    evidence: [],
+    untraced: [],
   }
 
+  // The tenant's clock, not the world's. This line is the model's entire sense of
+  // "now" — driven with a moved tenant clock, the bare call told a coach "It is
+  // Saturday, 10:52am" on his Wednesday, and every watch the turn scheduled
+  // landed in the past (findings-archive.md F-A). Awaited first now, because
+  // every replayed lookup is stamped against it: an unstamped past is read as the
+  // present, and the model will argue itself out of a correct doubt with it.
+  const at = await now(identity.academyId)
   const [clock, lookups, actions] = await Promise.all([
-    // The tenant's clock, not the world's. This line is the model's entire sense of
-    // "now" — driven with a moved tenant clock, the bare call told a coach
-    // "It is Saturday, 10:52am" on his Wednesday, and every watch the turn
-    // scheduled landed in the past (findings-archive.md F-A).
-    now(identity.academyId).then((at) => inZone(at, identity.academy.timezone)),
-    recentLookups(identity),
+    Promise.resolve(inZone(at, identity.academy.timezone)),
+    recentLookups(identity, at),
     recentActions(identity),
   ])
   const tail = await variableTail(identity, {
@@ -1316,7 +1324,12 @@ async function modelTurn(
             ? { error: String((out.result as any)?.error ?? 'refused').slice(0, 300) }
             : {}),
       })
-      responses.push({ role: 'tool', tool_call_id: call.id, content: toolContent(out.result) })
+      const content = toolContent(out.result)
+      // The evidence half of R10, collected at the one place a tool result is
+      // recorded — so a number in a message either appears in something a tool
+      // actually returned this turn, or the turn did not read it.
+      toolCtx.evidence?.push(content)
+      responses.push({ role: 'tool', tool_call_id: call.id, content })
     }
     messages.push(...responses)
 
@@ -1352,15 +1365,28 @@ async function modelTurn(
      * final round" in the reply declaration used to name a moment the model
      * could not identify while in it, and this is what makes it identifiable.
      */
+    /**
+     * And what the turn has actually DONE, beside where it is.
+     *
+     * This is what replaces six claim regexes and a substitution. The runtime is
+     * the only thing that knows whether anything happened, and for the whole life
+     * of those patterns it knew and did not say — it waited until the model had
+     * written a sentence and then argued with the sentence. F-AM is the shape of
+     * that: one round, zero tool calls, *"I've flagged it to the owner"* about a
+     * child's injury, no message behind it. Zero writes is trivially catchable,
+     * and the catch that works is telling the author before it writes rather than
+     * detecting a verb afterwards.
+     *
+     * A statement, never advice: counts of what happened, and nothing about what
+     * to say. Every round, because the answer changes with every round.
+     */
     if (round < MAX_TOOL_ROUNDS - 1) {
       const used = round + 1
-      messages.push({
-        role: 'user',
-        content:
-          used === MAX_TOOL_ROUNDS - 1
-            ? `[${used} of ${MAX_TOOL_ROUNDS} tool rounds used — the next is your LAST. If the work will not finish in it, spend it on reply: say plainly what ran, what did not, and what you need. Prose beside tool calls reaches nobody.]`
-            : `[${used} of ${MAX_TOOL_ROUNDS} tool rounds used]`,
-      })
+      const where =
+        used === MAX_TOOL_ROUNDS - 1
+          ? `${used} of ${MAX_TOOL_ROUNDS} tool rounds used — the next is your LAST. If the work will not finish in it, spend it on reply: say plainly what ran, what did not, and what you need. Prose beside tool calls reaches nobody.`
+          : `${used} of ${MAX_TOOL_ROUNDS} tool rounds used`
+      messages.push({ role: 'user', content: `[${where}. ${turnState(toolCtx)}]` })
     }
   }
 
@@ -1448,7 +1474,12 @@ async function modelTurn(
               'you are about to do, are going to do, or will now set up — this is the last thing sent, ' +
               'and a promise here is a promise nothing keeps. And anything you say you have done must ' +
               'already be in the results above — this round can describe, it cannot do. State what you ' +
-              'found, or say plainly that you have not done it yet and ask for the one thing you need to.',
+              'found, or say plainly that you have not done it yet and ask for the one thing you need to.\n\n' +
+              // The recovery round is the one that runs when the turn has already
+              // gone wrong, which makes it the round most likely to reach for a
+              // sentence about work that did not happen. It gets the same fact
+              // every other round gets.
+              turnState(toolCtx),
           },
         ],
         model: env.MODEL_MAIN,
@@ -1650,6 +1681,11 @@ async function modelTurn(
       }
     }
 
+    // R10 on this path too: which one a turn takes is the model's choice, and a
+    // recording that depends on that choice records the easy half.
+    const untraced = traceabilityNote(outgoing, toolCtx.evidence ?? [])
+    if (untraced) toolCtx.untraced?.push({ body: outgoing, found: untraced })
+
     const trailing = await composeAndSend(session, {
       toContactId: identity.contact.id,
       body: outgoing,
@@ -1663,6 +1699,23 @@ async function modelTurn(
       toolCtx.saidToUser?.push(outgoing)
     }
     text = outgoing
+  }
+
+  /**
+   * R10's shadow report, on the flight recorder and nowhere else.
+   *
+   * One entry per message that stated a figure or a clock time this turn's own
+   * tools never returned. It refused nothing and changed nothing; it exists so a
+   * drive can be read for whether the gate would be worth turning on, which is
+   * the only evidence this repo accepts for turning anything on.
+   */
+  if (toolCtx.untraced?.length) {
+    trace.push({
+      round: rounds,
+      name: '(R10 shadow: numbers with no read behind them)',
+      ms: 0,
+      args: traceValue(toolCtx.untraced, 4000),
+    })
   }
 
   return {
@@ -1786,7 +1839,30 @@ async function recentToolTurns(identity: Identity): Promise<{ created_at: Date; 
   })
 }
 
-async function recentLookups(identity: Identity): Promise<string | undefined> {
+/**
+ * How old a replayed lookup is, off the tenant's clock, in the words a person
+ * would use.
+ *
+ * **Everything the model is shown is either byte-stable forever or stamped with
+ * when it was true.** These results were not. In a WhatsApp thread "earlier in
+ * this conversation" can be three weeks ago, and a two-day-old zero-row result
+ * presented as current data is how the model reassured an owner that every
+ * register was marked while two were not. The row it read was right when it read
+ * it; nothing said when that was.
+ */
+function ageOf(readAt: Date | string, at: Date): string {
+  const then = readAt instanceof Date ? readAt : new Date(String(readAt))
+  const mins = Math.max(0, Math.round((at.getTime() - then.getTime()) / 60_000))
+  if (!Number.isFinite(mins)) return 'age unknown — treat as stale'
+  if (mins < 2) return 'just now'
+  if (mins < 60) return `${mins} minutes ago`
+  const hours = Math.round(mins / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
+  const days = Math.round(hours / 24)
+  return `${days} day${days === 1 ? '' : 's'} ago`
+}
+
+async function recentLookups(identity: Identity, at: Date): Promise<string | undefined> {
   const BUDGET = 6000
   try {
     const rows = await recentToolTurns(identity)
@@ -1794,6 +1870,7 @@ async function recentLookups(identity: Identity): Promise<string | undefined> {
     const blocks: string[] = []
     let used = 0
     for (const row of rows) {
+      const age = ageOf(row.created_at, at)
       for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
         // A `read` is the only call whose *result* is reference data. A write's
         // result is an outcome, and replaying outcomes as if they were facts is
@@ -1803,7 +1880,7 @@ async function recentLookups(identity: Identity): Promise<string | undefined> {
         if (!query) continue
         const result = typeof call.result === 'string' ? call.result : JSON.stringify(call.result ?? null)
         const block =
-          `- ${query}\n  → ${result.length > 1400 ? `${result.slice(0, 1400)}… (truncated)` : result}` +
+          `- [read ${age}] ${query}\n  → ${result.length > 1400 ? `${result.slice(0, 1400)}… (truncated)` : result}` +
           (call.error ? `\n  ! failed: ${call.error.split('\n')[0]}` : '')
         if (used + block.length > BUDGET) return blocks.length ? blocks.join('\n') : undefined
         blocks.push(block)
@@ -1964,6 +2041,7 @@ Below are the only questions left open — anything not listed here was already 
 "Neither" is the common and correct answer:
 
 1. **Is there a fact worth carrying?** Vocabulary they use, a habit, a preference, something about how this person works. Facts, not transcripts — "prefers voice notes" is a fact, "asked about fees" is a log line. And facts, not rows: a rate, a schedule, a venue, a phone number, who pays for whom, a balance — the database holds those, and a memory copy of a row is a future wrong answer, so if a table holds it, do not write it. One instance is never a policy: store what happened and for whom, never a rule you inferred from it. A fact that changes no future behaviour was not worth storing. Correct an existing fact by superseding it, never by writing a contradiction.
+   **A fact comes from what THEY said or what a row held — never from a sentence you wrote.** You are not shown your own reply below, and that is deliberate: a policy invented mid-conversation, then remembered, acquires the authority of memory and is indistinguishable from one the owner stated. If the only evidence for something is that you said it, there is no evidence. How the business is run belongs in \`business_rule\`, stated by the owner, and an unstated policy is theirs to decide rather than yours to record.
 2. **Did they ask you to look at something later, or is there something you said you would come back to?** "Check if she's paid by Friday", "keep an eye on Saturday", "remind me Thursday", or a promise you made in the reply. That is a \`schedule\` — it runs later as an ordinary turn under this person's own permissions, and deciding to do nothing then is fine. \`expires_at\` is required. Know what already runs without you: standing jobs remind every family before every session, chase every unmarked register, send each coach their day and the owner their brief and digest, bill the month, and chase every unpaid bill (a dunning ladder: a few spaced nudges, then it puts the bill in front of the admin — so "make sure they get a nudge about the bill" is already kept). A promise the standing machinery already keeps is not a schedule call — a watch duplicating one sends somebody the same thing twice.
 
 Do not invent work. Do not schedule a watch nobody asked for and you did not promise. If neither applies, call nothing at all and say nothing — that is the system working.
@@ -1975,9 +2053,25 @@ Their id, for \`subject_id\`: person = ${identity.person.id}, business = ${ident
     messages: [
       {
         role: 'user',
+        /**
+         * The reply stays, and it is labelled for the one question it may answer.
+         *
+         * It is the evidence for a PROMISE — "I'll check back Friday" is a
+         * commitment to a person and the watch is how it is kept, which is F-AO's
+         * whole finding — so removing it would close one hole by opening another.
+         * It is not evidence for a FACT, and that is where the refund invention
+         * came from: the model answered a prospect with a pro-rata rule nobody had
+         * stated, reflection read its own sentence back, and wrote it down.
+         *
+         * The prompt says so, and the write refuses it independently
+         * (`policyShapedFact`) — because a rule about how the business runs has a
+         * home now, with provenance, and it is not this one.
+         */
         content:
           `They said: ${turn.said || '(nothing — a tap)'}\n\n` +
-          `You replied: ${turn.replied || '(nothing)'}\n\n` +
+          `You replied (evidence for question 2 ONLY — a promise here is a promise to keep; ` +
+          `nothing in it is evidence for a fact, because you wrote it): ` +
+          `${turn.replied || '(nothing)'}\n\n` +
           `What you ran this turn: ${did.length ? did.join(', ') : 'nothing'}`,
       },
     ],

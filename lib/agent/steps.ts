@@ -23,6 +23,11 @@ import { z } from 'zod'
 
 import { LIMITS } from '@/lib/messaging/types'
 import { isFlowId } from '@/lib/messaging/flows'
+// Imported from `./kinds` rather than `@/lib/jobs`, whose barrel pulls in the
+// runner and the planner: this module is loaded by the tool declarations, and a
+// wider import edge there is what made the operation registry evaluate empty.
+import { JOB_KINDS, isJobKind } from '@/lib/jobs/kinds'
+import { proseViolations } from './lint'
 import { OPERATIONS } from './operations'
 
 /* ------------------------------------------------------------------------- *
@@ -110,7 +115,27 @@ export const ActionPayloadSchema: z.ZodTypeAny = z.lazy(() =>
 const MessageStepSchema = z.object({
   to_contact_id: z.string().optional(),
   to_person_id: z.string().optional(),
-  body: z.string().min(1),
+  /**
+   * A plan's message reaches a phone exactly like a `reply` does, so it is held
+   * to the same thing — and this is the only moment it can be.
+   *
+   * The outbox flushes AFTER the transaction commits, where a refusal would mean
+   * a committed change nobody was told about; it used to be quietly repaired
+   * there instead, which is the second author one door over. Validating the body
+   * when the plan is validated puts the refusal where a round of grace still
+   * exists, and a plan refused for its prose has written nothing.
+   */
+  body: z
+    .string()
+    .min(1)
+    .superRefine((body, ctx) => {
+      for (const v of proseViolations(body)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `this message cannot go out: ${v.what}${v.sample ? ` ("${v.sample}")` : ''} — ${v.fix}`,
+        })
+      }
+    }),
   header: z.string().optional(),
   footer: z.string().optional(),
   buttons: z
@@ -203,7 +228,27 @@ export const PlanStepSchema: z.ZodTypeAny = z.lazy(() =>
     z.object({ message: MessageStepSchema }),
     z.object({
       schedule: z.object({
-        kind: z.string(),
+        /**
+         * Checked against the handler registry HERE, not when the job runs.
+         *
+         * F-AW: a correct, forward-dated answer minted `[Yes, set it]` carrying a
+         * `schedule` step of kind `"private-rate-1000"` — a job kind that does not
+         * exist. Accepted, stored, shown to the admin, and dead on the tap: *"That
+         * didn't go through — something about it doesn't line up on my side."* The
+         * admin had been told his prices would rise on 1 October. They did not.
+         *
+         * Everything a tap can run is validated when it is minted, because
+         * tap-time has no model present and the payload executes as stored. A
+         * button that fails politely at the tap is a promise already broken.
+         */
+        kind: z
+          .string()
+          .refine(isJobKind, (k) => ({
+            message:
+              `'${String(k)}' is not a job kind. A schedule step runs one of the runtime's own handlers — ` +
+              `${JOB_KINDS.join(', ')} — and a kind invented for the occasion is a button that will fail ` +
+              `on the tap. To watch something yourself, use the schedule tool.`,
+          })),
         run_at: z.string(),
         dedupe_key: z.string().min(1),
         payload: z.record(z.unknown()).default({}),

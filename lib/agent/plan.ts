@@ -170,6 +170,14 @@ export type PlanResult = {
    * a fact rather than parsing one back out of a sentence.
    */
   untold: string[]
+  /**
+   * Steps that ran and matched no rows, each named by what it was trying to do.
+   * A diagnostic that names its subject, or nothing — the count that used to
+   * stand here cost a round of guessing and reached a prospect verbatim.
+   */
+  emptyWrites: string[]
+  /** Messages this plan staged that resolved to nobody at all. */
+  unaddressed: number
   error?: string
 }
 
@@ -444,12 +452,18 @@ type RunState = {
   personalNotes: string[]
   exec: { table: string; op: 'insert' | 'update' | 'delete'; count: number }[]
   /**
-   * Raw `write` steps the MODEL authored that matched no row — see `emptyWrites`
-   * in `buildSummary`. Counted separately from `exec` because `exec` drops
-   * zero-count entries when it becomes a diff, which is how a write that did
-   * nothing became indistinguishable from one that was never written.
+   * Raw `write` steps that matched no row, **each named**. Kept separately from
+   * `exec` because `exec` drops zero-count entries when it becomes a diff, which
+   * is how a write that did nothing became indistinguishable from one that was
+   * never written.
+   *
+   * It was a COUNT, and the count is what made it useless. *"3 steps matched no
+   * rows and change nothing — check that part landed"* cost a round of
+   * deliberation trying to guess which three, and the same string reached a
+   * prospect verbatim. A result either says which, in words the model can act
+   * on, or it says nothing.
    */
-  emptyWrites: number
+  emptyWrites: string[]
   /** Message steps whose recipient resolved to nobody — see `resolveContact`. */
   unaddressed: number
 }
@@ -562,11 +576,36 @@ async function runSteps(
        * `deactivateStrandedPlayers` deliberately — those match nothing routinely
        * and saying so every time would train the reader to skip the line.
        */
-      if (n === 0 && step.requireRows === undefined) state.emptyWrites++
+      if (n === 0 && step.requireRows === undefined) {
+        // Named by what it was trying to do, and by the predicate that matched
+        // nothing — which is the part the author has to look at. The statement is
+        // clipped rather than whole: this reaches the model, and the model wrote it.
+        state.emptyWrites.push(
+          t ? `${t.op} on ${t.table}: ${step.write.replace(/\s+/g, ' ').slice(0, 160)}` : step.write.replace(/\s+/g, ' ').slice(0, 160),
+        )
+      }
       if (step.requireRows !== undefined && n < step.requireRows) {
+        /**
+         * **"The world moved under this plan" is a sentence about a race, and
+         * most of the time this is not one.**
+         *
+         * Driven (F-AX): a parent named her own makeup slot, RLS gives an account
+         * holder no update on `session`, the statement matched nothing, and this
+         * error told the model a concurrent write had beaten it. A model given a
+         * wrong cause diagnoses it perfectly — it re-read the row, found it
+         * unchanged, and called the identical operation again; only the loop's
+         * repeated-failure guard stopped it. Two wasted rounds in front of a
+         * waiting parent, and the customer inherits the misdiagnosis.
+         *
+         * The runtime can tell the two apart and simply was not asked. So this
+         * says only what it knows for certain, and `hintFor` below re-runs the
+         * same writes as the service role in a rolled-back transaction to say
+         * which of the two it was — the diagnosis the raw-SQL path has had all
+         * along.
+         */
         throw new PlanAbort(
           'PRECONDITION_FAILED',
-          `a step needed ${step.requireRows} row(s) and matched ${n} — the world moved under this plan`,
+          `a step needed ${step.requireRows} row(s) and matched ${n}`,
         )
       }
       continue
@@ -858,21 +897,22 @@ function buildSummary(
   let s = note ? `${head} — ${note}.` : `${head}.`
 
   /**
-   * Say when a step matched nothing. R7: "doing nothing succeeds" is the only
-   * root whose failures a reader of the transcript scores as a pass, and this is
-   * the sentence that stops it doing so here. It is deliberately blunt and
-   * deliberately not an abort — the rest of the plan committed, the person needs
-   * to know which part of what they were promised did not happen, and rolling
-   * back a correct closure because a follow-on write missed would be worse.
+   * **The empty-write and unaddressed lines used to be appended here, and they
+   * are plan-builder internals in a sentence that becomes a message body.**
+   *
+   * "3 steps matched no rows and change nothing — check that part landed" reached
+   * an admin verbatim, three times in one drive, over a tap receipt. It is a true
+   * and useful thing to say to the AUTHOR of the plan and a meaningless thing to
+   * say to the person who tapped a button. Both now travel on `PlanResult`
+   * (`emptyWrites`, `unaddressed`), where the model reads them as facts and the
+   * runtime never puts them on a phone.
+   *
+   * R7 — "doing nothing succeeds" is still the root whose failures read as a
+   * pass, and it is still not an abort: the rest of the plan committed, and
+   * rolling back a correct closure because a follow-on write missed would be
+   * worse. It is reported to the layer that can act on it, which is the only
+   * change.
    */
-  if (state.emptyWrites > 0) {
-    s += ` ${state.emptyWrites} step${state.emptyWrites === 1 ? '' : 's'} matched no rows and ${
-      state.emptyWrites === 1 ? 'changed' : 'change'
-    } nothing — check that part landed.`
-  }
-  if (state.unaddressed > 0) {
-    s += ` ${state.unaddressed} message${state.unaddressed === 1 ? '' : 's'} had nobody to go to.`
-  }
 
   /**
    * Told, or merely addressed.
@@ -937,7 +977,7 @@ function previewOf(m: MessageStep): string {
  * ------------------------------------------------------------------------- */
 
 function emptyState(): RunState {
-  return { staged: [], scheduled: [], notes: [], personalNotes: [], exec: [], emptyWrites: 0, unaddressed: 0 }
+  return { staged: [], scheduled: [], notes: [], personalNotes: [], exec: [], emptyWrites: [], unaddressed: 0 }
 }
 
 /**
@@ -1098,6 +1138,8 @@ export async function previewPlan(
       summary: buildSummary(merged, state),
       clashes: inTx.clashes,
       untold: inTx.untold,
+      emptyWrites: state.emptyWrites,
+      unaddressed: state.unaddressed,
     }
   } catch (e) {
     return failed(state, e, opts?.noHints ? null : await hintFor(ctx, e, expanded, state.notes, intent))
@@ -1107,9 +1149,14 @@ export async function previewPlan(
 /**
  * The best sentence available about why this failed.
  *
- * `CHANGED_NOTHING` is the one failure whose cause the error itself cannot name,
- * so it gets the extra round trip; everything else is diagnosable from the
- * Postgres message alone.
+ * **Both silent failures get the round trip now.** `CHANGED_NOTHING` always did:
+ * it is the failure whose cause the error itself cannot name. `PRECONDITION_FAILED`
+ * did not, and it is the same failure wearing a guard's clothes — a `requireRows`
+ * step matching fewer rows than it needed is either a real race or a policy
+ * refusing silently, and the error text used to assert the first (F-AX). One
+ * re-run as the service role, rolled back, answers it for both.
+ *
+ * Everything else is diagnosable from the Postgres message alone.
  */
 async function hintFor(
   ctx: SessionCtx,
@@ -1119,8 +1166,8 @@ async function hintFor(
   notes: string[] = [],
   intent?: string,
 ): Promise<string | null> {
-  if (e instanceof PlanAbort && e.code === 'CHANGED_NOTHING') {
-    const refusal = await refusalHint(ctx, expanded, notes, intent)
+  if (e instanceof PlanAbort && (e.code === 'CHANGED_NOTHING' || e.code === 'PRECONDITION_FAILED')) {
+    const refusal = await refusalHint(ctx, expanded, notes, intent, e.code)
     if (refusal) return refusal
   }
   return repairHint(ctx, e)
@@ -1360,6 +1407,8 @@ export async function executePlan(
       summary: receipt,
       clashes: inTx.clashes,
       untold: inTx.untold,
+      emptyWrites: state.emptyWrites,
+      unaddressed: state.unaddressed,
     }
   } catch (e) {
     return { ...failed(state, e, await hintFor(ctx, e, expanded, state.notes, intent)), auditId, outcomes: [] }
@@ -1379,6 +1428,8 @@ function failed(state: RunState, e: unknown, hint?: string | null): PlanResult {
     // anybody to be told about.
     clashes: [],
     untold: [],
+    emptyWrites: state.emptyWrites,
+    unaddressed: state.unaddressed,
     error: (e instanceof PlanAbort ? `${e.code}: ${message}` : message) + (hint ? ` — ${hint}` : ''),
   }
 }
@@ -1442,7 +1493,12 @@ const UNIQUE_DETAIL_RE = /Key \(([^)]+)\)=\(([^)]*)\) already exists/i
  * diagnosis cannot become the write.
  */
 async function refusalHint(
-  ctx: SessionCtx, expanded: PlanStep[], notes: string[] = [], intent?: string,
+  ctx: SessionCtx,
+  expanded: PlanStep[],
+  notes: string[] = [],
+  intent?: string,
+  /** Which silent failure asked. A race is only possible for the guarded one. */
+  code: 'CHANGED_NOTHING' | 'PRECONDITION_FAILED' = 'CHANGED_NOTHING',
 ): Promise<string | null> {
   if (ctx.role === 'service') return null
   const writes = expanded.filter((s): s is PlanStep & { write: string } => 'write' in s)
@@ -1468,10 +1524,20 @@ async function refusalHint(
             `runs the business.`)
       )
     }
-    return (
-      `the rows genuinely do not exist — the same writes match nothing even with no permissions in the way. ` +
-      `The WHERE is wrong, not the permission. Read the row back and check the id before writing again.`
-    )
+    /**
+     * Nothing matched even as the service role, so permission was never the
+     * question. For a `requireRows` guard that leaves the race the error used to
+     * assert unconditionally — and here it IS the honest reading, because the
+     * guarded statements are the ones written to be raced (first-tap-wins cover,
+     * a payment confirmed twice).
+     */
+    return code === 'PRECONDITION_FAILED'
+      ? `the rows are not there even with no permissions in the way, so this is not a refusal — either the world ` +
+        `moved between reading and writing (somebody else got there first, which is what these guards are for), ` +
+        `or the WHERE names something that does not exist. Read it back before writing again, and if somebody else ` +
+        `got there first, say so rather than retrying.`
+      : `the rows genuinely do not exist — the same writes match nothing even with no permissions in the way. ` +
+        `The WHERE is wrong, not the permission. Read the row back and check the id before writing again.`
   } catch {
     /* a hint is an improvement on the error, never a precondition for reporting it */
     return null

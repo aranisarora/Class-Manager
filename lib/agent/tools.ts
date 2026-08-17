@@ -16,11 +16,12 @@ import { CATALOG, type CatalogId } from '@/lib/messaging/catalog'
 import { FORM_IDS, type FormId } from '@/lib/messaging/flows'
 import { formFor } from '@/lib/messaging/forms'
 import { LIMITS, validateOutbound, type SendOutcome, type SuppressReason } from '@/lib/messaging/types'
-import { AGENT_TASK_CAP, dedupe, enqueue, liveAgentTasks } from '@/lib/jobs'
+import { AGENT_TASK_CAP, dedupe, enqueue, liveAgentTasks, watchSubjectKey } from '@/lib/jobs'
 import { adminContactIds } from '@/lib/identity'
 import type { Identity } from '@/lib/types'
 import { proseViolations, violationMessage } from './lint'
-import { rowShapedFact, writeFact } from './memory'
+import { traceabilityNote } from './traceability'
+import { policyShapedFact, rowShapedFact, writeFact } from './memory'
 import type { ToolDecl } from './deepseek'
 import { audienceFor, executePlan, needsPreview, parseSteps, previewPlan, type PlanStep } from './plan'
 import {
@@ -104,6 +105,16 @@ export type ToolCtx = {
    */
   proseChecked?: boolean
   shapeChecked?: boolean
+  /**
+   * Everything this turn's tools returned, verbatim, in order.
+   *
+   * The evidence half of R10: a number in a message either appears in here or the
+   * turn did not read it. Filled by the loop at the one place a tool result is
+   * recorded, so no future tool can forget to.
+   */
+  evidence?: string[]
+  /** Shadow-mode R10 findings, for the flight recorder. Never blocks anything. */
+  untraced?: { body: string; found: { value: string; kind: string }[] }[]
 }
 
 /* ------------------------------------------------------------------------- *
@@ -854,7 +865,10 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
   {
     name: 'plan',
     description:
-      'Compose a transaction of steps: it runs inside one transaction, the diff of every affected row is captured, and messages are staged, not sent. Two outcomes, decided by the runtime. A plan that touches nobody else, no money and nothing destructive has ALREADY RUN when this returns — say what you did, past tense. Anything bigger — money or the business\'s own settings, a message to anyone else, a delete, changing more than one existing row, a destructive operation — comes back as a preview with a handle: NOTHING has run, and no call of yours can run it. Put the read-back on a reply whose button carries the plan ({kind:\'steps\',steps,summary} or {kind:\'operation\',op:\'commit\',args:{handle}}) — the person\'s tap is the commit.',
+      'Compose a transaction of steps: it runs inside one transaction, the diff of every affected row is captured, and messages are staged, not sent. Two outcomes, decided by the runtime. A plan that touches nobody else, no money and nothing destructive has ALREADY RUN when this returns — say what you did, past tense. Anything bigger — money or the business\'s own settings, a message to anyone else, a delete, changing more than one existing row, a destructive operation, or a change that puts one coach in two places — comes back as a preview with a handle: NOTHING has run, and no call of yours can run it. Put the read-back on a reply whose button carries the plan ({kind:\'steps\',steps,summary} or {kind:\'operation\',op:\'commit\',args:{handle}}) — the person\'s tap is the commit. ' +
+      // What the result carries that the model would otherwise have to infer, or
+      // parse back out of a sentence. Each of these was a driven failure.
+      'The result tells you three things nothing else can: which of your statements MATCHED NO ROWS (named, so you never have to guess which part did not land), whether anyone was put in TWO PLACES at once, and who this changed something for while the plan tells them NOTHING — that last one is yours to answer, by composing what each of them needs to hear or by being able to say why silence is right.',
     parametersJsonSchema: {
       type: 'object',
       properties: {
@@ -881,8 +895,17 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
     name: 'reply',
     description:
       'Send a message now, to this person or to someone else, with buttons, a list, or a form. Every button carries an action minted here and replayed verbatim on tap. Offer the natural next step as a button. NEVER write a web address into the body — there is no browser in this product. ' +
-      'And know your channel: prose you write in a round that calls tools reaches NOBODY — it is your notebook, not a message. What a person sees is what you pass here (or, on an interactive turn only, the closing text of your final round — which ships WITHOUT your options: the runtime attaches only a generic menu to it). ' +
-      'So a choice you have worked out is not offered until each option is a button on a reply — options written into the body as prose or bullets cannot be tapped. An option that has no operation behind it is still a button: {kind:\'reply\', text:"…"} just types those words back as their message, is always legal, and needs no arguments you do not have.',
+      'And know your channel: prose you write in a round that calls tools reaches NOBODY — it is your notebook, not a message. What a person sees is what you pass here, or the closing text of your final round on an interactive turn — and that trailing text ships with NO buttons at all, because nothing is attached to it for you. ' +
+      'So a choice you have worked out is not offered until each option is a button on a reply — options written into the body as prose or bullets cannot be tapped, and a line of [Bracketed labels] is refused rather than harvested. An option that has no operation behind it is still a button: {kind:\'reply\', text:"…"} just types those words back as their message, is always legal, and needs no arguments you do not have. ' +
+      // The three restrictions the audit found the model was never told, each of
+      // which it previously learned only by being refused, once per flow, forever
+      // — history is rebuilt from message text, so the lesson cannot persist.
+      'ONE MESSAGE PER PERSON PER TURN: a second call to the same recipient is refused, whatever it says. Whatever you learn after sending waits for their next message or rides a button on the one already in front of them. ' +
+      'BUTTONS OR A LIST, NEVER BOTH, and a form carries neither. ' +
+      // What is sent is what is written. This is new, and it is the fact the model
+      // most needs when reasoning about its own previous message.
+      'What you write here is what they read, byte for byte — nothing downstream trims, rewrites or decorates it. The two exceptions are stated where they apply: markdown becomes WhatsApp markup, and out of window the whole body is replaced by an approved template (the result tells you when that happened). ' +
+      'A body carrying a uuid, an ISO timestamp, a table or column name, a section reference or a web address is refused with the offending text named, once, while you can still fix it.',
     parametersJsonSchema: {
       type: 'object',
       properties: {
@@ -948,19 +971,37 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
     parametersJsonSchema: {
       type: 'object',
       properties: {
+        subject: {
+          type: 'string',
+          description:
+            'WHAT is being watched, as a short stable noun phrase — "meera august fee", "arjun monday register", ' +
+            '"kabir trial follow-up". Not what you will do about it. A second watch on the same subject REPLACES ' +
+            'the first, so restating one you already have is safe and duplicating one is impossible: this is the ' +
+            'field that stops the same thing being watched five ways under five names.',
+        },
         slug: { type: 'string', description: 'Short stable id for this watch, e.g. "meera-fee-followup".' },
         instruction: { type: 'string', description: 'What to check, what would make it worth saying something, and what to do about it. Include what silence means.' },
         run_at: { type: 'string', description: 'ISO timestamp. When the answer will actually exist — after the deadline, not before it.' },
         expires_at: { type: 'string', description: 'ISO timestamp. When this stops being worth doing. Required.' },
-        context_query: { type: 'string', description: 'A SELECT whose result gives the task its data.' },
+        context_query: {
+          type: 'string',
+          description:
+            'A SELECT whose result gives the task its data. Checked against the real schema when you mint it, ' +
+            'not on the day it fires — so a table that does not exist is a refusal now rather than a watch that ' +
+            'runs blind weeks from now.',
+        },
       },
-      required: ['slug', 'instruction', 'run_at', 'expires_at'],
+      required: ['subject', 'slug', 'instruction', 'run_at', 'expires_at'],
     },
   },
   {
     name: 'remember',
     description:
-      "Write down a fact worth carrying: vocabulary, a habit, a preference, a stated boundary. Facts, not transcripts — short, about a person or the business, true beyond today. And facts, not rows: a rate, a schedule, a venue, a phone number, who pays for whom, a balance — the tables hold those, and a memory copy is a future wrong answer waiting for the row to change, so if a table holds it, do not write it. One instance is never a policy: store what happened and for whom, not a rule you inferred from it. A fact that changes no behaviour was not worth storing, so be able to name what it changes. The obvious ones are the valuable ones: the word they use for a class, the day they always ask about money, that this parent never taps a button, that this coach wants three hours' notice. Corrections never edit — pass `supersedes` and keep both, so \"why does it think that?\" stays answerable.",
+      "Write down a fact worth carrying: vocabulary, a habit, a preference, a stated boundary. Facts, not transcripts — short, about a person or the business, true beyond today. And facts, not rows: a rate, a schedule, a venue, a phone number, who pays for whom, a balance — the tables hold those, and a memory copy is a future wrong answer waiting for the row to change, so if a table holds it, do not write it. One instance is never a policy: store what happened and for whom, not a rule you inferred from it. " +
+      // The home a policy actually has, named where the wrong home is being
+      // reached for. Refused at the write as well, so this is not the only guard.
+      "**A rule about how the business runs is not a memory fact — it is a `business_rule` row**, carrying the owner's own words and its provenance: owner_stated outranks everything and only they retire it, while something you merely noticed is a suggestion until they bless it. And nothing you said yourself is evidence for either: a policy invented in a reply and then remembered acquires the authority of one the owner stated, which is exactly how a refund rule nobody had ever set became this business's policy. " +
+      "A fact that changes no behaviour was not worth storing, so be able to name what it changes. The obvious ones are the valuable ones: the word they use for a class, the day they always ask about money, that this parent never taps a button, that this coach wants three hours' notice. Corrections never edit — pass `supersedes` and keep both, so \"why does it think that?\" stays answerable.",
     parametersJsonSchema: {
       type: 'object',
       properties: {
@@ -1171,6 +1212,25 @@ function compactDiff(r: Awaited<ReturnType<typeof previewPlan>>, executed = true
             'to say why silence is right for them.',
         }
       : {}),
+    /**
+     * The steps that ran and matched nothing, NAMED.
+     *
+     * This used to be a count inside the summary sentence, which meant two
+     * failures at once: the model spent a round guessing which of its steps was
+     * meant, and the sentence itself reached a prospect's phone as part of a
+     * receipt. A diagnostic either says which, in words the author can act on, or
+     * it says nothing — and it never travels in a message body.
+     */
+    ...(r.emptyWrites.length
+      ? {
+          matched_no_rows: r.emptyWrites,
+          matched_no_rows_note:
+            'Those statements ran and changed nothing. The rest of the plan committed. Read the WHERE ' +
+            'on each — either it names something that is not there, or this person may not change it — ' +
+            'and do not describe that part as done.',
+        }
+      : {}),
+    ...(r.unaddressed ? { messages_with_no_recipient: r.unaddressed } : {}),
     // One diff, two truths. An EXECUTED diff is what is now in the rows; a
     // STAGED one is what a tap WOULD write — and carrying the executed
     // coaching on both taught a staged "rows: 2" to read as a receipt: the
@@ -1814,6 +1874,14 @@ export async function runTool(
         }
       }
 
+      /**
+       * R10, recorded and not enforced. See `./traceability` for why it is a
+       * comparison against this turn's own evidence rather than a verb list, and
+       * why DRIVING.md's spec says do not ship it live.
+       */
+      const untraced = traceabilityNote(body, ctx.evidence ?? [])
+      if (untraced) ctx.untraced?.push({ body, found: untraced })
+
       const outcome = await composeAndSend(ctx.session, {
         toContactId: to,
         body,
@@ -1912,39 +1980,120 @@ export async function runTool(
         }
       }
 
+      /**
+       * The SUBJECT, declared, because a slug is not one.
+       *
+       * F-C: seven watches about the same two unmarked registers, minted across a
+       * few turns under seven different slugs — `follow-up-mon-register`,
+       * `remind-unmarked-registers-aug-17-19`, `arjun-register-nudge-monday` — and
+       * every one of them a distinct dedupe key, so nothing anywhere could see
+       * they were one thing. They fired together and sent a coach seven
+       * near-identical messages in three minutes, one of them referring to him in
+       * the third person; then the frequency cap spent his budget and the message
+       * that actually mattered, a parent's cancellation, was the one dropped.
+       *
+       * The runtime cannot derive the subject from the instruction without
+       * reading prose, which is the thing it may not do. So the model states it,
+       * the runtime normalises it, and a partial unique index makes a second watch
+       * on the same subject supersede rather than accumulate.
+       */
+      const subject = String(args?.subject ?? '').trim()
+      if (!subject) {
+        return {
+          result: {
+            error: 'subject is required — what is being watched, as a short stable noun phrase',
+            hint:
+              'Not what you will do about it: what it is ABOUT. "meera august fee", "arjun monday register", ' +
+              '"kabir trial follow-up". A second watch on the same subject replaces the first, which is what ' +
+              'stops one thing being watched five ways.',
+          },
+        }
+      }
+
+      /**
+       * A `context_query` written from imagination (F-AP).
+       *
+       * Both watches minted in one drive carried SQL against tables that do not
+       * exist — `from register where family_id = 'meera'`, `from devs d left join
+       * owner_decisions` — and neither would fail until its fire day, weeks later,
+       * when the task runs blind on its instruction alone and nobody is watching.
+       * Validated here, at mint, while the model can still fix it: parsed and
+       * planned, never executed, so it costs one round trip and touches nothing.
+       */
+      const contextQuery = args?.context_query ? String(args.context_query) : null
+      if (contextQuery) {
+        try {
+          assertSingleReadStatement(contextQuery)
+        } catch (e) {
+          return {
+            result: {
+              error: `context_query is not a single SELECT: ${e instanceof Error ? e.message : String(e)}`,
+            },
+          }
+        }
+        const planned = await withSession(ctx.session, async (tx) => {
+          await tx.unsafe(`explain ${contextQuery}`)
+          return true
+        }).catch((e: unknown) => (e instanceof Error ? e.message : String(e)))
+        if (planned !== true) {
+          return {
+            result: {
+              error: `context_query will not run: ${String(planned)}`,
+              hint:
+                'It is checked now rather than on the day it fires, because a watch that errors weeks from ' +
+                'now runs blind on its instruction and nobody finds out. Read the schema, fix the query, and ' +
+                'mint it again — or drop context_query and let the task read what it needs when it runs.',
+            },
+          }
+        }
+      }
+
       const slug = String(args?.slug ?? newId())
         .replace(/[^a-z0-9_-]/gi, '-')
         .slice(0, 60)
-      const dedupeKey = dedupe.agentTask(ctx.session.academyId, slug)
+      const dedupeKey = dedupe.agentTask(ctx.session.academyId, `${slug}-${newId().slice(0, 8)}`)
+      const subjectKey = watchSubjectKey(ctx.session.academyId, subject)
       try {
-        const jobId = await enqueue(
+        const minted = await enqueue(
           'agent_task',
           runAt,
           dedupeKey,
           {
             academy_id: ctx.session.academyId,
             slug,
+            subject,
             instruction: String(args?.instruction ?? ''),
-            context: args?.context_query ? String(args.context_query) : null,
+            context: contextQuery,
             minted_by: ctx.turnId,
             minted_by_contact_id: ctx.identity.contact.id,
             minted_roles: ctx.identity.roles,
             expires_at: expires.toISOString(),
           },
           ctx.session.academyId,
+          subjectKey,
         )
         // "I'll check back on Friday" is a promise a scheduled watch keeps.
         ctx.worked = true
         return {
           result: {
             ok: true,
-            job_id: jobId,
+            job_id: minted.id,
             slug,
-            dedupe_key: dedupeKey,
+            subject,
             run_at: runAt.toISOString(),
             expires_at: expires.toISOString(),
+            // Said, because it changes what is true: the older watch is not
+            // running any more, and a message promising both would be wrong.
+            ...(minted.superseded
+              ? {
+                  superseded: minted.superseded,
+                  superseded_note:
+                    'You were already watching this subject. That watch has been replaced by this one — there ' +
+                    'is one, not two, and this is the one that will fire.',
+                }
+              : {}),
           },
-          note: `watching: ${String(args?.instruction ?? '').slice(0, 80)}`,
+          note: `watching: ${subject}`,
         }
       } catch (e) {
         return { result: { error: e instanceof Error ? e.message : String(e) } }
@@ -1977,7 +2126,7 @@ export async function runTool(
       // The placement gate (§5, F-D), answered in-round so the caller can keep
       // the preference and drop the figure — a refusal after the turn is a
       // refusal nobody hears.
-      const rowShaped = rowShapedFact(String(args?.fact ?? ''))
+      const rowShaped = rowShapedFact(String(args?.fact ?? '')) ?? policyShapedFact(String(args?.fact ?? ''))
       if (rowShaped) {
         return {
           result: {
