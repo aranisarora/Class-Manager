@@ -60,7 +60,7 @@
  * opinion about what four writes mean, frozen into the record where the next
  * reader cannot argue with it.
  */
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 type SqlRecord = import('@/lib/agent/sql-trace').SqlRecord
@@ -164,6 +164,17 @@ export type Run = {
   /** End-of-day or end-of-run counts, for judging consequence. */
   world?: Record<string, unknown>
   days?: unknown[]
+  /**
+   * Evidence a driver collects that is not a turn and not the world.
+   *
+   * `scripts/live.ts` puts three things here and each is text or a number, never
+   * a verdict: the persona briefs (so a reader can see what the person was
+   * *trying* to do before judging whether they got it), every seat command the
+   * personas ran (so the blindfold is auditable rather than promised), and what
+   * they said about the experience in their own words. A driver with nothing
+   * extra to say leaves it absent.
+   */
+  extra?: Record<string, unknown>
 }
 
 type Sql = <T = any>(sql: string) => Promise<T[]>
@@ -242,6 +253,32 @@ export async function openRun(opts: OpenOpts) {
     turns: [],
   }
 
+  return attach(dir, run, opts)
+}
+
+/**
+ * Re-open a run that a previous PROCESS started, and keep appending to it.
+ *
+ * `openRun` assumes one long-lived driver holding the record in memory, which is
+ * every instrument here except one. `scripts/live.ts` is driven from outside — a
+ * persona reads the reply, thinks, and comes back with the next sentence minutes
+ * later — so each turn is its own process and the record has to survive between
+ * them. Reading `record.json` back and appending is what makes that a single run
+ * rather than forty unrelated ones, and it is why `n` keeps counting: a judgement
+ * refers to turn 23, and turn 23 must mean the same thing tomorrow.
+ *
+ * The file on disk stays the authority. Nothing is held across invocations that
+ * is not written down, so a crash between turns costs the turn and not the week.
+ */
+export async function reopenRun(dir: string, opts: Omit<OpenOpts, 'suite' | 'model'>) {
+  const run = JSON.parse(await readFile(join(dir, 'record.json'), 'utf8')) as Run
+  if (!Array.isArray(run.turns)) run.turns = []
+  if (opts.academyId) run.academyId = opts.academyId
+  if (opts.note) run.note = opts.note
+  return attach(dir, run, { ...opts, suite: run.suite, model: run.model })
+}
+
+async function attach(dir: string, run: Run, opts: OpenOpts) {
   const flush = async (): Promise<void> => {
     await writeFile(join(dir, 'record.json'), JSON.stringify(run, null, 2))
   }
@@ -365,9 +402,12 @@ export async function openRun(opts: OpenOpts) {
   }
 
   /** Close the run, folding in whatever end-state the driver collected. */
-  async function close(tail: { world?: Record<string, unknown>; days?: unknown[] } = {}) {
+  async function close(
+    tail: { world?: Record<string, unknown>; days?: unknown[]; extra?: Record<string, unknown> } = {},
+  ) {
     if (tail.world) run.world = tail.world
     if (tail.days) run.days = tail.days
+    if (tail.extra) run.extra = { ...(run.extra ?? {}), ...tail.extra }
     await flush()
     return { dir, run }
   }

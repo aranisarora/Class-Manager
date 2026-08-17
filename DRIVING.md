@@ -118,3 +118,90 @@ without them everything fails in ways that look like model errors — every case
 `ERROR`, zero tools, an empty reply.
 
 ---
+
+## Driving it live, from a seat
+
+Everything above posts sentences somebody wrote in advance. `drive-week` scripts
+twenty-eight of them and posts them in order, and whatever the product replies, the next
+sentence is the same one. That cannot represent the three commonest things a real person
+does: **ask again because the first answer did not answer it**, **act on a misreading**,
+and **go quiet and leave**. All three are outcomes, and the last one is the one the
+business cares about.
+
+`scripts/live.ts` has no sentences in it. It is a **seat**: a way to say something as a
+particular person and see exactly — and only — what their phone would show. Somebody else
+sits in it, reads the reply, and decides what to type next.
+
+```bash
+npx tsx scripts/live.ts open --days 7            # build the academy, start the record
+npx tsx scripts/live.ts window --day 3 --window evening   # move the clock, run standing jobs
+npx tsx scripts/live.ts endday                   # close the day, run the overnight jobs
+npx tsx scripts/live.ts close                    # fold in the world, notes and diaries
+```
+
+Between `window` and `endday`, drive each seat the schedule calls for. A seat reads
+[`scripts/SEAT.md`](./scripts/SEAT.md) and may run **only** these:
+
+```bash
+npx tsx scripts/live.ts brief  <who>             # who you are, what you want, your phone
+npx tsx scripts/live.ts say    <who> "…"
+npx tsx scripts/live.ts tap    <who> "<the words on the button>"
+npx tsx scripts/live.ts inbox  <who>             # anything that arrived on its own
+npx tsx scripts/live.ts note   <who> --kind unclear --text "…"
+npx tsx scripts/live.ts diary  <who> --text "…"  # the only continuity a seat has
+```
+
+**The blindfold is the instrument.** A reading like *"I could not tell whether that meant
+she was charged"* is worth nothing if the reader could have checked the rows. So the seat
+commands print message bodies, buttons and list rows and **nothing else** — no SQL, no
+reasoning, no tokens, no rupees, no row counts, not even whether the turn errored. A turn
+that crashed reads, from the seat, as silence, which is what it is from the seat. Every
+seat command is appended to `seat.jsonl` with what it showed, so the blindfold is
+auditable after the run rather than promised in a comment.
+
+**The four seats are in `scripts/_personas.ts`, and they hold goals rather than lines** —
+who somebody is, what they want by Sunday, what would make them leave, and what happens in
+their life each day. They also hold a **typing contract**, which is the half of the input
+distribution this repo had never driven: typos left unfixed, half-messages finished in the
+next one, autocorrect damage, duplicate sends, voice-note run-ons, Hinglish, ambiguous
+pronouns, one-word replies, the occasional bare `?`. Roughly half of all messages should
+carry one. The four garble *differently* — a single shared noise model produces four people
+who garble identically, which is its own kind of clean. Judge whether the product
+**recovered** the meaning or **invented** one; those are different failures.
+
+Windows are balanced six per seat and **asserted before the run starts** — a week claiming
+equal coverage while running eleven owner windows and two client ones reports the owner's
+experience as though it were the product's.
+
+**Turns are serialised under a lock**, and seats are not. `_capture.ts` attributes evidence
+by a domain-time cursor, so two turns running at once each collect the other's messages,
+jobs and audit rows. Seats still run concurrently; they queue at the moment of speaking.
+
+The world is `scripts/_world.ts`: a settled academy where **the owner also coaches** (an
+`academy_admin` row and a `coach` row over one `person`), four families, one of them with
+two children on two classes, last month closed and this month open. It writes only the
+CLOSED month — anything the product bills for itself, it bills, and a fixture that wrote
+the current period too doubled every August bill.
+
+### Reading a live run back
+
+```bash
+node scripts/judge-slice.mjs --list              # index: every turn, one line each
+node scripts/judge-slice.mjs --turn 38           # ONE turn, opened all the way up
+node scripts/judge-slice.mjs --persona client    # every turn in one seat
+node scripts/judge-slice.mjs --notes             # what the people said, and their diaries
+node scripts/judge-slice.mjs --days              # what the standing jobs sent, unprompted
+node scripts/judge-slice.mjs --to "Divya Rao"    # everything that reached one phone, in order
+```
+
+`--turn` prints in the order [`JUDGING.md`](./JUDGING.md) says to read: what they typed,
+what it was thinking, what it queried and what came back, what it wrote, what moved in the
+world, and — last — what the person read. `npm run report` still renders the whole run as
+one page; this is for producing a judgement rather than reading one.
+
+The first live week is `.probe/runs/2026-08-17-18-07-live` — 82 conversational turns over
+seven days, judged by five readers into `judgement.json`, written up in
+`.probe/reports/2026-08-18-live-week-analysis.html`, with the findings staged in
+[`findings-live-week.md`](./findings-live-week.md).
+
+---
