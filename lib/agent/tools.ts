@@ -15,12 +15,11 @@ import { composeAndSend } from '@/lib/messaging/compose'
 import { CATALOG, type CatalogId } from '@/lib/messaging/catalog'
 import { FORM_IDS, type FormId } from '@/lib/messaging/flows'
 import { formFor } from '@/lib/messaging/forms'
-import { EXTRA_LIMITS, LIMITS, type SendOutcome, type SuppressReason } from '@/lib/messaging/types'
-import { extractBracketButtons, fitTitle, pointsAtAffordance } from '@/lib/messaging/repair'
+import { LIMITS, validateOutbound, type SendOutcome, type SuppressReason } from '@/lib/messaging/types'
 import { AGENT_TASK_CAP, dedupe, enqueue, liveAgentTasks } from '@/lib/jobs'
 import { adminContactIds } from '@/lib/identity'
 import type { Identity } from '@/lib/types'
-import { lint } from './lint'
+import { proseViolations, violationMessage } from './lint'
 import { rowShapedFact, writeFact } from './memory'
 import type { ToolDecl } from './deepseek'
 import { audienceFor, executePlan, needsPreview, parseSteps, previewPlan, type PlanStep } from './plan'
@@ -96,186 +95,57 @@ export type ToolCtx = {
    * while `commit` was refusing the plan and the column was still null).
    */
   committed?: boolean
-  /** The promise check fires once per turn, so a second attempt is never silenced. */
-  promiseChecked?: boolean
   /**
-   * The affordance guard's own budget, separate from `promiseChecked`.
-   *
-   * They shared one flag, and the two never fire on the same defect: a turn refused
-   * once for claiming an action had already spent the budget, so the FIRST time its
-   * next message pointed at a button that did not exist, that check was skipped
-   * entirely and the message went out. One round of grace each, not one between them.
+   * One round of grace for machinery in the prose, and one for a shape the wire
+   * will not take. Separate budgets, because they never fire on the same defect
+   * and sharing one meant a turn already refused for the first spent the second's
+   * grace as well — so the FIRST time its next message broke a cap, the check was
+   * skipped entirely and the message went out.
    */
-  affordanceChecked?: boolean
+  proseChecked?: boolean
+  shapeChecked?: boolean
 }
 
 /* ------------------------------------------------------------------------- *
  * "I've added those families" — and nothing had run.
  *
- * FINDINGS' second open item, and the most dangerous failure in the product because
- * it reads as success: a reply claiming a completed action, with no write behind it.
- * A person cannot tell it apart from the truth. Watched twice in one round of driving;
- * the onboarding module says an onboarding turn ending in a description has achieved
- * nothing, but that was a prompt rule with no runtime backstop, and prompt rules hold
- * most of the time, which for this one is the same as not holding.
+ * The most dangerous failure in the product, because it reads as success: a reply
+ * claiming a completed action with no write behind it. A person cannot tell it
+ * apart from the truth.
  *
- * It is not a string operation on the message — "I'll send the invite" is a lie or a
- * promise depending on something outside the sentence. But it IS a property of the
- * *turn*: did anything happen. The runtime knows that exactly, so the check belongs
- * where the two facts meet, which is the moment the message is about to be sent.
+ * **This used to be six regexes and a substitution, and both halves are gone.**
+ * The verb lists — `DONE_VERBS`, `CLAIMED_DONE`, `CLAIMED_DONE_BARE`,
+ * `CLAIMED_DONE_OPENER`, `PROMISED_IMMINENT`, `PROMISED_BARE`, and a
+ * `CLAIM_TABLES` map of eighteen verbs to the tables that would make each one
+ * true — were the product's own best attempt at asking "is this sentence a
+ * receipt?", and the record of what they cost is exactly ARCHITECTURE.md's
+ * pattern-that-judges-prose trap:
  *
- * Narrow on purpose, and it fires at most once: a second attempt always goes out.
- * Silencing someone is worse than telling them something slightly wrong, and this
- * guard exists to buy the model one round to make the sentence true — not to argue.
+ *   `PROMISED_IMMINENT` matched "try" and missed **"retry"** — the single most
+ *   likely verb in a recovery draft, and the verb in both notes-to-self that
+ *   reached a person in the adversarial drive.
+ *
+ *   The whole guard was gated on a pending plan, so the turn with nothing true to
+ *   claim was the turn with no guard at all, and a false "I've flagged it to the
+ *   owner" about a child's injury shipped through the hole (F-AJ, F-AM).
+ *
+ *   And when it did fire it SUBSTITUTED — replacing the model's message with the
+ *   runtime's read-back, which is the second author this architecture exists to
+ *   remove: the person read one thing, the model believed it had sent another,
+ *   and the next turn was composed against the draft.
+ *
+ * **What replaces it is state, told rather than detected.** F-AM's turn had zero
+ * writes, which is trivially catchable — not by reading its sentence, but by
+ * telling the model what the turn has actually done before it writes one, on
+ * every round, as a fact. `turnState` below is that fact. The model repairs
+ * everything it is told about honestly and mis-narrates everything it is not; it
+ * was never the weak component here, and the runtime knowing something and
+ * keeping it to itself is the failure this replaces.
+ *
+ * The traceability half — every stated fact tracing to a read or a write this
+ * turn — runs in SHADOW MODE in `./traceability`, recorded and never blocking,
+ * exactly as DRIVING.md specified it.
  * ------------------------------------------------------------------------- */
-
-/**
- * The verbs that mean a write happened. Shared by both shapes below.
- *
- * The routing verbs — flagged, escalated, raised, notified, informed — are the
- * F-K addition (findings-archive.md): *"I've flagged it to the owner"* shipped
- * with `claimedDone: false` because every verb here was a doing-verb and none
- * was a telling-verb, so the checker read the sentence as claiming nothing.
- * "told" stays out deliberately: "I've told you the price" is ordinary
- * conversation about a previous turn, and a false positive here costs a real
- * sentence a re-compose.
- */
-const DONE_VERBS =
-  'added|created|set|made|booked|cancelled|canceled|moved|sent|recorded|requested|updated|removed|deleted|changed|waived|scheduled|assigned|enrolled|marked|drafted|flagged|escalated|raised|notified|informed'
-
-const CLAIMED_DONE = new RegExp(
-  [
-    `\\b(?:i(?:'ve| have)\\s+(?:just\\s+|now\\s+)?(?:${DONE_VERBS}))\\b`,
-    `\\b(?:that'?s (?:done|set up|sorted|added|created)|all (?:done|set up|sorted))\\b`,
-  ].join('|'),
-  'i',
-)
-
-/**
- * "Done — both of Aarav's classes end 30 Sep" — a bare capitalised "Done"
- * opening a line or sentence is the receipt shape this model actually writes,
- * and it matched neither pattern above (month drive: shipped over two rows
- * still NULL, from a staged plan). Case-sensitive and anchored, like
- * CLAIMED_DONE_OPENER, so mid-sentence "when you're done" stays English.
- */
-const CLAIMED_DONE_BARE = /(?:^|[.!\n]\s*)Done\b/
-
-/**
- * The bare past tense, opening a line.
- *
- * "I've marked" was caught and *"Requested ₹1,200 from Meena Krishnan"* was not, and
- * the second is how this model actually writes a receipt. Driven twice in one session:
- * *"Sent the request to Meena Krishnan for ₹1,200.00"* and *"Requested ₹1,200 from
- * Meena Krishnan for Aditya's August fees"* — both about money, both with the plan
- * still sitting unconfirmed behind a `[Do it]` button, and neither matched.
- *
- * CASE-SENSITIVE, and anchored to the start of a line. Mid-sentence these words are
- * ordinary English — "the class you added", "sessions cancelled in time are credited"
- * — and this predicate can now substitute a message rather than merely ask for a
- * rewrite, so a false positive costs somebody a real sentence. A capitalised verb
- * opening a line, followed by a determiner, a figure or a name, is a receipt; the same
- * word lower-case mid-paragraph is prose.
- */
-const CLAIMED_DONE_OPENER = new RegExp(
-  `^\\s*(?:${DONE_VERBS.split('|').map((v) => v[0].toUpperCase() + v.slice(1)).join('|')})` +
-    `\\s+(?=[₹\\d"']|the\\b|a\\b|an\\b|your\\b|their\\b|his\\b|her\\b|[A-Z])`,
-)
-
-const PROMISED_IMMINENT =
-  // "I will try to create the venue first, then the class" — said to an admin, with
-  // nothing created and no round left to create it in. There is no "again": the turn
-  // ends when the message goes out, so a retry the model announces is a retry nobody
-  // will ever run. It is the commonest wording of this failure after an error.
-  /\b(?:i'?ll|i will|let me|i'?m going to|i am going to)\s+(?:now\s+|just\s+)?(?:try(?:ing)?\s+(?:to|and|again)\s*)?(?:add|create|set|make|book|cancel|move|send|remind|invite|record|update|remove|delete|change|waive|schedule|assign|enrol|enroll|mark|draft|retry|again)\b/i
-
-/**
- * "Retrying with the right player ids." — the recovery draft's own verb, and the one
- * the list above did not hold: both notes-to-self that reached a person in the
- * adversarial drive said "retry", not "try again", and one of them was the reply to
- * "delete everything". Anchored and capitalised like CLAIMED_DONE_BARE, so "worth
- * retrying tomorrow" mid-sentence stays English.
- */
-const PROMISED_BARE = /(?:^|[.!\n]\s*)(?:Retrying|Trying again)\b/
-
-/** The sentence this message is making, and whether the turn has anything to back it. */
-export function unbackedClaim(body: string): 'claimed' | 'promised' | null {
-  if (CLAIMED_DONE.test(body) || CLAIMED_DONE_OPENER.test(body) || CLAIMED_DONE_BARE.test(body)) return 'claimed'
-  if (PROMISED_IMMINENT.test(body) || PROMISED_BARE.test(body)) return 'promised'
-  return null
-}
-
-/* ------------------------------------------------------------------------- *
- * Which write would make THIS sentence true.
- *
- * `ctx.committed` is a property of the TURN, so one true claim licenses any
- * number of false ones beside it — and the false one is invisible precisely
- * because the message is mostly right. Driven five times in a single 17-case
- * run, every one inside a case whose checks all passed:
- *
- *   "I've also drafted an invite for Arjun"      — no draft; the turn ran
- *                                                  create_class and remember
- *   "and enrolled Aarav, Ananya, and Dev"        — no enrollment row, twice
- *   "I've also drafted the invite for Arjun"     — plan still behind [Do it]
- *   "I've also set you up on the system"         — plan still behind [Looks right]
- *
- * The fix is not general fact-grounding, which needs the world. It is asking
- * whether a sentence naming a SPECIFIC action has a write of that shape behind
- * it — and the turn already records every write it made, so the answer is a
- * lookup rather than a judgement.
- *
- * **Deliberately partial.** Only verbs with an unambiguous footprint are listed.
- * "added", "created", "set", "updated", "changed" name no particular table and
- * are left to the turn-scoped flag exactly as before: a guard that guessed at
- * those would refuse true sentences, and refusing a true sentence costs a round
- * and can end in a substitution. Every verb below either has a table that must
- * have been touched, or is not claimed at all.
- * ------------------------------------------------------------------------- */
-
-/** Verb (as written in a claim) → the tables any of which makes it true. */
-const CLAIM_TABLES: Record<string, string[]> = {
-  drafted: ['message'],
-  invited: ['message'],
-  enrolled: ['enrollment'],
-  waived: ['tally_line'],
-  recorded: ['payment'],
-  requested: ['payment'],
-  marked: ['attendance', 'session', 'session_coach'],
-  cancelled: ['session', 'enrollment', 'job'],
-  canceled: ['session', 'enrollment', 'job'],
-  moved: ['session', 'class_slot'],
-  scheduled: ['job', 'session'],
-  booked: ['enrollment', 'session'],
-  assigned: ['class_coach', 'session_coach'],
-  removed: ['enrollment', 'session', 'class_coach', 'session_coach'],
-  deleted: ['enrollment', 'session', 'class_coach', 'session_coach'],
-  // The routing verbs are true exactly when somebody was actually told: a
-  // message row this turn (a handoff's send lands there too, via `outcomes`).
-  flagged: ['message'],
-  escalated: ['message'],
-  raised: ['message'],
-  notified: ['message'],
-  informed: ['message'],
-}
-
-/**
- * The three shapes a claim about a specific verb arrives in, compiled once.
- *
- * These were built inside the loop in `unsupportedClaims` — three `new RegExp`
- * per verb, thirteen verbs, so thirty-nine compilations per call, on a function
- * that runs on every outbound message and again on the loop's trailing prose.
- * The patterns are constant; only the verb varies, and the verbs are a literal.
- */
-const CLAIM_PATTERNS: [verb: string, patterns: RegExp[]][] = Object.keys(CLAIM_TABLES).map((verb) => [
-  verb,
-  [
-    // "I've enrolled", "I have also enrolled"
-    new RegExp(`\\bi(?:'ve| have)\\s+(?:just\\s+|now\\s+|also\\s+)*${verb}\\b`, 'i'),
-    // "Enrolled Aarav…" — the bare past tense opening a line or a sentence.
-    new RegExp(`(?:^|[.\\n]\\s*)(?:and\\s+)?${verb[0].toUpperCase()}${verb.slice(1)}\\s`),
-    // "…and enrolled Aarav" — a second clause riding the first claim's subject.
-    new RegExp(`\\band\\s+${verb}\\s+(?=[A-Z₹\\d])`),
-  ],
-])
 
 /** Which contacts an execute path just asked to confirm (ToolCtx.confirmationAskedTo). */
 function noteConfirmations(ctx: ToolCtx, outcomes: SendOutcome[]): void {
@@ -286,7 +156,7 @@ function noteConfirmations(ctx: ToolCtx, outcomes: SendOutcome[]): void {
   }
 }
 
-/** Record what a plan wrote, so a claim can be checked against it. */
+/** Record what a plan wrote, so the turn's own state can be stated back. */
 export function recordExecuted(
   ctx: ToolCtx,
   op: string,
@@ -301,123 +171,37 @@ export function recordExecuted(
 }
 
 /**
- * The specific claims this body makes that the turn's writes do NOT support.
+ * What this turn has actually done, in one line, told to the model every round.
  *
- * Empty when the sentence names no specific action — the caller then falls back
- * to the turn-scoped flag, which is the behaviour that shipped before.
+ * **This is the whole honesty mechanism now, and it is a statement rather than a
+ * check.** The runtime is the only thing that knows whether anything happened,
+ * and for the entire life of the verb lists it knew and did not say — it waited
+ * until the model had written a sentence and then argued with the sentence. Every
+ * failure in that argument was a failure of the argument, never of the model:
+ * given the truth, the model's own reasoning was watched converting "I've flagged
+ * it" into an actual routing, mid-turn.
+ *
+ * Deliberately counts, never advice. What to do about a turn that has written
+ * nothing is a judgement, and a runtime that appended "so do not say you did
+ * anything" would be composing.
  */
-export function unsupportedClaims(body: string, ctx: ToolCtx): string[] {
+export function turnState(ctx: ToolCtx): string {
   const wrote = new Set<string>()
   for (const e of ctx.executed ?? []) for (const w of e.wrote ?? []) wrote.add(w.table)
-  // A message that actually reached somebody is a write for the purposes of
-  // "sent"/"drafted"/"invited": staged plan messages land in `message` too, but
-  // an operation that emitted one outside a plan diff would otherwise look silent.
-  if (ctx.outcomes?.some((o) => o.status === 'sent' || o.status === 'queued')) wrote.add('message')
+  const landed = (ctx.outcomes ?? []).filter((o) => o.status === 'sent' || o.status === 'queued').length
+  const waiting = [...(ctx.pendingMeta?.values() ?? [])].filter((m) => m.needsConfirm).length
 
-  const missing: string[] = []
-  for (const [verb, patterns] of CLAIM_PATTERNS) {
-    // Same two shapes `unbackedClaim` matches: "I've <verb>" anywhere, or the
-    // bare past tense opening a line. Mid-sentence lower-case is ordinary English
-    // ("sessions cancelled in time are credited") and must not be read as a receipt.
-    if (!patterns.some((re) => re.test(body))) continue
-    if (!CLAIM_TABLES[verb].some((t) => wrote.has(t))) missing.push(verb)
-  }
-  return missing
-}
-
-export type ClaimCheck = {
-  /** What kind of sentence this is, if it is one of the two. */
-  claim: 'claimed' | 'promised' | null
-  /** The specific verbs it claims that no write this turn supports. */
-  unsupported: string[]
-  /** It makes a claim, and the turn has nothing behind it. */
-  unbacked: boolean
-}
-
-/**
- * Does this message's own sentence match what this turn actually did?
- *
- * **One function, because there are two paths out of a turn and the guarantee has
- * to hold on both.** A message leaves either through the `reply` tool or as the
- * loop's trailing prose, and which one a given turn takes is the model's choice —
- * so a check living on one of them is not a check. That was understood; the fix
- * was to write the same four lines in both places, and they promptly drifted:
- * the two substituted read-backs ended up saying *"Nothing has run yet — tap to
- * confirm and I'll do it"* and *"Nothing is done yet — tap to confirm and I'll
- * run it"*, which is two products' worth of voice for one runtime sentence.
- *
- * The asymmetry between the paths is real and stays at the call sites: `reply`
- * has a round of grace to spend (it can refuse and ask for a rewrite), while the
- * trailing path has none — there is no round left to ask. What is identical is
- * the judgement, and that is what lives here.
- *
- * Past tense needs something to be TRUE; a promise needs something to be in
- * motion. A previewed plan satisfies the second and not the first. `unsupported`
- * is the claim-scoped half: `ctx.committed` asks only whether the TURN wrote
- * anything, so a message that truthfully reports creating a class could carry
- * "and enrolled Aarav, Ananya and Dev" beside it with no enrollment row
- * anywhere — and did. A verb naming a table that was never written is unbacked
- * however much else the turn got right.
- */
-export function checkClaims(body: string, ctx: ToolCtx): ClaimCheck {
-  const claim = unbackedClaim(body)
-  const unsupported = unsupportedClaims(body, ctx)
-  // A claim whose every specific verb has its footprint this turn is backed by
-  // that footprint. `ctx.committed` cannot vouch for a send-shaped verb —
-  // "I've flagged it to the owner" over a message row and no table write is
-  // true, and demanding a commit would refuse the one true sentence the
-  // routing verbs were added to allow. For doing-verbs this changes nothing:
-  // their footprint IS a table write, which set `committed` on the way in.
-  const specific = CLAIM_PATTERNS.filter(([, patterns]) => patterns.some((re) => re.test(body)))
-  const backed =
-    claim === 'claimed'
-      ? !unsupported.length && (specific.length > 0 || Boolean(ctx.committed))
-      : Boolean(ctx.worked)
-  return { claim, unsupported, unbacked: Boolean(claim || unsupported.length) && !backed }
-}
-
-/**
- * What the runtime says instead of a false receipt, when a plan is sitting here
- * unconfirmed.
- *
- * The runtime is entitled to substitute this: the summary is computed from the
- * diff, so it is strictly better evidence than the prose it replaces, and the
- * affordance is untouched so the person can still act. One wording, because a
- * person cannot tell which code path composed their message and should not be
- * able to.
- */
-export function pendingReadBack(summary: string): string {
-  return `${summary}\n\nNothing has run yet — tap to confirm and I'll do it.`
-}
-
-/* ------------------------------------------------------------------------- *
- * "Tap the button below" — and there is no button.
- *
- * The same failure as the one above, one layer out: the message does not claim an
- * ACTION happened, it claims an AFFORDANCE is present. Both were watched on the
- * first two minutes of a real onboarding, on the first message a new owner ever
- * receives:
- *
- *   "You can tap the button below to set up the business details…"   — no button
- *   "…you can fill this in on this page."                            — no link
- *   "No problem — here's that link again."                           — no link
- *
- * In all three the runtime then bolted its generic `[What can you do?]` fallback on,
- * so the owner got a sentence pointing at one thing and a button offering another.
- *
- * This is worth checking where general fact-grounding is not, and the difference is
- * the reason `lint.ts` refuses to do number-grounding as a string rule: that would
- * need the database to decide, and no string operation can tell "14 enrollments"
- * from a price. This needs NOTHING outside the message. "Does the body point at an
- * affordance, and does the message carry one" is answerable from the message alone,
- * which makes it a structural check rather than a guess.
- *
- * Deliberately narrow: only phrases that point at a control on THIS message. "I'll
- * send you a link" is a promise about a later message and is not matched.
- * ------------------------------------------------------------------------- */
-
-function pointsAtMissingAffordance(body: string, hasAffordance: boolean): boolean {
-  return !hasAffordance && pointsAtAffordance(body)
+  const bits: string[] = []
+  bits.push(
+    wrote.size
+      ? `written to ${[...wrote].sort().join(', ')}`
+      : 'written nothing — no row in this database has changed',
+  )
+  bits.push(
+    landed ? `${landed} message${landed === 1 ? '' : 's'} actually reached somebody` : 'sent nobody anything',
+  )
+  if (waiting) bits.push(`${waiting} plan${waiting === 1 ? '' : 's'} waiting on a tap (nothing of it has run)`)
+  return `So far this turn you have ${bits.join('; ')}.`
 }
 
 /* ------------------------------------------------------------------------- *
@@ -586,155 +370,40 @@ const SUPPRESSION_HELP: Record<SuppressReason, string> = {
   repeat: 'They were told this, word for word, moments ago. Saying it again teaches them nothing — say what changed, or say nothing.',
   no_contact: 'There is no reachable contact row for that recipient in this academy.',
   limit_violation: 'The message breaks a WhatsApp shape limit (length, button count, title length). Rebuild it smaller — this one could not render.',
-}
-
-/**
- * The label on the nav-bar door. Kept under `LIMITS.buttonTitleChars` here rather
- * than truncated at the call site: a title trimmed to fit renders as "What else can
- * you do" with the question mark missing, which looks like a bug to the person
- * reading it — and a 21-character title is not a compose error worth suppressing a
- * whole message over, which is what happened the first time this shipped.
- */
-export const MENU_BUTTON_TITLE = 'What can you do?'
-
-/**
- * The backstop button, chosen for the message it is about to sit under.
- *
- * `[What can you do?]` is the most-minted button in the product and it announces
- * capability instead of demonstrating it — §4.3's whole complaint. Driven from
- * empty: an admin typed *"what can you do?"*, got a good four-bullet answer, and
- * the single affordance underneath it was **[What can you do?]**. The one thing
- * offered to somebody who had just been told everything was to ask again.
- *
- * A menu is a reasonable backstop under a message that answered something else.
- * It is a dead end under the answer to this question, and it is a wasted slot
- * while a business still has an obvious next step — which the runtime knows,
- * because `onboarding_state` is the thing every job in the product gates on.
- *
- * Returns the menu unchanged when there is nothing better to say, so this can
- * only improve a message, never empty one.
- */
-export function backstopButtons(
-  identity: Identity,
-  body: string,
-): { title: string; action: ActionPayload }[] {
-  const menu = [{ title: MENU_BUTTON_TITLE, action: { kind: 'menu', menu: 'root' } as ActionPayload }]
-  if (!identity.roles.includes('admin')) return menu
-
-  // Only when the business has not finished being built. After go-live the next
-  // step is whatever the person is doing, and guessing at it is worse than a menu.
-  const state = identity.academy.onboarding_state
-  if (state === 'live') {
-    // …except directly under the capability answer, where the menu is circular.
-    return /\bwhat (?:can|do) (?:you|i) /i.test(body) ? [] : menu
-  }
-
-  /**
-   * The steps have to be a function of the state they are named after. This list was
-   * static, so the turn that *finished* business setup came back offering
-   * `[Set up the business]` again — the one step the person had just completed, sitting
-   * first in the row under a message that read the settings back to them.
-   *
-   * `onboarding_state` is `setup → roster → ready → live`, and `setup` is precisely the
-   * state that means "the business form has not been submitted". Past it, the form is an
-   * edit rather than a step, and an edit is not what a backstop is for.
-   */
-  const steps: { title: string; action: ActionPayload }[] = [
-    ...(state === 'setup'
-      ? [{ title: 'Set up the business', action: { kind: 'form', form: 'business_setup' } as ActionPayload }]
-      : []),
-    { title: 'Add a class', action: { kind: 'reply', text: 'I want to add a class' } },
-    { title: 'Add a coach', action: { kind: 'reply', text: 'I want to add a coach' } },
-  ]
-  return steps.slice(0, LIMITS.buttons)
+  muted: 'This person asked to hear nothing in this category (comm_preference). It is a scope, not a full opt-out, so other things still reach them — and their own question is always answerable. If this genuinely needs to reach them, the way is to ask them to lift the mute, never to send it under another heading.',
+  quiet_hours: 'It is the middle of the night where this business is. Nothing unprompted goes out during quiet hours — it is not a delay, this send is dropped. Schedule it for a waking hour instead, or let the standing job that owns this moment raise it at the right time.',
 }
 
 /* ------------------------------------------------------------------------- *
- * §4.3 — after every action, the natural next step as a button.
+ * There is no backstop composer.
  *
- * "A first-class pattern, not a nicety… it teaches capability by demonstration
- * rather than announcement, and it is the discovery mechanism that keeps the
- * natural-language surface from being a blank page."
+ * `backstopButtons`, `MENU_BUTTON_TITLE`, `closingQuestionButtons`, `FOLLOW_UPS`
+ * and `withFollowUps` used to live here: a menu bolted under any bare message, a
+ * `[Yes] [No]` pair attached to any body ending in a question, and a next-step
+ * button appended after any operation that ran. Each was added for a real
+ * defect — an owner offered nothing, a question with nothing to tap, a first
+ * coach added and never invited — and together they made the runtime a second
+ * author of every message the model wrote.
  *
- * These were reachable only from a button *tap*, which is the one path where the
- * model is not involved — so the guarantee held exactly where it was least
- * needed and lapsed everywhere else. Watched live: an admin added their first
- * coach by typing a sentence, `add_coach` ran directly, and the reply moved
- * straight on to families. The coach sat at `status='added'` — invited by
- * nobody, able to see nothing — and the one step that would have fixed that,
- * §8.1's invite, was never offered. `[Send the invite]` was defined here the
- * whole time.
+ * The evidence that they had to go is their own: `[What can you do?]` was the
+ * most-minted button in the product, it announces capability instead of
+ * demonstrating it, and the backstop's own comment says so. Driven from empty, an
+ * admin typed "what can you do?", got a good four-bullet answer, and the single
+ * affordance underneath it was **[What can you do?]** — the one thing offered to
+ * somebody who had just been told everything was to ask again. And the backstop
+ * decorated a child-injury acknowledgement with the same button, which is what
+ * second authors do.
  *
- * So the runtime appends it whichever way the operation ran.
+ * What replaces them is the model being told, at the decode point, what a
+ * buttonless reply costs the person — `reply`'s declaration says it, doctrine
+ * names the three-slot budget and that a `{kind:'reply', text}` button needs no
+ * arguments, and the model composing the message is the only thing in the system
+ * that can pick a useful third option. It was never told to; now it is.
  * ------------------------------------------------------------------------- */
-
-/** The id of the first row an operation inserted into a table. */
-function insertedId(wrote: { table: string; op: string; after: any[] }[] | undefined, table: string): string | null {
-  const d = wrote?.find((x) => x.table === table && x.op === 'insert')
-  const id = d?.after?.[0]?.id
-  return typeof id === 'string' ? id : null
-}
-
-export const FOLLOW_UPS: Partial<
-  Record<OperationName, (args: any, wrote?: { table: string; op: string; after: any[] }[]) => { title: string; action: any }[]>
-> = {
-  cancel_session: () => [
-    { title: "See who's affected", action: { kind: 'reply', text: `Who was in the session I just cancelled?` } },
-  ],
-  end_coach: () => [{ title: 'Assign classes', action: { kind: 'reply', text: 'Who should take those sessions?' } }],
-  mark_attendance: () => [
-    { title: 'Rebook someone', action: { kind: 'reply', text: 'Find a makeup slot for someone who missed' } },
-  ],
-  client_cancel: () => [
-    { title: 'Find a makeup', action: { kind: 'reply', text: 'Find a makeup slot for that class' } },
-  ],
-  /**
-   * The strongest kind of button the surface has, on the moment it matters most.
-   *
-   * This was `{kind:'reply', text:"Draft the invite for Ravi Menon"}` — a button that
-   * types a sentence back and makes the model work the whole thing out again. Watched
-   * live: it did, and the id it worked out was `ae9f36b1-…`, which is not a coach. The
-   * invite went out addressed to *"Hi them"* and the coach stayed un-invited, from a
-   * button the admin had tapped to invite them.
-   *
-   * §6.5 exists for exactly this: "fully resolved. no ids to look up." The operation has
-   * just written the row, so the id is known here, at mint time, with no model in the
-   * loop at either end.
-   */
-  add_coach: (a, wrote) => {
-    const coachId = insertedId(wrote, 'coach')
-    return [
-      coachId
-        ? { title: 'Send the invite', action: { kind: 'operation', op: 'send_invite_draft', args: { coach_id: coachId } } }
-        : { title: 'Send the invite', action: { kind: 'reply', text: `Draft the invite for ${a?.full_name ?? 'them'}` } },
-    ]
-  },
-  add_family: (a, wrote) => {
-    const personId = insertedId(wrote, 'person')
-    return [
-      personId
-        ? { title: 'Send the invite', action: { kind: 'operation', op: 'send_invite_draft', args: { person_id: personId } } }
-        : { title: 'Send the invite', action: { kind: 'reply', text: `Draft the invite for ${a?.display_name ?? 'that family'}` } },
-    ]
-  },
-  create_class: () => [{ title: 'Assign a coach', action: { kind: 'reply', text: 'Who coaches that class?' } }],
-  record_payment: () => [{ title: 'See the tally', action: { kind: 'reply', text: 'Show me that account tally' } }],
-  book_trial: () => [{ title: 'See the schedule', action: { kind: 'reply', text: 'Show me the schedule' } }],
-}
 
 /* ------------------------------------------------------------------------- *
  * Button actions, made legal before they are minted
  * ------------------------------------------------------------------------- */
-
-/**
- * Fitting and bracket-button extraction moved to `lib/messaging/repair.ts`, which is
- * imported by `composeAndSend` — the one place all outbound traffic passes. They were
- * applied here and in the loop's trailing message, so which of the two a turn got
- * depended on which path the model took, and jobs and taps got neither. Re-exported
- * because callers here still want them *before* compose, where a repair can still be
- * reported back to the model inside the same turn.
- */
-export { extractBracketButtons, fitTitle }
 
 /**
  * The model's most frequent instinct after previewing a plan is to offer a
@@ -880,32 +549,6 @@ function defangedButton(stripped: string[]): string {
  * know. A read-back that names two things has to commit two things.
  */
 /**
- * A message that ends by asking a yes-or-no question, answered with a tap.
- *
- * The bare-message backstop offers the menu, which is right for a statement and
- * a non-sequitur after a question: *"Would you like me to do that now?"* followed
- * by a single `[What can you do?]` button leaves the one obvious answer to be
- * typed. Doctrine rule 4 is "buttons first, text always available", and the model
- * writes the question far more reliably than it remembers the two buttons.
- *
- * Deliberately narrow. Only a closing question opening with an auxiliary — the
- * shape English uses for yes-or-no and almost nothing else — qualifies. "What
- * date would you like?" is not one of these and correctly gets the menu instead.
- */
-export function closingQuestionButtons(body: string): { title: string; action: any }[] | null {
-  const text = body.trim()
-  if (!text.endsWith('?')) return null
-  const question = (text.match(/[^.!?\n]+\?\s*$/)?.[0] ?? '').trim()
-  const YES_NO =
-    /^(would|will|shall|should|do|does|did|can|could|is|are|was|were|have|has|had|may|want|ready|happy|ok(ay)?)\b/i
-  if (!YES_NO.test(question)) return null
-  return [
-    { title: 'Yes', action: { kind: 'reply', text: 'yes' } },
-    { title: 'No', action: { kind: 'reply', text: 'no' } },
-  ]
-}
-
-/**
  * The form a `reply` asked for, resolved at the moment the message is composed.
  *
  * There used to be a second answer to "the thing I want to say is form-shaped": a
@@ -940,90 +583,31 @@ async function formForReply(
 }
 
 /**
- * Add §4.3's next step for anything that ran this turn.
+ * **`withFollowUps` and `withRuntimeDiffLine` are gone, and they were the two
+ * best-argued edits in the product.**
  *
- * Applied on both paths a message can leave by — the `reply` tool and the loop's
- * own trailing message — because which one carries a given turn is decided by
- * the model, and a guarantee that depends on that is not a guarantee. The first
- * coach ever added went out through the trailing path, which is why the invite
- * was not offered even after the follow-up existed.
+ * `withFollowUps` appended §4.3's natural next step after any operation that ran,
+ * on both paths a message can leave by, precisely because a guarantee that
+ * depends on which path the model chose is not a guarantee. `withRuntimeDiffLine`
+ * appended the runtime's own description of what a `steps` button would run,
+ * under the model's prose, because the two had diverged three times in one driven
+ * month — a trial's [Confirm] minting ₹1,600 of charges behind "free, nothing to
+ * pay".
  *
- * The nav-bar door gives way to a real next step: "What can you do?" is what to
- * offer when there is nothing better, and there now is.
+ * Both append words to a message the model wrote, and ARCHITECTURE.md's rule is
+ * not about intent: *anything that deletes, adds or rewrites words is not an
+ * adapter*. What they cost is the same thing every edit here costs — the model's
+ * only picture of its own message is its draft, so the next turn reasons from a
+ * message that was never sent.
+ *
+ * Neither capability is lost, and this is why the removal is safe rather than
+ * merely principled. The next step is doctrine's, at the decode point, where the
+ * model can choose one that fits instead of a constant that fits sometimes. And
+ * the diff line was solving a **two-authors** problem — the model describing a
+ * plan the runtime holds — which layer 1 answers properly: the plan result
+ * already carries `summary`, the row counts, the clashes and now the untold
+ * audience, as facts, before the model writes a word about them.
  */
-export function withFollowUps(
-  buttons: { title: string; action: any }[] | undefined,
-  ctx: ToolCtx,
-): { title: string; action: any }[] | undefined {
-  if (!ctx.executed?.length) return buttons
-  let out = [...(buttons ?? [])]
-  for (const done of ctx.executed) {
-    for (const f of FOLLOW_UPS[done.op as OperationName]?.(done.args, done.wrote) ?? []) {
-      const already = out.some((b) => b.title === f.title || JSON.stringify(b.action) === JSON.stringify(f.action))
-      if (already) continue
-      out = out.filter((b) => b.action?.kind !== 'menu')
-      if (out.length < LIMITS.buttons) out.push({ title: fitTitle(f.title), action: f.action })
-    }
-  }
-  return out.length ? out : buttons
-}
-
-/**
- * F-M — the runtime's description travels with the model's at the point of
- * confirmation.
- *
- * A steps button does what its steps say, and the person confirms against the
- * model's prose — which diverged three times in one driven month: go-live
- * promised intro messages the steps never contained; a trial's [Confirm] minted
- * ₹1,600 of charges behind "free, nothing to pay"; "all 3 families are told"
- * sat over steps holding only the session write. The runtime computes the real
- * blast radius (`previewPlan`), so wherever a message to the acting person
- * carries a steps button, the runtime's own line — counts of writes and who
- * hears — is appended under the model's prose. One author for meaning, at the
- * one moment it matters.
- *
- * Steps that match a plan previewed this turn reuse its stored summary; novel
- * inline steps are previewed here, at mint time, which is also the first time
- * a broken button can be caught before a person taps it. A body that already
- * carries the summary verbatim (the `pendingReadBack` substitution does) is
- * left alone, and a body too near the wire cap is left alone rather than
- * pushed over it.
- */
-async function runtimeSummaryFor(steps: PlanStep[], ctx: ToolCtx): Promise<string | null> {
-  try {
-    const key = JSON.stringify(steps)
-    for (const [handle, plan] of ctx.pendingPlans) {
-      if (JSON.stringify(plan) === key) {
-        const s = ctx.pendingMeta?.get(handle)?.summary
-        if (s) return s
-      }
-    }
-    // `noHints` is load-bearing: an ordinary failed preview escalates a
-    // CHANGED_NOTHING to the admins, and a mint-time annotation check must
-    // change nothing and page nobody, whatever the steps turn out to be.
-    const preview = await previewPlan(ctx.session, steps, 'read-back check at mint', { noHints: true })
-    return preview.ok ? preview.summary : null
-  } catch {
-    return null
-  }
-}
-
-export async function withRuntimeDiffLine(
-  body: string,
-  buttons: { title: string; action: any }[] | undefined,
-  ctx: ToolCtx,
-): Promise<string> {
-  const stepsButton = buttons?.find((b) => b?.action?.kind === 'steps' && Array.isArray(b.action.steps))
-  if (!stepsButton || !body.trim()) return body
-  const summary = await runtimeSummaryFor(stepsButton.action.steps as PlanStep[], ctx)
-  if (!summary) return body
-  const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
-  if (norm(body).includes(norm(summary))) return body
-  const line = `Tapping runs exactly this: ${summary.replace(/^that'?ll\s+/i, '')}`
-  if (body.length + line.length + 2 > LIMITS.bodyChars) return body
-  return `${body.trimEnd()}\n\n${line}`
-}
-
 export function pendingConfirmation(ctx: ToolCtx): { steps: PlanStep[]; summary: string } | null {
   const waiting = [...(ctx.pendingMeta?.entries() ?? [])].filter(([, m]) => m.needsConfirm)
   const steps: PlanStep[] = []
@@ -1570,6 +1154,23 @@ function compactDiff(r: Awaited<ReturnType<typeof previewPlan>>, executed = true
     // model has to reason about should not have to be parsed back out of a
     // sentence. This is also why the plan came back needing a tap.
     ...(r.clashes.length ? { clashes: r.clashes } : {}),
+    /**
+     * Who this changed something for while telling them nothing.
+     *
+     * The substrate can see the audience; only the person composing can decide
+     * whether silence is right. Sometimes it plainly is — a coach's decline
+     * while others remain assigned changes nothing for the parents. So this is
+     * a fact and an instruction to decide, never an instruction to send.
+     */
+    ...(r.untold.length
+      ? {
+          affected_and_untold: r.untold,
+          affected_note:
+            'Their arrangements changed and nothing here reaches them. Either compose what each of them ' +
+            'needs to hear — one message per person, whatever they are actually affected by — or be able ' +
+            'to say why silence is right for them.',
+        }
+      : {}),
     // One diff, two truths. An EXECUTED diff is what is now in the rows; a
     // STAGED one is what a tap WOULD write — and carrying the executed
     // coaching on both taught a staged "rows: 2" to read as a receipt: the
@@ -1986,13 +1587,21 @@ export async function runTool(
         buttons = []
         for (const b of args.buttons.slice(0, LIMITS.buttons)) {
           const resolved = resolveAction((b as any)?.action, ctx)
+          const title = String((b as any)?.title ?? '').trim()
           if (!resolved.ok) {
-            const title = String((b as any)?.title ?? '').trim()
             downgraded.push({ title, why: resolved.error })
-            if (title) buttons.push({ title: fitTitle(title), action: { kind: 'reply', text: title } })
+            // Downgraded, never deleted: the tap becomes typing the title, which is
+            // a privilege the person already has, so the option the prose points at
+            // still exists and the working route is one tap longer rather than gone.
+            // This is not the runtime authoring anything — the label is the model's
+            // own word, unchanged — and what happened comes back in the result.
+            if (title) buttons.push({ title, action: { kind: 'reply', text: title } })
             continue
           }
-          buttons.push({ title: fitTitle((b as any)?.title), action: resolved.action })
+          // Not fitted. A title over the cap is refused below with the cap named,
+          // while there is a round left to shorten it — `fitTitle` used to cut
+          // "I'm done with the roster" to "I'm done with the ro" and ship it.
+          buttons.push({ title, action: resolved.action })
         }
       }
 
@@ -2033,168 +1642,44 @@ export async function runTool(
         }
       }
 
-      // §5 — "a persistent list-picker is the primary affordance; prose is the
-      // fallback". The picker was built, role-aware and reordered by memory, and
-      // was reachable only by tapping a button carrying `{kind:'menu'}` — which
-      // nothing ever minted. Across every message the product had ever sent, not
-      // one menu action existed, so the nav bar had no door. This is the door: a
-      // reply that would otherwise ship bare carries one, which costs a person
-      // nothing and is the only thing that teaches them what else there is.
-      // Buttons the model typed into the prose become real ones, before any
-      // fallback decides the message is bare.
-      let body = String(args?.body ?? '')
-      if (!buttons?.length && !args?.list) {
-        const pulled = extractBracketButtons(body)
-        if (pulled.buttons.length && pulled.text) {
-          body = pulled.text
-          buttons = pulled.buttons
-        }
-      }
+      const body = String(args?.body ?? '')
 
       /**
-       * Does this message's own sentence match what this turn actually did?
+       * **What the string itself decides, refused before anything is composed.**
        *
-       * **Every recipient, not only the one talking.** This read
-       * `to === ctx.identity.contact.id`, so the product's one structural honesty
-       * check inspected the reply going back to whoever had just typed and nothing
-       * else. Messages composed *to a third party* — "tell the Saturday parents the
-       * venue moved", a coach told his class was covered, a parent told a payment
-       * landed — went out unchecked. That is precisely the traffic §14.4 says makes
-       * this a manager rather than a notifier, and it is the traffic where the
-       * recipient has least context to notice a claim is wrong: the person talking
-       * can see the turn, a parent two hops away cannot.
+       * Two guards used to stand here and both of them edited: an honesty check
+       * over verb lists that substituted the runtime's own read-back when it fired
+       * twice, and a `/\bsetup form\b|\bbusiness setup\b/i` test that silently
+       * attached a form because the prose mentioned one. Both read language to
+       * decide what a person receives, which is the thing ARCHITECTURE.md's layer
+       * 2 forbids outright, and the second is the purer example: a regex over a
+       * sentence, deciding to put a form on somebody's screen.
        *
-       * A guarantee that depends on which recipient the model picked is not a
-       * guarantee (R4). `ctx.worked` and `ctx.committed` are properties of the whole
-       * turn, so the check was never recipient-specific — only its condition was.
+       * `proseViolations` is what a string operation may legitimately answer —
+       * "does this contain a uuid, an ISO timestamp, a section reference, a raw
+       * URL, a wire blob, a line of pseudo-buttons, the word academy" all have one
+       * answer, the way "is this an overclaim" does not. Every one of them was
+       * previously rewritten on the way past; every one is now a refusal naming
+       * what is wrong and what to do, with a round of grace, while the model can
+       * still fix it. What ships is byte-for-byte what the model wrote.
        *
-       * `promiseChecked` still fires at most once per turn, and that is deliberate:
-       * it buys the model one round to make the sentence true, not an argument.
-       * Silencing somebody is worse than telling them something slightly wrong.
+       * Fires at most once per turn. The budget is not politeness — a model
+       * arguing with a refusal it cannot satisfy spends the person's whole turn —
+       * and a second attempt goes out as written, because silencing somebody is
+       * worse than a machine word in an otherwise good sentence.
        */
-      {
-        // The judgement is `checkClaims`, shared with the loop's trailing path.
-        // What differs here, and stays here, is that this path has a round of
-        // grace to spend: it can refuse and ask for a rewrite.
-        const { claim, unsupported, unbacked } = checkClaims(body, ctx)
-        if (unbacked) {
-          if (!ctx.promiseChecked) {
-            ctx.promiseChecked = true
-            // Naming the verb is the difference between one round and three. A
-            // message that is mostly true and wrong in one clause reads as
-            // correct to the model too, so "nothing has been written this turn"
-            // sends it looking for a problem it cannot see — and the turn that
-            // produced this had committed a class quite correctly.
-            const error = unsupported.length
-              ? `that message says you ${unsupported.join(' and ')} something, and nothing was written this turn that ` +
-                `would make that true. The rest of the message may be right — this is about the "${unsupported[0]}" part ` +
-                `specifically.`
-              : claim === 'claimed'
-                ? 'that message says you did something, and nothing has been written this turn'
-                : 'that message says you are about to do something, and there is no "about to" — the turn ends when you reply'
-            return {
-              result: {
-                error,
-                hint: unsupported.length
-                  ? `Either do it now — ${unsupported.join(' / ')} — and then say so, or drop that clause and send the ` +
-                    `part that is true. Do not reword it: the sentence is not what is wrong.`
-                  : 'Do it now — `act` for a named operation, `plan` then a confirmation button for anything bigger — and ' +
-                    'then say what you did. Or say plainly that you have not done it yet and ask for the one thing you ' +
-                    'need. Nothing else you send will make it true.',
-                sent: false,
-              },
-            }
+      if (!ctx.proseChecked) {
+        const violations = proseViolations(body, ctx.identity)
+        if (violations.length) {
+          ctx.proseChecked = true
+          return {
+            result: {
+              error: `that message cannot go as written: ${violationMessage(violations)}`,
+              hint: 'Rewrite just those parts and send it again. Everything else about the message is fine.',
+              sent: false,
+            },
           }
-
-          /**
-           * The model has already had its one round and the sentence is still false.
-           *
-           * The old rule was "fires at most once; a second attempt always goes out",
-           * on the reasoning that silencing somebody is worse than telling them
-           * something slightly wrong. The first half of that is right. The second
-           * assumed the retry would be closer to true, and driven on a real payment
-           * request it was further: refused for *"I'll send her a payment request
-           * now"*, the model came back with *"Sent the request to Meena Krishnan for
-           * ₹1,200.00. I'll let you know once she's paid."* — past tense, about money,
-           * with the plan still sitting unconfirmed behind a `[Do it]` button.
-           *
-           * There is a third option between silence and a lie, and the runtime is the
-           * one thing entitled to take it: substitute its own read-back. When a plan
-           * is pending that read-back is computed from the diff, so it is strictly
-           * better evidence than the prose it replaces — and the affordance is
-           * untouched, so the person can still act.
-           *
-           * **Only to the person in the conversation.** The substituted sentence ends
-           * "tap to confirm and I'll do it", and the button that makes it true is minted
-           * for the tapping contact — so sent to a parent or a coach it is an
-           * instruction they cannot follow, attached to a plan diff written for an
-           * operator. The "silencing somebody is worse" argument does not carry here
-           * either: it is about the person waiting on an answer, not about a bystander
-           * who was never expecting this message and would only be told something false.
-           * So a third-party message with a false claim is refused outright, and the
-           * model is told why.
-           */
-          if (to !== ctx.identity.contact.id) {
-            return {
-              result: {
-                error:
-                  'that message claims something happened, nothing was written this turn, and it is addressed to '
-                  + 'somebody else — so there is nothing they could tap to make it true',
-                hint:
-                  'Do the thing first, then tell them. A message to a third party has to be true when it is sent: '
-                  + 'they have no way to see this conversation and no button that fixes it.',
-                sent: false,
-              },
-            }
-          }
-
-          /**
-           * ONLY when a plan is sitting here unconfirmed.
-           *
-           * The predicate answers "is this sentence a receipt?"; the gate asks "did THIS
-           * turn commit?" Those are the same question only when the receipt is about
-           * this turn, and English does not carry that distinction. A read-only turn
-           * that truthfully reports earlier work — *"Requested ₹1,200 on 13 Aug, still
-           * unpaid"* — is a receipt about the past, and substituting it tells an admin
-           * the payment row does not exist when it does.
-           *
-           * That is not hypothetical: scheduled `agent_task` check-backs are read-only
-           * by construction and about prior work by construction ("check if the invite
-           * was forwarded"), and two such turns are already in this world, saved only by
-           * having phrased themselves passively.
-           *
-           * A pending plan is the evidence that makes the two questions line up: the
-           * model previewed something a moment ago and then described it as done, which
-           * is exactly what was watched twice on money. With no plan pending the runtime
-           * has no reason to believe the sentence is about this turn, so it keeps its
-           * hands off and the one refusal round above remains the whole intervention.
-           */
-          const waiting = pendingConfirmation(ctx)
-          if (waiting) body = pendingReadBack(waiting.summary)
         }
-      }
-
-      /**
-       * The form the model's own sentence says it attached.
-       *
-       * The guard below refuses a message that points at a control it does not carry,
-       * and refusing costs a round. Where the runtime can simply SATISFY the pointer it
-       * should: an owner told "I've attached the business setup form" wants that form,
-       * and the runtime is holding it. Driven — that exact sentence went out with
-       * nothing but the generic `[What can you do?]` under it.
-       *
-       * Only when this message carries no affordance of its own: a model that DID offer
-       * buttons has made a deliberate choice and the runtime does not overrule it. And
-       * only to the owner themselves — `flow_token` is an action minted for one contact.
-       */
-      const bare = !args?.form && !buttons?.length && !args?.list
-      if (
-        bare
-        && to === ctx.identity.contact.id
-        && ctx.identity.roles.includes('admin')
-        && /\bsetup form\b|\bbusiness setup\b|\bset ?up (?:screen|page|form)\b/i.test(body)
-      ) {
-        args = { ...args, form: 'business_setup' }
       }
 
       /**
@@ -2223,66 +1708,23 @@ export async function runTool(
       }
 
       /**
-       * The body points at a control this message does not have.
+       * `pointsAtMissingAffordance` used to stand here, refusing a message whose
+       * body said "tap the button below" when the message carried none — and its
+       * own pattern then decided, in `send`, whether an over-long message lost its
+       * buttons or was suppressed entirely. It was the clearest case in the
+       * product of a regex whose output touched a customer's message, and it is
+       * gone with the backstops it was written to stand in front of.
        *
-       * Checked BEFORE the two backstops below, which is the whole point: those bolt a
-       * generic `[What can you do?]` or a menu onto any bare message, so after them the
-       * message technically has a button and the sentence "tap the button below to set
-       * up your business details" still points at nothing that does it. Checking first
-       * is what makes the difference between a message that is wrong and a message that
-       * is wrong AND looks fine.
-       *
-       * Fires at most once per turn, on its OWN budget. It used to share
-       * `promiseChecked` with the action-claim guard, and the two never fire on the same
-       * defect — so a turn already refused once for claiming an action had spent the
-       * budget, and the first time its next message pointed at a button that did not
-       * exist the check was skipped and the message went out. One round of grace each.
+       * What replaces it is that there is nothing to point at falsely any more.
+       * The runtime no longer attaches a menu, a `[Yes]/[No]` pair or a follow-up,
+       * so a message with no buttons is a message the model chose to send with no
+       * buttons — and `reply`'s declaration tells it, at the decode point, exactly
+       * what that costs the person reading it.
        */
-      if (!ctx.affordanceChecked) {
-        const hasAffordance = Boolean(form || buttons?.length || args?.list)
-        if (pointsAtMissingAffordance(body, hasAffordance)) {
-          ctx.affordanceChecked = true
-          return {
-            result: {
-              error: 'that message points at a button or a form, and the message carries none',
-              hint:
-                'Either attach it — form:"business_setup" sends the business form right here in the chat, '
-                + 'form:"add_class" and form:"register" send those, and buttons:[…] offers a next step — '
-                + 'or say the thing plainly instead of pointing at a control that is not there.',
-            },
-          }
-        }
-      }
-
-      if (to === ctx.identity.contact.id && !form) buttons = withFollowUps(buttons, ctx)
-
-      /**
-       * The bare-message backstop — `backstopButtons`, not a hardcoded menu.
-       *
-       * This branch minted `[{title: MENU_BUTTON_TITLE, action:{kind:'menu'}}]` directly,
-       * which is the thing `backstopButtons` exists to improve on and only ever did on
-       * the OTHER path. So both of its judgements were reachable only from the loop's
-       * trailing prose: an admin mid-onboarding got `[What can you do?]` here instead of
-       * `[Add a class] [Add a coach] [Set up the business]`, and the circular case its
-       * own comment is about — a good answer to "what can you do?" with `[What can you
-       * do?]` as its single affordance — was suppressed there and shipped here.
-       *
-       * The same defect as the honesty guard and the follow-ups before it: a rule
-       * enforced on one of the two ways a message leaves a turn, where which one it
-       * takes is the model's choice.
-       */
-      // Recorded when it fires, because this is one of the ways the message the
-      // person reads stops being the message the model wrote — and the model's
-      // next decision is made from its draft unless told otherwise (F-AL).
-      let attachedByRuntime: string[] = []
-      if (to === ctx.identity.contact.id && !form && !buttons?.length && !args?.list) {
-        buttons = closingQuestionButtons(body) ?? backstopButtons(ctx.identity, body)
-        attachedByRuntime = (buttons ?? []).map((b) => b.title)
-      }
 
       // A list is the primary affordance (§7.2), so its rows get exactly the same
-      // treatment as buttons: resolved, validated, and fitted before minting. One
-      // bad row used to take the whole picker — and the whole message — with it.
+      // treatment as buttons: resolved and validated before minting. One bad row
+      // used to take the whole picker — and the whole message — with it.
       let list = args?.list
       if (typeof list === 'string') {
         try {
@@ -2311,34 +1753,70 @@ export async function runTool(
               }
             }
             rows.push({
-              title: fitTitle(r?.title, LIMITS.listRowTitleChars),
+              // Titles unfitted here too — `validateOutbound` names the row and the
+              // cap, which is a repair the model can make and a trim is not.
+              title: String(r?.title ?? ''),
               description: r?.description ? String(r.description) : undefined,
               action: resolved.action,
             })
           }
-          sections.push({ title: fitTitle(s?.title, LIMITS.listSectionTitleChars), rows })
+          sections.push({ title: String(s?.title ?? ''), rows })
         }
-        list = { buttonText: fitTitle(list.buttonText || 'Choose', EXTRA_LIMITS.listButtonTextChars), sections }
+        list = { buttonText: String(list.buttonText || 'Choose'), sections }
       }
 
-      // F-M — a confirmation to the acting person carries the runtime's own
-      // description of what the tap runs, under the model's prose.
-      if (to === ctx.identity.contact.id) {
-        body = await withRuntimeDiffLine(body, buttons, ctx)
+      /**
+       * The wire's own shape limits, checked here rather than discovered as a
+       * suppression.
+       *
+       * This is the other half of "validation refuses, it never mutates": every
+       * one of these caps is on the declaration the model decodes against, and
+       * every one of them used to be enforced by a silent trim or by dropping the
+       * affordance. Refused once, with the reason, while a round remains — the
+       * interactive body cap especially, which is the limit whose breach used to
+       * be entirely silent and cost an admin every button on a good answer.
+       */
+      if (!ctx.shapeChecked) {
+        const shape = validateOutbound({
+          toContactId: to,
+          body,
+          header: args?.header ? String(args.header) : undefined,
+          footer: args?.footer ? String(args.footer) : undefined,
+          catalogId: catalogId ?? null,
+          templateName: null,
+          idempotencyKey: 'shape-check',
+          buttons: buttons?.map((b, i) => ({ actionId: `pending-${i}`, title: b.title })),
+          list: list?.sections
+            ? {
+                buttonText: String(list.buttonText ?? 'Choose'),
+                sections: list.sections.map((s: any, si: number) => ({
+                  title: String(s.title ?? ''),
+                  rows: (s.rows ?? []).map((r: any, ri: number) => ({
+                    actionId: `pending-${si}-${ri}`,
+                    title: String(r.title ?? ''),
+                    description: r.description,
+                  })),
+                })),
+              }
+            : undefined,
+        })
+        if (shape.length) {
+          ctx.shapeChecked = true
+          return {
+            result: {
+              error: `that message will not render: ${shape.join('; ')}`,
+              hint:
+                `Cut it to fit rather than cutting the affordance — over ${LIMITS.bodyChars} characters a message ` +
+                'carrying buttons cannot go at all, and the explanation is the part that can move to a second turn.',
+              sent: false,
+            },
+          }
+        }
       }
-
-      // §4.5 ran on exactly one path — the loop's own trailing message — and this
-      // is the path the model actually uses, so most outbound text was never
-      // linted at all. Uuids, table names, ISO timestamps and doctrine references
-      // were one `reply` call away from a customer's phone the whole time.
-      //
-      // Hoisted out of the call so `saidToUser` below records the sentence the person
-      // reads rather than the one the model drafted.
-      const linted = lint(body, ctx.identity)
 
       const outcome = await composeAndSend(ctx.session, {
         toContactId: to,
-        body: linted,
+        body,
         header: args?.header ? String(args.header) : undefined,
         footer: args?.footer ? String(args.footer) : undefined,
         buttons,
@@ -2351,8 +1829,10 @@ export async function runTool(
       ctx.outcomes?.push(outcome)
       if (outcome.status === 'sent' || outcome.status === 'queued') {
         ctx.repliedTo?.add(to)
-        // The body as the person will read it, not the model's draft.
-        if (to === ctx.identity.contact.id && linted.trim()) ctx.saidToUser?.push(linted.trim())
+        // The body, which is now also the body the person reads: nothing between
+        // here and the wire rewrites a word, and the one transform that remains
+        // changes representation only.
+        if (to === ctx.identity.contact.id && body.trim()) ctx.saidToUser?.push(body.trim())
       }
       if (outcome.status === 'suppressed') {
         // A bare `{status:'suppressed'}` reads as "that didn't work, try again", and
@@ -2370,19 +1850,17 @@ export async function runTool(
         }
       }
       /**
-       * What the wire changed between this call and the phone (F-AL). The model's
-       * only picture of the sent message is otherwise its own draft — history
-       * replays sent *bodies* but never affordances — so a stripped button or a
-       * bolted-on menu was invisible, and the same over-long body was written
-       * again the next time the moment recurred. `downgraded_buttons` below
-       * already proves the shape works; this is the same shape for the rest.
+       * What the wire changed between this call and the phone.
+       *
+       * There used to be a long list of these — a bolted-on menu, a stripped
+       * button row, a repaired body — and reporting them was the right answer to
+       * the wrong design. **The final shape does not report the runtime's edits;
+       * it does not have edits.** What is left is the one thing the runtime does
+       * not author and cannot prevent: out of window the wire itself replaces the
+       * body with an approved template shell (see layer 4's one-author rule), and
+       * the model has to know that is what the person read.
        */
-      const altered = [
-        ...(attachedByRuntime.length
-          ? [`you attached no buttons, so the runtime added: ${attachedByRuntime.map((t) => `[${t}]`).join(' ')}`]
-          : []),
-        ...(('altered' in outcome ? outcome.altered : undefined) ?? []),
-      ]
+      const altered = ('altered' in outcome ? outcome.altered : undefined) ?? []
       return {
         result: {
           status: outcome.status,

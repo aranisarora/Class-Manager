@@ -22,9 +22,8 @@
  */
 
 import { serviceFrom, withSession } from '@/lib/db'
-import { pointsAtAffordance } from '@/lib/messaging/repair'
 import type { SessionCtx, Tx } from '@/lib/db'
-import { lint } from '@/lib/agent/lint'
+import { encodeForWhatsApp } from '@/lib/agent/lint'
 import { CATALOG, isCatalogId } from './catalog'
 import { TEMPLATES, sanitizeParam, renderTemplate, isTemplateName } from './templates'
 import type { TemplateName } from './templates'
@@ -450,11 +449,22 @@ async function suppress(
   reason: SuppressReason,
   inWindow: boolean,
 ): Promise<Prepared> {
-  const releasesKey = reason === 'recipient_frequency_cap' || reason === 'tenant_send_cap'
+  // "Not now" releases the key so the same message may be attempted once the
+  // window moves; every other suppression is a decision made once. Quiet hours
+  // and a mute-with-an-end-date are both "not now" — the message is owed, the
+  // hour is wrong.
+  const releasesKey =
+    reason === 'recipient_frequency_cap' ||
+    reason === 'tenant_send_cap' ||
+    reason === 'quiet_hours'
   const messageId = await insertMessage(tx, {
     row,
     msg,
-    status: 'failed',
+    // A gate is not an outage. Sharing `failed` with a real delivery failure is
+    // what made the product report its own most careful behaviour to its owner
+    // as a broken number (F-AT); 0032 gave the decision its own value, and this
+    // is the one writer of it.
+    status: 'suppressed',
     inWindow,
     template: null,
     category: null,
@@ -535,44 +545,38 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     }
 
     /**
-     * ── Gate 1b · say it in the business's own words ──────────────────────────
+     * ── Gate 1b · the encoding, and nothing else ──────────────────────────────
      *
-     * `lint` used to be applied by CALLERS — three of them: the `reply` tool, the
-     * tap receipt, and the loop's trailing message. Everything else went out raw:
-     * every one of the five job-handler modules, the morning brief, the evening
-     * digest, every tap ack and menu, the handoff escalation, the web form's
-     * confirmation, and every message an operation's plan staged. So "speak the
-     * academy's language, never say academy, no uuids, no ISO timestamps, no
-     * `**bold**`" held only on the paths a caller had remembered — which is the
-     * definition of not being a guarantee.
+     * This used to be five rewriting passes: markdown to WhatsApp markup, then
+     * stripping identifiers, then re-rendering timestamps, then weakening
+     * delivery claims, then swapping in the academy's own vocabulary. Four of
+     * those five are gone, and the reason is ARCHITECTURE.md's second author:
+     * every gap between the message the model wrote and the message the person
+     * read becomes a false belief in the very next turn, because the model's only
+     * picture of what it sent is its own draft. The passes are not gone because
+     * they were buggy — they were, repeatedly, in both directions — but because
+     * the shape is wrong however carefully it is written.
      *
-     * It is here rather than in `composeAndSend` — which is where you would first
-     * look, and where NEXT.md proposed it — because `composeAndSend` is not the
-     * chokepoint. `plan.ts` imports `send` directly for its staged outbox, so every
-     * operation-authored message would still have missed it. `send` is the one door
-     * all traffic goes through, so the guarantee lives here.
+     * What is left changes representation and not meaning, the model is told it
+     * happens (`PLATFORM`), and it applies to every author equally: a job's body,
+     * an operation's staged message and the model's reply all reach a phone in
+     * the markup the surface actually renders.
      *
-     * Before the repeat gate on purpose: that gate compares bodies byte for byte,
-     * and two messages identical after linting must dedupe as the repeats they are.
+     * **Refusal moved to where a round of grace exists.** A uuid or an ISO
+     * timestamp in a body is still a defect, and it is now caught at the `reply`
+     * tool while the model can fix it, rather than quietly deleted here where
+     * nobody would ever learn. Runtime-composed traffic has one author already,
+     * and a defect in it is a bug in that handler rather than something to edit
+     * on the way past.
      *
-     * Delivery evidence is deliberately NOT passed. `downgradeClaims` weakens "they
-     * have seen it" to something honest, and at this point the message has not been
-     * sent at all — so the only truthful evidence here is none.
+     * Still before the repeat gate: that gate compares bodies byte for byte, and
+     * two messages identical after encoding must dedupe as the repeats they are.
      */
-    const scope = {
-      academyId: ctx.academyId,
-      academy: {
-        name: row.academy_name,
-        timezone: row.academy_timezone,
-        memory: row.academy_memory,
-      },
-    }
-    const at = (s: string) => lint(s, scope, undefined, { deliveryClaims: false })
     msg = {
       ...msg,
-      body: at(msg.body ?? ''),
-      ...(msg.header ? { header: at(msg.header) } : null),
-      ...(msg.footer ? { footer: at(msg.footer) } : null),
+      body: encodeForWhatsApp(msg.body ?? ''),
+      ...(msg.header ? { header: encodeForWhatsApp(msg.header) } : null),
+      ...(msg.footer ? { footer: encodeForWhatsApp(msg.footer) } : null),
     }
 
     const subjects = msg.subjectPersonIds ?? []
@@ -677,51 +681,27 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
       }
     }
 
-    // ── Gate 5 · the real API's limits (§17) ──────────────────────────────────
-    // Rejected, never truncated. A 21-character button title is a compose bug; cutting it
-    // to 20 ships the bug. "If a message cannot render in the emulator, it does not ship."
     /**
-     * **A body too long for its buttons loses the buttons, not the message.**
+     * ── Gate 5 · the real API's limits (§17) ──────────────────────────────────
      *
-     * "Rejected, never truncated" is right about a malformed control: a
-     * 21-character button title is a compose bug and cutting it to 20 ships the
-     * bug. It is wrong about length, and the difference is who pays. Driven from
-     * empty: an admin asked "so what exactly can you do for me?", the model wrote
-     * a good 1,141-character answer, three real next-step buttons were attached,
-     * and 1,141 > the 1,024 interactive cap — so the whole thing was suppressed
-     * and **the admin got silence**. Nothing told them, nothing retried, and the
-     * turn's own record says it answered.
+     * Rejected, never truncated and never stripped. "If a message cannot render
+     * in the emulator, it does not ship."
      *
-     * WhatsApp's cap is 1,024 for an interactive message and 4,096 for plain
-     * text, so the same words fit perfectly well without the buttons. Dropping
-     * the affordance costs a tap; dropping the message costs the answer. The
-     * body is never cut.
+     * **This gate used to drop the buttons off an over-long body and send the
+     * words anyway**, on the reasoning that dropping the affordance costs a tap
+     * while dropping the message costs the answer. The arithmetic was right and
+     * the shape was wrong: the person then held a message whose prose was written
+     * for controls that were not on it, the model's picture of what it sent was
+     * its draft, and the runtime had to explain its own edit back afterwards —
+     * which it did, in `altered`, and which is exactly the "report the runtime's
+     * edits" design ARCHITECTURE.md replaces with not having edits.
      *
-     * Not done when the body points at a control — "tap the button below" with
-     * the button removed is the exact lie the reply path already refuses, and
-     * silence is better than that.
+     * The cap now binds where a round of grace exists. `reply`'s own declaration
+     * states it at the decode point, and the tool refuses over it while the model
+     * can still cut the explanation instead of the affordance. What reaches here
+     * over the cap is therefore a runtime compose bug, and a compose bug should
+     * be loud rather than papered over.
      */
-    if (msg.buttons?.length || msg.list) {
-      const stripped = { ...msg, buttons: undefined, list: undefined }
-      if (validateOutbound(msg).length > 0 && validateOutbound(stripped).length === 0) {
-        if (pointsAtAffordance(msg.body ?? '')) {
-          console.error(
-            `[send] too long for its buttons AND points at one, for contact ${msg.toContactId} — suppressed`,
-          )
-          return suppress(tx, row, msg, 'limit_violation', inWindow)
-        }
-        console.error(
-          `[send] body ${[...(msg.body ?? '')].length} chars > interactive cap for contact ` +
-            `${msg.toContactId}: sent as text, affordance dropped`,
-        )
-        altered.push(
-          `the body was ${[...(msg.body ?? '')].length} characters — over the 1,024 cap an interactive message has — ` +
-            `so it went as plain text and EVERY BUTTON WAS DROPPED. The person has nothing to tap.`,
-        )
-        msg = stripped
-      }
-    }
-
     const violations = validateOutbound(msg)
     if (violations.length) {
       console.error(
@@ -970,7 +950,10 @@ async function stampFailed(svc: SessionCtx, messageId: string, reason: string): 
   })
 }
 
-const RANK: Record<Exclude<MessageStatus, 'failed'>, number> = {
+// `suppressed` is off the ladder entirely, like `failed`: it is not a rung a
+// message can be moved forward from, and a delivery callback for one is a bug
+// somewhere else.
+const RANK: Record<Exclude<MessageStatus, 'failed' | 'suppressed'>, number> = {
   queued: 0,
   sent: 1,
   delivered: 2,

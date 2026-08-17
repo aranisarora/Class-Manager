@@ -1,150 +1,96 @@
 /**
- * lib/agent/lint.ts — Layer 5 (§4.5). Deterministic repair on generated output.
+ * lib/agent/lint.ts — one adapter, and a validator that refuses.
  *
- * Every pass here is a string operation, because "is it a string operation?" is
- * the whole test for belonging in this layer:
+ * **This file used to be five rewriting passes and it is now one encoding and a
+ * list of complaints.** That is the whole of ARCHITECTURE.md's hardest rule, in
+ * the place it bit hardest:
  *
- *   0. rewrite Markdown into WhatsApp's markup — the surface has one asterisk
- *      for bold, no headings, and no link syntax at all
- *   1. strip internal identifiers — uuids and table/column names
- *   2. rewrite machine timestamps into the academy's timezone and idiom
- *   3. downgrade claims the system cannot back — "delivered" where only
- *      `sent_at` is known
- *   4. rewrite product vocabulary the academy's memory says they do not use into
- *      the word they do use (doctrine: *speak simply* — their words, from memory)
+ *   > The runtime never reads or writes prose. Deterministic machinery is the
+ *   > right tool where a question has one answer — rows, diffs, permissions,
+ *   > caps, collisions. It is the wrong tool wherever the question is "what does
+ *   > this sentence mean?", and the record is total: every pattern that ever read
+ *   > or edited language in this product misfired silently, in both directions.
  *
- * NUMBER-GROUNDING IS DELIBERATELY NOT HERE, and must not be added.
- * -----------------------------------------------------------------------------
- * Tracing every numeral in generated prose back to a query result is an
- * attribution problem, not a regex. There is no string operation that can tell
- * "14 enrollments" (must trace to a row count) from a date, a time, an age, a
- * price, a phone number, a jersey size or "three weeks" — so any implementation
- * here either false-positives on ordinary English or passes everything and
- * provides false assurance, which is worse. It is a prompt rule (§10.2: every
- * number traces to a query result in the payload) verified by eval (§17).
+ * The record it is total about is this file's own. `downgradeClaims` turned *"she
+ * has read the notice"* into *"she has sent the notice"* — the opposite of what
+ * was said, produced by the pass whose entire job was not saying things that are
+ * not true — and then turned *"the coach delivered a great session"* into *"the
+ * coach sent a great session"* one line further down, by the identical defect,
+ * which survived because "delivered" reads like jargon and "read" reads like
+ * English. `localiseEnglishDates` parsed "August 2026" as day 20 and shipped
+ * **"20 Aug26"**, a date that does not exist, into billing prose. `stripIdentifiers`
+ * ate a UPI handle down to an address nobody could pay to, in the message whose
+ * entire purpose was to be paid. Each was fixed. Each fix was correct. The class
+ * is what does not go away, and every one of them was a **second author**: a gap
+ * between the message the model wrote and the message the person read, which
+ * becomes a false belief in the very next turn, because the model's picture of
+ * what it said is its own draft.
+ *
+ * What survives, and why exactly this and nothing else:
+ *
+ *   **`toWhatsAppMarkup` is an ADAPTER.** It changes representation, not meaning:
+ *   `**bold**` and `## heading` both become WhatsApp's one-asterisk bold, `- item`
+ *   becomes a bullet, a pipe table becomes one bulleted line per row. Nothing is
+ *   deleted, nothing is added, and no word is exchanged for another word. The
+ *   model is told it happens (`PLATFORM`), so its next sentence about its own
+ *   message is not a guess. An adapter is allowed; a second author is not.
+ *
+ *   **`proseViolations` REFUSES.** A uuid, a table name, an ISO timestamp, a
+ *   section reference, a raw URL, a bracketed pseudo-button, a wire-shape blob —
+ *   every one of these is machinery on a customer's screen, every one is
+ *   answerable from the string alone, and every one used to be quietly rewritten.
+ *   Now it comes back as a refusal naming what is wrong, with one round of grace,
+ *   while the model can still fix it. The model repairs everything it is told
+ *   about honestly; it mis-narrates everything it is not.
+ *
+ * DELETED, and not to be re-added without a drive showing their absence cost
+ * something — they are in ARCHITECTURE.md's trap list by name:
+ *
+ *   `downgradeClaims`  a pattern judging whether a sentence was a delivery claim.
+ *                      Whether a message was delivered is a COLUMN; the model
+ *                      reads it like it reads everything else.
+ *   `applyVocabulary`  rewriting "class" to "batch" behind the model's back. The
+ *                      tail already tells it their words, which is the half that
+ *                      works — and a preference is not a falsehood, so there is
+ *                      nothing here to refuse either.
+ *   `rewriteTimestamps` / `localiseEnglishDates`
+ *                      re-rendering times the model already wrote. An ISO
+ *                      timestamp in a message is a defect and is refused; a
+ *                      correctly-written English time is not the runtime's to
+ *                      restyle.
+ *   `stripIdentifiers` deleting uuids, unquoting state words, substituting the
+ *                      business name for "academy", humanising snake_case.
+ *                      Refused now, every one.
+ *   `tidy`             closing up the punctuation the deletions left behind.
+ *                      With nothing deleting, there is nothing to tidy.
  */
-import { inZone, nowSync } from '@/lib/clock'
-import { compactDate } from '@/lib/format'
-
-/** What the caller actually has evidence for, from the `message` row's own columns. */
-export type DeliveryEvidence = { delivered?: boolean; read?: boolean }
+import type { Identity } from '@/lib/types'
 
 /**
- * The only part of an `Identity` this file has ever read: the business's name, its
- * timezone and its vocabulary memory.
- *
- * The wider parameter was the reason lint could not live at the send path. `send`
- * holds a `SessionCtx`, not an `Identity`, so every caller that had one applied lint
- * itself and every caller that did not simply skipped it — which is how "speak the
- * academy's language" became a guarantee that depended on which code path composed
- * the message. Narrowing the parameter to what is actually used is what makes the
- * chokepoint reachable. `Identity` still satisfies it structurally, so no existing
- * caller changes.
+ * The only part of an `Identity` this file reads. Kept narrow so `send` — which
+ * holds a `SessionCtx` and not an `Identity` — can reach the same guarantee.
  */
 export type LintScope = {
-  // Which tenant's clock "today" means. `Identity` already carries it, so the turn
-  // callers pay nothing; without it the date-grounding pass reads the world clock,
-  // which is wrong in any driven world whose tenant clock has been moved (F-A).
   academyId?: string | null
   academy?: { name?: string | null; timezone?: string | null; memory?: string | null } | null
 }
 
-/**
- * `deliveryClaims: false` turns off the two passes that weaken a claim about whether a
- * message was delivered or read.
- *
- * Those passes are aimed at a MODEL asserting something about ONE message it cannot
- * know — *"she's read it"* — and they are right for that. At the send chokepoint they
- * are wrong twice over. Nothing has been delivered yet, so `evidence` is always absent
- * and they always fire; and the traffic that only reaches `send` is runtime-composed,
- * where "delivered" and "read" are counts computed from `message.status`. The admin's
- * evening digest came out saying *"9 were sent and 4 have been sent"* over numbers that
- * meant delivered and read — the delivery-health line, with its own health rewritten
- * out of it.
- *
- * The model path is unaffected: the `reply` tool lints before the message ever reaches
- * `send`, so a model claim is still checked exactly once, on the way in. It passes no
- * evidence — nothing has been delivered at compose time either — so both passes fire
- * there, which is the right direction for a claim nobody can back yet.
- */
-export type LintOptions = { deliveryClaims?: boolean }
-
-export function lint(
-  text: string,
-  id: LintScope,
-  evidence?: DeliveryEvidence,
-  opts?: LintOptions,
-): string {
-  if (!text) return text
-  const tz = id.academy?.timezone || 'Asia/Kolkata'
-
-  // Links are minted elsewhere and are opaque: a signed token is full of
-  // underscores and dashes and would be shredded by the identifier pass. Park
-  // them, run the four passes, put them back.
-  const parked: string[] = []
-  let out = text.replace(/https?:\/\/\S+/g, (m) => {
-    parked.push(m)
-    return `[[LINK${parked.length - 1}]]`
-  })
-
-  out = toWhatsAppMarkup(out)
-  out = stripDoctrineRefs(out)
-  out = stripIdentifiers(out, id)
-  out = rewriteTimestamps(out, tz, id.academyId ?? '')
-  if (opts?.deliveryClaims !== false) out = downgradeClaims(out, evidence)
-  out = applyVocabulary(out, id.academy?.memory ?? null)
-
-  out = out.replace(/\[\[LINK(\d+)\]\]/g, (_m, i: string) => parked[Number(i)] ?? '')
-  return tidy(out)
-}
-
 // -----------------------------------------------------------------------------
-// 0a. markdown that is not this surface's markup
+// The adapter
 // -----------------------------------------------------------------------------
 
-/**
- * The model writes Markdown, because everything it has ever read was Markdown.
- * WhatsApp is not Markdown: bold is `*one*` asterisk, there are no headings, and
- * `[label](url)` renders as the literal characters `[label](url)`.
- *
- * Left alone, the very first thing a new admin was shown read:
- *
- *   `* **Beginners:** Monday, Wednesday, Friday, 6:30pm - 7:30pm`
- *
- * — which is correct information wearing four wrong characters, on the screen
- * where the product makes its first impression. It is the same class as an ISO
- * timestamp or a table name: right, and not the language of the surface it
- * landed on. Which is exactly what makes it a lint rule rather than a prompt
- * one — it is a string operation, and a model under pressure will always
- * eventually reach for `**`.
- *
- * Runs first, so a heading rewritten to bold is still bold after the passes
- * below have taken their punctuation out.
- */
 /**
  * A Markdown pipe table, turned into lines WhatsApp can actually draw.
  *
  * WhatsApp's markup is bold, italic, strikethrough, monospace, inline code,
- * bulleted and numbered lists, and block quotes. There is no table. A model
- * asked for a roster reaches for one anyway, and an admin was shown:
+ * bulleted and numbered lists, and block quotes. There is no table. A model asked
+ * for a roster reaches for one anyway, and an admin was shown pipes and colons,
+ * verbatim, in the message summarising their whole business.
  *
- *   | Class | Coach | Roster |
- *   |:--- |:--- |:--- |
- *   | *Beginners* | Arjun Menon | Aarav, Ananya |
- *
- * — pipes and colons, verbatim, in the message summarising their whole business.
- * It passed every check in the probe, including "no message carries raw
- * structure", because that check was looking for JSON and ids.
- *
- * **Converted rather than refused.** The information is right and the person
- * wants it; suppressing the message would leave them with nothing, and this file
- * is a rewriting pass by design. Each data row becomes a bullet led by its first
- * cell, with the remaining cells labelled from the header — which is what the
- * table was for.
- *
- * Requires two or more consecutive pipe rows AND either a `|:---|` separator or a
- * consistent column count, so a sentence that merely contains a pipe is left
- * alone. A rewriting pass that fires on prose is worse than the table it fixes.
+ * Converted rather than refused, because this is representation and not meaning:
+ * every cell survives, in the same order, under the same headings. Requires two
+ * or more consecutive pipe rows AND either a `|:---|` separator or a consistent
+ * column count, so a sentence that merely contains a pipe is left alone.
  */
 function pipeTablesToLines(text: string): string {
   const lines = text.split('\n')
@@ -192,57 +138,59 @@ function pipeTablesToLines(text: string): string {
   return out.join('\n')
 }
 
-function toWhatsAppMarkup(text: string): string {
+/**
+ * Markdown into WhatsApp's own markup. Representation, never meaning.
+ *
+ * The model writes Markdown because everything it has ever read was Markdown.
+ * WhatsApp is not Markdown: bold is one asterisk, there are no headings, and
+ * `[label](url)` renders as the literal characters. Left alone, the first thing a
+ * new admin was ever shown read `* **Beginners:** Monday, Wednesday, Friday` —
+ * correct information wearing four wrong characters.
+ */
+export function toWhatsAppMarkup(text: string): string {
+  if (!text) return text
   return (
     pipeTablesToLines(text)
       // Fenced code and inline code survive as-is: WhatsApp has both.
       // `## Heading` → bold on its own line. Headings do not exist here.
       .replace(/^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*$/gm, (_m, body: string) => `*${String(body).trim()}*`)
-      // `**bold**` / `__bold__` → the one-character forms.
-      // Bounded to one line on purpose: an unbalanced `**` must not swallow the
-      // rest of the message looking for its partner.
+      // `**bold**` / `__bold__` → the one-character forms. Bounded to one line on
+      // purpose: an unbalanced `**` must not swallow the rest of the message
+      // looking for its partner.
       .replace(/\*\*\*([^\n*]+?)\*\*\*/g, '_*$1*_')
       .replace(/\*\*([^\n*]+?)\*\*/g, '*$1*')
       .replace(/__([^\n_]+?)__/g, '_$1_')
       // `* item` / `- item` at the start of a line → a real bullet. An asterisk
       // there is indistinguishable from an unclosed bold marker.
       .replace(/^[ \t]*[*+-][ \t]+/gm, '• ')
-      // `[label](https://…)` — parked as [[LINKn]] by now — renders literally.
-      .replace(/\[([^\]\n]+)\]\(\s*(\[\[LINK\d+\]\])\s*\)/g, '$1: $2')
       // A horizontal rule is a Markdown idea.
       .replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm, '')
   )
 }
 
-// -----------------------------------------------------------------------------
-// 0. doctrine references
-// -----------------------------------------------------------------------------
-
 /**
- * The whole spec is in the prompt, so its section numbers are part of the model's
- * working vocabulary — and they leak. A parent was told "nobody is messaged (§2.6)";
- * an internal citation, on WhatsApp, cited at someone who has never seen the
- * document. It is the same class as a uuid in a message: correct, and not English.
+ * The one thing every outbound message passes through, at the chokepoint.
  *
- * Runs before the identifier pass so a stripped "(§14.2)" cannot leave stray
- * punctuation for the later passes to tidy around.
+ * Named for what it now is. The old `lint()` took an `evidence` argument and an
+ * options bag because two of its five passes made claims about delivery; there
+ * is nothing left here that has an opinion about the content.
  */
-function stripDoctrineRefs(text: string): string {
-  return text
-    // "(§2.6)" / "[§14.2.1]" / "(see §4.3)" — the whole bracket goes.
-    .replace(/[([]\s*(?:see\s+)?§+\s*\d+(?:\.\d+)*\s*[)\]]/gi, '')
-    // "§16.3" bare, and "per §7.2" / "under §7.2" with its preposition.
-    .replace(/\b(?:per|under|see|as per)\s+§+\s*\d+(?:\.\d+)*/gi, '')
-    .replace(/§+\s*\d+(?:\.\d+)*/g, '')
-  // The space a stripped reference leaves in front of the next comma or full stop
-  // is closed by `tidy()` at the end of the pass, along with every other one. There
-  // used to be a `.replace(/\s+,/g, ',')` here doing a subset of that, under a
-  // comment about "rule 10" describing something it never did.
+export function encodeForWhatsApp(text: string): string {
+  return toWhatsAppMarkup(text)
 }
 
 // -----------------------------------------------------------------------------
-// 1. identifiers
+// The validator
 // -----------------------------------------------------------------------------
+
+export type ProseViolation = {
+  /** What is wrong, in the model's terms. */
+  what: string
+  /** What to do instead. A refusal that carries no repair costs a round. */
+  fix: string
+  /** The offending text, so the model does not have to hunt for it. */
+  sample?: string
+}
 
 const UUID = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/
 
@@ -252,291 +200,157 @@ const TABLES = [
   'academy_admin', 'memory_fact', 'class', 'class_slot', 'class_coach',
   'enrollment', 'session', 'session_coach', 'attendance', 'tally_line',
   'payment', 'sender', 'message', 'action', 'job', 'audit_entry',
-  'turn', 'sim_clock', 'sim_fault',
+  'turn', 'pending_request', 'comm_preference', 'business_rule',
 ]
 
-/** Table names with no natural English reading of their own. */
-const TABLE_WORDS: Record<string, string> = {
-  academy_admin: 'admin',
-  memory_fact: 'note',
-  class_slot: 'weekly time',
-  class_coach: 'coach assignment',
-  session_coach: 'coach assignment',
-  tally_line: 'line on the bill',
-  audit_entry: 'change record',
-  sim_clock: 'clock',
-  sim_fault: 'fault',
-}
+const TABLE_COLUMN = new RegExp(`\\b(?:${TABLES.join('|')})\\.[a-z_]+\\b`)
 
 /**
- * Column values the schema spells in quotes. The model quotes them back —
- * *"we can set Shuttle Point to 'live'"* — and a quoted lowercase token on
- * WhatsApp reads as a setting in a system rather than as English. Unquoting is
- * the whole repair: "set Shuttle Point to live" is what a person would have
- * said, and the word survives.
- */
-const STATE_WORDS =
-  /'(setup|roster|ready|live|added|invited|active|ended|prospect|registered|engaged|opted_out|scheduled|cancelled|completed|present|late|absent|cancelled_timely|queued|sent|delivered|read|failed|requested|confirmed)'/g
-
-/**
- * Compiled once, not per message.
+ * A bare `snake_case` token that is not part of an address.
  *
- * These are built from `UUID`, `TABLES` and `TABLE_WORDS`, all of which are module
- * constants — so the patterns never vary, and building them inside the function meant
- * thirteen `new RegExp` on the way out of every single message the product sends.
- * `String.replace` with a global regex starts at 0 and resets `lastIndex` when it
- * finishes, so sharing one instance across calls is safe.
+ * The lookarounds are what stop it reading a UPI handle as a column name:
+ * `coach_ace@okhdfc` is the one identifier in this product a person is supposed
+ * to read verbatim, so anything adjacent to `@`, `.` or `/` is left alone.
  */
-/** "(id: 7f3…)", "[session_id=7f3…]" — the whole parenthetical is machinery. */
-const UUID_PARENTHETICAL = new RegExp(
-  `\\s*[(\\[][^()\\[\\]]{0,40}${UUID.source}[^()\\[\\]]{0,10}[)\\]]`,
-  'g',
-)
-/** Bare uuids, and any label immediately in front of one. */
-const UUID_LABELLED = new RegExp(`(?:\\b[\\w.]{0,24}\\s*[:=]\\s*)?${UUID.source}`, 'g')
-/** table.column -> the column, humanised. "session.starts_at" -> "start time". */
-const TABLE_COLUMN = new RegExp(`\\b(${TABLES.join('|')})\\.([a-z_]+)\\b`, 'g')
-/** Multi-word table names standing on their own. */
-const TABLE_WORD_PATTERNS: [RegExp, string][] = Object.entries(TABLE_WORDS).map(([table, word]) => [
-  new RegExp(`\\b${table}s?\\b`, 'gi'),
-  word,
-])
+const SNAKE_CASE = /(?:^|[^\w@./])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?![\w@./])/
 
-function stripIdentifiers(text: string, id: LintScope): string {
-  let out = text.replace(STATE_WORDS, '$1')
-
-  // "I've flagged it to the owner to sort out on the backend" — said to a
-  // parent (F-K). "backend" is machinery vocabulary the same way a table name
-  // is: nobody on WhatsApp has a backend. Substituted, not flagged, per this
-  // pass's repair-only contract. Bare "roster" is deliberately NOT rewritten:
-  // it is ordinary English in a sports business often enough that a blind
-  // substitution would corrupt more sentences than it saves.
-  out = out.replace(/\bback[- ]?end\b/gi, 'our side')
-
-  out = out.replace(UUID_PARENTHETICAL, '')
-  out = out.replace(UUID_LABELLED, '')
-  out = out.replace(TABLE_COLUMN, (_m, _t: string, col: string) => humanise(col))
-
-  for (const [pattern, word] of TABLE_WORD_PATTERNS) {
-    out = out.replace(pattern, (m) => (m.endsWith('s') && !m.endsWith('ss') ? `${word}s` : word))
-  }
-
-  // §6.1 / §18.4 — "academy" is a table name AND the one word that appears
-  // nowhere a user can see. Their own name for the business goes in instead.
-  const businessName = id.academy?.name
-  if (businessName) {
-    out = out.replace(/\b(?:the|your|our|this)\s+academ(?:y|ies)\b/gi, businessName)
-    out = out.replace(/\bacadem(?:y|ies)\b/g, businessName)
-  }
-
-  // Anything else still shaped like an identifier: rate_amount, last_inbound_at,
-  // per_session. Humanising keeps the meaning and loses the machinery.
-  //
-  // The lookarounds are what stop it eating a UPI handle. `coach_ace@okhdfc` became
-  // "coach ace@okhdfc" — an address nobody can pay to, in the message whose entire
-  // purpose is to be paid — because an underscore inside a handle looks exactly like an
-  // underscore inside a column name. A UPI handle is the one identifier in this product
-  // that a person is supposed to read verbatim, so anything adjacent to `@`, `.` or `/`
-  // is left alone: that is an address, not machinery.
-  out = out.replace(
-    /(^|[^\w@./])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?![\w@./])/g,
-    (_m, before: string, token: string) => `${before}${humanise(token)}`,
-  )
-
-  return out
-}
-
-const COLUMN_WORDS: Record<string, string> = {
-  id: '',
-  starts_at: 'start time',
-  ends_at: 'end time',
-  started_on: 'start date',
-  ended_on: 'end date',
-  starts_on: 'start date',
-  ends_on: 'end date',
-  confirmed_at: 'confirmation',
-  declined_at: 'decline',
-  arrived_at: 'arrival',
-  marked_at: 'the time it was marked',
-  last_inbound_at: 'their last message',
-  opted_out_at: 'opt-out',
-  full_name: 'name',
-  phone_e164: 'number',
-  rate_amount: 'rate',
-  rate_unit: 'rate',
-  pay_amount: 'pay',
-  cancellation_window_hours: 'cancellation window',
-  client_reminder_lead_hours: 'reminder lead time',
-  cancelled_timely: 'cancelled in time',
-  running_late: 'running late',
-  idempotency_key: '',
-  wa_message_id: '',
-  academy_id: '',
-  person_id: '',
-  contact_id: '',
-  session_id: '',
-  player_id: '',
-  account_id: '',
-  class_id: '',
-  coach_id: '',
-}
-
-function humanise(token: string): string {
-  if (token in COLUMN_WORDS) return COLUMN_WORDS[token]
-  return token.replace(/_/g, ' ')
-}
-
-// -----------------------------------------------------------------------------
-// 2. timestamps
-// -----------------------------------------------------------------------------
-
-const ISO =
-  /\b(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?\s*(Z|[+-]\d{2}:?\d{2})?)?\b/g
+const ISO_TIMESTAMP = /\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2})/
+const BARE_ISO_DATE = /\b\d{4}-\d{2}-\d{2}\b/
+const SECTION_REF = /§+\s*\d+(?:\.\d+)*/
+const RAW_URL = /https?:\/\/(?!wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com)\S+/
 
 /**
- * The idiom pass the ISO pass never covered.
+ * A line that is nothing but `[Label]` groups — the model typing the buttons it
+ * meant to attach.
  *
- * The rule is "their timezone and their idiom — 'tomorrow 6:30pm', 'Sat 8am'", and
- * an ISO string is only the most obvious way to break it. A model writing English
- * reaches for "Monday, August 17th at 6:00 PM", which is not wrong, not an ISO
- * timestamp, and not how anyone in Bangalore writes a time to a parent. It arrives
- * looking like software.
+ * This used to be harvested into real buttons, which is the friendliest possible
+ * second author and still a second author: the message that reached the person
+ * had lines removed from it and controls added to it, and the model's picture of
+ * what it sent was its draft. Refused now, once, while there is a round left to
+ * pass them as buttons — which is the only form that is actually tappable.
  */
-function localiseEnglishDates(text: string): string {
-  const MONTHS_LONG: Record<string, string> = {
-    january: 'Jan', february: 'Feb', march: 'Mar', april: 'Apr', may: 'May', june: 'Jun',
-    july: 'Jul', august: 'Aug', september: 'Sep', october: 'Oct', november: 'Nov', december: 'Dec',
-  }
-  return (
-    text
-      // "6:00 PM" -> "6pm", "6:30 PM" -> "6:30pm". Also "6 PM".
-      //
-      // **No trailing `\.?`.** It used to end `[Mm]\.?`, to absorb the second dot of
-      // "P.M.". A regex cannot tell that dot from the one ending the sentence, and
-      // the sentence is the commoner case by far: the model writes "PM", so every
-      // "...from 6:30 PM to 7:30 PM. It's ₹1,500 per month." shipped to a person as
-      // "...to 7:30pm It's ₹1,500 per month." — two sentences run together, on the
-      // first message a prospect ever receives. Driven twice in one probe run, and
-      // invisible to every check because the body is otherwise perfect English.
-      //
-      // Dropping it costs a stray dot on the rare dotted form ("6:30 P.M. tomorrow"
-      // -> "6:30pm. tomorrow"). That is the right way round: a spare full stop reads
-      // as a typo, a missing one reads as a different sentence.
-      .replace(/\b(\d{1,2}):(\d{2})\s*([APap])\.?[Mm]/g, (_m, h, mm, ap) =>
-        `${Number(h)}${mm === '00' ? '' : `:${mm}`}${ap.toLowerCase()}m`,
-      )
-      .replace(/\b(\d{1,2})\s+([APap])\.?[Mm]/g, (_m, h, ap) => `${Number(h)}${ap.toLowerCase()}m`)
-      // "August 17th" / "August 17, 2026" -> "17 Aug"
-      //
-      // `(?!\d)` after the day, because without it "August 2026" parsed as day 20 with
-      // "26" left over and became **"20 Aug26"** — a date that does not exist, in the
-      // one message where being wrong is most expensive. A billing period is written
-      // "<Month> <YYYY>" by `monthLabel`, so every dunning line, every month-end tally
-      // and every recurring charge description carries that shape. It only started
-      // reaching this pass when lint moved to the send path and job-handler bodies came
-      // with it; the bug is older than the move.
-      //
-      // A bare "August 2026" now matches nothing and is left exactly as written, which
-      // is right: it is a month, not a date, and there is nothing to localise.
-      .replace(
-        /\b([A-Z][a-z]{2,8})\s+(\d{1,2})(?!\d)(?:st|nd|rd|th)?(?:,\s*\d{4})?/g,
-        (whole, month: string, day: string) => {
-          const short = MONTHS_LONG[month.toLowerCase()]
-          return short ? `${Number(day)} ${short}` : whole
-        },
-      )
-      // "Monday, 17 Aug" -> "Mon 17 Aug"
-      .replace(
-        /\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?=\d{1,2}\s+[A-Z][a-z]{2}\b)/g,
-        (_m, day: string) => `${day.slice(0, 3)} `,
-      )
-  )
-}
+const BRACKET_LINE = /^\s*(\[[^\]\n]{1,40}\]\s*(?:\(\s*(?:action|payload|kind|on-click)\s*:[^)\n]*\)\s*)?)+\s*$/im
 
 /**
- * `compactDate` and its tables live in `lib/format.ts`, which is where this
- * product decides how a time reaches a human. This file used to hold a second
- * copy of both — and one of the things it rewrote on the way out was the FIRST
- * copy's output ("6:30 pm" -> "6:30pm"), which is two files disagreeing rather
- * than anybody choosing. The chat idiom is still the right one for this pass;
- * only its definition moved.
+ * A key that only ever appears in this product's own wire shape, in ANY notation.
+ *
+ * The model does not write strict JSON, because the prompt does not show it
+ * strict JSON — the action schema is documented as `{kind:'reply',text}`, so that
+ * is the notation that comes back when it types an offer instead of calling the
+ * tool. So the test is the KEY, never the quoting.
  */
-function rewriteTimestamps(text: string, tz: string, academyId = ''): string {
-  const today = inZone(nowSync(academyId), tz)
-  return localiseEnglishDates(text).replace(ISO, (whole, y, mo, d, hh, mm, _ss, off) => {
-    if (hh === undefined) {
-      // A calendar date. Converting a bare date between zones would move the day,
-      // so it is formatted where it stands.
-      return compactDate(`${y}-${mo}-${d}`, null, today.date)
+const WIRE_SHAPE =
+  /(?:^|[{,[\s])["']?(?:kind|buttons|action|steps|menu|args|form_prefill|catalog_id|to_contact_id|to_person_id)["']?\s*:/
+
+/**
+ * Everything a message can be wrong about that the string itself decides.
+ *
+ * Nothing here judges MEANING. Every one of these is answerable by looking at the
+ * characters — "does this contain a uuid" has one answer, the way "does this
+ * overclaim" does not — which is the line ARCHITECTURE.md draws between what
+ * deterministic machinery may decide and what it may not.
+ *
+ * Empty is the overwhelmingly common case, and an empty list costs one pass over
+ * the string.
+ */
+export function proseViolations(text: string, scope?: LintScope): ProseViolation[] {
+  const out: ProseViolation[] = []
+  if (!text) return out
+
+  const uuid = UUID.exec(text)
+  if (uuid) {
+    out.push({
+      what: 'it contains a uuid',
+      fix: 'Ids are for your SQL and never for a message. Say the person, the class or the session by name.',
+      sample: uuid[0],
+    })
+  }
+
+  const tableColumn = TABLE_COLUMN.exec(text)
+  if (tableColumn) {
+    out.push({
+      what: 'it names a table and column',
+      fix: 'Say what the value means in the business\'s words — "her start time", not the column it lives in.',
+      sample: tableColumn[0],
+    })
+  } else {
+    const snake = SNAKE_CASE.exec(text)
+    if (snake) {
+      out.push({
+        what: 'it contains a snake_case identifier',
+        fix: 'That is a column or a status value, not English. Say it the way the person would.',
+        sample: snake[1],
+      })
     }
-    const iso = `${y}-${mo}-${d}T${hh}:${mm}:00${off ? String(off) : 'Z'}`
-    const parsed = new Date(iso)
-    if (Number.isNaN(parsed.getTime())) return whole
-    const local = inZone(parsed, tz)
-    return compactDate(local.date, local.time, today.date)
-  })
-}
-
-// -----------------------------------------------------------------------------
-// 3. claims the system cannot back (§2.4)
-// -----------------------------------------------------------------------------
-
-function downgradeClaims(text: string, evidence?: DeliveryEvidence): string {
-  let out = text
-
-  if (!evidence?.read) {
-    /**
-     * "she has read it", "it was seen", "they've opened it" — downgraded to the
-     * strongest claim the row supports.
-     *
-     * **Bounded to a message-shaped object, because unbounded it inverts English.**
-     * This matched any auxiliary followed by read/seen/opened, so *"she has read
-     * the notice"* became *"she has sent the notice"* — the opposite of what was
-     * said, produced by the pass whose entire job is not saying things that are not
-     * true. "Read" is one of the commonest irregular verbs in the language and only
-     * a fraction of its uses are a delivery claim.
-     *
-     * The lookahead is the discriminator: a delivery claim is about *the message*,
-     * so it lands on "it", "that", "your message" or the end of the clause. Anything
-     * with a real object — a notice, a form, a book — is ordinary English and is
-     * left alone. This is the same line lint.ts draws for number-grounding: a string
-     * operation may only act where the string itself is decisive.
-     */
-    out = out.replace(
-      /\b(has|have|had|was|were|been|is|are|'ve|'s)\s+(?:already\s+)?(?:read|seen|opened)\b(?=\s*(?:it|this|that|them|the message|your message|my message|the reminder|the update)\b|\s*[.,;!?]|\s*$)/gi,
-      (_m, aux: string) => `${aux} sent`,
-    )
-    out = out.replace(/\bread receipts?\b/gi, 'delivery status')
   }
-  if (!evidence?.delivered) {
-    /**
-     * **Bounded the same way, and for the same reason.**
-     *
-     * The "read/seen/opened" pass above was narrowed after it inverted English —
-     * *"she has read the notice"* became *"she has sent the notice"* — and the
-     * discriminator it landed on is that a delivery claim is about *the message*,
-     * so it lands on "it", "that", "your message", or the end of the clause.
-     *
-     * This one was left unbounded: `\bdeliver(?:ed|y confirmed)\b` matched any use
-     * of the word, so *"the coach delivered a great session"* became *"the coach
-     * sent a great session"*. Same defect, same fix, one line apart — it survived
-     * because "delivered" reads like jargon and "read" reads like English, which is
-     * a fact about the reader rather than about the string.
-     *
-     * "delivery confirmed" keeps its own rule: it is a status phrase, never
-     * ordinary prose, so it needs no object to disambiguate it.
-     */
-    out = out.replace(
-      /\b(has|have|had|was|were|been|is|are|'ve|'s)\s+(?:already\s+)?delivered\b(?=\s*(?:it|this|that|them|the message|your message|my message|the reminder|the update)\b|\s*[.,;!?]|\s*$)/gi,
-      (_m, aux: string) => `${aux} sent`,
-    )
-    out = out.replace(/\bdelivery confirmed\b/gi, (m) => (m[0] === m[0].toUpperCase() ? 'Sent' : 'sent'))
+
+  const iso = ISO_TIMESTAMP.exec(text) ?? BARE_ISO_DATE.exec(text)
+  if (iso) {
+    out.push({
+      what: 'it contains a machine timestamp',
+      fix: 'Write times in their idiom and their zone — "tomorrow 6:30pm", "Sat 8am" — never an ISO string and never UTC.',
+      sample: iso[0],
+    })
   }
+
+  const section = SECTION_REF.exec(text)
+  if (section) {
+    out.push({
+      what: 'it cites an internal section number',
+      fix: 'Nobody you are writing to has read that document. Say the thing itself.',
+      sample: section[0],
+    })
+  }
+
+  const url = RAW_URL.exec(text)
+  if (url) {
+    out.push({
+      what: 'it contains a web address',
+      fix: 'There is no browser in this product. Offer the thing as a button or a form instead.',
+      sample: url[0],
+    })
+  }
+
+  const brackets = BRACKET_LINE.exec(text)
+  if (brackets) {
+    out.push({
+      what: 'it has a line of bracketed labels in the body',
+      fix: 'A label typed into a body looks tappable and is not. Pass them as buttons — {kind:\'reply\', text:"…"} is always legal and needs no arguments you do not have.',
+      sample: brackets[0].trim().slice(0, 80),
+    })
+  }
+
+  if (text.includes('{') && WIRE_SHAPE.test(text)) {
+    out.push({
+      what: 'it has a wire-shape object in the body',
+      fix: 'That is the shape you pass to the tool, not something a person may see. Put the offer on `buttons`.',
+    })
+  }
+
+  // "academy" is the one word that appears nowhere a user can see, and it is also
+  // a table name — so it is caught here rather than substituted, which is what
+  // used to happen and is why a receipt once read "changed 1 Shuttle Point".
+  if (/\bacadem(?:y|ies)\b/i.test(text)) {
+    out.push({
+      what: 'it uses the word "academy"',
+      fix: scope?.academy?.name
+        ? `Use their own name for the business — ${scope.academy.name} — or nothing at all.`
+        : 'Use their own name for the business, or nothing at all.',
+    })
+  }
+
   return out
 }
 
+/** One sentence a tool result can carry, from a list of violations. */
+export function violationMessage(violations: readonly ProseViolation[]): string {
+  return violations
+    .map((v) => `${v.what}${v.sample ? ` ("${v.sample}")` : ''} — ${v.fix}`)
+    .join(' ')
+}
+
 // -----------------------------------------------------------------------------
-// 4. their words, not ours (doctrine: *speak simply*)
+// Their words, from memory — read by the TAIL, never applied to a message
 // -----------------------------------------------------------------------------
 
 export type VocabularyPreference = { prefer: string; avoid: string }
@@ -549,9 +363,14 @@ const VOCAB_PATTERNS: RegExp[] = [
 ]
 
 /**
- * Reads vocabulary preferences out of an academy memory hot set. Shared with
- * `variableTail`, so the prompt tells the model their words and the lint fixes
- * it up when the model forgets anyway.
+ * Vocabulary preferences read out of an academy's memory hot set, for the tail.
+ *
+ * **This reads a FACT, never a message**, which is the whole reason it survived
+ * the deletion above it. A pattern over something the model wrote about the
+ * business is a pattern over data; a pattern over something the model is about to
+ * send is an unsupervised judge standing between the author and the reader. The
+ * rewriting half — `applyVocabulary` — is gone; telling the model their words and
+ * letting it choose is the half that ever worked.
  */
 export function vocabularyPreferences(memory: string | null | undefined): VocabularyPreference[] {
   if (!memory) return []
@@ -574,51 +393,5 @@ export function vocabularyPreferences(memory: string | null | undefined): Vocabu
   return found
 }
 
-function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function matchCase(sample: string, replacement: string): string {
-  if (sample === sample.toUpperCase() && sample.length > 1) return replacement.toUpperCase()
-  if (sample[0] === sample[0]?.toUpperCase()) {
-    return replacement[0].toUpperCase() + replacement.slice(1)
-  }
-  return replacement
-}
-
-function applyVocabulary(text: string, memory: string | null): string {
-  let out = text
-  for (const { prefer, avoid } of vocabularyPreferences(memory)) {
-    for (const [from, to] of variants(avoid, prefer)) {
-      out = out.replace(new RegExp(`\\b${escapeRe(from)}\\b`, 'gi'), (m) => matchCase(m, to))
-    }
-  }
-  return out
-}
-
-/** "classes"/"class" both get rewritten, to the matching form of their word. */
-function variants(avoid: string, prefer: string): [string, string][] {
-  const pairs: [string, string][] = [[avoid, prefer]]
-  const plural = (w: string) => (/(s|x|z|ch|sh)$/i.test(w) ? `${w}es` : `${w}s`)
-  const singular = (w: string) =>
-    /ies$/i.test(w) ? `${w.slice(0, -3)}y` : /(?:ses|xes|zes|ches|shes)$/i.test(w) ? w.slice(0, -2) : w.replace(/s$/i, '')
-
-  if (/s$/i.test(avoid)) {
-    pairs.push([singular(avoid), /s$/i.test(prefer) ? singular(prefer) : prefer])
-  } else {
-    pairs.push([plural(avoid), /s$/i.test(prefer) ? prefer : plural(prefer)])
-  }
-  return pairs.filter(([f, t]) => f.length > 1 && t.length > 0 && f.toLowerCase() !== t.toLowerCase())
-}
-
-// -----------------------------------------------------------------------------
-
-function tidy(text: string): string {
-  return text
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\s+([.,;:!?])/g, '$1')
-    .replace(/\(\s*\)/g, '')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
+/** Structural satisfaction for callers that still hand an `Identity` through. */
+export type { Identity }

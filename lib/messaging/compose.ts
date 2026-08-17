@@ -22,7 +22,6 @@ import { CATALOG, isCatalogId } from './catalog'
 import type { CatalogId } from './catalog'
 import { FLOWS } from './flows'
 import { send } from './send'
-import { repairOutbound } from './repair'
 import type { Button, LinkButton, ListRow, ListSection, OutboundMessage, SendOutcome } from './types'
 import { validateOutbound } from './types'
 
@@ -70,27 +69,27 @@ export type ComposeSpec = {
 }
 
 /** Mints an action per button, then hands a well-formed OutboundMessage to `send`. */
-export async function composeAndSend(ctx: SessionCtx, rawSpec: ComposeSpec): Promise<SendOutcome> {
-  // The one place all outbound traffic passes, which is the only place a guarantee about
-  // outbound traffic can live. Every previous attempt at these three repairs was made in
-  // a caller — `reply` had one, the loop's trailing message had another — so which of them
-  // a given turn got depended on which path the model happened to take, and a guarantee
-  // that depends on the model's choice is not a guarantee. Jobs, digests, escalations and
-  // tap acknowledgements went through neither.
-  const { message: repaired, repairs, bracketButtons } = repairOutbound(rawSpec)
-  // This path can still mint, so labels the model typed into the prose become the buttons
-  // it plainly meant — unless the message already carries an affordance, in which case the
-  // brackets are simply gone, which is the better of the two remaining outcomes.
-  const promoted =
-    bracketButtons.length > 0 && !repaired.buttons?.length && !repaired.list && !repaired.link
-  const spec: ComposeSpec = promoted
-    ? { ...repaired, buttons: bracketButtons as ComposeSpec['buttons'] }
-    : repaired
-  if (repairs.length) {
-    // Loud, never silent: a repair firing every time is a compose bug upstream, and the
-    // whole reason "reject, never truncate" was the rule is that a silent fix hides one.
-    console.warn(`[compose] repaired an outbound message to ${spec.toContactId}: ${repairs.join('; ')}`)
-  }
+export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promise<SendOutcome> {
+  /**
+   * **Nothing is repaired here any more, and that is the change.**
+   *
+   * This used to call `repairOutbound` first: it pulled wire-shape blobs out of
+   * the body, harvested `[Bracketed labels]` into real buttons, turned a pasted
+   * URL into a link button and dropped the reply buttons it cannot share a
+   * message with, and trimmed headers and footers to fit. Every one of those was
+   * defensible on its own and every one of them was the same thing —
+   * ARCHITECTURE.md's second author, the gap between the message the model wrote
+   * and the message the person read, which becomes a false belief in the very
+   * next turn because the model's only picture of what it sent is its draft.
+   * The runtime then had to explain its own edits back through `altered`, which
+   * is the design the architecture replaces with not having edits.
+   *
+   * All of it is a refusal now, and it fires where a round of grace exists: the
+   * `reply` tool checks `proseViolations` plus the wire limits before composing
+   * and comes back with the reason. What reaches this function is what its author
+   * meant, and `validateOutbound` below is the last structural check rather than
+   * the last chance to rewrite.
+   */
   const entry = spec.catalogId && isCatalogId(spec.catalogId) ? CATALOG[spec.catalogId] : null
 
   const idempotencyKey =
@@ -232,30 +231,13 @@ export async function composeAndSend(ctx: SessionCtx, rawSpec: ComposeSpec): Pro
     }
   }
 
-  let outcome = await send(ctx, { ...base, buttons, list, flow })
+  const outcome = await send(ctx, { ...base, buttons, list, flow })
   // Close the family before returning. Until this lands, every button on this message is an
   // independent row live for its own TTL — which is how tapping `[Do it]` and then `[Cancel]`
   // on the same card committed a plan and then said "Left as it was — nothing changed."
   // A suppressed or failed send that never got a row leaves them unstamped, which is exactly
   // right: nothing was printed, so there is no family and nothing to invalidate.
   await attachActionsToMessage(ctx, outcome.messageId, minted)
-
-  // What compose changed rides the outcome beside what send changed, in the order it
-  // happened — repairs are already "returned, never swallowed" to the console; this
-  // returns them to the author, who is the one that can stop causing them.
-  const composeAltered = [
-    ...repairs,
-    ...(bracketButtons.length
-      ? [
-          promoted
-            ? `bracket labels typed into the prose became real buttons: ${bracketButtons.map((b) => `[${b.title}]`).join(' ')}`
-            : `bracket labels typed into the prose were removed — the message already carried its own affordance`,
-        ]
-      : []),
-  ]
-  if ((outcome.status === 'sent' || outcome.status === 'queued') && composeAltered.length) {
-    outcome = { ...outcome, altered: [...composeAltered, ...(outcome.altered ?? [])] }
-  }
   return outcome
 }
 

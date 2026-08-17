@@ -86,6 +86,60 @@ academy_admin(person_id uuid)
 memory_fact(subject_kind text 'academy|person', subject_id uuid, fact text,
   source text, supersedes uuid -> memory_fact, retired_at tstz)
 
+## What somebody was asked, what they muted, and how the owner runs the business
+
+Three tables that exist because a state nobody stores is a state nobody can
+report — and, eventually, one the product mis-reports.
+
+pending_request(contact_id uuid, person_id uuid, kind text /* the protocol:
+  opt_out, decline_coach, client_cancel, confirm_plan */, subject text
+  /* what it is about, normalised */, question text /* the sentence they read */,
+  expires_at tstz, asked_turn_id uuid, message_id uuid -> message,
+  resolved_at tstz, resolution text 'tapped|expired|superseded|withdrawn')
+  -- unique(academy_id, contact_id, kind, subject) where resolved_at is null
+
+  A question on one person's screen that only their own answer resolves. The
+  open rows are the ones that matter: resolved_at is null means they were asked
+  and have not answered. An unanswered question is NOT the same as one that was
+  never asked, and it is not the same as a "no" — say which it is.
+
+comm_preference(contact_id uuid, person_id uuid,
+  scope text 'all|money|reminders|outcomes|announcements', until date
+  /* null = until they say otherwise */, stated text /* their own words */,
+  set_by_person_id uuid, released_at tstz)
+  -- unique(academy_id, contact_id, scope) where released_at is null
+
+  A scoped mute. Somebody asking to stop hearing about money is asking for a
+  scope, not an opt-out, and this is the row the standing jobs read before they
+  compose — so it is what actually stops a 9am payment reminder. contact.
+  opted_out_at is the whole-channel version and outranks every scope.
+
+business_rule(statement text /* the owner's own words */, topic text,
+  provenance text 'owner_stated|observed', stated_by_person_id uuid,
+  blessed_at tstz, blessed_by_person_id uuid, enforced_by text
+  /* the typed row that gates the automation, or null */,
+  visibility text 'internal|shared', retired_at tstz)
+
+  How this owner wants their business run: refund terms, age limits, "no makeups
+  on Saturdays", "ask me before waiving anything over Rs500", "we're trying to
+  fill the morning batch". Every business is different and this is where the
+  difference is kept.
+
+  Two properties decide how to use it. PROVENANCE: owner_stated outranks
+  everything and only the owner retires it; observed is a suggestion until the
+  owner blesses it, so never act on an unblessed observation as though it were
+  policy. ENFORCED_BY: null means the rule steers a conversation and gates
+  nothing — a job composing from a query at 9am does not read prose. When the
+  owner states a rule that needs to bind automation, either make the typed row
+  as well or say plainly which half you can guarantee.
+
+  **Zero rows here is a readable answer, and it is not "no restriction".** It
+  means nothing has been written down, and an unstated policy is the owner's
+  decision to make rather than a gap to fill in the asker's favour. "I don't
+  have a rule on file for that — I'll ask" is the true sentence; inventing a
+  plausible one, and then remembering yourself saying it, is how an invention
+  acquires the authority of policy.
+
 One person can hold several of player/coach/academy_admin/account-holder rows at
 once. A self-paying adult is account.holder_person_id = player.person_id — the
 same objects at n=1, not a second case. A parent with three children is n=3.
@@ -138,11 +192,17 @@ that had not started or had already ended on the day.
 
 ## Money
 
-tally_line(account_id uuid, player_id uuid null, period date /* 1st of the billing
-  month */, kind text 'session|monthly|term|package|adjustment', description text
-  /* shown verbatim to the parent */, amount numeric /* negative = credit */,
-  session_id uuid, reason text, approved_by uuid -> person)
+tally_line(account_id uuid, player_id uuid null, class_id uuid null, period date
+  /* 1st of the billing month */, kind text
+  'session|monthly|term|package|adjustment', description text /* shown verbatim
+  to the parent */, amount numeric /* negative = credit */, session_id uuid,
+  reason text, approved_by uuid -> person, dedupe_key text)
   -- unique(session_id, player_id) where session_id is not null
+  -- unique(academy_id, dedupe_key) where dedupe_key is not null
+  -- dedupe_key is billing IDENTITY in ids, so a retry cannot double-charge. Set
+  -- it on any recurring charge you write. NULL means deliberately repeatable —
+  -- a waiver or a manual adjustment, where doing the same thing twice is a
+  -- decision and not a duplicate.
 payment(account_id uuid, amount numeric, rail text, method text, reference text
   /* UPI ref / UTR */, status text 'requested|confirmed|failed', requested_at tstz,
   confirmed_at tstz, confirmed_by uuid -> person, evidence_url text)
@@ -152,16 +212,29 @@ payment(account_id uuid, amount numeric, rail text, method text, reference text
 sender(phone_e164, waba_id, credentials jsonb, label)  -- GLOBAL, no academy_id, never readable in a user session
 message(contact_id, sender_id, direction 'inbound|outbound', catalog_id text,
   wa_message_id, template_name, body, payload jsonb, media_url,
-  status 'queued|sent|delivered|read|failed', queued_at, sent_at, delivered_at,
-  read_at, failed_reason, suppressed_reason, cost_paise int,
-  conversation_category, in_window bool, reply_to_action_id, idempotency_key unique)
+  status 'queued|sent|delivered|read|failed|suppressed', queued_at, sent_at,
+  delivered_at, read_at, failed_reason, suppressed_reason, cost_paise int,
+  conversation_category, in_window bool, solicited bool, reply_to_action_id,
+  idempotency_key unique, turn_id uuid, origin text 'turn|job|tap|system',
+  origin_ref text)
+  -- status='failed' is the WIRE saying no. status='suppressed' is this product
+  -- deciding not to send, and suppressed_reason says which gate. They are
+  -- opposite facts: reporting a gate as a delivery failure tells an owner his
+  -- messaging is broken when it is working exactly as designed. Count them apart.
+  -- origin says what put it on the wire, so "did a person ask for this" is a
+  -- query rather than a guess.
 action(kind text, payload jsonb /* fully resolved */, minted_at, minted_for_contact_id,
-  expires_at, consumed_at, consumed_by_contact_id)
-job(kind text, run_at tstz, dedupe_key text unique, status text, attempts int,
+  expires_at, consumed_at, consumed_by_contact_id, message_id uuid -> message,
+  expired_reason text)
+job(kind text, run_at tstz, dedupe_key text unique, subject_key text
+  /* what is being watched; one live job per subject */, status text
+  'pending|running|done|failed|skipped|cancelled|superseded', attempts int,
   last_error text, payload jsonb, locked_at, locked_by)   -- GLOBAL
-audit_entry(actor_person_id, intent text, plan jsonb, diff jsonb, undone_at, undo_of)
+audit_entry(actor_person_id, intent text, plan jsonb, diff jsonb, undone_at,
+  undo_of, turn_id uuid)
 turn(contact_id, person_id, role_acted, input jsonb, output jsonb, model,
-  prompt_tokens, output_tokens, latency_ms, error)
+  prompt_tokens, output_tokens, cached_tokens, latency_ms, error,
+  tool_calls jsonb, rounds int)
 
 ## FK graph
 

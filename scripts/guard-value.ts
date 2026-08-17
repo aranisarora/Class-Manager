@@ -32,8 +32,7 @@
  */
 import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
-import { lint } from '@/lib/agent/lint'
-import { checkClaims } from '@/lib/agent/tools'
+import { encodeForWhatsApp, proseViolations } from '@/lib/agent/lint'
 import { rowShapedFact } from '@/lib/agent/memory'
 import { assertSingleReadStatement } from '@/lib/db'
 
@@ -185,27 +184,41 @@ const mkBucket = (): LintBucket => ({ n: 0, changed: 0, passes: {}, examples: []
 const lintReply = mkBucket()
 const lintProse = mkBucket()
 
+/**
+ * Two questions now, where there used to be one.
+ *
+ * The old measurement asked "what did the lint CHANGE", because the lint changed
+ * five kinds of thing. Four of those passes are gone — they were the second
+ * author ARCHITECTURE.md removes — so the honest question split: what does the
+ * surviving ADAPTER re-encode (representation, harmless, and the model is told),
+ * and what would the VALIDATOR have refused (meaning, and each one is a round
+ * spent while the model can still fix it).
+ *
+ * The second number is the one that matters, because a refusal costs a round in
+ * front of a waiting person. If it is large, the prefix is not telling the model
+ * something it needs.
+ */
 function measureLint(b: LintBucket, raw: string) {
   b.n++
-  const out = lint(raw, SCOPE)
-  if (out === raw) return
-  b.changed++
   const bump = (k: string) => (b.passes[k] = (b.passes[k] ?? 0) + 1)
-  let attributed = false
-  const hit = (cond: boolean, label: string) => {
-    if (cond) {
-      bump(label)
-      attributed = true
-    }
+
+  const encoded = encodeForWhatsApp(raw)
+  const violations = proseViolations(raw, SCOPE)
+  if (encoded === raw && !violations.length) return
+  b.changed++
+
+  if (encoded !== raw) {
+    if (MD_BOLD.test(raw) && !MD_BOLD.test(encoded)) bump('encoded: **bold** → WhatsApp *bold*')
+    if (MD_HEAD.test(raw) && !MD_HEAD.test(encoded)) bump('encoded: heading → bold line')
+    if (MD_LINK.test(raw) && !MD_LINK.test(encoded)) bump('encoded: markdown link')
+    if (/^\s*[*+-]\s/m.test(raw)) bump('encoded: list marker → bullet')
+    if (/\|/.test(raw) && !/\|/.test(encoded)) bump('encoded: pipe table → lines')
   }
-  hit(MD_BOLD.test(raw) && !MD_BOLD.test(out), 'markdown **bold** → WhatsApp *bold*')
-  hit(MD_HEAD.test(raw) && !MD_HEAD.test(out), 'markdown heading removed')
-  hit(MD_LINK.test(raw) && !MD_LINK.test(out), 'markdown link → plain text')
-  hit(UUID_RE.test(raw) && !UUID_RE.test(out), 'uuid stripped')
-  hit(ISO_RE.test(raw) && !ISO_RE.test(out), 'machine date rewritten')
-  hit(/\b(delivered|has read)\b/i.test(raw) && !/\b(delivered|has read)\b/i.test(out), 'delivery claim downgraded')
-  if (!attributed) bump('other — whitespace, pipe tables, vocabulary')
-  else if (b.examples.length < 6) b.examples.push({ before: raw.slice(0, 260), after: out.slice(0, 260) })
+  for (const v of violations) bump(`REFUSED: ${v.what}`)
+
+  if (violations.length && b.examples.length < 6) {
+    b.examples.push({ before: raw.slice(0, 260), after: violations.map((v) => v.what).join('; ') })
+  }
 }
 
 for (const { recs } of runs) {
@@ -220,7 +233,22 @@ for (const { recs } of runs) {
 }
 
 /* ------------------------------------------------------------------ *
- * 3. claim guard — replayed against each turn's real footprint
+ * 3. the turn's own footprint, beside what it said
+ *
+ * **The claim guard this section used to replay is gone**, and its absence is
+ * the finding rather than a gap in the measurement. `checkClaims` was six
+ * regexes and an eighteen-verb table asking "is this sentence a receipt?", and
+ * the replayed number was never a defect count — the file's own header says the
+ * false-positive column is not decoration. ARCHITECTURE.md retires the whole
+ * class: a pattern that judges prose is an unsupervised judge, and it has been
+ * wrong every time it mattered.
+ *
+ * What is measurable without judging a sentence is the FOOTPRINT — did this turn
+ * write anything, send anything, leave a plan waiting — which is exactly what the
+ * runtime now states to the model on every round (`turnState`). So this counts
+ * the turns that produced a reply on no footprint at all. That is not a list of
+ * lies. It is the population inside which every lie of this kind must live, and
+ * it is small enough to read, which is the whole method here.
  * ------------------------------------------------------------------ */
 
 function ctxOf(r: Rec) {
@@ -261,13 +289,22 @@ for (const { run, recs } of runs) {
   for (const r of recs) {
     const ctx = ctxOf(r)
     const tools = [...new Set((r.tools ?? []).filter((t) => t.name !== '(model)').map((t) => t.name))]
+    // A turn that wrote nothing and sent nothing, and still spoke. Read these.
+    if (ctx.worked || ctx.committed) continue
     for (const m of r.reply?.all ?? []) {
       const body = m.body ?? ''
       if (!body) continue
-      const { claim, unsupported, unbacked } = checkClaims(body, ctx)
-      if (unbacked) {
-        replayedRefusals.push({ run, case: r.case, persona: r.persona, claim, unsupported, worked: ctx.worked, committed: ctx.committed, tools, body })
-      }
+      replayedRefusals.push({
+        run,
+        case: r.case,
+        persona: r.persona,
+        claim: null,
+        unsupported: [],
+        worked: ctx.worked,
+        committed: ctx.committed,
+        tools,
+        body,
+      })
     }
   }
 }

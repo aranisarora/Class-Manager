@@ -30,7 +30,6 @@ import { adminContactIds, resolveIdentity } from '@/lib/identity'
 import { attachActionsToMessage, mintAction, type ActionPayload } from '@/lib/actions'
 import { send } from '@/lib/messaging/send'
 import { composeAndSend } from '@/lib/messaging/compose'
-import { repairOutbound } from '@/lib/messaging/repair'
 import { LIMITS, type Button, type OutboundMessage, type SendOutcome } from '@/lib/messaging/types'
 import { CATALOG, type CatalogId } from '@/lib/messaging/catalog'
 import { isJobKind, JOB_KINDS, type JobKind } from '@/lib/jobs'
@@ -38,6 +37,7 @@ import type { Academy, Contact, Identity, Person, Role } from '@/lib/types'
 import { beginAudit, readDiffIn } from '@/lib/audit'
 import { OPERATIONS, jsonLit, lit, moneyLit, uid, type OperationName } from './operations'
 import { coachClashes } from './clash'
+import { untoldAudience } from './untold'
 import { parseSteps as parseStepsShared } from './steps'
 
 /* ------------------------------------------------------------------------- *
@@ -163,6 +163,13 @@ export type PlanResult = {
    * than by the sentence they were folded into.
    */
   clashes: string[]
+  /**
+   * Whose arrangements this plan changed while staging nothing to them
+   * (`./untold`). Same shape and the same reasoning as `clashes`: it is a plan
+   * note, so it rides the summary, and it is here separately so the model reads
+   * a fact rather than parsing one back out of a sentence.
+   */
+  untold: string[]
   error?: string
 }
 
@@ -1071,7 +1078,11 @@ export async function previewPlan(
       await runSteps(tx, ctx, expanded, state)
       const read = await readDiffSafe(tx, ctx, auditId)
       const diffs = read.length ? read : synthDiffs(state.exec)
-      return { diffs, clashes: await noteClashes(tx, ctx, diffs, state) }
+      return {
+        diffs,
+        clashes: await noteClashes(tx, ctx, diffs, state),
+        untold: await noteUntold(tx, ctx, diffs, state),
+      }
     })
     const merged = inTx.diffs
     assertSomethingChanged(expanded, merged)
@@ -1086,6 +1097,7 @@ export async function previewPlan(
       scheduled: state.scheduled,
       summary: buildSummary(merged, state),
       clashes: inTx.clashes,
+      untold: inTx.untold,
     }
   } catch (e) {
     return failed(state, e, opts?.noHints ? null : await hintFor(ctx, e, expanded, state.notes, intent))
@@ -1321,7 +1333,11 @@ export async function executePlan(
        * which is exactly where two 7am Mondays get typed — and a receipt that
        * names the overlap is the only warning that path has.
        */
-      return { diffs, clashes: await noteClashes(tx, ctx, diffs, state) }
+      return {
+        diffs,
+        clashes: await noteClashes(tx, ctx, diffs, state),
+        untold: await noteUntold(tx, ctx, diffs, state),
+      }
     })
     // ---- committed. Only now does anything reach the wire. ----
     const merged = inTx.diffs
@@ -1343,6 +1359,7 @@ export async function executePlan(
       scheduled: state.scheduled,
       summary: receipt,
       clashes: inTx.clashes,
+      untold: inTx.untold,
     }
   } catch (e) {
     return { ...failed(state, e, await hintFor(ctx, e, expanded, state.notes, intent)), auditId, outcomes: [] }
@@ -1358,8 +1375,10 @@ function failed(state: RunState, e: unknown, hint?: string | null): PlanResult {
     stagedMessages: [],
     scheduled: [],
     summary: 'Nothing was changed and nobody was messaged.',
-    // A plan that rolled back put nobody anywhere.
+    // A plan that rolled back put nobody anywhere, and changed nothing for
+    // anybody to be told about.
     clashes: [],
+    untold: [],
     error: (e instanceof PlanAbort ? `${e.code}: ${message}` : message) + (hint ? ` — ${hint}` : ''),
   }
 }
@@ -1712,6 +1731,46 @@ async function noteClashes(
   return found
 }
 
+/**
+ * Whose arrangements this plan changed while telling them nothing (`./untold`).
+ *
+ * A note, for the same reason a clash is one: it is written in the business's
+ * own words, so it rides `buildSummary` out through the preview, the receipt and
+ * the runtime's line under a `steps` button, and the model reads it as a fact in
+ * the tool result rather than as advice.
+ *
+ * **Not on the personal note list.** A `personal` receipt is addressed to the
+ * person the change is about, and "two families are affected and nothing tells
+ * them" is an operator's sentence — to a parent reading their own confirmation
+ * it is somebody else's business, and naming those families to them would be the
+ * leak this product's whole boundary exists to prevent.
+ *
+ * In a savepoint, so a plan can never fail because of a check that only had
+ * something to add.
+ */
+async function noteUntold(
+  tx: Tx,
+  ctx: SessionCtx,
+  diffs: TableDiff[],
+  state: RunState,
+): Promise<string[]> {
+  const told = state.staged.map((m) => m.toContactId)
+  const actor = ctx.role === 'user' ? ctx.personId : null
+  const found = await inSavepoint(tx, (sp) => untoldAudience(sp, ctx.academyId, diffs, told, actor))
+  // Same distinction `noteClashes` makes: a check that could not run is not a
+  // check that found nothing, and collapsing the two turns a crash into
+  // clearance. Said in the note list so a person decides with the uncertainty in
+  // front of them.
+  if (found === null) {
+    const note =
+      'the affected-but-untold check could not run on this one, so nothing here rules out somebody being changed without being told'
+    state.notes.push(note)
+    return []
+  }
+  state.notes.push(...found)
+  return found
+}
+
 /** Substitutes the audit id a button could not know at compose time (see `undo`). */
 function bindAudit<T>(value: T, auditId: string): T {
   if (typeof value === 'string') return (value === '$AUDIT_ID' ? auditId : value) as unknown as T
@@ -1741,17 +1800,21 @@ async function flushOutbox(
           forContactId: m.toContactId,
           ttlMinutes: b.ttl_minutes ?? 1440,
         })
-        buttons.push({ actionId, title: b.title.slice(0, LIMITS.buttonTitleChars) })
+        // Not trimmed. A title over the cap is a compose bug in whoever wrote it,
+        // and `validateOutbound` at the wire says so with the reason — where a
+        // silent `slice(0, 20)` renders "I'm done with the ro" and ships it.
+        buttons.push({ actionId, title: b.title })
       }
       // A catalog id the catalog does not know is not a catalog id: it would
       // otherwise ride onto the message row and out into the event log as a
       // moment nobody can look up.
       const catalogId = m.catalog_id && m.catalog_id in CATALOG ? (m.catalog_id as CatalogId) : null
       const entry = catalogId ? CATALOG[catalogId] : undefined
-      const limit = buttons.length ? LIMITS.bodyChars : LIMITS.textChars
       const raw: OutboundMessage = {
         toContactId: m.toContactId,
-        body: m.body.length > limit ? `${m.body.slice(0, limit - 1)}…` : m.body,
+        // Whole, or refused at the wire. The ellipsis this used to append was a
+        // sentence somebody else finished.
+        body: m.body,
         header: m.header,
         footer: m.footer,
         buttons: buttons.length ? buttons.slice(0, LIMITS.buttons) : undefined,
@@ -1771,26 +1834,28 @@ async function flushOutbox(
         // frequency cap while the plan it confirmed had already run.
         solicited: ctx.role !== 'service' && 'contactId' in ctx && ctx.contactId === m.toContactId,
       }
-      // The outbox is the second path to the wire — `composeAndSend` is the first — so the
-      // repairs that belong to "an outbound message" have to run on both or they run on
-      // whichever one the model happened to choose. Bracket labels are only stripped here
-      // rather than promoted: the actions on this path were already minted above, and a
-      // button with no action id is a worse message than a sentence with no button.
-      const { message: msg, repairs } = repairOutbound(raw)
-      if (repairs.length) {
-        console.warn(`[plan] repaired a staged message to ${m.toContactId}: ${repairs.join('; ')}`)
-      }
-      const outcome = await send(svc, msg)
+      /**
+       * **Nothing is repaired here either.** The outbox used to run
+       * `repairOutbound` on the way past, because it is the second door to the
+       * wire and a repair applied on one door is a repair applied on one door.
+       * The right resolution of that asymmetry turned out to be removing the
+       * repairs rather than duplicating them: a model-authored message step is
+       * checked when the plan is validated (`steps.ts`), where a refusal costs a
+       * round the model still has; an operation-authored one has a single author
+       * already, and editing it here would only hide a bug in that operation.
+       */
+      const outcome = await send(svc, raw)
       // The message id exists only now, so this is where the buttons learn which message
       // they were printed on (0016). Without it every button on a staged message stays an
       // independent row: tap `[Do it]`, the plan commits — then tap `[Cancel]` on the same
       // message and it fires its own `noop`, replying "Left as it was — nothing changed."
       // about work that did happen, on the one path with no model in the loop to catch it.
       //
-      // `msg.buttons`, not the array minted above: repair and the wire's cap can drop one,
-      // and a button that was never printed belongs to no message. It keeps a null
-      // `message_id` and simply lapses at its TTL, as every action did before 0016.
-      await attachActionsToMessage(svc, outcome.messageId, (msg.buttons ?? []).map((b) => b.actionId))
+      // `raw.buttons`, which is now exactly what was minted: with the repairs gone
+      // nothing between here and the wire can drop one. A button on a message that
+      // was suppressed is never printed, keeps a null `message_id`, and simply
+      // lapses at its TTL, as every action did before 0016.
+      await attachActionsToMessage(svc, outcome.messageId, (raw.buttons ?? []).map((b) => b.actionId))
       outcomes.push(
         outcome.status === 'queued' || outcome.status === 'sent'
           ? { ...outcome, toContactId: m.toContactId, confirmationRequest: Boolean(m.is_confirmation_request) }

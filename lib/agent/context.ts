@@ -45,8 +45,6 @@ import { SCHEMA_DOC } from '@/lib/agent/schema-doc'
 import { hotSet } from '@/lib/agent/memory'
 import { vocabularyPreferences } from '@/lib/agent/lint'
 
-export { lint } from '@/lib/agent/lint'
-
 /**
  * Doctrine lives on disk as markdown. Resolution tries the working directory
  * first (how Next and tsx both run) and falls back to a path derived from this

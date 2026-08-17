@@ -31,22 +31,16 @@ import { formFor } from '@/lib/messaging/forms'
 import { buildSetupSteps, summariseSetup } from '@/lib/setup-plan'
 import type { Identity, Job, Role } from '@/lib/types'
 import { generate, generateJson, type Msg } from './deepseek'
-import { lint, mixInstruction, stablePrefix, synthesisDoctrine, variableTail } from './context'
+import { mixInstruction, stablePrefix, synthesisDoctrine, variableTail } from './context'
+import { proseViolations, violationMessage } from './lint'
 import { hotSet } from './memory'
 import { audienceFor, executePlan, type PlanStep } from './plan'
 import { jsonLit, lit, uid, type OperationName } from './operations'
 import {
-  checkClaims,
-  closingQuestionButtons,
-  extractBracketButtons,
-  FOLLOW_UPS,
   pendingConfirmation,
-  pendingReadBack,
   runTool,
   toolDecls,
-  withFollowUps,
-  withRuntimeDiffLine,
-  backstopButtons,
+  turnState,
   type ToolCtx,
 } from './tools'
 
@@ -793,37 +787,28 @@ async function executeAction(
     return { outcomes, summary: res.error ?? 'failed' }
   }
 
-  // If the plan already spoke to this person, adding an ack on top is noise.
+  /**
+   * If the plan already spoke to this person, adding an ack on top is noise.
+   *
+   * What is left of this receipt is the runtime's OWN sentence, written by
+   * `buildSummary` from the diff, on the one path with no model in it — so it is
+   * a first author rather than a second. The follow-up button and the backstop
+   * menu that used to ride under it are gone with the rest of the composer: a tap
+   * receipt offering `[What can you do?]` is the same dead end it was everywhere
+   * else, and the operation-specific next steps were the runtime guessing at a
+   * moment only the model can read.
+   *
+   * The lint pass is gone from here too. The receipt is built from the plan's own
+   * notes and `plural()`'s vocabulary, which is where a table noun leaking into
+   * it has to be fixed — a rewrite on the way out was covering for `SINGULARS`
+   * and `PLURALS` rather than completing them.
+   */
   const alreadyTold = res.stagedMessages.some((m) => m.toContactId === identity.contact.id)
   if (!alreadyTold) {
-    const follow =
-      payload.kind === 'operation'
-        ? (FOLLOW_UPS[payload.op as OperationName]?.(
-            payload.args,
-            res.diffs.map((d) => ({ table: d.table, op: d.op, after: d.after })),
-          ) ?? [])
-        : []
-    /**
-     * The tap may have just changed the very state the backstop reads. Going
-     * live is the canonical case: `identity` was resolved before the tap wrote
-     * the row, so the [Switch it on] receipt offered `[Set up the business]` —
-     * the onboarding steps, to an admin whose business had gone live one second
-     * earlier (month drive, T012). The diff holds what is now true; the
-     * backstop reads that instead of the snapshot.
-     */
-    const flipped = res.diffs.find((d) => d.table === 'academy')?.after?.[0]?.onboarding_state
-    const freshIdentity: Identity =
-      typeof flipped === 'string'
-        ? { ...identity, academy: { ...identity.academy, onboarding_state: flipped as Identity['academy']['onboarding_state'] } }
-        : identity
     outcomes.push(
       await composeAndSend(session, {
         toContactId: identity.contact.id,
-        // Runtime-composed, but it still lands on a phone: the receipt is built from
-        // table names and operation notes, and both leak — "2 persons", "(§2.6)".
-        // Everything user-facing goes through the same lint, whoever wrote it.
-        body: lint(res.summary, identity),
-        buttons: follow.length ? follow.slice(0, LIMITS.buttons) : backstopButtons(freshIdentity, res.summary),
+        body: res.summary,
       }),
     )
   }
@@ -911,6 +896,31 @@ export type ToolTrace = {
   args?: unknown
   result?: unknown
   error?: string
+  /**
+   * What the model was thinking on this round, on `(model)` rows.
+   *
+   * A FIELD OF ITS OWN, and both halves of that matter.
+   *
+   * *Its own*, rather than inside `args`: `args` on a `(model)` row is the prose
+   * the model wrote, and every consumer reads it as a bare string
+   * (`spokenOn` in the report scripts is `typeof parse(args) === 'string'`).
+   * Folding the reasoning in there would have been a shape change rippling
+   * through five readers, and the one that forgot would go quiet rather than
+   * fail.
+   *
+   * *Recorded at all* is the fix. Until 17 Aug 2026 the reasoning was carried
+   * only on rounds that produced NO prose — the `returnedNothing` diagnostic —
+   * and then only as part of an assistant blob capped at 2,000 characters. Three
+   * consequences, all of them silent: a round that both thought and spoke stored
+   * no thinking whatsoever; a long deliberation was cut mid-sentence; and when
+   * the blob went over the cap `traceValue` returned a truncated JSON *string*
+   * instead of the object, so every downstream reader — including the probe that
+   * exists to render it — parsed nothing and showed nothing. Measured on a live
+   * drive: 35 `(model)` rows, reasoning visible to the probe on 10 of them, and
+   * the ones lost were the LONG ones. The instrument was blindest exactly where
+   * the turns were hardest, which is the one place it had to see.
+   */
+  reasoning?: unknown
 }
 
 /**
@@ -951,6 +961,16 @@ function reasonKey(err: unknown): string {
     .replace(/\d+/g, '#')
     .slice(0, 200)
 }
+
+/**
+ * How much of one round's reasoning the flight recorder keeps.
+ *
+ * Sized from measurement: the longest single reasoning seen on a driven month
+ * was ~9,000 characters, and the old effective cap was 2,000 — so the cases that
+ * most needed explaining were the ones cut. This binds on nothing observed and
+ * still refuses to store a pathological turn without limit.
+ */
+const REASONING_TRACE_CAP = 24_000
 
 /** Long strings are evidence, not payload — keep the shape, cap the size. */
 function traceValue(v: unknown, limit: number): unknown {
@@ -1149,6 +1169,16 @@ async function modelTurn(
       args: prose.trim()
         ? traceValue(prose, 4000)
         : { returnedNothing: true, message: traceValue(res.assistant, 2000) },
+      // Every round that deliberated, not only the ones that came back empty.
+      // See `ToolTrace.reasoning` for what this replaces and why it is a
+      // separate field. The cap is generous rather than absent: the longest
+      // reasoning measured on a live drive was ~9k characters, and a cap that
+      // never binds in practice still bounds a pathological turn — and when it
+      // does bind, `traceValue` says so in the value rather than ending
+      // mid-token and looking complete.
+      ...(typeof res.assistant.reasoning_content === 'string' && res.assistant.reasoning_content.trim()
+        ? { reasoning: traceValue(res.assistant.reasoning_content, REASONING_TRACE_CAP) }
+        : {}),
       result: {
         in: res.usage.promptTokens,
         cached: res.usage.cachedTokens,
@@ -1436,6 +1466,11 @@ async function modelTurn(
         name: TRACE_MARKER,
         ms: forced.ms,
         args: text.trim() ? traceValue(text, 4000) : { returnedNothing: true, recovery: true },
+        // The recovery round deliberates too, and it is the round that runs when
+        // the turn has already gone wrong — the last place to be missing a why.
+        ...(typeof forced.assistant?.reasoning_content === 'string' && forced.assistant.reasoning_content.trim()
+          ? { reasoning: traceValue(forced.assistant.reasoning_content, REASONING_TRACE_CAP) }
+          : {}),
         result: {
           in: forced.usage.promptTokens,
           cached: forced.usage.cachedTokens,
@@ -1518,19 +1553,31 @@ async function modelTurn(
   }
 
   if (text.trim() && !spoke()) {
-    // §4.3 — "after every action the bot takes, it offers the natural next step as
-    // a button". A plan that was previewed and not committed has exactly one natural
-    // next step, and the runtime knows it: the steps are already validated and
-    // diff-computed, so the button carries them verbatim (§2.2). Leaving this to the
-    // model means a confirmation sometimes arrives as prose with nothing to tap,
-    // which is how the preview→commit path quietly stops being button-driven.
-    // Buttons typed into the prose — the recovery round has no tools, so this is
-    // where they land most — become real ones.
-    const pulled = extractBracketButtons(text.trim())
-    if (pulled.buttons.length && pulled.text) text = pulled.text
-
-    // Every plan still waiting on a yes, not just the newest — a read-back that
-    // names two changes has to commit two changes.
+    /**
+     * **The trailing path used to be where every runtime edit landed hardest**,
+     * because it is the one path with no round of grace: bracket labels harvested
+     * out of the prose, a backstop menu or a `[Yes]/[No]` pair bolted on, a
+     * follow-up appended, the model's own sentence substituted for the runtime's
+     * read-back when a claims regex fired, and a lint pass rewriting five ways on
+     * the way out. Every one of them widened the gap between the message the model
+     * wrote and the message the person read, on the path where the model has the
+     * least ability to notice.
+     *
+     * Two things are left, and neither is an edit.
+     *
+     * **The confirmation button is minted, not composed.** A plan previewed and
+     * not committed has exactly one thing that can commit it, and only the runtime
+     * is holding the validated steps — so the button carries them verbatim (§2.2).
+     * That is an affordance the model cannot mint from here rather than words put
+     * in its mouth, and without it the preview→commit path quietly stops being
+     * button-driven.
+     *
+     * **The message is validated, and a refusal buys a round instead of an edit.**
+     * `proseViolations` answers what the string itself decides; when it fires, the
+     * loop spends its recovery round telling the model exactly what is wrong,
+     * which is the same round of grace the `reply` tool gives — reached here by
+     * asking again rather than by rewriting.
+     */
     const pending = pendingConfirmation(toolCtx)
     const totalRows = [...(toolCtx.pendingMeta?.values() ?? [])]
       .filter((m) => m.needsConfirm)
@@ -1543,71 +1590,69 @@ async function modelTurn(
         buttons.push({ title: `Show me all ${totalRows}`, action: { kind: 'reply', text: 'show me everyone that affects' } })
       }
       buttons.push({ title: 'Cancel', action: { kind: 'noop', ack: 'Left as it was — nothing changed.' } })
-    } else {
-      // Same door as the `reply` tool mints (§5): no plan to confirm still means
-      // something to offer, and a bare paragraph is where discovery goes to die.
-      // A closing yes-or-no question gets an answer to tap instead of the menu,
-      // which after a question is a non-sequitur.
-      buttons =
-        (pulled.buttons.length ? (pulled.buttons as { title: string; action: ActionPayload }[]) : null) ??
-        (closingQuestionButtons(text.trim()) as { title: string; action: ActionPayload }[] | null) ??
-        backstopButtons(identity, text.trim())
     }
-    // Whichever path the message leaves by, §4.3 holds.
-    buttons = withFollowUps(buttons, toolCtx) as { title: string; action: ActionPayload }[] | undefined
 
     /**
-     * The honesty guard, on the other path a message can leave a turn by.
+     * One more round, spent on a refusal rather than on silence.
      *
-     * `unbackedClaim` lived only in the `reply` tool, so the product's one structural
-     * check on "did it actually do what it said" covered the path where the model
-     * calls a tool to speak, and not the path where it simply stops talking. Driven,
-     * on a coach marking her first register: she typed *"everyone was there today"*,
-     * the model previewed the attendance plan, produced no `reply` call at all, and
-     * the trailing prose went out saying
-     *
-     *     "I've marked Aditya and Ananya as present for today's 6:30pm session."
-     *
-     * Zero attendance rows. Session still `scheduled`. Zero tally lines. The register
-     * is the meter the whole money half runs on, and the one person who could have
-     * noticed had just been told it was done.
-     *
-     * There is no round left here to ask for a rewrite, which is the difference from
-     * the `reply` path — so the runtime substitutes its own sentence rather than
-     * performing surgery on the model's tense. It is entitled to: when a plan is
-     * pending it holds the true read-back already, computed from the diff, and that
-     * is strictly better evidence than the prose it replaces.
-     *
-     * **Only when a plan is pending**, and this path needs that guard more than the
-     * `reply` one does because it has no round of grace at all — there is nothing left
-     * to ask. `committed` is turn-scoped and a past-tense sentence is not, so a turn
-     * that reads rows and truthfully reports earlier work is indistinguishable from one
-     * that invents a receipt. Scheduled `agent_task` check-backs are exactly that shape
-     * by construction — read-only, and about work done in some previous turn — and
-     * substituting there tells somebody the rows do not exist when they do. A pending
-     * plan is the runtime's evidence that the sentence is about THIS turn.
+     * The recovery round already exists for the turn that said nothing; this is
+     * the same mechanism for the turn that said something it cannot send. It runs
+     * at most once — a second failure is not argued with, because the alternative
+     * to a machine word in a good sentence is no sentence at all, and going quiet
+     * is the one failure a person cannot tell apart from being ignored.
      */
-    // The same judgement the `reply` tool makes, from the same function. A
-    // guarantee enforced where the model happens to call `reply` and not where
-    // the loop emits its own trailing prose is not a guarantee — which path a
-    // turn takes is the model's choice (R4), and this is the path that shipped
-    // "I've marked Aditya and Ananya as present" over zero attendance rows.
-    //
-    // What is different here is that there is no round of grace: nothing left to
-    // ask, so the runtime substitutes rather than refusing — and only when a plan
-    // is pending, which is its evidence that the sentence is about THIS turn.
-    if (pending && checkClaims(text.trim(), toolCtx).unbacked) {
-      text = pendingReadBack(pending.summary)
+    let outgoing = text.trim()
+    const violations = proseViolations(outgoing, identity)
+    if (violations.length) {
+      trace.push({
+        round: rounds,
+        name: '(trailing message refused: machinery in the prose)',
+        ms: 0,
+        args: traceValue({ violations, draft: outgoing }, 2000),
+      })
+      try {
+        const again = await generate({
+          system,
+          messages: [
+            ...flattenToolTurns(messages),
+            {
+              role: 'user',
+              content:
+                `That last message cannot go out as written: ${violationMessage(violations)}\n\n` +
+                'Write it again with just those parts fixed. Everything else about it was fine, ' +
+                'and nothing about the situation has changed — do not add anything, and do not ' +
+                'say you are about to do something. This is the last thing sent.',
+            },
+          ],
+          model: env.MODEL_MAIN,
+          temperature: 0.4,
+        })
+        promptTokens += again.usage.promptTokens
+        outputTokens += again.usage.outputTokens
+        cachedTokens += again.usage.cachedTokens
+        trace.push({
+          round: rounds + 1,
+          name: TRACE_MARKER,
+          ms: again.ms,
+          args: traceValue(again.text ?? '', 4000),
+          ...(typeof again.assistant?.reasoning_content === 'string' && again.assistant.reasoning_content.trim()
+            ? { reasoning: traceValue(again.assistant.reasoning_content, REASONING_TRACE_CAP) }
+            : {}),
+          result: { in: again.usage.promptTokens, cached: again.usage.cachedTokens, out: again.usage.outputTokens, calls: [], finish: again.finishReason ?? 'unknown', repair: true },
+        })
+        const rewritten = (again.text ?? '').trim()
+        // Only if it is actually better. A rewrite that still carries machinery
+        // is not worth preferring over the original, and the original at least
+        // came from a round that had the whole turn in front of it.
+        if (rewritten && !proseViolations(rewritten, identity).length) outgoing = rewritten
+      } catch {
+        /* the draft still goes; a failed repair must not become silence */
+      }
     }
 
-    // F-M — same guarantee as the `reply` path: a confirmation carrying a steps
-    // button also carries the runtime's own line about what the tap runs.
-    text = await withRuntimeDiffLine(text.trim(), buttons, toolCtx)
-
-    const trailingBody = lint(text.trim(), identity)
     const trailing = await composeAndSend(session, {
       toContactId: identity.contact.id,
-      body: trailingBody,
+      body: outgoing,
       buttons,
     })
     outcomes.push(trailing)
@@ -1615,8 +1660,9 @@ async function modelTurn(
     // said when it landed. A suppressed trailing message is a turn that said nothing,
     // and reflection should see that rather than a reply nobody received.
     if (trailing.status === 'sent' || trailing.status === 'queued') {
-      toolCtx.saidToUser?.push(trailingBody)
+      toolCtx.saidToUser?.push(outgoing)
     }
+    text = outgoing
   }
 
   return {

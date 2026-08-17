@@ -95,6 +95,22 @@ node scripts/rls-check.mjs
 onboarding arc in a fresh academy and runs a set of SQL invariants after every case. It
 tears its academy down unless you pass `--keep`.
 
+**Driving the ledger.** `--suite stress` is the regression drive: a month in a SOLO business
+(the admin is the only coach), thirty-two turns, eight on each of the four personas, and every
+turn re-stages a scenario that has already produced a finding — with the checks written to
+catch that finding specifically. `node scripts/stress-report.mjs` renders it as a recurrence
+ledger: one row per finding, and a verdict computed from the turn's own checks rather than
+from anybody's reading of the transcript.
+
+```bash
+TRANSPORT=emulator npm run probe -- --suite stress --models deepseek-v4-flash \
+  --out .probe/runs/$(date +%Y-%m-%d-%H%M)-stress-month
+node scripts/stress-report.mjs
+```
+
+`TRANSPORT=emulator` is not optional garnish: `.env.local` ships `TRANSPORT=cloud`, and a drive
+that takes the cloud path hard-fails at the credential gate and measures nothing.
+
 **A worktree needs three things copied in before it can run anything**: `.env.local`,
 `.secrets/`, and `node_modules` (a junction is fine). All three are gitignored, and
 without them everything fails in ways that look like model errors — every case reports

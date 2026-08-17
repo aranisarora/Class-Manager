@@ -29,12 +29,16 @@ export type OnboardingState = 'setup' | 'roster' | 'ready' | 'live'
 export type PayUnit = 'per_session' | 'per_hour' | 'per_month'
 export type Rail = 'rail1' | 'rail2'
 export type MessageDirection = 'inbound' | 'outbound'
-export type MessageStatus = 'queued' | 'sent' | 'delivered' | 'read' | 'failed'
+/** `suppressed` is a decision, `failed` is the wire saying no — 0032, F-AT. */
+export type MessageStatus = 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'suppressed'
 export type ConversationCategory = 'service' | 'utility' | 'marketing' | 'authentication' | 'free_window'
 export type TallyKind = 'session' | 'monthly' | 'term' | 'package' | 'adjustment'
 export type PaymentStatus = 'requested' | 'confirmed' | 'failed'
 export type SubjectKind = 'academy' | 'person'
-export type JobStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled'
+export type JobStatus =
+  | 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'cancelled'
+  /** A newer job about the same `subject_key` took its place (0032, F-C). */
+  | 'superseded'
 export type SnapshotOp = 'insert' | 'update' | 'delete'
 export type FaultKind = 'send_fail' | 'number_blocked' | 'media_timeout' | 'link_expired' | 'model_error'
 

@@ -227,9 +227,31 @@ export type SuppressReason =
   | 'repeat'
   | 'no_contact'
   | 'limit_violation'
+  /**
+   * They asked for less of exactly this kind of thing (0032 `comm_preference`).
+   * A scope, not an opt-out: "stop messaging me about money" is the commonest
+   * stop request, and until there was a row for it a memory fact recorded the
+   * promise while a `payment_due` job composing from a query kept its own
+   * counsel (F-AV).
+   */
+  | 'muted'
+  /**
+   * The academy is asleep. A floor under every proactive send, enforced here
+   * rather than composed around by each job — going live at 2am fired three
+   * reminders at 02:02, from three different handlers, none of which was wrong
+   * about anything except the hour.
+   */
+  | 'quiet_hours'
 
-/** Message status ladder. §2.4: queued ≠ sent ≠ delivered ≠ read. */
-export type MessageStatus = 'queued' | 'sent' | 'delivered' | 'read' | 'failed'
+/**
+ * Message status ladder. §2.4: queued ≠ sent ≠ delivered ≠ read.
+ *
+ * `suppressed` is NOT a rung on it — it is the other outcome entirely, and
+ * sharing `failed` with a real delivery failure is how the product told its own
+ * owner his messaging was broken while it was working exactly as designed
+ * (F-AT, closed by 0032). A gate is a decision; the wire saying no is a fault.
+ */
+export type MessageStatus = 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'suppressed'
 
 /** §17 event log: what a conversation cost, and whether one opened at all. */
 export type ConversationCategory =

@@ -32,10 +32,20 @@ import { AppError, errorMessage } from '@/lib/errors'
 
 export type Tx = postgres.TransactionSql<{}>
 
+/**
+ * What put this session's work on the wire (0032). Carried here rather than
+ * passed to `send`, for the reason `turnId` is: a guarantee applied per caller
+ * is not a guarantee, and every job handler that opens its own service session
+ * would otherwise have to remember.
+ */
+export type MessageOrigin = 'turn' | 'job' | 'tap' | 'system'
+
+type Attribution = { turnId?: string; origin?: MessageOrigin; originRef?: string }
+
 export type SessionCtx =
-  | { role: 'service'; academyId: string; turnId?: string }
-  | { role: 'user'; academyId: string; personId: string; contactId: string; turnId?: string }
-  | { role: 'readonly'; academyId: string; personId: string; contactId: string; turnId?: string }
+  | ({ role: 'service'; academyId: string } & Attribution)
+  | ({ role: 'user'; academyId: string; personId: string; contactId: string } & Attribution)
+  | ({ role: 'readonly'; academyId: string; personId: string; contactId: string } & Attribution)
 
 /**
  * The service session that does a piece of work on behalf of an existing one.
@@ -54,7 +64,15 @@ export type SessionCtx =
  * `applySession` distinguishes an absent GUC from an empty one.
  */
 export function serviceFrom(ctx: SessionCtx): SessionCtx {
-  return { role: 'service', academyId: ctx.academyId, ...(ctx.turnId ? { turnId: ctx.turnId } : {}) }
+  return {
+    role: 'service',
+    academyId: ctx.academyId,
+    ...(ctx.turnId ? { turnId: ctx.turnId } : {}),
+    // Attribution travels with the escalation for the same reason turnId does:
+    // an elevated write is still this turn's, this job's or this tap's work.
+    ...(ctx.origin ? { origin: ctx.origin } : {}),
+    ...(ctx.originRef ? { originRef: ctx.originRef } : {}),
+  }
 }
 
 export type QueryResult = {
@@ -252,6 +270,33 @@ function guc(name: string, value: string | undefined): string {
   return `set_config('${name}', '${v}', true)`
 }
 
+/**
+ * The two attribution GUCs that are words rather than uuids (0032).
+ *
+ * `app.origin` is one of four literals and is validated against them, which is
+ * the same guarantee `guc()` gives a uuid and for the same reason: these are
+ * interpolated. `app.origin_ref` is free text by design — a job kind, a tapped
+ * action kind, a form id — so it is escaped rather than enumerated, and capped,
+ * because a GUC is not a place to put a body.
+ */
+const ORIGINS = new Set(['turn', 'job', 'tap', 'system', ''])
+
+function originGuc(value: string | undefined): string {
+  const v = value ?? ''
+  if (!ORIGINS.has(v)) {
+    throw new AppError({
+      code: 'bad_session_guc',
+      message: `app.origin must be turn, job, tap or system — got ${JSON.stringify(v).slice(0, 40)}`,
+    })
+  }
+  return `set_config('app.origin', '${v}', true)`
+}
+
+function originRefGuc(value: string | undefined): string {
+  const v = (value ?? '').slice(0, 120).replace(/'/g, "''")
+  return `set_config('app.origin_ref', '${v}', true)`
+}
+
 async function applySession(tx: Tx, ctx: SessionCtx): Promise<void> {
   const role = ROLE_SQL[ctx.role]
   if (!role) {
@@ -284,7 +329,14 @@ async function applySession(tx: Tx, ctx: SessionCtx): Promise<void> {
             ${guc('app.contact_id', contactId)},
             -- Read by app.begin_audit, so every write in this transaction is
             -- attributable to the turn that caused it (0015). Empty outside a turn.
-            ${guc('app.turn_id', ctx.turnId)}`,
+            ${guc('app.turn_id', ctx.turnId)},
+            -- The same shape one question wider (0032): turn_id says WHICH turn,
+            -- these say whether there was a turn at all. 27 of 81 outbound
+            -- messages in one drive carried no attribution, which meant the truth
+            -- axis could not be measured on exactly the surface where the product
+            -- acts unsupervised. Defaults on message.origin read these.
+            ${originGuc(ctx.origin)},
+            ${originRefGuc(ctx.originRef)}`,
   )
 }
 
