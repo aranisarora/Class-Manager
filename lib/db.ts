@@ -28,6 +28,7 @@
 import postgres from 'postgres'
 
 import { env } from '@/lib/env'
+import { recordSql, sqlTraceRows, type SqlRecord } from '@/lib/agent/sql-trace'
 import { AppError, errorMessage } from '@/lib/errors'
 
 export type Tx = postgres.TransactionSql<{}>
@@ -86,6 +87,16 @@ export type QueryResult = {
 
 /** §14.2 — a model can write an accidental cartesian join. */
 export const MODEL_ROW_CAP = 10_000
+
+/**
+ * How many rows of a read are handed back to the model.
+ *
+ * Distinct from `MODEL_ROW_CAP`, and the distinction is the point: the cap is
+ * what the DATABASE returns and sets `truncated`; this is the sample the model
+ * is shown, and until it was named it was an anonymous `.slice(0, 200)` in the
+ * read tool that reported nothing. See the hand-back in `tools.ts`.
+ */
+export const MODEL_ROWS_SHOWN = 200
 const MODEL_TIMEOUT_MS = 5_000
 const USER_TIMEOUT_MS = 15_000
 
@@ -578,9 +589,37 @@ function stripTrailingSemicolon(query: string): string {
  * message and fix its own SQL (§14.2). A thrown error here would surface as a
  * turn failure instead of a retry.
  */
-export async function modelQuery(ctx: SessionCtx, query: string): Promise<QueryResult> {
+export async function modelQuery(ctx: SessionCtx, query: string, note?: string): Promise<QueryResult> {
   const started = Date.now()
-  const fail = (error: string): QueryResult => ({ rows: [], rowCount: 0, truncated: false, ms: Date.now() - started, error })
+  /**
+   * Every exit reports, including the two that never reach Postgres.
+   *
+   * A statement refused by `assertSingleReadStatement` is the one an instrument
+   * most wants to see — it is a round the model spent and a shape it believed was
+   * legal — and it produces no database error, no row, and nothing for a reader
+   * to find. Routing all three exits through here is what makes the capture a
+   * record of what the model ATTEMPTED rather than of what Postgres happened to
+   * accept.
+   */
+  const report = (r: Omit<SqlRecord, 'kind' | 'sql' | 'role' | 'academyId' | 'personId' | 'ms' | 'note'>) =>
+    recordSql(() => ({
+      kind: 'read',
+      // The model's own text, not `wrapped`. The row-cap envelope is the
+      // runtime's sentence and reviewing the model on it would be reviewing the
+      // wrong author.
+      sql: query,
+      role: 'readonly',
+      academyId: ctx.academyId ?? null,
+      personId: 'personId' in ctx ? (ctx.personId ?? null) : null,
+      ms: Date.now() - started,
+      ...(note ? { note } : {}),
+      ...r,
+    }))
+
+  const fail = (error: string): QueryResult => {
+    report({ rowCount: null, error })
+    return { rows: [], rowCount: 0, truncated: false, ms: Date.now() - started, error }
+  }
 
   try {
     assertSingleReadStatement(query)
@@ -588,12 +627,28 @@ export async function modelQuery(ctx: SessionCtx, query: string): Promise<QueryR
     return fail(errorMessage(e))
   }
 
-  const wrapped = `select * from ( ${stripTrailingSemicolon(query)} ) _m limit ${MODEL_ROW_CAP + 1}`
+  /**
+   * The closing paren goes on its own LINE, and that is the whole point.
+   *
+   * Built on one line, a query ending in a `-- …` comment comments out the rest
+   * of that line — which is `) _m limit 10001`, the row cap and the closing of
+   * the wrapper. Postgres then answers `syntax error at end of input`, an error
+   * about a statement the model did not write and cannot see, on a query that is
+   * perfectly valid on its own. And the model DOES write trailing comments: the
+   * SQL ladder caught it annotating a census query inline, explaining to itself
+   * why two counts were named apart.
+   *
+   * A newline before the close ends the comment and costs nothing. The same
+   * applies to the leading side, where a first-line comment would otherwise
+   * swallow `select * from (`.
+   */
+  const wrapped = `select * from (\n${stripTrailingSemicolon(query)}\n) _m limit ${MODEL_ROW_CAP + 1}`
 
   try {
     const raw = await withSession(readonlyCtx(ctx), (tx) => unsafeQuery(tx, wrapped))
     const truncated = raw.length > MODEL_ROW_CAP
     const rows = (truncated ? raw.slice(0, MODEL_ROW_CAP) : raw).map((r) => ({ ...r }))
+    report({ rowCount: rows.length, truncated, ...(sqlTraceRows() ? { rows } : {}) })
     return { rows, rowCount: rows.length, truncated, ms: Date.now() - started }
   } catch (e) {
     return fail(errorMessage(e))
@@ -606,6 +661,34 @@ export async function modelQuery(ctx: SessionCtx, query: string): Promise<QueryR
  * pg_read* reads the filesystem.
  */
 const FORBIDDEN_FRAGMENTS = ['pg_sleep', 'dblink', 'copy ', 'pg_read']
+
+/**
+ * The wall clock, refused where the sentence asking for it could not be enforced.
+ *
+ * SCHEMA_DOC has said **"Never call now(), current_date or current_timestamp.
+ * Use app.now()"** for as long as it has existed, and nothing checked. That is
+ * the worst shape a rule can have here: the clock is drivable, so `now()` is not
+ * an error anywhere — it silently answers with the host's time, which is right
+ * in production by coincidence and wrong in every driven world. A query using it
+ * returns confident rows that are about a different day, and no error, no empty
+ * result and no log line marks the moment it happened.
+ *
+ * `app.now()` and `app.now_for()` are the legitimate forms and both contain the
+ * forbidden substring, so this cannot be a substring check like the ones above —
+ * it is anchored to a word boundary and excludes anything qualified with `app.`.
+ *
+ * The refusal names the replacement, because the only feedback the model gets
+ * from a pre-flight rejection is the sentence in it.
+ */
+const WALL_CLOCK = [
+  { re: /(?<!app\s*\.\s*)\bnow\s*\(/, name: 'now()' },
+  { re: /\bcurrent_date\b/, name: 'current_date' },
+  { re: /\bcurrent_timestamp\b/, name: 'current_timestamp' },
+  { re: /\blocaltimestamp\b/, name: 'localtimestamp' },
+  { re: /\btransaction_timestamp\s*\(/, name: 'transaction_timestamp()' },
+  { re: /\bstatement_timestamp\s*\(/, name: 'statement_timestamp()' },
+  { re: /\bclock_timestamp\s*\(/, name: 'clock_timestamp()' },
+]
 
 /**
  * String literals and comments are data, not structure. A parent's note reading
@@ -633,6 +716,18 @@ function assertOneStatement(query: string, allowed: readonly string[], label: st
       throw new AppError({
         code: 'forbidden_sql',
         message: `Query contains "${fragment.trim()}", which is not allowed in a ${label} statement.`,
+      })
+    }
+  }
+
+  for (const { re, name } of WALL_CLOCK) {
+    if (re.test(lowered)) {
+      throw new AppError({
+        code: 'wall_clock_sql',
+        message:
+          `This ${label} statement calls ${name}, which reads the host clock. Use app.now() instead — ` +
+          `it is the only clock this product has, and ${name} answers with a different time in every ` +
+          `driven world without raising anything.`,
       })
     }
   }

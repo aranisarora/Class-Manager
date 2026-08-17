@@ -164,9 +164,35 @@ Measurement, not taste. Four tools, in the order you should reach for them:
 ```bash
 npm run surface          # everything the model is shown, in one greppable file
 npm run ask              # ask the model what it understood; ~₹1 a run
+npm run check:schema-doc # does the schema block still describe the real database?
+npx tsx scripts/probe-sql.ts        # can it actually WRITE the SQL? real rows, real verdicts
 npx tsx scripts/probe-prefix.ts     # where the bytes go, block by block
 npx tsx scripts/probe-ceiling.ts    # what the whole cached block costs
 ```
+
+**`probe-sql` is the one that answers the question this prefix now lives or dies
+on.** Since the wrapper operations went, nearly every write is SQL the model
+composed, and neither of the two probes above can tell you whether a statement
+was correct — `ask` has no tools and `probe` judges the sentence the person got.
+This drives 25 cases up a difficulty ladder and decides each on **what is true in
+the database afterwards**. Its top rung is not harder SQL; it is the cases where
+the obvious SQL is wrong in a way Postgres does not complain about.
+
+Read it with `lib/agent/sql-trace.ts` in mind: that is what makes the WRITE half
+visible at all. A plan carrying six statements was one clipped line in the flight
+recorder, so which statement was refused, and what Postgres said about it, was
+recorded nowhere. **A case that passes while the model wrote four wrong
+statements first is a case that passed and should be read.**
+
+**`check:schema-doc` is the cheap half, and it runs in a second.** `SCHEMA_DOC`
+is a hand-maintained string whose own header promises it changes when the
+migrations change — a promise kept by remembering, and the record shows it was
+not kept. So the check asks the database instead, in both directions: every table
+and column named must exist, every `!` must really be NOT NULL with no default,
+and **every NOT NULL column must carry a `!`** — that last one being the
+direction no reading of the document can catch, because absence has nothing to
+point at. It also refuses a view under the wrong schema, which is how
+`app.session_coverage` reached a live turn. It does not check prose; nothing can.
 
 `probe-prefix.ts` is the source of truth for size — this document deliberately quotes no byte
 counts, because a number written here goes stale exactly the way a count in the prompt does.
@@ -220,6 +246,9 @@ one of these, you have rediscovered a thing that was already considered and reje
 
 | Removed | When | Why |
 | --- | --- | --- |
+| *"every INSERT must set academy_id = app.academy_id() explicitly, on every row"* | 17 Aug 2026 | The column defaults to it now (0034), on all 25 tenant tables. The instruction was a rule fighting the shape of the language: the model knew it, wrote the natural statement anyway, and paid a round for the RLS refusal — whose text names a permission and means a missing column. **The general lesson is the mirror of the class/session one: a rule the writer must remember is a default the database should hold.** The `STEPS_PARAM` examples stopped carrying the column too, because an example is imitated as surface. |
+| *"to fetch several things at once combine them with WITH … UNION ALL"* | 17 Aug 2026 | Advice that is a trap for the case it was given for. Stacking a venue id onto a coach status unions uuid onto text, and Postgres refuses the statement outright — driven twice in one turn, the retry the same shape. Replaced with sub-selects in one SELECT list, and with the fact that several `read` calls in one round cost one round between them. |
+| *"The operations that remain are the ones with no SQL sentence … everything else is rows, and the rows are yours to write"* | 17 Aug 2026 | Factually wrong about most of the seventeen. `mark_attendance` writes the billing line, `cancel_session` credits and tells the families, `end_coach` issues a final statement — each has a fine SQL sentence for the row it starts with, and the hand-written version does a fraction of the job silently. The test is not *is there SQL for this* (there nearly always is) but *is there an operation for this*. |
 | ~20 operation signatures, again — this time the operations themselves | 17 Aug 2026 | Thirteen wrapper operations deleted (ARCHITECTURE.md layer 2). The tool surface went 36 declarations to 23 and the cached block lost 4,318 characters. Their knowledge did not go into the prefix: the invariants moved DOWN into triggers and constraints, and the consequences into `SCHEMA_DOC`, which is rung 2. If you are about to add a paragraph explaining what a write implies, that is where it goes. |
 | *"Reach for the operation rather than raw INSERTs — create_class is the only thing that schedules the sessions"* | 17 Aug 2026 | An instruction standing in for a property, and half false besides: the planner materialised every class on every tick anyway. 0033 makes a `class_slot` imply its sessions by trigger, so the sentence is true without being said. **The general lesson: an instruction that describes a guarantee is a guarantee that does not exist.** |
 | The eleven behavior modules | phase-6 arc | Retired by measurement. Same lifecycle driven with and without them; truth tied, the module-free replies were plainer, and the prescriptions were implicated in their own arm's two worst behaviors. |

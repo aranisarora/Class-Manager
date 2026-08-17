@@ -125,6 +125,16 @@ const RUN_AT = new Date()
 const ONLY = flag('case')
 const ONLY_STAGE = flag('stage')
 const ONLY_PERSONA = flag('persona')
+/**
+ * Stop after the first N selected cases — a smoke run rather than a reading.
+ *
+ * Cases accumulate state, so the only honest way to shorten an arc is to cut it
+ * from the END: a filter that skips the middle leaves later cases asking
+ * questions of a world nobody built. `--limit 5` walks the first five turns of
+ * the suite in order and stops, which is a probe of "does a turn work at all"
+ * and is NOT a reading about the stages it never reached.
+ */
+const LIMIT = Number(flag('limit', '0')) || 0
 const OUT_DIR = flag('out', join(process.cwd(), '.probe'))
 /**
  * Which arc to walk. `arc` is the lifecycle sweep; `f-o` is the regression suite
@@ -289,310 +299,6 @@ async function register(q: Sql) {
   return { s, ended, marked, roster }
 }
 
-/* -------------------------------------------------------------------------- *
- * Invariants — run after EVERY case, whatever the case was about
- *
- * The obvious way to keep a harness honest is a case per bug, and it is the way
- * that rots: the file grows monotonically, each case exercises one sentence, and
- * after a dozen rounds nobody runs the thing because it takes an hour. It also
- * tests the wrong thing — a case reproduces the *instance*, and every finding in
- * the retired ledger is filed as a class precisely because the instance is not
- * the point.
- *
- * These are statements about the world that must hold no matter what was said.
- * They cost one query each, they run against whatever state the arc has built by
- * then, and a defect anywhere in the class trips them — including from a sentence
- * nobody thought to write a case for. Four findings from an earlier round are
- * caught here by three checks, none of which mentions the sentence that produced it.
- *
- * The bar for adding one: it must be a property of the data or the outbound
- * record, true for every business, checkable in SQL, and false today only if
- * something is actually wrong. Anything needing a specific prompt is a case, not
- * an invariant — and should probably fold into one of the cases that exist.
- *
- * Every query below is tenant-scoped by RLS, because `q` pins the session to this
- * probe's own academy. `job` is the one table that is NOT — it is global and
- * carries its academy in the payload (§6.6) — so anything asking about jobs has
- * to say so itself, which is exactly what the `discretionary` case got wrong.
- * -------------------------------------------------------------------------- */
-
-const INVARIANTS: { label: string; run: (q: Sql) => Promise<Check> }[] = [
-  {
-    // F6. A class whose slots are all Saturday cannot begin on a Sunday, or its
-    // first week silently does not exist — the calendar looks right and the
-    // sessions are simply absent.
-    label: 'every class starts on one of its own weekdays',
-    run: async (q) => {
-      const bad = await q(`
-        select c.name, c.starts_on::text,
-               extract(dow from c.starts_on)::int as start_dow,
-               array_agg(distinct cs.weekday order by cs.weekday) as slot_days
-          from class c join class_slot cs on cs.class_id = c.id
-         group by c.id, c.name, c.starts_on
-        having not (extract(dow from c.starts_on)::int = any(array_agg(cs.weekday)))`)
-      return check('every class starts on one of its own weekdays', bad.length === 0, bad)
-    },
-  },
-  {
-    // F7. One human is one person row. Two rows with the same name in one
-    // business is either a duplicate or two people the product cannot tell
-    // apart — both are defects and neither has ever been visible.
-    label: 'no two people share a name',
-    run: async (q) => {
-      const bad = await q(`
-        select lower(btrim(full_name)) as name, count(*)::int as n
-          from person group by 1 having count(*) > 1`)
-      return check('no two people share a name', bad.length === 0, bad)
-    },
-  },
-  {
-    // F7 again, from the other side: a player and their account holder being the
-    // same human is the self-payer, which is correct. A player whose person has
-    // the same NAME as the holder but a different id is the bug.
-    label: 'no player is a duplicate of their own account holder',
-    run: async (q) => {
-      const bad = await q(`
-        select ph.full_name as player, ah.full_name as holder
-          from player pl
-          join person ph on ph.id = pl.person_id
-          join account a on a.id = pl.account_id
-          join person ah on ah.id = a.holder_person_id
-         where ph.id <> ah.id
-           and lower(btrim(ph.full_name)) = lower(btrim(ah.full_name))`)
-      return check('no player is a duplicate of their own account holder', bad.length === 0, bad)
-    },
-  },
-  {
-    // F4/F5. Repetition is invisible in a transcript read one message at a time
-    // and obvious in one query. Scoped to what actually went out.
-    label: 'nobody was told the same thing twice',
-    run: async (q) => {
-      const bad = await q(`
-        select contact_id, left(body, 60) as body, count(*)::int as n
-          from message
-         where direction = 'outbound' and suppressed_reason is null and btrim(body) <> ''
-         group by contact_id, body having count(*) > 1`)
-      return check('nobody was told the same thing twice', bad.length === 0, bad)
-    },
-  },
-  {
-    // F8. Operator vocabulary is correct for an admin and wrong for everybody
-    // else, and the receipt is minted once and replayed to whoever taps. This
-    // catches the shape rather than the string: a row count opening a sentence.
-    label: 'no row-counting receipt reached a non-admin',
-    run: async (q) => {
-      const bad = await q(`
-        select p.full_name, left(m.body, 80) as body
-          from message m
-          join contact ct on ct.id = m.contact_id
-          join person p on p.id = ct.person_id
-         where m.direction = 'outbound' and m.suppressed_reason is null
-           and m.body ~* '^(changed|added|removed|updated) [0-9]+ '
-           and not exists (select 1 from academy_admin aa where aa.person_id = ct.person_id)`)
-      return check('no row-counting receipt reached a non-admin', bad.length === 0, bad)
-    },
-  },
-  {
-    // §2.2 and §14.6. A JSON blob in the prose and a link pasted as text are the
-    // two ways a message arrives looking broken; both are structural, so both
-    // belong here rather than in anybody's eyes.
-    //
-    // wa.me and friends are exempt, and that is not a loophole: §8.1's invite is a
-    // link the admin FORWARDS, so there the text is the artifact and a button would
-    // destroy it. Same predicate as `isForwardableLink` in `messaging/types.ts` —
-    // if that one changes, this must too, which is the cost of stating it twice and
-    // is cheaper than a harness that fails on every correct invite.
-    label: 'no message carries raw structure or a bare url',
-    run: async (q) => {
-      const bad = await q(`
-        select left(body, 80) as body from message
-         where direction = 'outbound' and suppressed_reason is null
-           and (body like '%"buttons"%'
-                or body ~* 'https?://(?!wa\\.me|api\\.whatsapp\\.com|chat\\.whatsapp\\.com)')`)
-      return check('no message carries raw structure or a bare url', bad.length === 0, bad)
-    },
-  },
-  {
-    // §2.6 — "building the roster messages nobody". The send path already refuses
-    // this (gate 3 in `messaging/send.ts`), so a row here is a leak past a gate
-    // rather than a model that spoke out of turn, which is the interesting case.
-    //
-    // Solicited replies are exempt for the reason the gate exempts them: answering
-    // somebody who wrote in first is not the bot reaching out. And the whole check
-    // scopes ITSELF to a business that has not gone live, because after go-live a
-    // message sent before it is indistinguishable from one sent after.
-    label: 'nothing unsolicited reached a non-admin before go-live',
-    run: async (q) => {
-      const bad = await q(`
-        select p.full_name, left(m.body, 60) as body
-          from message m
-          join contact ct on ct.id = m.contact_id
-          join person p on p.id = ct.person_id
-         where m.direction = 'outbound' and m.suppressed_reason is null and not m.solicited
-           and (select onboarding_state from academy) <> 'live'
-           and not exists (select 1 from academy_admin aa where aa.person_id = ct.person_id)`)
-      return check('nothing unsolicited reached a non-admin before go-live', bad.length === 0, bad)
-    },
-  },
-  {
-    // R4/R7. Enrolling somebody who is already enrolled writes a second open row
-    // rather than failing, so the roster looks right and every per-month billing
-    // run charges the family twice. Nothing in the schema forbids it, which is why
-    // it has to be asked here.
-    label: 'nobody is enrolled in the same class twice',
-    run: async (q) => {
-      const bad = await q(`
-        select p.full_name as who, cl.name as class, count(*)::int as n
-          from enrollment e
-          join player pl on pl.id = e.player_id
-          join person p on p.id = pl.person_id
-          join class cl on cl.id = e.class_id
-         where e.ended_on is null
-         group by p.full_name, cl.name having count(*) > 1`)
-      return check('nobody is enrolled in the same class twice', bad.length === 0, bad)
-    },
-  },
-  {
-    // §6.7 — money follows the account, and the account is the player's own. A
-    // line billed to some other account is a family paying for a child that is not
-    // theirs, and the only place it shows up is the tally, once a month, in money.
-    label: 'every charge is billed to the account that holds the player',
-    run: async (q) => {
-      const bad = await q(`
-        select p.full_name as who, t.description, t.amount::text
-          from tally_line t
-          join player pl on pl.id = t.player_id
-          join person p on p.id = pl.person_id
-         where t.account_id <> pl.account_id`)
-      return check('every charge is billed to the account that holds the player', bad.length === 0, bad)
-    },
-  },
-  {
-    // R10, in the one place it is checkable in SQL. A register marked for a class
-    // that has not happened yet is the calendar-versus-recurrence confusion writing
-    // itself into attendance, and from there into money. A timely cancellation is
-    // the one attendance status that legitimately lands on a future session.
-    label: 'no register was marked for a class that has not happened',
-    run: async (q) => {
-      const bad = await q(`
-        select p.full_name as who, a.status, s.starts_at::text
-          from attendance a
-          join session s on s.id = a.session_id
-          join player pl on pl.id = a.player_id
-          join person p on p.id = pl.person_id
-         where a.status <> 'cancelled_timely' and s.starts_at > app.now()`)
-      return check('no register was marked for a class that has not happened', bad.length === 0, bad)
-    },
-  },
-  {
-    // R6 — what the product records is narrower than what it changes. A payment
-    // that says `confirmed` and cannot say when is a number in a tally with no
-    // evidence behind it, and the person it hurts is the one who paid.
-    label: 'every confirmed payment records when it was confirmed',
-    run: async (q) => {
-      const bad = await q(`
-        select id::text, amount::text, rail, reference
-          from payment where status = 'confirmed' and confirmed_at is null`)
-      return check('every confirmed payment records when it was confirmed', bad.length === 0, bad)
-    },
-  },
-  {
-    // §11.2. Opting out is the one promise that cannot be half-kept, and the
-    // failure is silent to everyone except the person who asked to be left alone.
-    label: 'nobody was messaged after they opted out',
-    run: async (q) => {
-      const bad = await q(`
-        select p.full_name, left(m.body, 60) as body, m.created_at::text
-          from message m
-          join contact ct on ct.id = m.contact_id
-          join person p on p.id = ct.person_id
-         where m.direction = 'outbound' and m.suppressed_reason is null
-           and ct.opted_out_at is not null and m.created_at > ct.opted_out_at`)
-      return check('nobody was messaged after they opted out', bad.length === 0, bad)
-    },
-  },
-  {
-    /**
-     * F-AP. A watch carries a `context_query` the model wrote, and both watches
-     * minted on the 16 Aug realism drive queried tables that do not exist —
-     * `FROM register WHERE family_id = 'meera'`, `FROM devs d LEFT JOIN
-     * owner_decisions`. Neither fails at mint. Each fails on its fire day, weeks
-     * later, inside a job nobody is watching, and the task then runs blind on
-     * its instruction alone.
-     *
-     * `explain` is the cheapest way to ask the database whether a statement
-     * could run: it plans the query — resolving every table and column — and
-     * executes nothing. A watch with no query is not a defect, so it is skipped
-     * rather than counted.
-     *
-     * `job` is global (§6.6), so this names its own tenant. Without that it
-     * would validate every other business's watches and report their defects
-     * here.
-     */
-    label: 'every watch queries tables that exist',
-    run: async (q) => {
-      const tasks = await q(`
-        select id::text, payload->>'context_query' as sql, payload->>'instruction' as instruction
-          from job
-         where kind = 'agent_task' and status in ('pending', 'running')
-           and payload->>'academy_id' = (select id::text from academy)
-           and coalesce(btrim(payload->>'context_query'), '') <> ''`)
-      const bad: any[] = []
-      for (const t of tasks) {
-        // One statement only. A `context_query` is a read the product runs on
-        // the model's behalf, and validating the first half of something with a
-        // semicolon in it would report a pass for a statement that is not the
-        // one that will run.
-        if (String(t.sql).includes(';')) {
-          bad.push({ id: t.id, why: 'more than one statement', sql: String(t.sql).slice(0, 200) })
-          continue
-        }
-        try {
-          await q(`explain ${t.sql}`)
-        } catch (e) {
-          bad.push({ id: t.id, why: (e as Error)?.message ?? String(e), sql: String(t.sql).slice(0, 200), instruction: t.instruction })
-        }
-      }
-      return check('every watch queries tables that exist', bad.length === 0, bad)
-    },
-  },
-  {
-    /**
-     * Rule 9 — nothing lands at 4:30 in the morning. The tennis month went live
-     * at 2am and fired three reminder templates at 02:02, and the drive before
-     * it found the same class from the other end.
-     *
-     * Scoped to sends nobody asked for, to non-admins, on the tenant's own
-     * clock: an operator typing at 2am and being answered at 2am is the product
-     * working. A reminder arriving then is not.
-     */
-    label: 'nothing unsolicited landed in the small hours',
-    run: async (q) => {
-      const bad = await q(`
-        select p.full_name, left(m.body, 60) as body, m.created_at::text as at
-          from message m
-          join contact ct on ct.id = m.contact_id
-          join person p on p.id = ct.person_id
-         where m.direction = 'outbound' and m.suppressed_reason is null and not m.solicited
-           and extract(hour from (m.created_at at time zone
-                 (select timezone from academy limit 1)))::int not between 6 and 21
-           and not exists (select 1 from academy_admin aa where aa.person_id = ct.person_id)`)
-      return check('nothing unsolicited landed in the small hours', bad.length === 0, bad)
-    },
-  },
-]
-
-async function runInvariants(q: Sql): Promise<Check[]> {
-  const out: Check[] = []
-  for (const inv of INVARIANTS) {
-    try {
-      out.push(await inv.run(q))
-    } catch (e) {
-      out.push(check(inv.label, false, `invariant query failed: ${(e as Error)?.message ?? String(e)}`))
-    }
-  }
-  return out
-}
 
 const CASES: Case[] = [
   /* ---- onboarding -------------------------------------------------------- */
@@ -5129,7 +4835,12 @@ if (!SUITES[SUITE]) {
   console.error(c.red(`no suite "${SUITE}" — one of ${Object.keys(SUITES).join(', ')}`))
   process.exit(2)
 }
-const ACTIVE: Case[] = SUITES[SUITE] as Case[]
+// The cut is applied AFTER the name/stage/persona filters and before anything
+// runs, so `--limit` means "the first N turns this run would have taken" rather
+// than "the first N cases in the file, some of which were filtered out anyway".
+const ACTIVE: Case[] = LIMIT
+  ? (SUITES[SUITE] as Case[]).filter(selected).slice(0, LIMIT)
+  : (SUITES[SUITE] as Case[])
 
 /* -------------------------------------------------------------------------- *
  * Reply quality, as evidence rather than as a grade.
@@ -5267,7 +4978,27 @@ type TurnRecord = {
   /** What the queue did around this turn — the ladder, in the order it fired. */
   jobs: string[]
   reply: ReplyReport
-  tools: { round: number; name: string; args: string; result: string; error?: string }[]
+  /**
+   * The flight recorder, one entry per tool call AND per model round.
+   *
+   * `reasoning` and `drafted` were being written into these entries and were
+   * absent from this type, so every reader was type-checked into blindness:
+   * the fields existed in the JSON on disk, `score.md` could not name them
+   * without an error, and the instrument reported thinking it had recorded.
+   * A record shape that omits a field the recorder writes is not a smaller
+   * type, it is a lie about the evidence.
+   */
+  tools: {
+    round: number
+    name: string
+    args: string
+    result: string
+    /** The model's own deliberation for this round, verbatim and uncapped. */
+    reasoning?: string
+    /** Prose it wrote this round before any tool ran. */
+    drafted?: string
+    error?: string
+  }[]
   toolNames: string[]
   wants: string[]
   wanted: boolean
@@ -6078,10 +5809,28 @@ async function runChild(model: string, arm: string): Promise<void> {
       // Asked earlier, reported here — a reader of the record should not have to
       // know which side of the thumb a check fell on to find it.
       checks = [...preChecks, ...checks]
-      // Every case pays for the invariants, so a defect introduced by one sentence
-      // is caught by whichever case happens to run after it — which is the point:
-      // nobody has to predict which prompt will break which rule.
-      checks = [...checks, ...(await runInvariants(q))]
+      /**
+       * The standing invariants ran here and no longer exist.
+       *
+       * Fourteen of them ran after every turn, and measured on two five-turn runs
+       * of the same five sentences they were worth nothing. Nine could not fail at
+       * roster stage — there were no payments, no charges, no registers, no
+       * opt-outs, no watches and no message to any non-admin, so they queried
+       * empty sets and passed. The one that DID fail failed by arithmetic: a class
+       * created on a Tuesday whose slots are Mon/Wed/Fri trips "every class starts
+       * on one of its own weekdays" whatever the model does.
+       *
+       * The number they produced was insensitive to the thing it claimed to
+       * measure. Both runs scored 88/93. One of them invented three surnames,
+       * named a two-child family account after one child, and stamped `invited_at`
+       * on a coach nobody had invited; the other did none of that. The score could
+       * not tell them apart, and a score that cannot tell a good run from a bad
+       * one is not a weak instrument, it is a misleading one — it says 88/93 to
+       * somebody deciding whether to ship.
+       *
+       * What replaces them is a person reading the turn, which is what found all
+       * three of those defects in the first place. See `JUDGING` below.
+       */
 
       records.push({
         model,
@@ -6205,6 +5954,7 @@ function spawnChild(model: string, thinking: string): Promise<number> {
         ...(ONLY ? ['--case', ONLY] : []),
         ...(ONLY_STAGE ? ['--stage', ONLY_STAGE] : []),
         ...(ONLY_PERSONA ? ['--persona', ONLY_PERSONA] : []),
+        ...(LIMIT ? ['--limit', String(LIMIT)] : []),
         ...(has('keep') ? ['--keep'] : []),
       ],
       {
@@ -6244,6 +5994,57 @@ function report(all: TurnRecord[]): void {
     `Run at ${RUN_AT.toISOString()} — ${isPeak(RUN_AT) ? 'PEAK' : 'off-peak'} rates. Two runs at different`,
     'times of day bill differently; that is the rate card, not a finding.',
     '',
+    '## How to judge this run',
+    '',
+    'Nothing below is scored, and the pass/fail checks that used to be here are gone.',
+    'They were measured against two runs of the same five sentences and could not tell',
+    'them apart: both scored 88/93 while one invented three surnames, named a',
+    'two-child family account after one of the children, and stamped `invited_at` on a',
+    'coach nobody had invited. A number that survives all three is not a weak',
+    'instrument, it is a misleading one. **You are the instrument. Read the turns.**',
+    '',
+    'Read a turn in this order, and do not skip to the reply:',
+    '',
+    '1. **What they typed.** Decide what a good answer would be BEFORE reading the',
+    '   reply, or you will grade what it did instead of what it should have done.',
+    '2. **What it was thinking.** Printed verbatim under each round. This is where',
+    '   intent lives: a model that dropped a fact and a model that never saw it read',
+    '   identically in the rows and differently here. Check what it noticed and then',
+    '   did nothing with — ages, a second child, a name it had to guess at.',
+    '3. **What it queried, and what came back.** A zero-row result it treated as',
+    '   absence is the commonest silent failure. Ask whether the query could have',
+    '   found the thing at all.',
+    '4. **What it wrote.** The `wrote` array in a plan result is the ground truth of',
+    '   the turn. Compare it against the sentence — every fact they volunteered',
+    '   should be somewhere, and every column it filled should be one it was told',
+    '   about. A field set from nothing (an invite time for an invite never sent) is',
+    '   a defect no amount of correct rows makes up for.',
+    '5. **What is actually in the database.** The evidence rows at the end of the',
+    '   turn, unlabelled. Read them as facts, not as a verdict.',
+    '6. **What the person read.** Last. Judge it as the person, not as the author:',
+    '   would you know what to do next, and is anything in it untrue?',
+    '',
+    'Then write the turn up on these axes — the repo\'s seven (`scripts/drive.ts score`)',
+    'plus the two a driven arc can ask that a single turn cannot:',
+    '',
+    '- **truth** — is every claim in the reply backed by a row this turn wrote?',
+    '- **correctness** — is what landed what they asked for?',
+    '- **friction** — how many turns did it take that it should not have?',
+    '- **affordance** — could they act on it, or must they type?',
+    '- **capability** — did it do the whole job or part of it?',
+    '- **plainness** — would a busy person understand it on one read?',
+    '- **cost** — rounds and rupees against what the turn was worth.',
+    '- **consequence** — did it leave the world in a state tomorrow can rely on? A',
+    '  promise with no machinery behind it passes every other axis and fails this one.',
+    '- **sideways reading** — did it look at what else had a claim on the thing it',
+    '  changed, or only at what the sentence in front of it needed?',
+    '',
+    'Two habits worth keeping. Where a reading and a row disagree, record the reading',
+    'and treat the query as the thing that needs fixing. And run the same arc twice',
+    'before believing any defect is a property of the product rather than of the run —',
+    'the three defects named above all appeared in one run of two and vanished in the',
+    'other.',
+    '',
   ]
   for (const arm of arms) {
     const mine = forArm(arm)
@@ -6278,16 +6079,86 @@ function report(all: TurnRecord[]): void {
         lines.push('')
       }
       if (r.reply.flags.length) lines.push(`**Flags:** ${r.reply.flags.join(' · ')}`, '')
-      lines.push(`**Tools** (${r.rounds} rounds): ${r.toolNames.join(' → ') || 'none'}`, '')
+      /**
+       * What it was thinking, printed.
+       *
+       * The recorder was fixed on 17 Aug and this reader was not, which is the
+       * worse half of the same bug: `loop.ts` writes the reasoning untruncated
+       * to its own field, the JSON record carries it, and `score.md` — the file
+       * every reading is actually done from — rendered only `args`, where the
+       * SAME text rides as a copy that `traceValue` cuts at 2,000 characters.
+       *
+       * So the evidence was present and invisible, which is worse than absent:
+       * a turn with 3,373 characters of deliberation printed as no `(model)`
+       * thinking at all, and a reader who went looking found a duplicate ending
+       * mid-sentence and concluded the instrument was lossy. Both readings are
+       * wrong, and both were reached from this file.
+       *
+       * Printed BEFORE the arguments, because the order a turn is read in is
+       * why → what, not what → why.
+       */
+      const deliberated = r.tools.filter((t) => typeof t.reasoning === 'string' && t.reasoning.trim())
+      const thoughtChars = deliberated.reduce((n, t) => n + (t.reasoning as string).length, 0)
+      lines.push(
+        `**Tools** (${r.rounds} rounds): ${r.toolNames.join(' → ') || 'none'}` +
+          (deliberated.length
+            ? ` · deliberated on ${deliberated.length} of them, ${thoughtChars.toLocaleString()} characters of it`
+            : ' · no reasoning recorded on any round'),
+        '',
+      )
       for (const t of r.tools) {
-        lines.push(`- r${t.round} \`${t.name}\` ${t.error ? `**THREW: ${t.error}**` : ''}`, '  ```json', `  ${t.args}`, '  ```')
+        lines.push(`- r${t.round} \`${t.name}\` ${t.error ? `**THREW: ${t.error}**` : ''}`)
+        const thinking = typeof t.reasoning === 'string' ? t.reasoning.trim() : ''
+        if (thinking) {
+          // Four backticks: reasoning quotes the model's own fenced blocks often
+          // enough that three would close the fence early and spill the rest of
+          // the thinking into the document as prose.
+          lines.push(
+            '',
+            `  **what it was thinking** (${thinking.length.toLocaleString()} chars, verbatim):`,
+            '',
+            '  ````text',
+            ...thinking.split('\n').map((l) => `  ${l}`),
+            '  ````',
+          )
+        }
+        if (typeof t.drafted === 'string' && t.drafted.trim()) {
+          lines.push(
+            '',
+            '  **what it wrote this round, before any tool ran:**',
+            '',
+            '  ````text',
+            ...t.drafted.trim().split('\n').map((l) => `  ${l}`),
+            '  ````',
+          )
+        }
+        lines.push('', '  ```json', `  ${t.args}`, '  ```')
+        // The blob below carries its own copy of the thinking, cut at 2,000
+        // characters by the recorder. Saying so is the difference between a
+        // reader trusting the complete text above and doubting the record.
+        if (thinking && /reasoning_content/.test(t.args)) {
+          lines.push(
+            `  > the \`reasoning_content\` inside that blob is a **truncated duplicate** of the thinking printed above — read the block, not the blob.`,
+          )
+        }
         if (t.result && t.result !== 'null') lines.push(`  → \`${t.result}\``)
       }
       lines.push('')
       if (r.jobs.length) lines.push(`**Queue:** ${r.jobs.join(' · ')}`, '')
       if (r.checks.length) {
-        lines.push('**Is it actually true?**', '')
-        for (const k of r.checks) lines.push(`- ${k.ok ? '✅' : '❌'} ${k.label} — \`${k.detail}\``)
+        /**
+         * Rows, not verdicts.
+         *
+         * These queries stay because a hand judge needs to see the world the turn
+         * left behind, and the tool trace only shows what the model THOUGHT it
+         * wrote. The tick and the cross are gone: a green row here never meant the
+         * turn was good — it meant one query the case author thought of came back
+         * the shape they expected — and printing a verdict beside evidence makes
+         * the reader stop at the verdict. Every defect worth having found on this
+         * arc was found by reading, and passed every tick on the page.
+         */
+        lines.push('**What is actually in the database**', '')
+        for (const k of r.checks) lines.push(`- ${k.label} — \`${k.detail}\``)
         lines.push('')
       }
       lines.push(
@@ -6304,11 +6175,12 @@ function report(all: TurnRecord[]): void {
   writeFileSync(join(OUT_DIR, 'score.md'), lines.join('\n'))
 
   console.log(`\n${c.bold('per turn')}`)
-  console.log(c.dim(`${'model'.padEnd(24)} ${'stage'.padEnd(12)} ${'case'.padEnd(22)} ${'who'.padEnd(9)} ${'true?'.padEnd(6)} ${'tools'.padEnd(26)} ${'reply'.padEnd(7)} ${'aff'.padStart(4)} ${'rnd'.padStart(3)} ${'secs'.padStart(5)} ${'₹'.padStart(6)}`))
+  console.log(c.dim(`${'model'.padEnd(24)} ${'stage'.padEnd(12)} ${'case'.padEnd(22)} ${'who'.padEnd(9)} ${'rows'.padEnd(6)} ${'tools'.padEnd(26)} ${'reply'.padEnd(7)} ${'aff'.padStart(4)} ${'rnd'.padStart(3)} ${'secs'.padStart(5)} ${'₹'.padStart(6)}`))
   for (const r of all) {
-    const t = `${r.checks.filter((k) => k.ok).length}/${r.checks.length}`
-    const good = r.checks.length === 0 || r.checks.every((k) => k.ok)
-    const cell = r.checks.length === 0 ? c.dim('  —  ') : good ? c.green(t.padEnd(6)) : c.red(t.padEnd(6))
+    // How many world-state queries this turn produced for the judge to read.
+    // Deliberately not a fraction and deliberately not coloured: there is no
+    // denominator any more, because nothing here is scored.
+    const cell = c.dim((r.checks.length ? String(r.checks.length) : '—').padEnd(6))
     const aff = r.reply.buttons.length ? `${r.reply.buttons.length}b` : r.reply.link ? 'link' : r.reply.list ? 'list' : '—'
     console.log(
       `${armLabel(r.model, r.thinking ?? 'default').padEnd(30)} ${r.stage.padEnd(12)} ${r.case.padEnd(22)} ${(r.spokeAs ? r.persona : c.red(r.persona)).padEnd(9)} ${cell} ` +
@@ -6325,29 +6197,44 @@ function report(all: TurnRecord[]): void {
   for (const arm of arms) {
     const mine = forArm(arm)
     if (!mine.length) continue
-    const checks = mine.flatMap((r) => r.checks)
     const wanted = mine.filter((r) => r.wants.length)
     const usd = mine.reduce((a, r) => a + (r.usd ?? 0), 0)
     console.log(
-      `  ${arm.label.padEnd(30)} truth ${checks.filter((k) => k.ok).length}/${checks.length} · ` +
+      `  ${arm.label.padEnd(30)} ${mine.length} turns · ` +
         `right tool ${wanted.filter((r) => r.wanted).length}/${wanted.length} · ` +
         `${mine.filter((r) => r.reply.flags.length).length} turns with reply flags · ` +
         `${mine.filter((r) => r.claimedDone && !r.backedByWrite).length} unbacked · ` +
         `${(mine.reduce((a, r) => a + r.latencyMs, 0) / mine.length / 1000).toFixed(1)}s avg · ₹${(usd * USD_INR).toFixed(2)} total`,
     )
+    /**
+     * How much of the thinking this run actually holds.
+     *
+     * The instrument went blind to reasoning for a whole day without one number
+     * moving: the checks passed, the costs were right, the report was written
+     * and read, and the only symptom was a reader concluding the model had not
+     * deliberated. So coverage is stated on every run, and a run that captured
+     * NONE says so in red rather than printing a confident summary of a turn it
+     * could not see inside.
+     */
+    const rounds = mine.flatMap((r) => r.tools).filter((t) => t.name === '(model)')
+    const thought = rounds.filter((t) => (t.reasoning ?? '').trim())
+    const chars = thought.reduce((a, t) => a + (t.reasoning as string).length, 0)
+    const line =
+      `  ${''.padEnd(30)} reasoning on ${thought.length}/${rounds.length} model rounds` +
+      `${rounds.length ? ` (${Math.round((100 * thought.length) / rounds.length)}%)` : ''}` +
+      `, ${chars.toLocaleString()} characters kept`
+    console.log(rounds.length && !thought.length ? c.red(`${line} — THE RUN CANNOT SAY WHY ANYTHING HAPPENED`) : c.dim(line))
   }
 
-  // Which checks fail everywhere is a different question from which turn failed,
-  // and it is the one that says whether the product or the model is at fault.
-  const failing = new Map<string, number>()
-  for (const r of all) for (const k of r.checks) if (!k.ok) failing.set(k.label, (failing.get(k.label) ?? 0) + 1)
-  if (failing.size) {
-    console.log(`\n${c.bold('failed checks, by how often')}`)
-    for (const [labelText, n] of [...failing].sort((a, b) => b[1] - a[1])) {
-      console.log(`  ${c.red(String(n).padStart(3))}  ${labelText}`)
-    }
-  }
-  console.log(c.dim(`\nfull evidence → ${join(OUT_DIR, 'score.md')}`))
+  // The "failed checks, by how often" tally stood here. It ranked labels by how
+  // many turns tripped them, which on a run where one invariant fails by
+  // arithmetic reads as the single most important thing about the run — five
+  // times over, at the bottom of the report, in red.
+  console.log(
+    `\n${c.bold('nothing here is scored')} ${c.dim('— the run is evidence. Read the turns and judge them by hand:')}`,
+  )
+  console.log(c.dim(`  ${join(OUT_DIR, 'score.md')} — every turn: typed, thought, queried, wrote, replied`))
+  console.log(c.dim('  the rubric is at the top of that file'))
 }
 
 /* ========================================================================== */

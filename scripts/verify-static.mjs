@@ -467,6 +467,20 @@ const SQL_CLOCK_ALLOW = allow([
       'or current_timestamp. Use app.now()."). It is a byte-frozen prompt constant and holds ' +
       'no executed SQL.',
   },
+  {
+    file: 'lib/db.ts',
+    permanent: true,
+    why:
+      'WALL_CLOCK — the guard that ENFORCES this rule, and it has to name what it refuses. ' +
+      'A check that flags its own enforcement is the shape where the enforcement gets deleted ' +
+      'to make the check green, so this is exempt by construction rather than by note.',
+  },
+  {
+    file: 'scripts/probe-sql.ts',
+    why:
+      'a probe case description, in prose, explaining what the clock-discipline case tests. ' +
+      'Not SQL, and this file executes none of its own against the product.',
+  },
 ])
 
 {

@@ -32,6 +32,9 @@ exists" into "the behaviour happened". Read the next drive against this list.
 | **F-I** | Mid-month joins bill in full; an unknown number is dropped without trace; §14.8 escalation unenforced. *(`turn_id` on job sends closed — `serviceFrom` carries it and `message.origin` says what sent it.)* | several — named per bullet | 15 Aug |
 | **F-R** | `app.session_roster` times out at 5s on a large world. *(The duplicate sends closed — see F-AN.)* | the view itself, undiagnosed | 16 Aug |
 | **F-AR** | The answer dies beside a tool call on the final round, and an operation's side-message stands in as the reply | `lib/agent/loop.ts` — recovery must fire on discarded prose, not just on silence | 16 Aug |
+| **F-BA** | A hand-written `insert into attendance` messages the family and bills nobody — the per-session line is written by the operation, not by the world | a trigger, the way 0033 did sessions. Part 6 | 17 Aug |
+| **F-BB** | The plan result names anyone put in two places at once, and nothing makes the model pass it on | `lib/agent/plan.ts` / the declaration. Part 6 | 17 Aug |
+| **F-BC** | 7 of 27 replies carry anything to tap, and families got 0 of 6 — flagged independently by the probe arm on 14 of 18 turns. Told twice already, so not a prompt fix | `backstopButtons` in `lib/agent/tools.ts`. Part 6 | 17 Aug |
 
 ### Closed 17 Aug 2026, by the architecture pass
 
@@ -870,3 +873,150 @@ in three turns (*"3 steps matched no rows and change nothing — check that part
 is no quiet-hours floor on a proactive send — going live at 2am fired three reminder templates at
 02:02. Also: removing a weekly slot leaves `class.starts_on` on a weekday the class no longer runs
 (tripped F6 on 22 consecutive turns; harmless until something reads `starts_on`).
+
+**F6 is over-strict at creation, and the finding it produces there is manufactured.** On the 17 Aug
+five-turn smoke it failed on all five records, and the reading that says the model chose a bad date
+is wrong: the world's clock was Tue 18 Aug and `starts_on = 2026-08-18` is TODAY, not a date the
+model picked out of the air. A class created today whose slots are Mon/Wed/Fri trips this invariant
+by arithmetic, not by defect — and so does every class whose weekdays do not happen to include the
+day it was created on. The daily batch passed only because it runs all seven days.
+
+Nothing is lost behaviourally: materialisation walks the slots forward from `starts_on`
+(`sessions.ts` skips `dayIso < cls.starts_on`), so the first session lands on the first slot weekday
+on or after it. Decide once what `starts_on` means. If it is *effective from*, F6 is testing the
+wrong column and should assert on the first materialised session instead — the slot-removal case
+above is then the only real one. If it is *the first session*, then the creation path must snap it
+forward to a slot weekday, and the invariant is right to fail on every class in the run.
+
+Recorded because it is the shape the instrument is supposed to have stopped producing: a check that
+cannot pass except by accident reads, five times over, as a product defect.
+
+---
+
+## Part 6 — can it write the SQL? Audited and driven 17 Aug 2026
+
+The 17 Aug architecture pass deleted thirteen wrapper operations, and from that
+commit onwards nearly every write in this product is SQL the model composed
+itself. Nothing measured whether it can. `npm run ask` measures comprehension
+with no tools; `npm run probe` judges what the person got. Neither can say "was
+that statement correct", and the write half of the model's SQL was not recorded
+anywhere at all: a plan carrying six statements is ONE row in the flight
+recorder, whose `args` are clipped at 4,000 characters. Which statement Postgres
+refused, and what it said, was written down nowhere.
+
+Two instruments, then a ladder.
+
+**`lib/agent/sql-trace.ts`** — every statement the model authored, at the two
+places one reaches Postgres (`modelQuery` and `runSteps`), untruncated, with the
+role it ran as, rows affected, and the whole error. Including the statements
+refused *before* the database sees them, which are the ones an instrument most
+wants and which leave no database error to find. One null check when no capture
+is open; deliberately not wired to any table.
+
+**`scripts/probe-sql.ts`** — 25 cases on a six-rung ladder, in a world where the
+owner also coaches. Every case is chosen because the SQL is the hard part, and
+every verdict is SQL against the real rows afterwards rather than a reading of
+the reply. Tier 6 is not "harder SQL": it is where the OBVIOUS SQL is wrong in a
+way Postgres does not complain about.
+
+### The headline
+
+**The model writes good SQL, and what was wrong was what it had been told.**
+Across 25 cases it composed large, structurally correct multi-statement plans,
+used the roster view rather than rebuilding the join, aggregated in SQL rather
+than counting rows, kept a sibling discount on the enrollment instead of
+repricing the class, refused a duplicate class name, ended rather than deleted,
+and — on a coach asking for a raise he has no policy to grant himself — declined
+to claim it was done and routed it to the owner.
+
+Every genuine defect below is a sentence in the prompt that was **false, absent,
+or in the wrong place**. Each was closed and re-driven.
+
+| Found | What it did | Closed by |
+| --- | --- | --- |
+| `insert into person (full_name)` refused with *new row violates row-level security policy* | Every INSERT had to state `academy_id = app.academy_id()`. The model knew the rule — the schema block states it twice, in bold — wrote the natural statement anyway, and spent a round recovering. The error names a permission and means a missing column. | **0034** — `academy_id` DEFAULTs to `app.academy_id()` on all 25 tenant tables. It is the same expression the policy tests against, so it cannot mint a row the policy would have refused, and a statement passing the column explicitly is untouched. Every statement that used to succeed is unaffected; the only behaviour that changed belonged to statements that always failed. The paragraph telling the model to remember it is gone, and the `STEPS_PARAM` examples stopped carrying it — the model imitates an example's surface. |
+| `relation "app.session_coverage" does not exist` | `SCHEMA_DOC` listed the views without saying which schema each lives in. `app.session_roster` IS `app.`-qualified; `session_coverage` and `uncovered_session` are not, and the model generalised. | The block names the qualification and says prefixing is an error, not a near-miss. |
+| `UNION types uuid and text cannot be matched`, twice in one turn | The `read` declaration **recommended** `WITH … UNION ALL` for fetching several things at once. Stacking a venue id onto a coach status is exactly that advice, and Postgres refuses the whole statement. The second attempt was the same shape again. | The declaration leads with sub-selects in one SELECT list, says UNION ALL needs matching column count *and* types, and points at the cheaper answer — several `read` calls in one round, which costs one round between them. |
+| `column en.active does not exist` | The warning existed, ~40 lines from the `enrollment` signature, inside the roster section. | Moved onto the signature, where the decode happens. |
+| **A coach was enrolled as a fee-paying player** | Asked to *put Arjun on the Morning Juniors class as well*, the model opened an account in its own coach's name, made him a player, enrolled him, and told the owner he would be billed 900 a month from 1 Sep. `class_coach` and `enrollment` sit adjacent in the doc with nothing saying which one a **coach** uses. | `SCHEMA_DOC` states that teaching a class and attending it are different tables, that one human can hold both rows so the name does not tell you, and that enrolling a coach starts billing them. Re-driven: it writes `class_coach` and says he now reaches every session. |
+| No column marked NOT NULL anywhere, and no CHECK beyond the enums | Every table rendered as a bare column list, so `class.starts_on`, `enrollment.started_on`, `payment.rail` and the rest were invisible requirements — and a plan is one transaction, so one missing column rolls back every correct step beside it. The block's one nullability marking taught the opposite inference. | A `!` convention, 52 columns marked, plus the `rate_count` rule for per_term and per_package, and `rail`'s two values. |
+| Three tables the session cannot read, four it cannot write, none marked | `job`, `audit_entry` and `turn` have no `cm_user` policy at all, so they read **empty** in every session including the owner's — beside a line telling the model that the admin's empty is real. `memory_fact`, `message`, `pending_request` and `action` are SELECT-only, while the doc instructed *a correction inserts a new row with supersedes set*. | A block naming what is invisible, what is read-only, and what writes it instead. |
+| `dedupe_key` demanded, its grammar never given | The model was told to set billing identity on any recurring charge and never told the six key shapes the runtime's own writers use, so its key and theirs would not recognise the same charge. | The shapes, on the `tally_line` line. |
+| The clock rule had no enforcement | *Never call now(), current_date* has been in the schema block for as long as it has existed and nothing checked. The clock is drivable, so `now()` is never an error — it silently answers about a different day, right in production by coincidence and wrong in every driven world. | **Build-it**: the pre-flight refuses `now()`, `current_date`, `current_timestamp`, `localtimestamp` and the three `*_timestamp()` forms, anchored so `app.now()` and `app.now_for()` pass. The refusal names the replacement, because a pre-flight rejection is the only feedback there is. |
+| The read tool clipped its hand-back at 200 rows and reported `truncated: false` | A read matching 900 rows came back as `rowCount: 900, truncated: false` beside exactly 200 row objects — a complete-looking answer, of the shape this whole block warns about, manufactured by the runtime rather than the database. The declaration named 10,000 as the only ceiling. | `MODEL_ROWS_SHOWN`, and the result carries `rows_shown` plus a note saying which number a total may be read off. |
+| A trailing `-- comment` commented out the read tool's own row cap | `modelQuery` wrapped the model's SELECT on ONE line, so a query ending in a line comment swallowed `) _m limit 10001` — the close of the wrapper and the cap. Postgres answers *syntax error at end of input*, about a statement the model did not write, on a query that is valid by itself. And the model does write trailing comments: the ladder caught it annotating a census query inline to explain why two counts were named apart. | The close goes on its own line. Proved both ways against the live database. |
+| *The operations that remain are the ones with no SQL sentence … everything else is rows, and the rows are yours to write* | False for most of the seventeen. `mark_attendance` writes the per-session billing line; `cancel_session` credits what was billed, tells the families and drops that session's prompts; `end_coach` issues a final statement. Each has a perfectly good SQL sentence for the row it starts with, and the hand-written version silently does a fraction of the job. | The declaration states the true test: an operation exists BECAUSE doing that thing properly is more than its rows. |
+
+### Still open
+
+**F-BA · A hand-written attendance INSERT bills nobody.** The per-session tally
+line is written by the `mark_attendance` operation, not by the world. So an
+`insert into attendance …` composed as a plan step raises the family's outcome
+message and charges them nothing, and nothing detects it. The declaration now
+steers toward the operation, and a declaration is not a guarantee. The structural
+home is the one 0033 used for sessions: **the line belongs on a trigger**, so
+attendance implies its billing on every route including raw SQL. Not shipped
+here — it changes money behaviour and deserves a drive of its own behind it.
+
+**F-BB · The plan reports "two places" and nothing makes the model say it.** The
+plan result names anyone put in two places at once. Whether that reaches the
+person is the model's choice, and on the first drive of that case it did not.
+
+**F-BC · Nothing to tap. Measured on two instruments at once, and it is the
+biggest behavioural gap left.** In the week, **7 of 27** turn-composed messages
+carried a tappable button, at an average of 62 words. The probe arm flagged the
+same thing independently on 14 of 18 turns — *wall of text, nothing to tap*.
+
+It is not persona-specific, and it is worst where it matters most: the three
+FAMILIES got **0 buttons across 6 messages**, and a parent on a phone is the
+person least likely to type a sentence back.
+
+This is not a case of the model not being told. It is told twice, in the two
+places the ladder says are strongest: the `reply` declaration
+(*"Offer the natural next step as a button"*, and that `{kind:'reply', text}`
+needs no arguments you do not have) and doctrine 7's button budget. **So more
+prompt text is the one fix that is known not to work here** — that is the
+standing prohibition, and this finding is the evidence for it rather than an
+exception to it.
+
+The structural home is the runtime. `backstopButtons` already exists and, by its
+own comment at `tools.ts`, only helps an admin before go-live, "because from
+where it stands it cannot guess a useful third button". Two directions worth
+driving: mint the obvious affordance from what the turn already did (a plan that
+staged something has a tap; a question asked has its answers), and treat a
+button-less reply to a non-admin as the exception that has to earn itself,
+the way a long body already does.
+
+### On the harness, recorded so the next reader does not re-find them
+
+Four of the six apparent model failures across the first two runs were mine, and
+each is a shape this document keeps warning about:
+
+- A tripwire grepping a coach's reply for *done* failed a turn that had behaved
+  perfectly: the sentence was *I will let you know once it is done*, a promise
+  about the future and the exact opposite of a false claim. It grades the ROUTE
+  now — a write that did not land must reach somebody who can land it.
+- A case asked the model to cancel *tonight's* session on a day that class does
+  not run. It correctly said there was none. A case whose premise depends on the
+  day it runs measures the calendar.
+- `dedupe-key` failed with *nobody was charged* over a textbook charge: money
+  plans come back as a preview, and the statements execute inside a transaction
+  that is rolled back to compute the diff. `sql-trace` faithfully recorded good
+  SQL for a row that was never committed. The harness taps now, as a person does.
+- An anti-join check accepted `not exists` and `left join … is null` and rejected
+  `left join … group by … count()`, which is the same question and arguably the
+  better answer, because it also says who has FEW marks rather than only none.
+
+And two that were real and not the model's:
+
+- The cursor for "what was said this turn" was host time, while `created_at` runs
+  on the tenant's own clock (0027). One case was graded against the reply to the
+  case two before it.
+- Tapping a staged plan opens a SECOND turn, and the harness read the turn table
+  with `order by created_at desc limit 1` — so on every tapped case it recorded
+  the TAP's trace and discarded the trace of the turn that composed the SQL. The
+  report showed one round named `tap:steps` and no reasoning at all, for exactly
+  the cases whose reasoning was most worth reading. It records every turn in the
+  window now. The statements themselves were never affected: `sql-trace` sits at
+  the database and does not care which turn a statement belonged to, which is a
+  large part of why it exists.

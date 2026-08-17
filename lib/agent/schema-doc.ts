@@ -24,6 +24,9 @@ Postgres. You author SQL against these tables directly.
 
 - Every table has: id uuid pk, created_at timestamptz.
 - Every table except academy, sender, job, sim_* also has academy_id uuid not null.
+- **A column marked \`!\` is required and has no default: an INSERT that leaves it
+  out is refused, and refused for the whole plan.** Everything unmarked is either
+  nullable or defaulted, so leave it out and let the default stand.
 - RLS is on for every table and it is the security boundary, not a filter you add.
   **Reading and writing are not symmetrical here, and assuming they are is the
   single most common way a write fails.**
@@ -36,11 +39,10 @@ Postgres. You author SQL against these tables directly.
     "withheld by policy" arrive as the same zero rows: report what they can see,
     and where their view ends say "not something I can see from here" — never
     that the thing does not exist.
-  - WRITE (INSERT): **every INSERT must set academy_id = app.academy_id() explicitly,
-    on every row, including rows in a multi-row VALUES list.** Nothing fills it in
-    for you: the column is not defaulted, and the policy checks it, so an insert
-    that leaves it out is refused with "new row violates row-level security
-    policy" — which looks like a permissions problem and is a missing column.
+  - WRITE (INSERT): academy_id fills itself in. It defaults to the business you
+    are serving on every tenant-scoped table, so leave it out and write the
+    statement you would write if there were only one business in the world.
+    Setting it explicitly to app.academy_id() is still correct, just noise.
   - WRITE (UPDATE and DELETE): **the dangerous half, because it does not fail.** An
     INSERT the policy refuses raises an error you can read. An UPDATE or DELETE whose
     rows the policy excludes simply **matches nothing and raises nothing** — no error,
@@ -53,37 +55,80 @@ Postgres. You author SQL against these tables directly.
     to make this change and it must be routed to the admin instead.
 - **Never call now(), current_date or current_timestamp. Use app.now().** The clock
   is drivable; sql now() ignores it and produces answers that are wrong in test and
-  subtly wrong in production.
+  subtly wrong in production. These are refused before the database sees them.
+
+## What you may write, and what is not yours to write
+
+Not every table in this document is one you can change, and two of them are not
+even ones you can read. Postgres does not warn you: a read you have no policy for
+returns **zero rows**, and a write you have no policy for is refused mid-plan and
+takes every correct step beside it down with it.
+
+- **Not yours at all — job, audit_entry, turn.** These are the runtime's own
+  books, and they are closed in BOTH directions. A select returns zero rows in
+  every session including the owner's, so never answer "nothing is scheduled" or
+  "nothing changed" from one — what you have scheduled is a thing to say from
+  what you did, not to look up. And an UPDATE or DELETE here changes nothing and
+  says nothing: cancelling a standing reminder is not a row you edit. Use
+  drop_watch for a watch, and leave the rest to the runtime — it already drops
+  the prompts a cancellation makes moot.
+- **Yours to read, never to write — memory_fact, message, pending_request,
+  action, row_snapshot.** Each has a tool or a runtime path that writes it:
+  \`remember\` writes memory_fact (including a correction — pass supersedes, do not
+  compose the INSERT yourself), \`reply\` writes message and action, and asking a
+  question that only one person's tap can answer is what writes pending_request.
+  An INSERT here fails; an UPDATE here matches nothing and says nothing.
+- **academy — update only.** You may change the business's own settings. There is
+  no route to a second academy and no reason to look for one.
+- **Everything else you may write — but WHO you are serving decides it, not the
+  table.** The admin can write all of it. A coach and a family can write very
+  little of it, and the boundary is not listed here because it is enforced per
+  row rather than per table. Two consequences, and they are the two failure
+  modes above in miniature: an INSERT the policy refuses raises an error you can
+  read and act on, and an UPDATE it refuses matches nothing and stays silent. So
+  when you are acting for anyone but the owner, expect the write to be the part
+  that fails, read back what you changed, and route it to the admin rather than
+  reporting it done.
 - Money is numeric(10,2), rupees. Timestamps are timestamptz; render in the
   academy's timezone, never raw.
 
 ## Tenancy and place
 
-academy(name text, category text, timezone text, cancellation_window_hours int,
+academy(name! text, category text, timezone text, cancellation_window_hours int,
   client_reminder_lead_hours int, morning_brief_at time, evening_digest_at time,
   rail text 'rail1|rail2', upi_handle text, sender_id uuid, memory text,
   prompt_cache_handle text, settings jsonb, created_on date,
   onboarding_state text 'setup|roster|ready|live')
-venue(name text, address text, notes text)
+venue(name! text, address text, notes text)
 
 ## People — three separate concerns, and roles compose
 
-person(full_name text, notes text, memory text, settings jsonb)
-contact(person_id uuid, phone_e164 text, wa_id text, profile_name text,
+person(full_name! text, notes text, memory text, settings jsonb)
+contact(person_id! uuid, phone_e164! text, wa_id text, profile_name text,
   is_primary bool, state text 'prospect|registered|engaged|opted_out',
   opted_out_at tstz, last_inbound_at tstz, role_hint text, tier_state jsonb,
   unique(academy_id, phone_e164))          -- a WhatsApp number
-account(holder_person_id uuid, display_name text)
-player(account_id uuid, person_id uuid, active bool)
-coach(person_id uuid, pay_amount numeric, pay_unit text 'per_session|per_hour|per_month',
+  -- phone_e164 is REWRITTEN to +91… on the way in, whatever was typed. So a
+  -- lookup on the digits somebody gave you ('9876500011', '098765 00011')
+  -- matches nothing and reads as "no such person". Match the tail instead:
+  --   where right(phone_e164, 10) = right('<what they typed>', 10)
+account(holder_person_id! uuid, display_name text)
+player(account_id! uuid, person_id! uuid, active bool)
+coach(person_id! uuid, pay_amount numeric, pay_unit text 'per_session|per_hour|per_month',
   status text 'added|invited|active|ended', invited_at tstz, onboarded_at tstz,
   ended_on date)
-academy_admin(person_id uuid)
+  -- Pay is private from OTHER coaches, not from themselves, and rows cannot hide
+  -- one column — so in a COACH's session this table is their own row and nothing
+  -- else. "Who else is on this session?" reads zero rows here and is not an
+  -- answer. Use coach_public(id, person_id, status, ended_on), which is every
+  -- coach in the business with no pay columns to leak. The admin sees all of
+  -- coach, so from an admin session this does not arise.
+academy_admin(person_id! uuid)
   -- a non-admin session sees only its own row here (usually none), by design:
   -- an empty read means "not yours to see", never "no admin exists". To reach
   -- the admin you never need this table: reply with to_contact_id 'admin', or
   -- handoff — the runtime resolves who that is.
-memory_fact(subject_kind text 'academy|person', subject_id uuid, fact text,
+memory_fact(subject_kind! text 'academy|person', subject_id! uuid, fact! text,
   source text, supersedes uuid -> memory_fact, retired_at tstz)
 
 ## What somebody was asked, what they muted, and how the owner runs the business
@@ -91,9 +136,9 @@ memory_fact(subject_kind text 'academy|person', subject_id uuid, fact text,
 Three tables that exist because a state nobody stores is a state nobody can
 report — and, eventually, one the product mis-reports.
 
-pending_request(contact_id uuid, person_id uuid, kind text /* the protocol:
-  opt_out, decline_coach, client_cancel, confirm_plan */, subject text
-  /* what it is about, normalised */, question text /* the sentence they read */,
+pending_request(contact_id! uuid, person_id! uuid, kind! text /* the protocol:
+  opt_out, decline_coach, client_cancel, confirm_plan */, subject! text
+  /* what it is about, normalised */, question! text /* the sentence they read */,
   expires_at tstz, asked_turn_id uuid, message_id uuid -> message,
   resolved_at tstz, resolution text 'tapped|expired|superseded|withdrawn')
   -- unique(academy_id, contact_id, kind, subject) where resolved_at is null
@@ -103,8 +148,8 @@ pending_request(contact_id uuid, person_id uuid, kind text /* the protocol:
   and have not answered. An unanswered question is NOT the same as one that was
   never asked, and it is not the same as a "no" — say which it is.
 
-comm_preference(contact_id uuid, person_id uuid,
-  scope text 'all|money|reminders|outcomes|announcements', until date
+comm_preference(contact_id! uuid, person_id! uuid,
+  scope! text 'all|money|reminders|outcomes|announcements', until date
   /* null = until they say otherwise */, stated text /* their own words */,
   set_by_person_id uuid, released_at tstz)
   -- unique(academy_id, contact_id, scope) where released_at is null
@@ -114,8 +159,8 @@ comm_preference(contact_id uuid, person_id uuid,
   compose — so it is what actually stops a 9am payment reminder. contact.
   opted_out_at is the whole-channel version and outranks every scope.
 
-business_rule(statement text /* the owner's own words */, topic text,
-  provenance text 'owner_stated|observed', stated_by_person_id uuid,
+business_rule(statement! text /* the owner's own words */, topic text,
+  provenance! text 'owner_stated|observed', stated_by_person_id uuid,
   blessed_at tstz, blessed_by_person_id uuid, enforced_by text
   /* the typed row that gates the automation, or null */,
   visibility text 'internal|shared', retired_at tstz)
@@ -153,20 +198,36 @@ where supersedes is not null).
 
 ## Classes and sessions — one class noun
 
-class(name text, venue_id uuid, rate_amount numeric,
-  rate_unit text 'per_session|per_month|per_term|per_package', rate_count int,
-  starts_on date, ends_on date, active bool)
-class_slot(class_id uuid, weekday int 0=Sun..6=Sat, start_time time, end_time time)
-class_coach(class_id uuid, coach_id uuid)          -- pk(class_id,coach_id). DEFAULT coach set
-enrollment(class_id uuid, player_id uuid, rate_amount numeric, rate_unit text,
-  rate_count int, is_trial bool, started_on date, ended_on date)
-session(class_id uuid, venue_id uuid, starts_at tstz, ends_at tstz,
+class(name! text, venue_id uuid, rate_amount numeric,
+  rate_unit text 'per_session|per_month|per_term|per_package', rate_count int
+  /* REQUIRED and > 0 when rate_unit is per_term or per_package — how many months
+     a term runs, how many sessions a package holds. A check refuses the row
+     without it, and the same rule holds on enrollment. */,
+  starts_on! date, ends_on date, active bool)
+class_slot(class_id! uuid, weekday! int 0=Sun..6=Sat, start_time! time, end_time! time)
+class_coach(class_id! uuid, coach_id! uuid)          -- pk(class_id,coach_id). DEFAULT coach set
+
+**Two different people can be "put on a class", and the tables are not
+interchangeable.** Somebody who TEACHES it joins through class_coach, by their
+coach.id, and is paid. Somebody who ATTENDS it joins through enrollment, by
+their player.id, and is charged. So before writing either, know which one this
+person is — the same human can hold both rows, so the name does not tell you.
+Enrolling a coach is not a near-miss: it opens an account in their name and
+starts billing them for the class they are there to run.
+
+enrollment(class_id! uuid, player_id! uuid, rate_amount numeric, rate_unit text,
+  rate_count int, is_trial bool, started_on! date, ended_on date)
+  -- **There is no enrollment.active.** It is the single commonest invented
+  -- column here, and it errors rather than lying. An enrollment is live when
+  -- ended_on is null (or is later than the day you are asking about); "active"
+  -- is a column on player, and it means the person has left altogether.
+session(class_id! uuid, venue_id uuid, starts_at! tstz, ends_at! tstz,
   status text 'scheduled|cancelled|completed', cancel_reason text,
   unique(class_id, starts_at))
-session_coach(session_id uuid, coach_id uuid, confirmed_at tstz, declined_at tstz,
+session_coach(session_id! uuid, coach_id! uuid, confirmed_at tstz, declined_at tstz,
   arrived_at tstz, running_late bool)              -- pk(session_id,coach_id). ACTUAL coach set
-attendance(session_id uuid, player_id uuid,
-  status text 'present|late|absent|cancelled_timely', note text,
+attendance(session_id! uuid, player_id! uuid,
+  status! text 'present|late|absent|cancelled_timely', note text,
   marked_by_coach_id uuid, marked_at tstz, unique(session_id, player_id))
 
 There is no group/private/batch/one-off distinction. A private class has one
@@ -192,19 +253,26 @@ that had not started or had already ended on the day.
 
 ## Money
 
-tally_line(account_id uuid, player_id uuid null, class_id uuid null, period date
-  /* 1st of the billing month */, kind text
-  'session|monthly|term|package|adjustment', description text /* shown verbatim
-  to the parent */, amount numeric /* negative = credit */, session_id uuid,
+tally_line(account_id! uuid, player_id uuid null, class_id uuid null, period! date
+  /* 1st of the billing month */, kind! text
+  'session|monthly|term|package|adjustment', description! text /* shown verbatim
+  to the parent */, amount! numeric /* negative = credit */, session_id uuid,
   reason text, approved_by uuid -> person, dedupe_key text)
   -- unique(session_id, player_id) where session_id is not null
   -- unique(academy_id, dedupe_key) where dedupe_key is not null
-  -- dedupe_key is billing IDENTITY in ids, so a retry cannot double-charge. Set
-  -- it on any recurring charge you write. NULL means deliberately repeatable —
-  -- a waiver or a manual adjustment, where doing the same thing twice is a
-  -- decision and not a duplicate.
-payment(account_id uuid, amount numeric, rail text, method text, reference text
-  /* UPI ref / UTR */, status text 'requested|confirmed|failed', requested_at tstz,
+  -- dedupe_key is billing IDENTITY, so a retry cannot double-charge. Set it on
+  -- any recurring charge you write, and use the shape the runtime's own writers
+  -- use, or your row and theirs will not recognise each other as the same charge:
+  --   m:<player_id>:<class_id>:<period>     one month
+  --   t:<player_id>:<class_id>:<period>     one term
+  --   p:<player_id>:<class_id>:<n>          the nth package
+  --   s:<player_id>:<session_id>            one session
+  --   ff:<player_id>                        the free first class, once ever
+  --   ct:<player_id>:<session_id>           the credit for a timely cancellation
+  -- NULL means deliberately repeatable — a waiver or a manual adjustment, where
+  -- doing the same thing twice is a decision and not a duplicate.
+payment(account_id! uuid, amount! numeric, rail! text 'rail1|rail2', method text, reference text
+  /* UPI ref / UTR */, status! text 'requested|confirmed|failed', requested_at tstz,
   confirmed_at tstz, confirmed_by uuid -> person, evidence_url text)
 
 ## Messaging, actions, views, jobs, audit
@@ -223,7 +291,7 @@ message(contact_id, sender_id, direction 'inbound|outbound', catalog_id text,
   -- messaging is broken when it is working exactly as designed. Count them apart.
   -- origin says what put it on the wire, so "did a person ask for this" is a
   -- query rather than a guess.
-action(kind text, payload jsonb /* fully resolved */, minted_at, minted_for_contact_id,
+action(kind! text, payload! jsonb /* fully resolved */, minted_at, minted_for_contact_id,
   expires_at, consumed_at, consumed_by_contact_id, message_id uuid -> message,
   expired_reason text)
 job(kind text, run_at tstz, dedupe_key text unique, subject_key text
@@ -263,9 +331,13 @@ memory_fact.supersedes -> memory_fact, audit_entry.undo_of -> audit_entry
 It is a property of the session, which is why a coach dropping out while others
 remain assigned changes nothing it returns.
 
-Views: session_coverage(session_id, academy_id, starts_at, status, covered,
-pending_count, confirmed_count, declined_count) and uncovered_session — the same,
-filtered to scheduled, uncovered, starts_at > app.now().
+Views, and **their names are exactly as written here.** The roster view is the
+only one under the app schema; these two are unqualified, and prefixing them
+with app. is an error rather than a near-miss:
+
+  session_coverage(session_id, academy_id, starts_at, status, covered,
+  pending_count, confirmed_count, declined_count)
+  uncovered_session — the same, filtered to scheduled, uncovered, starts_at > app.now()
 
 **Effective rate** lives on the enrollment and defaults from the class:
 coalesce(enrollment.rate_amount, class.rate_amount), and the same for rate_unit

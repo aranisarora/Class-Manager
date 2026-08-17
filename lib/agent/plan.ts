@@ -24,6 +24,7 @@ import {
   type SessionCtx,
   type Tx,
 } from '@/lib/db'
+import { recordSql } from '@/lib/agent/sql-trace'
 import { idem, newId } from '@/lib/ids'
 import { now } from '@/lib/clock'
 import { adminContactIds, resolveIdentity } from '@/lib/identity'
@@ -564,10 +565,46 @@ async function runSteps(
     }
 
     if ('write' in step) {
-      assertSingleWriteStatement(step.write)
+      /**
+       * Recorded here, at the statement, because nothing downstream can see one.
+       *
+       * A plan carrying six writes is ONE row in the flight recorder, whose
+       * `args` hold the steps as a JSON string clipped at 4,000 characters. Which
+       * statement Postgres refused, and what it said, was written down nowhere —
+       * so the write half of the model's SQL, which is the half that changes the
+       * world, was the half no instrument could read. See `lib/agent/sql-trace.ts`.
+       *
+       * The refusal path reports too: `assertSingleWriteStatement` throws before
+       * the database is reached, and a shape the model believed was legal is
+       * exactly what a review of its SQL is looking for.
+       */
+      const startedAt = Date.now()
+      const say = (r: { rowCount: number | null; error?: string }) =>
+        recordSql(() => ({
+              kind: 'write' as const,
+          sql: step.write,
+          role: step.service ? 'service' : ctx.role,
+          academyId: ctx.academyId ?? null,
+          personId: 'personId' in ctx ? (ctx.personId ?? null) : null,
+          ms: Date.now() - startedAt,
+          ...r,
+        }))
+      try {
+        assertSingleWriteStatement(step.write)
+      } catch (e) {
+        say({ rowCount: null, error: e instanceof Error ? e.message : String(e) })
+        throw e
+      }
       const run = () => tx.unsafe(step.write) as unknown as Promise<unknown>
-      const res = step.service ? await asService(tx, ctx, run) : await run()
+      let res: unknown
+      try {
+        res = step.service ? await asService(tx, ctx, run) : await run()
+      } catch (e) {
+        say({ rowCount: null, error: e instanceof Error ? e.message : String(e) })
+        throw e
+      }
       const n = rowCount(res)
+      say({ rowCount: n })
       const t = tableOf(step.write)
       if (t) state.exec.push({ ...t, count: n })
       /**
@@ -635,7 +672,19 @@ async function runSteps(
         `${uid(ctx.academyId)}, ${uid(a.account_id)}, ${a.player_id ? uid(a.player_id) : 'null'}, ` +
         `date ${lit(period)}, 'adjustment', ${lit(a.description ?? a.reason)}, ${moneyLit(a.amount)}, ` +
         `${lit(a.reason)}, ${ctx.role === 'user' ? uid(ctx.personId) : 'null'})`
+      const adjustStartedAt = Date.now()
       const res = (await tx.unsafe(sql)) as unknown
+      // The one statement the model did not write, recorded under its own kind so
+      // a report never credits the model with SQL the runtime composed for it.
+      recordSql(() => ({
+          kind: 'adjust' as const,
+        sql,
+        role: ctx.role,
+        academyId: ctx.academyId ?? null,
+        personId: 'personId' in ctx ? (ctx.personId ?? null) : null,
+        ms: Date.now() - adjustStartedAt,
+        rowCount: rowCount(res),
+      }))
       state.exec.push({ table: 'tally_line', op: 'insert', count: rowCount(res) })
       continue
     }

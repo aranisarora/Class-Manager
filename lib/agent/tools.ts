@@ -8,7 +8,14 @@
  * model be free above it.
  */
 
-import { assertSingleReadStatement, modelQuery, serviceFrom, withSession, type SessionCtx } from '@/lib/db'
+import {
+  assertSingleReadStatement,
+  modelQuery,
+  serviceFrom,
+  withSession,
+  MODEL_ROWS_SHOWN,
+  type SessionCtx,
+} from '@/lib/db'
 import { newId } from '@/lib/ids'
 import type { ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
@@ -251,9 +258,15 @@ const STEPS_PARAM = {
     'Steps run one after another inside ONE transaction, so a later step sees rows an ' +
     'earlier step created. You will not know the id of something you just inserted — do ' +
     'not guess one and do not leave the link empty. Select it back:\n' +
-    '  [{"write":"insert into venue (academy_id, name) values (app.academy_id(), \'Green Park\')"},\n' +
-    '   {"write":"insert into class (academy_id, name, venue_id, starts_on) values (app.academy_id(), \'Evening\', ' +
-    '(select id from venue where name = \'Green Park\' and academy_id = app.academy_id()), date \'2026-08-20\')"}]\n' +
+    // The examples no longer carry `academy_id` (0034 defaults it) or a tenant
+    // predicate on the sub-select (RLS is the boundary, and SCHEMA_DOC says not
+    // to add one). Both were noise the model imitates as surface — it copies an
+    // example's SHAPE along with its content, which is why worked chat examples
+    // are banned outright and why these two are kept to the narrowest thing that
+    // demonstrates the point: a later step reading back an earlier step's row.
+    '  [{"write":"insert into venue (name) values (\'Green Park\')"},\n' +
+    '   {"write":"insert into class (name, venue_id, starts_on) values (\'Evening\', ' +
+    '(select id from venue where name = \'Green Park\'), date \'2026-08-20\')"}]\n' +
     // Both are safe now. `venue` has always had a unique key on (academy_id,
     // name); `class` gained one in 0021, scoped to classes that are still OPEN
     // (active and no `ends_on`), so §6.3's requirement still holds — an ended
@@ -270,8 +283,7 @@ const STEPS_PARAM = {
     'It MUST return exactly one row: a subquery that matches two aborts the whole plan. Venue names ' +
     'are unique per business, and so are the names of classes that are still running, so both are ' +
     'safe as written. Narrow a class lookup with `and active and ends_on is null`:\n' +
-    "  (select id from class where name = 'Beginners' and academy_id = app.academy_id() and active " +
-    'and ends_on is null)\n' +
+    "  (select id from class where name = 'Beginners' and active and ends_on is null)\n" +
     'If that matches nothing, the class does not exist yet — create it rather than widening the ' +
     'lookup until something comes back.\n' +
     'Better still, if the row already exists, `read` its id first and pass the id itself.\n' +
@@ -283,15 +295,26 @@ const STEPS_PARAM = {
     // (0033). What an operation used to carry that a statement cannot is the
     // half the schema still cannot say — what follows what — and that lives in
     // SCHEMA_DOC, where somebody writing SQL can read it.
-    'The operations that remain are the ones with no SQL sentence: a question only THIS ' +
-    "person's own tap may answer, an undo, and the few writes needing a permission the person " +
-    'you are serving does not have. Everything else is rows, and the rows are yours to write.\n' +
+    // "The operations that remain are the ones with no SQL sentence … everything
+    // else is rows, and the rows are yours to write" stood here, and it was
+    // false for most of the seventeen. `mark_attendance` writes the per-session
+    // billing line; `cancel_session` credits what was billed, tells the families
+    // and drops that session's prompts; `end_coach` issues a final statement and
+    // reopens the coverage. Every one of those has a perfectly good SQL sentence
+    // for the row it starts with, and a hand-written version of it silently
+    // performs a fraction of the job — an attendance INSERT that bills nobody
+    // being the one that costs money. A test the model can apply is the fix: not
+    // "is there SQL for this" (there nearly always is) but "is there an operation
+    // for this" (then it is doing more than the row).
+    'A named operation exists BECAUSE doing that thing properly is more than its rows — it credits ' +
+    'money back, tells the people affected, closes the prompts that are now moot, or needs a permission ' +
+    'this person does not have. So when one covers what you are about to do, reach for it, and let it ' +
+    'carry the rest. Raw statements are for everything no operation names, which is most of the schema.\n' +
     'Example, a class and its weekly time:\n' +
-    '  [{"write":"insert into class (academy_id, name, starts_on) values (app.academy_id(), ' +
-    "'Evening', date '2026-08-20')\"},\n" +
-    '   {"write":"insert into class_slot (academy_id, class_id, weekday, start_time, end_time) ' +
-    "values (app.academy_id(), (select id from class where name = 'Evening' and academy_id = " +
-    "app.academy_id() and active and ends_on is null), 1, time '18:00', time '19:00')\"}]",
+    '  [{"write":"insert into class (name, starts_on) values (\'Evening\', date \'2026-08-20\')"},\n' +
+    '   {"write":"insert into class_slot (class_id, weekday, start_time, end_time) ' +
+    "values ((select id from class where name = 'Evening' and active and ends_on is null), " +
+    "1, time '18:00', time '19:00')\"}]",
 }
 
 /**
@@ -845,8 +868,21 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
         query: {
           type: 'string',
           description:
-            'EXACTLY ONE SELECT (or WITH … SELECT) statement. No semicolon, and never two statements — ' +
-            'to fetch several things at once combine them with WITH … UNION ALL, or as sub-selects in one SELECT list.',
+            'EXACTLY ONE SELECT (or WITH … SELECT) statement. No semicolon, and never two statements. ' +
+            // "Combine them with WITH … UNION ALL" was the advice, and it is a
+            // trap for exactly the shape it was recommended for: stacking a venue
+            // lookup on a coach lookup on a class lookup means unioning a uuid
+            // column onto a text one, and Postgres refuses the whole statement
+            // with `UNION types uuid and text cannot be matched`. Driven twice in
+            // one turn, and the second attempt was the same shape again.
+            // Sub-selects have no such rule, so they lead — and the batching this
+            // was really asking for is several `read` CALLS in one round, which
+            // the description above already says costs nothing extra.
+            'To ask several unrelated things at once, put each as its own sub-select in one SELECT list — ' +
+            "select (select count(*) from class) as classes, (select id from venue where name = 'X') as venue_id. " +
+            'UNION ALL is for stacking rows of the SAME SHAPE: every branch must have the same column count ' +
+            'AND matching types, so unioning an id onto a name is refused outright. Simplest of all, make ' +
+            'several read calls in the same round.',
         },
         purpose: { type: 'string', description: 'What you are trying to find out. One short line.' },
       },
@@ -1299,8 +1335,41 @@ export async function runTool(
                 'off an empty read this person\'s permissions could have emptied.',
             }
           : null
+      /**
+       * **The hand-back has always been clipped at 200 and has never said so.**
+       *
+       * `truncated` is `modelQuery`'s flag and means "the query matched more than
+       * the 10,000-row cap". It says nothing about this slice, so a read matching
+       * 900 rows came back as `rowCount: 900, truncated: false` beside exactly 200
+       * row objects — a complete-looking answer, of the shape this product spends
+       * its whole schema block warning about, produced by the runtime rather than
+       * by the database. The `read` declaration names 10,000 as the only ceiling,
+       * which made the number in front of the model wrong as well as unexplained.
+       *
+       * Saying it is the whole fix. `rowCount` is the true count and stays the
+       * thing to reason with; `rows_shown` marks the sample, and the note says
+       * which of the two a total may be read off.
+       */
+      const shown = res.rows.slice(0, MODEL_ROWS_SHOWN)
+      const clipped = res.rowCount > shown.length
       return {
-        result: { scope, rowCount: res.rowCount, truncated: res.truncated, ms: res.ms, rows: res.rows.slice(0, 200), ...(scoped ?? {}) },
+        result: {
+          scope,
+          rowCount: res.rowCount,
+          truncated: res.truncated,
+          ms: res.ms,
+          rows: shown,
+          ...(clipped
+            ? {
+                rows_shown: shown.length,
+                note_rows:
+                  `${res.rowCount} rows matched and the first ${shown.length} are here. The rest were not sent. ` +
+                  `rowCount is the real total — never count these rows yourself, and if you need a figure over ` +
+                  `the whole set, ask for it with count()/sum() instead.`,
+              }
+            : {}),
+          ...(scoped ?? {}),
+        },
         note: scope,
       }
     }
@@ -1347,7 +1416,15 @@ export async function runTool(
       steps = stripHumanAssertions(steps, planStripped) as PlanStep[]
       const planIgnored = planStripped.length ? { ignored: humanAssertionNote(planStripped) } : null
       const preview = await previewPlan(ctx.session, steps, String(args?.intent ?? ''))
-      if (!preview.ok) return { result: { ok: false, error: preview.error } }
+      // The same column-repair the `read` path has had all along, on the path
+      // where getting it wrong is most expensive: a plan is ONE transaction, so
+      // an invented column takes every correct step beside it down with it. The
+      // model's only clue was `column "x" does not exist`, while the runtime
+      // could say which table x is actually on and was simply never asked.
+      if (!preview.ok)
+        return {
+          result: { ok: false, error: preview.error, ...(await whereThatColumnLives(ctx, String(preview.error ?? ''))) },
+        }
       const handle = newId()
       const gate = needsPreview(preview, steps, {
         actorContactId: ctx.identity.contact.id,
@@ -1508,7 +1585,15 @@ export async function runTool(
         : null
       const steps: PlanStep[] = [{ operation: { name: opName as any, args: (args?.args ?? {}) as any } }]
       const preview = await previewPlan(ctx.session, steps, String(args?.intent ?? ''))
-      if (!preview.ok) return { result: { ok: false, error: preview.error } }
+      // The same column-repair the `read` path has had all along, on the path
+      // where getting it wrong is most expensive: a plan is ONE transaction, so
+      // an invented column takes every correct step beside it down with it. The
+      // model's only clue was `column "x" does not exist`, while the runtime
+      // could say which table x is actually on and was simply never asked.
+      if (!preview.ok)
+        return {
+          result: { ok: false, error: preview.error, ...(await whereThatColumnLives(ctx, String(preview.error ?? ''))) },
+        }
       if (needsPreview(preview, steps, { actorContactId: ctx.identity.contact.id })) {
         const handle = newId()
         ctx.pendingPlans.set(handle, steps)
@@ -2046,6 +2131,17 @@ export async function runTool(
           return true
         }).catch((e: unknown) => (e instanceof Error ? e.message : String(e)))
         if (planned !== true) {
+          /**
+           * The same column-repair the `read` path has had all along.
+           *
+           * `whereThatColumnLives` existed and was wired to exactly one of the
+           * three places a model-authored statement can fail. Driven: a watch was
+           * minted with `select … from message where person_id = …`, which is the
+           * §6.2 confusion this schema invites — `message` is keyed by CONTACT —
+           * and the refusal said only that the column does not exist. The runtime
+           * knew which table it was on and did not say, so the model's only route
+           * back was to re-read 40k characters of schema and guess again.
+           */
           return {
             result: {
               error: `context_query will not run: ${String(planned)}`,
@@ -2053,6 +2149,7 @@ export async function runTool(
                 'It is checked now rather than on the day it fires, because a watch that errors weeks from ' +
                 'now runs blind on its instruction and nobody finds out. Read the schema, fix the query, and ' +
                 'mint it again — or drop context_query and let the task read what it needs when it runs.',
+              ...(await whereThatColumnLives(ctx, String(planned))),
             },
           }
         }

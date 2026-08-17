@@ -13,12 +13,16 @@
     "drive": "tsx scripts/drive.ts",
     "wa": "tsx scripts/wa-cloud.ts",
     "probe": "tsx scripts/probe-model.ts",
+    "probe:sql": "tsx scripts/probe-sql.ts",
+    "drive:week": "tsx scripts/drive-week.ts",
     "ask": "tsx scripts/probe-ask.ts",
     "surface": "tsx scripts/probe-surface.ts",
     "guards": "tsx scripts/guard-value.ts",
     "check:world": "tsx scripts/check-world.ts",
+    "check:schema-doc": "tsx scripts/check-schema-doc.ts",
     "check:clash": "tsx scripts/check-clash.ts",
     "judge": "node scripts/judge.mjs",
+    "report:sql": "node scripts/sql-report.mjs",
     "verify:static": "node scripts/verify-static.mjs"
   },
   "dependencies": {
