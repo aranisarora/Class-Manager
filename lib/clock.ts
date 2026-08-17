@@ -258,6 +258,38 @@ export async function nextEventAt(academyId = ''): Promise<Date | null> {
  * `weekday` is 0 = Sunday .. 6 = Saturday, matching `class_slot.weekday` — not
  * luxon's 1 = Monday, which is a bug waiting to happen at the boundary.
  */
+/**
+ * Is this instant inside the academy's night?
+ *
+ * **The one predicate, here rather than in the jobs layer, because the send path
+ * needs it and cannot reach that far.** `lib/jobs/util.ts` had the only copy, and
+ * `lib/jobs/runner.ts` said outright *"There are no quiet hours (§13)"* — which
+ * was true of the send path and false of the planner, so the product both had
+ * them and did not. Going live at 2am fired three reminder templates at 02:02,
+ * from three different handlers, none of which was wrong about anything except
+ * the hour. ARCHITECTURE.md's layer 4 is explicit: no job composes around it, the
+ * send layer enforces it.
+ *
+ * The pair lives in `academy.settings` (`quiet_start` / `quiet_end`, 'HH:MM'),
+ * defaulted rather than written into every row: 21:00–07:00 is a sane household
+ * window, and an academy that wants dawn sends can say so.
+ */
+export function quietWindow(settings: Record<string, unknown> | null): { start: string; end: string } {
+  const read = (k: string, fallback: string): string => {
+    const v = settings?.[k]
+    return typeof v === 'string' && /^\d{2}:\d{2}$/.test(v) ? v : fallback
+  }
+  return { start: read('quiet_start', '21:00'), end: read('quiet_end', '07:00') }
+}
+
+export function isQuietHour(at: Date, tz: string, settings: Record<string, unknown> | null): boolean {
+  const { start, end } = quietWindow(settings)
+  const hm = DateTime.fromJSDate(at, { zone: tz || 'Asia/Kolkata' }).toFormat('HH:mm')
+  // The window normally wraps midnight; an academy that sets 13:00–15:00 gets the
+  // straight reading, which is the same expression without the wrap.
+  return start > end ? hm >= start || hm < end : hm >= start && hm < end
+}
+
 export function inZone(d: Date, tz: string): { date: string; time: string; label: string; weekday: number } {
   const zone = tz || 'Asia/Kolkata'
   const dt = DateTime.fromJSDate(d instanceof Date ? d : new Date(d), { zone })

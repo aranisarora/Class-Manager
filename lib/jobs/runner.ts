@@ -17,9 +17,13 @@
  *  4. **Rescheduling cancels by dedupe key and re-enqueues** — see
  *     `cancelSessionJobs` in `enqueue.ts`.
  *
- * There are no quiet hours (§13). Early-morning classes are normal, and holding
- * a 5am prompt for a 6am class would break the product for exactly the places
- * that need it most.
+ * **Quiet hours are a floor under every proactive send, and it is not here.**
+ * This file used to say there were none, which was true of the send path and
+ * false of the planner — so the product both had them and did not, and going live
+ * at 2am fired three reminder templates at 02:02. The window lives in
+ * `lib/clock.ts` and binds in `lib/messaging/send.ts`, where every author passes.
+ * The runner still fires whenever a job is due: a 5am job for a 6am class is
+ * normal and correct, and what the floor stops is the message, not the work.
  */
 
 import type { Job } from '@/lib/types'

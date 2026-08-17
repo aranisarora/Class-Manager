@@ -176,6 +176,27 @@ export type OutboundMessage = {
    */
   optOutAck?: boolean
   /**
+   * **What standing state this message reports, and what that state currently
+   * IS.** Told once per state, and never again until the state changes.
+   *
+   * The repeat gate below it compares bodies inside a time window, and a stuck
+   * state is exactly the case that defeats both halves: the body is identical
+   * because nothing has happened, and the window is six hours because the
+   * generator fires daily. Driven, the repetition invariant went red on **16
+   * consecutive cases**, all queue traffic — Kiran got the generic session-change
+   * shell four times, Arjun the byte-identical register chase three times, Meera
+   * "we're still sorting out a coach" twice, the admin the same invite draft
+   * re-issued two days apart. A coach who has not onboarded is one fact;
+   * narrating it every morning trains everyone to ignore the number (F-AN).
+   *
+   * So the key carries the state, not the moment: `AD-COACH-NOT-ONBOARDED:<coach>
+   * :invited`. Same key, no second message. When the state moves — they onboard,
+   * a second register goes unmarked, the ladder escalates a rung — the key moves
+   * with it and the message is news again. Set by the composer, because only the
+   * composer knows what its message is a statement ABOUT.
+   */
+  stateKey?: string
+  /**
    * Additive (not in CONTRACTS §5, safe to omit): named parameters for the §16.2 template
    * used when this message goes out of window. Omitted, `send` fills them from what it
    * knows — academy name, the catalog row's event phrase, the composed body as the detail —

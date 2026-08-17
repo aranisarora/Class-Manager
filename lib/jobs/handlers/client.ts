@@ -206,6 +206,19 @@ export async function clientSessionTrouble(job: Job): Promise<void> {
       body: clamp(body, LIMITS.textChars),
       catalogId: 'CL-SESSION-TROUBLE',
       subjectPersonIds: [r.player_person_id],
+      /**
+       * One family, one class, one state — told once while it lasts.
+       *
+       * Meera was told "we're still sorting out a coach" twice, about two
+       * sessions of the same class in the same unresolved state, and both were
+       * true. Rule 7 is one event, one person, one message, and the event here is
+       * the CLASS being uncovered rather than each session of it being uncovered
+       * in turn. Keyed on the class rather than the session for exactly that; the
+       * lateness case is a different state and says so.
+       */
+      stateKey:
+        `CL-SESSION-TROUBLE:${session.class_id}:${r.player_person_id}:` +
+        (late.length > 0 ? `late:${late[0].coach_id}` : 'uncovered'),
     })
     if (outcome.status === 'queued' || outcome.status === 'sent') sent++
   }

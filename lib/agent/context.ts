@@ -407,20 +407,24 @@ Each one is a tool you can call directly, and its arguments are on the tool.`,
 }
 
 /**
- * What the brief and the digest need, and nothing else (§10.2).
+ * `synthesisDoctrine()` stood here: doctrine alone, sent to the brief and the
+ * digest, which authored no SQL and called no operation.
  *
- * They author no SQL, call no operation and choose no catalog row — they turn a
- * payload they are handed into prose. So they get the doctrine that governs how the
- * product sounds, and none of the ~13k tokens of machinery that governs what it does.
- * Kept here rather than in `loop.ts` so there is one place that knows what a layer is.
+ * **The path it served no longer exists.** The brief and the digest are ordinary
+ * turns opened by a job (`lib/jobs/handlers/admin.ts`), so they get the same
+ * prefix, the same tools and the same flight recorder as every other turn — which
+ * is cheaper, not dearer, because the prefix they can now share is the cached
+ * part.
+ *
+ * Its removal takes a constraint with it. Everything in `lib/doctrine.md` had to
+ * be true on a toolless path as well, because this function sent doctrine
+ * somewhere that had no tools; that is why the capability sentence lives in
+ * `PREAMBLE` rather than in doctrine. Nothing needs to be true on the toolless
+ * path when there is no toolless path — so a doctrine line about what the model
+ * can reach is now admissible, if a drive ever shows one is needed. The existing
+ * placement is left alone: moving it would be a prompt change, and prompt changes
+ * here are made on the evidence of a drive, not on a tidy-up.
  */
-export function synthesisDoctrine(): string {
-  return [
-    `You are Class Manager, the manager for a coaching business, writing to the person who runs it.`,
-    readDoc('lib/doctrine.md'),
-    `You are not composing a message to send on a schedule. You are deciding what this person should know.`,
-  ].join('\n\n')
-}
 
 // -----------------------------------------------------------------------------
 // Variable tail

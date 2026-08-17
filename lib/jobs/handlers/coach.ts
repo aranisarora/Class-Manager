@@ -21,6 +21,7 @@ import type { Job } from '@/lib/types'
 import type { Tx } from '@/lib/db'
 import { now } from '@/lib/clock'
 import { composeAndSend } from '@/lib/messaging/compose'
+import { executePlan } from '@/lib/agent/plan'
 import { LIMITS } from '@/lib/messaging/types'
 import { dedupe } from '../kinds'
 import { enqueue } from '../enqueue'
@@ -61,6 +62,66 @@ async function loadCoach(tx: Tx, academyId: string, coachId: string): Promise<Co
 async function confirmationAudience(tx: Tx, academyId: string): Promise<string[]> {
   const rows = await admins(tx, academyId)
   return rows.map((r) => r.person_id)
+}
+
+/**
+ * **Half a gate is worse than no gate.**
+ *
+ * The suppression above is right and it was the whole of the design: ask nobody
+ * to confirm something to themselves. What it never did was ANSWER the question
+ * it suppressed. So for every solo operator, and every head coach who
+ * administers, `session_coach.confirmed_at` stayed null forever — and `isCovered`
+ * keys on exactly that. The client-facing trouble ladder then told paying
+ * families *"we're still sorting out a coach"* **38 times in one month**, about
+ * sessions that all ran, coached by the person being asked.
+ *
+ * The resolution is not a second gate. It is the same decision, carried through:
+ * a coach who is an admin of this academy is definitionally present — there is
+ * nobody for them to confirm to and nothing for them to arrange — so suppressing
+ * the ask CONFIRMS the session. Written through `executePlan` like every other
+ * write in the product, so it is diffed, audited and attributed, and it happens
+ * where the question is composed rather than where the message is dropped.
+ *
+ * Returns true when it took the decision, so the caller stands down.
+ */
+async function confirmIfSelfDirected(
+  academyId: string,
+  sessionId: string,
+  coachId: string,
+  personId: string,
+  className: string,
+): Promise<boolean> {
+  const [isAdmin] = await withAcademy(academyId, async (tx) =>
+    tx<{ n: number }[]>`
+      select count(*)::int as n from academy_admin
+       where academy_id = ${academyId} and person_id = ${personId}`,
+  )
+  if ((isAdmin?.n ?? 0) === 0) return false
+
+  const res = await executePlan(
+    { role: 'service', academyId, origin: 'job', originRef: 'coach_confirmation' },
+    [
+      {
+        write:
+          `update session_coach set confirmed_at = app.now()` +
+          ` where session_id = '${sessionId}'::uuid and coach_id = '${coachId}'::uuid` +
+          ` and confirmed_at is null and declined_at is null`,
+        service: true,
+      },
+      {
+        note:
+          `${className} is confirmed — the coach for it runs this business, so there was nobody ` +
+          `to ask and nothing to wait for`,
+      },
+    ],
+    'a coach who is also the admin is definitionally present',
+  )
+  // A failure here must not silently leave the state unresolved the way the
+  // suppression did — that is the whole finding. Reported, and the ask still
+  // stands down, because asking somebody to confirm to themselves is the worse
+  // of the two remaining outcomes.
+  if (!res.ok) console.error(`[coach] self-confirmation did not land for ${sessionId}: ${res.error}`)
+  return true
 }
 
 /**
@@ -205,6 +266,13 @@ export async function coachComing(job: Job): Promise<void> {
   const tz = academy.timezone
   const venue = session.venue_name ? ` at ${session.venue_name}` : ''
 
+  // The suppressed question's answer, supplied by the same decision. Nothing is
+  // asked, nothing is nudged, and — unlike before — nothing stays unconfirmed.
+  if (await confirmIfSelfDirected(academy.id, session.id, me.coach_id, me.person_id, session.class_name)) {
+    note(`${session.class_name} confirmed without asking — its coach runs the business`)
+    return
+  }
+
   await composeAndSend(serviceCtx(academy.id), {
     toContactId: me.contact_id as string,
     header: clamp(academy.name, LIMITS.headerChars),
@@ -269,6 +337,14 @@ export async function coachNudge(job: Job): Promise<void> {
   const tz = academy.timezone
   const escalateAt = new Date(session.starts_at.getTime() - escalateLead * 60_000)
   const teller = adminName ? firstName(adminName) : 'the office'
+
+  // Same resolution as the rung above. A nudge is the rung that says "if I have
+  // not heard by 6:15 I'll tell Sanjay" — to Sanjay, about Sanjay, on a session
+  // Sanjay is coaching.
+  if (await confirmIfSelfDirected(academy.id, session.id, me.coach_id, me.person_id, session.class_name)) {
+    note(`${session.class_name} confirmed without nudging — its coach runs the business`)
+    return
+  }
 
   await composeAndSend(serviceCtx(academy.id), {
     toContactId: me.contact_id as string,

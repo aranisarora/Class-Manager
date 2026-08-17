@@ -24,7 +24,8 @@
 import { serviceFrom, withSession } from '@/lib/db'
 import type { SessionCtx, Tx } from '@/lib/db'
 import { encodeForWhatsApp } from '@/lib/agent/lint'
-import { CATALOG, isCatalogId } from './catalog'
+import { inZone, isQuietHour } from '@/lib/clock'
+import { CATALOG, isCatalogId, MUTE_SCOPE } from './catalog'
 import { TEMPLATES, sanitizeParam, renderTemplate, isTemplateName } from './templates'
 import type { TemplateName } from './templates'
 import { getTransport } from './transport'
@@ -133,25 +134,14 @@ function capFrom(settings: Record<string, unknown> | null, key: string, fallback
 }
 
 /**
- * The fallback event phrase, used only when the SENDER named no catalog moment
- * — which means the runtime does not know what happened, and the header must
- * not claim it does. `session_change` used to fall back to "a change to your
- * schedule", and the first message three families ever received — a composed
- * intro, no catalog id — went out under that heading (F-G, month drive T014/
- * T015): a claimed event over an unknown one, on the highest-risk send in the
- * product. A catalog moment still gets its own specific phrase
- * (`templateEvent`); only the don't-know case is neutral.
+ * `GENERIC_EVENT` stood here: one vague phrase per template, used whenever the
+ * sender named no catalog moment. It was already the careful version of the
+ * mistake — neutral rather than claiming an event the runtime could not know —
+ * and it was still a placeholder in the one parameter whose job is substance.
+ * "an update about your classes" differentiates nothing, which is how one contact
+ * came to hold four identical notifications (F-AZ). `buildTemplateParams` fills
+ * the slot from what the runtime actually knows instead.
  */
-const GENERIC_EVENT: Record<TemplateName, string> = {
-  session_reminder: 'a session coming up',
-  session_change: 'an update about your classes',
-  session_outcome: 'how the session went',
-  payment_due: 'an update on your account',
-  coach_schedule: 'an update about your sessions',
-  coach_prompt: 'something needs your reply',
-  admin_alert: 'something needs your attention',
-  admin_digest: 'an update from your academy',
-}
 
 /**
  * §16.2: the parameters carry real content or the template is the vague-clickbait pattern
@@ -210,40 +200,50 @@ async function subjectName(tx: Tx, msg: OutboundMessage, row: Row): Promise<stri
  * 24h window has shut. R1 — composed at one layer, rendered at another, and there
  * is no model in the loop at send time to notice.
  *
- * **Only the OPENING restatement is removed, and only the academy's own name.**
- * A mention later in the body is prose and may be load-bearing. And the event
- * being repeated in different words — "your final statement" then "final statement
- * to 20 Aug" — is left alone deliberately: DRIVING's split puts byte-identical
- * repetition at the send gate and *semantic* repetition at the generator, because
- * only the first is a thing the runtime can check against its own record. The
- * academy name IS the runtime's own record, which is what makes this half a
- * structural check rather than a guess.
+ * **This is gone, and the reason is that the seam it patched is gone.** It was a
+ * runtime edit to a composed body — anchored, narrow, well argued, and still the
+ * second author: it deleted a word somebody wrote, in the one place with no model
+ * in the loop to notice. What it was fixing was two authors naming one subject,
+ * and layer 4's rule fixes that at the source: the template lead-in now names the
+ * SENDER and nothing else, so a composed body that opens with the business's own
+ * name is no longer a restatement of anything.
  */
-function withoutRestatedFrame(detail: string, academyName: string): string {
-  const name = academyName.trim()
-  if (!name) return detail
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // The separator is optional because a composer may write "Ace: x", "Ace — x" or
-  // just "Ace x". Anchored at the start, so this can only ever remove a prefix.
-  const stripped = detail.replace(new RegExp(`^\\s*${escaped}\\s*(?:[:\\u2013\\u2014-]\\s*)?`, 'i'), '')
-  // A body that is *only* the academy's name has nothing left to say; keep it
-  // rather than handing `renderTemplate` an empty parameter, which it throws on.
-  if (!stripped.trim()) return detail
-  return stripped.charAt(0).toUpperCase() + stripped.slice(1)
-}
 
+/**
+ * **A parameter carries substance, never a placeholder.**
+ *
+ * `{event}` was `CATALOG[id].templateEvent` — a per-category constant like *"a
+ * change to a session"* — falling back to `GENERIC_EVENT`, which is the same idea
+ * with less information. Both are the vague-clickbait pattern §16.2 warns about,
+ * moved from the frozen half of the template into the variable half where nobody
+ * was looking for it. *"Change: a change to today's session"* tells a parent
+ * nothing and was sent seventeen times to one contact (F-AZ).
+ *
+ * What the runtime actually knows about any send, whatever composed it: WHO it is
+ * about and WHEN it is being sent. Those are the two things that differentiate
+ * one notification from the next in a parent's list, so those are what fill it —
+ * the catalog's phrase joins them rather than standing in for them. A caller that
+ * knows better still overrides through `templateParams`, and several should.
+ */
 function buildTemplateParams(
   template: TemplateName,
   msg: OutboundMessage,
   row: Row,
   who: string,
+  at: Date,
 ): Record<string, string> {
   const entry = msg.catalogId && isCatalogId(msg.catalogId) ? CATALOG[msg.catalogId] : null
-  const detail = withoutRestatedFrame((msg.body ?? '').trim(), row.academy_name)
+  const detail = (msg.body ?? '').trim()
+  const day = inZone(at, row.academy_timezone || 'Asia/Kolkata').label
+  // The catalog's phrase, dated — "a change to a session" becomes "a change to a
+  // session, Wed 19 Aug 6:30pm". Without a catalog row the runtime does not know
+  // what happened and does not claim to; the day alone is still a true and
+  // differentiating thing to say.
+  const event = entry?.templateEvent ? `${entry.templateEvent}, ${day}` : day
   const defaults: Record<string, string> = {
     academy: row.academy_name,
     who,
-    event: entry?.templateEvent ?? GENERIC_EVENT[template],
+    event,
     detail: detail ? sanitizeParam(detail) : 'Open this chat for the details.',
   }
   return { ...defaults, ...(msg.templateParams ?? {}) }
@@ -287,8 +287,10 @@ function asTemplateMessage(
   who: string,
   /** True when the first button would commit — see `committingButton`. */
   firstCommits: boolean,
+  /** The tenant's own clock, for the day that differentiates this send. */
+  at: Date,
 ): OutboundMessage {
-  const params = buildTemplateParams(template, msg, row, who)
+  const params = buildTemplateParams(template, msg, row, who, at)
   const def = TEMPLATES[template]
   const first = msg.buttons?.[0]
   /**
@@ -367,6 +369,11 @@ function messagePayload(msg: OutboundMessage, extra: Record<string, unknown>): s
     is_escalation: Boolean(msg.isEscalation),
     fixed: Boolean(msg.fixed),
     pre_launch_ok: Boolean(msg.preLaunchOk),
+    // What standing state this message reported, so gate 4a can ask whether it
+    // has already been reported. Written on suppressed rows too — a message
+    // dropped by the caps did not tell anybody anything, and the gate reads only
+    // rows with no suppression reason.
+    state_key: msg.stateKey ?? null,
     ...extra,
   })
 }
@@ -582,6 +589,67 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     const subjects = msg.subjectPersonIds ?? []
     const aboutRecipient = subjects.includes(row.person_id)
 
+    /**
+     * ── Gate 1c · they asked to hear nothing about this ───────────────────────
+     *
+     * The scoped half of an opt-out, which the product could not store until 0032
+     * and therefore could not keep. "Please stop messaging me about money. I will
+     * pay when I pay." — the reply was close to ideal, said what would stop and
+     * scoped it, and behind it were one `remember` call and a null
+     * `opted_out_at`. The always-rule *nobody was messaged after they opted out*
+     * passed every later turn **because the column was never set** (F-AV).
+     *
+     * Here rather than in each job for the reason every gate is here: a rule
+     * enforced per composer is enforced in the composers somebody remembered.
+     * `MUTE_SCOPE` decides which mute a moment answers to; a message with no
+     * catalog moment is answerable only to a full stop, which is the honest
+     * reading of an unclassified interruption.
+     *
+     * **A reply to something they said is never muted.** Somebody asking to stop
+     * hearing about money is asking the business to stop starting that
+     * conversation, not to ignore them when they start one — that distinction is
+     * `solicited`, and it is the same one the opt-out itself makes.
+     */
+    if (!msg.solicited && !msg.optOutAck) {
+      const scope = msg.catalogId && isCatalogId(msg.catalogId) ? MUTE_SCOPE[msg.catalogId] : null
+      const muted = await tx<{ scope: string }[]>`
+        select scope from comm_preference
+         where contact_id = ${row.contact_id}
+           and released_at is null
+           and (until is null or until >= (app.now() at time zone ${row.academy_timezone})::date)
+           and (scope = 'all' ${scope ? tx`or scope = ${scope}` : tx``})
+         limit 1`
+      if (muted.length > 0) {
+        return suppress(tx, row, msg, 'muted', inWindow)
+      }
+    }
+
+    /**
+     * ── Gate 1d · the academy is asleep ───────────────────────────────────────
+     *
+     * A floor under every proactive send, and the layer that has to hold it.
+     * `lib/jobs/plan-ahead.ts` pulls a client reminder back and defers a register
+     * escalation forward, which covers two of fourteen senders; `runner.ts` said
+     * in as many words that there are no quiet hours. Going live at 2am fired
+     * three reminder templates at 02:02 — three handlers, each correct about
+     * everything except the hour, which is exactly the shape that cannot be fixed
+     * one handler at a time.
+     *
+     * Two exemptions, both the same ones the frequency cap makes and for the same
+     * reasons. A reply to something they just said is not an interruption. And the
+     * admin is the operator rather than a recipient to be protected: an owner
+     * running their business through this at 6am for a 7am class is working, not
+     * being woken, and the escalation about that class is the thing they are
+     * awake for.
+     *
+     * Suppressed rather than deferred, and the key is released so the same moment
+     * may be attempted again once morning comes: `send` has no queue of its own,
+     * and inventing one here would put a second scheduler beside the real one.
+     */
+    if (!msg.solicited && !row.is_admin && isQuietHour(now, row.academy_timezone, row.settings)) {
+      return suppress(tx, row, msg, 'quiet_hours', inWindow)
+    }
+
     // ── Gate 2 · §18 rule 1 ───────────────────────────────────────────────────
     // "Never ask someone to confirm something to themselves." The solo coach asked to
     // confirm they are coming to their own class is week-one churn, and this is the one
@@ -623,6 +691,36 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     // correct, and never left the building.
     if (row.onboarding_state !== 'live' && !msg.preLaunchOk && !row.is_admin && !msg.solicited) {
       return suppress(tx, row, msg, 'pre_launch', inWindow)
+    }
+
+    /**
+     * ── Gate 4a · saying the same STATE twice ─────────────────────────────────
+     *
+     * Before the byte-window gate, because it is the gate that byte-window
+     * dedupe cannot be: a state that has not moved produces an identical body
+     * *and* fires on a slower clock than any window worth having. Sixteen
+     * consecutive cases of the repetition invariant were this (F-AN).
+     *
+     * No time window at all, deliberately. "Fire on a change in the state, never
+     * restate" means once per state, however long the state lasts — and a state
+     * that legitimately recurs carries the thing that changed inside its own key
+     * (the dunning rung, the billing period, the set of unmarked registers), so
+     * it produces a different key and goes.
+     *
+     * Suppressed rows do not count as having told them, so a message dropped by
+     * the caps or by quiet hours is retried when the next attempt comes.
+     */
+    if (msg.stateKey) {
+      const told = await tx<{ id: string }[]>`
+        select id from message
+         where contact_id = ${row.contact_id}
+           and direction = 'outbound'
+           and suppressed_reason is null
+           and payload->>'state_key' = ${msg.stateKey}
+         limit 1`
+      if (told.length > 0) {
+        return suppress(tx, row, msg, 'repeat', inWindow)
+      }
     }
 
     // ── Gate 4b · saying it twice ─────────────────────────────────────────────
@@ -784,6 +882,7 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
           row,
           await subjectName(tx, msg, row),
           await committingButton(tx, msg.buttons?.[0]?.actionId),
+          now,
         )
       } catch (e) {
         console.error(`[send] template ${wanted} could not render: ${(e as Error).message}`)

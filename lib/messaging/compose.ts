@@ -66,6 +66,11 @@ export type ComposeSpec = {
   templateName?: OutboundMessage['templateName']
   /** Additive: named template parameters, when the caller knows better than the defaults. */
   templateParams?: Record<string, string>
+  /**
+   * Additive: what standing state this message reports, and what it currently is.
+   * Told once per state — see `OutboundMessage.stateKey` and F-AN.
+   */
+  stateKey?: string
 }
 
 /** Mints an action per button, then hands a well-formed OutboundMessage to `send`. */
@@ -122,6 +127,7 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
     solicited,
     preLaunchOk: spec.preLaunchOk,
     templateParams: spec.templateParams,
+    stateKey: spec.stateKey,
   }
 
   // Validate the shape BEFORE minting: an unrenderable message must not leave a trail of

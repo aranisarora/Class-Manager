@@ -12,7 +12,7 @@ import { modelQuery, withSession, type SessionCtx } from '@/lib/db'
 import { now, inZone } from '@/lib/clock'
 import { newId } from '@/lib/ids'
 import { env } from '@/lib/env'
-import { admins as adminRecipients, resolveIdentity } from '@/lib/identity'
+import { resolveIdentity } from '@/lib/identity'
 import { consumeAction, type ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { LIMITS, type SendOutcome } from '@/lib/messaging/types'
@@ -30,8 +30,8 @@ import {
 import { formFor } from '@/lib/messaging/forms'
 import { buildSetupSteps, summariseSetup } from '@/lib/setup-plan'
 import type { Identity, Job, Role } from '@/lib/types'
-import { generate, generateJson, type Msg } from './deepseek'
-import { mixInstruction, stablePrefix, synthesisDoctrine, variableTail } from './context'
+import { generate, type Msg } from './deepseek'
+import { stablePrefix, variableTail } from './context'
 import { proseViolations, violationMessage } from './lint'
 import { traceabilityNote } from './traceability'
 import { hotSet } from './memory'
@@ -2256,386 +2256,35 @@ export async function runAgentTask(job: Job): Promise<void> {
 }
 
 /* ------------------------------------------------------------------------- *
- * §10.2 — synthesized insight. NOT a template with slots.
+ * §10.2 — the brief and the digest.
+ *
+ * **They used to live here, and they were the only bespoke model calls in the
+ * product.** `synthesize()`, `synthesisPayload()`, `GROUNDING` and
+ * `writeSynthTurn()` stood in this space: eleven pre-run queries handed to
+ * `MODEL_SYNTH` as a JSON blob, with no tools, no stable prefix, no flight
+ * recorder, twice a day per academy, whether or not anything had happened.
+ *
+ * They are `lib/jobs/handlers/admin.ts`'s `runSynthesis` now, which counts what
+ * changed and — if anything did — opens an ORDINARY TURN. Every reason the
+ * separate path existed inverted under the architecture:
+ *
+ *   The cached prefix is the CHEAP part. A hit costs 3.2% of a miss, so an
+ *   ordinary turn on the conversation model costs less than the bespoke call
+ *   did — and the bespoke path could not share the prefix at all, which is how
+ *   the two most expensive calls of the day came to cost 3.5× the entire human
+ *   conversation while caching at half the rate. The stress month is the evidence
+ *   the conversation model is enough: the hardest judgements of the run were made
+ *   by it, and summarizing a day is easier than the clash refusal was.
+ *
+ *   As a turn it has TOOLS, which closes a real defect class. The old synth was
+ *   spoon-fed query results it could not verify or widen — which is why a digest
+ *   once told the solo coach "I think coaches aren't marking after sessions"
+ *   *about himself*. A turn reads what the sentence needs, like every other turn.
+ *
+ *   As a turn it is recorded, guarded and result-honest for free. The two most
+ *   expensive calls of the day stop being the two with no record of why they said
+ *   anything.
+ *
+ *   And the special doctrine constraint dies with the path: nothing has to be
+ *   "true on the toolless path too" when there is no toolless path.
  * ------------------------------------------------------------------------- */
-
-const GROUNDING = `Three rules keep this honest, and they are not negotiable:
-1. Every number you write must trace to a value in the payload below. If it is not there, you do not know it.
-2. A comparison needs its baseline IN the payload. No baseline, no claim — not "attendance is down" from memory.
-3. State uncertainty plainly. "Might be a pattern, might be coincidence at this size" beats a confident causal story.
-
-You are deciding what THIS admin should know: what to lead with, what to leave out, and in what order. Do not
-fill a template. Do not list everything you were given. If a section would be filler, drop it.`
-
-export async function synthesize(academyId: string, kind: 'brief' | 'digest'): Promise<TurnOutput> {
-  const turnId = newId()
-  const startedMs = Date.now()
-  const svc: SessionCtx = { role: 'service', academyId }
-  const outcomes: SendOutcome[] = []
-  let error: string | undefined
-  let model: string | undefined
-  let body = ''
-
-  try {
-    const payload = await synthesisPayload(svc, academyId)
-    const admins = await adminRecipients(academyId)
-    if (!admins.length) return { turnId, sent: [], toolCalls: 0 }
-
-    const memory = {
-      // `?? ''` as well as the catch: hotSet now returns null on a failed read rather
-      // than collapsing it into an empty string. The digest has no way to act on the
-      // distinction — it composes from a payload either way — so here, unlike the turn
-      // tail, flattening it is the right call.
-      academy: (await hotSet('academy', academyId, academyId).catch(() => '')) ?? '',
-      admin: (await hotSet('person', admins[0].person_id, academyId).catch(() => '')) ?? '',
-    }
-
-    const instruction =
-      kind === 'brief'
-        ? `Write ${admins[0].full_name.split(' ')[0]}'s morning brief. Lead with **Needs you** — the things that will
-go wrong today if nobody acts. If nothing needs them, say so in one line, or send nothing at all.
-Then, only if it is worth their attention, what today looks like.`
-        : `Write tonight's digest. Lead with the one thing worth looking at, and say what you think is behind it —
-with the uncertainty stated. Then the day in a line or two. Then delivery health, unconditionally: the admin
-will never think to ask whether the reminders went out. Then who is unpaid.`
-
-    // The same ladder the turn prompt uses (`context.ts`), not a second one. It
-    // used to be a two-way split at 30 days against that file's three-way split
-    // at 14 and 45, so a three-week-old academy was told to lean on proof inside
-    // a turn and to lean on synthesis in its digest, on the same evening.
-    const mix = mixInstruction(Number(payload.academy.age_days ?? 0))
-
-    // **The digest does not get the stable prefix, and should never have had it.**
-    //
-    // This sent `stablePrefix()` — the schema it authors no SQL against, 26 operation
-    // signatures it cannot call, the message catalog it is not choosing from, and the
-    // domain facts about situations it is not in — to `MODEL_SYNTH`, which is the
-    // most expensive model in the product, twice a day per academy.
-    //
-    // What the digest actually needs is doctrine (how to sound), the grounding rules
-    // (how to stay honest), and the payload — which it is handed in full below. The
-    // model choice is unchanged; only the bill is.
-    //
-    // **The shape is asked for, not enforced.** There is no constrained decoding
-    // on this API outside beta, so the schema moved into the prompt and the
-    // guarantee moved into `generateJson`: validate, and retry exactly once.
-    // DeepSeek's own docs admit JSON mode occasionally returns empty content, and
-    // this is a batch path where nobody is waiting on the retry.
-    const res = await generateJson<{ send: boolean; body: string }>({
-      system: `${synthesisDoctrine()}\n\n${GROUNDING}\n\n${mix}`,
-      messages: [
-        {
-          role: 'user',
-          content:
-            `${instruction}\n\n` +
-            `What this academy calls things, and what I know about them:\n${memory.academy || '(nothing yet)'}\n` +
-            `About this admin:\n${memory.admin || '(nothing yet)'}\n\n` +
-            `THE DATA — every number you use must come from here:\n${JSON.stringify(payload, null, 1)}\n\n` +
-            // The literal word "json" has to appear or the request is rejected
-            // outright — a requirement of the mode, not a style choice.
-            'Answer as one json object and nothing else, in exactly this shape:\n' +
-            '{"send": true, "body": "the message, in plain WhatsApp prose"}\n' +
-            'Set "send" to false — with "body" an empty string — when there is genuinely nothing worth saying.',
-        },
-      ],
-      model: env.MODEL_SYNTH,
-      temperature: 0.6,
-      validate: (v) => {
-        const o = v as { send?: unknown; body?: unknown }
-        if (!o || typeof o !== 'object') return null
-        if (typeof o.send !== 'boolean') return null
-        if (o.body !== undefined && typeof o.body !== 'string') return null
-        return { send: o.send, body: String(o.body ?? '') }
-      },
-    })
-    model = res.model
-
-    // A digest that could not be composed is silence, which is a legal outcome
-    // here (§13.1) — but it is a DIFFERENT silence from "nothing worth saying",
-    // so it is recorded as the failure it is rather than as a quiet evening.
-    if (!res.value) {
-      await writeSynthTurn(
-        academyId,
-        turnId,
-        kind,
-        admins[0],
-        { sent: false, error: res.error ?? 'no json' },
-        model,
-        Date.now() - startedMs,
-        res.usage,
-      )
-      return { turnId, sent: [], toolCalls: 0, error: `synthesis produced no usable json: ${res.error ?? 'unknown'}` }
-    }
-    const parsed = res.value
-    body = parsed.body.trim()
-
-    // The morning brief is silent when there is nothing.
-    if (!parsed.send || !body) {
-      await writeSynthTurn(
-        academyId,
-        turnId,
-        kind,
-        admins[0],
-        { sent: false },
-        model,
-        Date.now() - startedMs,
-        res.usage,
-      )
-      return { turnId, sent: [], toolCalls: 0 }
-    }
-
-    for (const admin of admins) {
-      if (!admin.contact_id) continue
-      outcomes.push(
-        await composeAndSend(svc, {
-          toContactId: admin.contact_id,
-          catalogId: kind === 'brief' ? 'AD-MORNING-BRIEF' : 'AD-EVENING-DIGEST',
-          // Unlinted here on purpose: `send` runs the full pass for every message,
-          // including this one. `lintForAdmin` used to sit here — a three-regex
-          // hand-rolled subset written because "the lint pass wants an Identity and
-          // synthesis runs without one" — and being a subset was the whole problem:
-          // it did no markdown rewriting, no §-reference stripping, no timestamp
-          // localisation and no vocabulary rewriting, so the two proactive messages
-          // an admin gets every day reached them with `**bold**` and ISO timestamps
-          // intact. One implementation, at the chokepoint.
-          body,
-          buttons: [
-            kind === 'brief'
-              ? { title: 'What needs me?', action: { kind: 'reply', text: 'What needs me today?' } }
-              : { title: 'Show the numbers', action: { kind: 'reply', text: 'Show me the numbers behind that' } },
-          ],
-        }),
-      )
-    }
-    await writeSynthTurn(
-      academyId,
-      turnId,
-      kind,
-      admins[0],
-      { sent: true, statuses: outcomes.map((o) => o.status) },
-      model,
-      Date.now() - startedMs,
-      res.usage,
-    )
-  } catch (e) {
-    error = e instanceof Error ? e.message : String(e)
-  }
-
-  return { turnId, sent: outcomes, toolCalls: 0, error }
-}
-
-async function synthesisPayload(svc: SessionCtx, academyId: string): Promise<Record<string, any>> {
-  return withSession(svc, async (tx) => {
-    const one = async (sql: string) => ((await tx.unsafe(sql)) as unknown as Record<string, any>[])[0] ?? {}
-    const many = async (sql: string) => (await tx.unsafe(sql)) as unknown as Record<string, any>[]
-    const A = uid(academyId)
-
-    const academy = await one(
-      `select name, timezone, onboarding_state,
-              (app.now()::date - created_on) as age_days,
-              to_char(app.now() at time zone timezone, 'YYYY-MM-DD') as today
-         from academy where id = ${A}`,
-    )
-
-    /**
-     * A rendered local time, because this payload is `JSON.stringify`'d straight into
-     * the prompt and a bare `starts_at` reaches the model as `2026-08-17T13:00:00.000Z`.
-     *
-     * Driven: the owner's 6:30pm Beginners class was reported to him as **"Arjun for
-     * Beginners at 1pm"** in two consecutive briefs and an evening digest — 13:00 UTC,
-     * read back as local. `context.ts` has carried `sessionLine` for exactly this since
-     * a raw `06:00:00` was read out as "6pm" and sent a parent to a locked hall, but the
-     * turn path and the synthesis path each built their own payload, so the guarantee
-     * held only on the one that a person was already talking to.
-     *
-     * Rendered through `inZone` rather than in SQL so there is one formatter, and the
-     * brief says a time the same way the chat does. The raw column is dropped, not kept
-     * alongside — a model handed both will sometimes reach for the wrong one.
-     */
-    const tz = String(academy.timezone || 'Asia/Kolkata')
-    const localTimes = (rows: Record<string, any>[]): Record<string, any>[] =>
-      rows.map(({ starts_at, ...rest }) =>
-        starts_at ? { ...rest, when: inZone(new Date(starts_at), tz).label } : rest)
-
-    // Sequential on purpose: these all share one transaction, and one
-    // connection is not a place to fan out.
-    const today_sessions = await many(`select c.name as class_name, s.starts_at, s.status,
-                     (select count(*) from session_coach sc where sc.session_id = s.id
-                        and sc.declined_at is null and (sc.confirmed_at is not null or sc.arrived_at is not null)) as confirmed_coaches,
-                     (select count(*) from attendance att where att.session_id = s.id and att.status in ('present','late')) as present,
-                     (select count(*) from attendance att where att.session_id = s.id and att.status = 'absent') as absent
-                from session s join class c on c.id = s.class_id
-               where s.academy_id = ${A}
-                 and (s.starts_at at time zone (select timezone from academy where id = ${A}))::date
-                     = (app.now() at time zone (select timezone from academy where id = ${A}))::date
-               order by s.starts_at`)
-    // The predicate is §6.3's definition of coverage and is correct. What was
-    // wrong was that it travelled alone: a bare list of "uncovered" sessions
-    // cannot distinguish *nobody is on this* from *somebody is on this and has
-    // not tapped yet*, and the digest read it out as the first when it was the
-    // second — four times, to an owner whose only coach was assigned to all
-    // three classes. So the assignment travels with it.
-    const needs_you_uncovered = await many(`select c.name as class_name, s.starts_at,
-                     coalesce((select string_agg(p.full_name, ', ' order by p.full_name)
-                                 from session_coach sc
-                                 join coach co on co.id = sc.coach_id
-                                 join person p on p.id = co.person_id
-                                where sc.session_id = s.id and sc.declined_at is null), '')
-                       as assigned_coaches
-                from session s join class c on c.id = s.class_id
-               where s.academy_id = ${A} and s.status = 'scheduled'
-                 and s.starts_at between app.now() and app.now() + interval '36 hours'
-                 and not exists (select 1 from session_coach sc where sc.session_id = s.id
-                                   and sc.declined_at is null
-                                   and (sc.confirmed_at is not null or sc.arrived_at is not null))
-               order by s.starts_at`)
-    const registers_unmarked = await many(`select c.name as class_name, s.starts_at
-                from session s join class c on c.id = s.class_id
-               where s.academy_id = ${A} and s.status = 'scheduled' and s.ends_at < app.now()
-                 and not exists (select 1 from attendance att where att.session_id = s.id)
-               order by s.starts_at desc limit 10`)
-    const coaches_not_onboarded = await many(`select p.full_name, count(*) as sessions_within_48h
-                from coach co join person p on p.id = co.person_id
-                join session_coach sc on sc.coach_id = co.id
-                join session s on s.id = sc.session_id
-               where co.academy_id = ${A} and co.status = 'invited'
-                 and s.starts_at between app.now() and app.now() + interval '48 hours'
-               group by p.full_name`)
-    const unpaid = await many(`select p.full_name, ac.id as account_id,
-                     coalesce(sum(tl.amount), 0) - coalesce((select sum(pay.amount) from payment pay
-                        where pay.account_id = ac.id and pay.status = 'confirmed'), 0) as balance
-                from account ac join person p on p.id = ac.holder_person_id
-                left join tally_line tl on tl.account_id = ac.id
-               where ac.academy_id = ${A}
-               group by p.full_name, ac.id
-              having coalesce(sum(tl.amount), 0) - coalesce((select sum(pay.amount) from payment pay
-                        where pay.account_id = ac.id and pay.status = 'confirmed'), 0) > 0
-               order by 3 desc limit 20`)
-    // Delivery health is about messages to the BUSINESS's people. Two things were
-    // wrong here, and together they produced a brief that reported an outage that
-    // had not happened and a mailout that had never been sent.
-    //
-    // First, `failed` and `suppressed` overlapped: a suppressed row carries status
-    // 'failed' too, so every gated message was counted twice and reported as "14
-    // failed and another 14 suppressed" — the same fourteen rows, described as an
-    // unusual failure rate "with the contact numbers or the account itself".
-    //
-    // Second, the admin's own conversation was in the denominator. Their thread is
-    // the operator using the tool, not traffic to families, and counting it meant a
-    // quiet academy whose owner had been testing looked like a business mid-mailout.
-    // A brief that narrates the plumbing as news is worse than one that says nothing.
-    const delivery = await one(`select count(*) filter (where suppressed_reason is null
-                                              and status in ('sent','delivered','read')) as sent,
-                    count(*) filter (where status in ('delivered','read')) as delivered,
-                    count(*) filter (where status = 'read') as read,
-                    count(*) filter (where suppressed_reason is null and status = 'failed') as failed,
-                    count(*) filter (where suppressed_reason is not null) as gated,
-                    coalesce(sum(cost_paise), 0) as cost_paise
-               from message m
-              where m.academy_id = ${A} and m.direction = 'outbound'
-                and m.queued_at > app.now() - interval '24 hours'
-                and not exists (select 1 from contact c
-                                  join academy_admin aa on aa.person_id = c.person_id
-                                                       and aa.academy_id = c.academy_id
-                                 where c.id = m.contact_id)`)
-    // Named apart so the two can never be read as one number again: a gate is a
-    // decision this system made on purpose, a failure is the network saying no.
-    const gated_by_reason = await many(`select m.suppressed_reason as reason, count(*) as n
-               from message m
-              where m.academy_id = ${A} and m.direction = 'outbound'
-                and m.suppressed_reason is not null
-                and m.queued_at > app.now() - interval '24 hours'
-              group by 1 order by 2 desc`)
-    const attendance_30d = await many(`select c.name as class_name,
-                     count(*) filter (where att.status in ('present','late')) as attended,
-                     count(*) as marked
-                from attendance att join session s on s.id = att.session_id join class c on c.id = s.class_id
-               where att.academy_id = ${A} and s.starts_at > app.now() - interval '30 days'
-               group by c.name order by 3 desc`)
-    const attendance_prev_30d = await many(`select c.name as class_name,
-                     count(*) filter (where att.status in ('present','late')) as attended,
-                     count(*) as marked
-                from attendance att join session s on s.id = att.session_id join class c on c.id = s.class_id
-               where att.academy_id = ${A}
-                 and s.starts_at between app.now() - interval '60 days' and app.now() - interval '30 days'
-               group by c.name order by 3 desc`)
-    const new_trials_7d = await many(`select p.full_name as player_name, c.name as class_name, e.started_on
-                from enrollment e join player pl on pl.id = e.player_id
-                join person p on p.id = pl.person_id join class c on c.id = e.class_id
-               where e.academy_id = ${A} and e.is_trial and e.created_at > app.now() - interval '7 days'`)
-    const quiet_contacts = await one(`select count(*) as n from contact
-              where academy_id = ${A} and state = 'engaged'
-                and last_inbound_at < app.now() - interval '90 days'`)
-
-    return {
-      academy,
-      note: 'Every list here is the complete result of its query, not a sample.',
-      // `when` is the academy's own local time, already rendered — say it verbatim.
-      // See `localTimes` above for the brief that read 6:30pm back as "1pm".
-      today_sessions: localTimes(today_sessions),
-      needs_you: {
-        // **The key name is prompt, and it is the part nobody reviews.** This was
-        // `uncovered_sessions_next_36h`, and "uncovered" became "still need a coach
-        // assigned" in the admin's digest — a false sentence, sent four times, about
-        // the only coach he had, on the eve of his first class. The predicate never
-        // changed; the name did the damage. Named for what it measures now, with the
-        // assignment alongside it so the true sentence is the available one.
-        sessions_without_a_confirmed_coach_next_36h: localTimes(needs_you_uncovered),
-        sessions_note:
-          'A row here means nobody has CONFIRMED — not that nobody is assigned. Read ' +
-          '`assigned_coaches` on the row: non-empty means they have a coach who simply ' +
-          'has not tapped yet, and the true sentence names that person. Only an empty ' +
-          '`assigned_coaches` means nobody is on it at all. Never tell an admin a session ' +
-          'needs a coach assigned when one is.',
-        registers_unmarked: localTimes(registers_unmarked),
-        coaches_invited_but_not_onboarded: coaches_not_onboarded,
-      },
-      money: { unpaid_accounts: unpaid },
-      delivery_last_24h: {
-        ...delivery,
-        note:
-          "Messages to families and coaches only — the admin's own thread is excluded, and " +
-          '`gated` counts messages this system chose not to send (see gated_by_reason), which ' +
-          'is not a delivery failure and must never be reported as one.',
-      },
-      gated_by_reason,
-      attendance_last_30d_by_class: attendance_30d,
-      attendance_previous_30d_by_class: attendance_prev_30d,
-      new_trials_last_7d: new_trials_7d,
-      contacts_silent_90d: quiet_contacts,
-    }
-  })
-}
-
-/**
- * The brief and the digest are the only MODEL_SYNTH calls in the product — the most
- * expensive single call it makes, twice a day per academy. They were the one model path
- * writing a turn row with no token columns at all, so they were invisible in every cost
- * and cache reading taken from `turn`. Usage is passed through now for the same reason
- * §4.4 exists: an unmeasured prefix is an unbounded bill.
- */
-async function writeSynthTurn(
-  academyId: string,
-  turnId: string,
-  kind: string,
-  admin: { person_id: string; contact_id: string | null },
-  output: unknown,
-  model: string | undefined,
-  latencyMs: number,
-  usage?: { promptTokens: number; outputTokens: number; cachedTokens: number },
-): Promise<void> {
-  try {
-    await withSession({ role: 'service', academyId }, async (tx) => {
-      await tx.unsafe(
-        `insert into turn (id, academy_id, contact_id, person_id, role_acted, input, output, model,
-                           prompt_tokens, output_tokens, cached_tokens, latency_ms)
-         values (${uid(turnId)}, ${uid(academyId)}, ${admin.contact_id ? uid(admin.contact_id) : 'null'},
-                 ${uid(admin.person_id)}, 'admin', ${jsonLit({ synthesis: kind })}, ${jsonLit(output)},
-                 ${lit(model ?? null)}, ${lit(usage?.promptTokens ?? 0)}, ${lit(usage?.outputTokens ?? 0)},
-                 ${lit(usage?.cachedTokens ?? 0)}, ${lit(latencyMs)})`,
-      )
-    })
-  } catch {
-    /* never let instrumentation break the digest */
-  }
-}

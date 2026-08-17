@@ -7,14 +7,16 @@
  *   admin_evening_digest             AD-EVENING-DIGEST  (§10.2, synthesised)
  *
  * "Two bookends, quiet between" (§7.2). The two bookends are written by the
- * model, not by this file — the digest is not a template with slots, so both
- * hand off to `synthesize`. The other two are the genuine escalations that are
- * allowed to interrupt.
+ * model, not by this file — the digest is not a template with slots. They are
+ * **ordinary turns opened by a job** now, rather than a bespoke synthesis call:
+ * see `runSynthesis` for why every reason the separate path existed inverted.
+ * The other two are the genuine escalations that are allowed to interrupt.
  */
 
 import type { Job } from '@/lib/types'
+import type { Tx } from '@/lib/db'
 import { now } from '@/lib/clock'
-import { synthesize } from '@/lib/agent/loop'
+import { runTurn } from '@/lib/agent/loop'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { LIMITS } from '@/lib/messaging/types'
 import {
@@ -185,6 +187,18 @@ export async function coachNotOnboarded(job: Job): Promise<void> {
       catalogId: 'AD-COACH-NOT-ONBOARDED',
       isEscalation: true,
       subjectPersonIds: [coach.person_id],
+      /**
+       * A coach who has not onboarded is ONE fact, and this job fires daily.
+       *
+       * Driven: the admin received the same invite-not-confirmed message two days
+       * apart, byte for byte, because nothing had changed — which is precisely
+       * why it should not have been sent. The key moves when the state does: they
+       * onboard (the job stops), or the set of sessions they are down for inside
+       * two days changes, which is a different and genuinely newer problem.
+       */
+      stateKey:
+        `AD-COACH-NOT-ONBOARDED:${coach.person_id}:invited:` +
+        upcoming.map((u) => u.starts_at.toISOString()).join(','),
     })
   }
   note(`${firstName(coach.full_name)} not onboarded, ${upcoming.length} session(s) inside 48h`)
@@ -207,24 +221,134 @@ export async function adminEveningDigest(job: Job): Promise<void> {
   await runSynthesis(job, 'digest')
 }
 
+/**
+ * **Anything new, pending or broken since the last one of these.**
+ *
+ * The cheap deterministic half, and the whole reason the expensive half is not
+ * paid for. The old shape composed **56 briefs for a business that received 36
+ * messages in a month**: a pure calendar trigger, eleven queries and the most
+ * expensive model call in the product, twice a day, whether or not anything had
+ * happened — and the model then decided, after all of it, that there was nothing
+ * to say.
+ *
+ * An empty census opens no turn and sends nothing. The quiet IS the all-clear,
+ * which is what doctrine promises anyway; cost then scales with events rather
+ * than with days.
+ *
+ * Counts only, never content. What is worth saying about a session that ran is a
+ * judgement, and the turn below has the tools to look — spoon-feeding it query
+ * results it could not verify or widen is how a digest once told the solo coach
+ * "I think coaches aren't marking after sessions" *about himself*.
+ */
+async function newsSince(tx: Tx, academyId: string, since: Date): Promise<Record<string, number>> {
+  const [row] = await tx<Record<string, number>[]>`
+    select
+      (select count(*)::int from message
+        where academy_id = ${academyId} and direction = 'inbound'
+          and created_at > ${since.toISOString()}::timestamptz)                  as people_wrote_in,
+      (select count(*)::int from session
+        where academy_id = ${academyId} and status = 'scheduled'
+          and ends_at between ${since.toISOString()}::timestamptz and app.now()) as sessions_finished,
+      (select count(*)::int from session s
+        where s.academy_id = ${academyId} and s.status = 'scheduled'
+          and s.ends_at < app.now()
+          and not exists (select 1 from attendance a where a.session_id = s.id)) as registers_unmarked,
+      (select count(*)::int from session s
+        where s.academy_id = ${academyId} and s.status = 'scheduled'
+          and s.starts_at between app.now() and app.now() + interval '36 hours'
+          and not exists (select 1 from session_coach sc
+                           where sc.session_id = s.id and sc.declined_at is null
+                             and (sc.confirmed_at is not null or sc.arrived_at is not null)))
+                                                                                as sessions_unconfirmed,
+      (select count(*)::int from session
+        where academy_id = ${academyId} and status = 'cancelled'
+          and created_at > ${since.toISOString()}::timestamptz) as sessions_cancelled,
+      (select count(*)::int from enrollment
+        where academy_id = ${academyId} and created_at > ${since.toISOString()}::timestamptz) as new_enrolments,
+      (select count(*)::int from payment
+        where academy_id = ${academyId} and created_at > ${since.toISOString()}::timestamptz) as payments_moved,
+      (select count(*)::int from tally_line
+        where academy_id = ${academyId} and created_at > ${since.toISOString()}::timestamptz) as charges_written,
+      (select count(*)::int from message
+        where academy_id = ${academyId} and direction = 'outbound'
+          and status = 'failed' and created_at > ${since.toISOString()}::timestamptz) as sends_failed,
+      (select count(*)::int from pending_request
+        where academy_id = ${academyId} and resolved_at is null)                 as questions_outstanding,
+      (select count(*)::int from coach
+        where academy_id = ${academyId} and status = 'invited')                  as coaches_not_onboarded
+  `
+  return row ?? {}
+}
+
 async function runSynthesis(job: Job, kind: 'brief' | 'digest'): Promise<void> {
   const p = payloadOf(job)
   const academyId = need(p, 'academy_id')
   const nowAt = await now(academyId)
 
-  const academy = await withAcademy(academyId, async (tx) => {
+  const plan = await withAcademy(academyId, async (tx) => {
     const a = await loadAcademy(tx, academyId)
     if (!a) skip('academy gone')
     if (a.onboarding_state !== 'live') skip('not live yet')
     const recipients = (await admins(tx, academyId)).filter((r) => r.contact_id)
     if (recipients.length === 0) skip('no admin to tell')
-    return a
+
+    // Since the last one of THIS kind actually went out — not since midnight.
+    // A brief that was silent yesterday leaves yesterday's news unreported, and
+    // a window keyed to the calendar would drop it on the floor.
+    const [last] = await tx<{ at: Date | null }[]>`
+      select max(created_at) as at from message
+       where academy_id = ${academyId} and direction = 'outbound'
+         and catalog_id = ${kind === 'brief' ? 'AD-MORNING-BRIEF' : 'AD-EVENING-DIGEST'}
+         and suppressed_reason is null`
+    const since = last?.at ?? new Date(nowAt.getTime() - 24 * 3600_000)
+    const news = await newsSince(tx, academyId, since)
+    return { academy: a, recipients, news, since }
   })
 
-  const out = await synthesize(academyId, kind)
-  const delivered = out.sent.filter((s) => s.status === 'queued' || s.status === 'sent').length
-  note(
-    `${kind} for ${isoDate(nowAt, academy.timezone)}: ${delivered} sent`
-    + (out.error ? ` (error: ${out.error})` : delivered === 0 ? ' — nothing worth saying' : ''),
-  )
+  const { academy, recipients, news } = plan
+  const total = Object.values(news).reduce((n, v) => n + Number(v ?? 0), 0)
+  if (total === 0) {
+    note(`${kind} for ${isoDate(nowAt, academy.timezone)}: nothing has happened — no turn opened, nothing sent`)
+    return
+  }
+
+  /**
+   * **An ordinary turn, opened by a job.** There is no separate synthesis path
+   * any more — no bespoke model call, no dearer model, no toolless prompt fed
+   * pre-queried rows.
+   *
+   * Every reason the old path existed inverted under the architecture. The cached
+   * prefix is the CHEAP part — a hit costs 3.2% of a miss — so an ordinary turn on
+   * the conversation model costs less than the bespoke call did, and the bespoke
+   * path could not share the prefix at all, which is how the two most expensive
+   * calls of the day came to cost 3.5× the entire human conversation while caching
+   * at half the rate. As a turn it has TOOLS, which fixes a real defect class: the
+   * old synth was spoon-fed query results it could not verify or widen. As a turn
+   * it is recorded, guarded and result-honest for free — the two most expensive
+   * calls of the day stop being the two with no record of why they said anything.
+   * And the doctrine constraint dies with the path: nothing needs to be "true on
+   * the toolless path too" when there is no toolless path.
+   */
+  const first = recipients[0]
+  await runTurn({
+    contactId: first.contact_id as string,
+    source: 'job',
+    task: {
+      instruction:
+        `Send it with catalog_id "${kind === 'brief' ? 'AD-MORNING-BRIEF' : 'AD-EVENING-DIGEST'}" — that is ` +
+        `what marks it as this moment, and what stops the next one counting news you have already reported. ` +
+        (kind === 'brief'
+          ? `Write ${firstName(first.full_name)} their morning brief, as a reply to them. Lead with what will ` +
+            `go wrong today if nobody acts. If that is nothing, say so in one line — or send nothing at all, ` +
+            `which is a real and common answer. Then, only if it is worth their attention, what today looks ` +
+            `like. Read what the sentences need; the counts below are only what changed, not the content.`
+          : `Write ${firstName(first.full_name)} tonight's digest, as a reply to them. Lead with the one thing ` +
+            `worth looking at and what you think is behind it, with the uncertainty stated. Then the day in a ` +
+            `line or two. Then how the messaging itself went — they will never think to ask. Then who is ` +
+            `unpaid. Drop any section that would be filler. Read what the sentences need; the counts below ` +
+            `are only what changed.`),
+      queryResults: { changed_since_the_last_one: news, note: 'Counts, not content. Look at whatever these point at.' },
+    },
+  })
+  note(`${kind} for ${isoDate(nowAt, academy.timezone)}: opened a turn — ${total} thing(s) had changed`)
 }

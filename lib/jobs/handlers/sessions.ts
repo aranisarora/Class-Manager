@@ -266,9 +266,23 @@ export async function postClassRegister(job: Job): Promise<void> {
  * `register_expiry` at `ends_at` + 2h — AD-REGISTER-MISSING (§12.4).
  *
  * The escalation is about the *session*, never about the coach (§6.3), but it
- * carries the coach as its subject so the send path can refuse to escalate
- * about someone to themselves (§18 rule 2) — which is how the solo admin never
- * gets told off for their own unmarked register.
+ * carries the coach as its subject so the send path can refuse to escalate about
+ * someone to themselves (§18 rule 2) — which is how the solo admin never gets
+ * told off for their own unmarked register.
+ *
+ * **Right for a multi-coach academy, and exactly inverted for the one operator
+ * whose money depends on it.** Driven over a month in a solo per-session
+ * business: ~21 sessions, **one** register marked, and that one only because the
+ * drive made the admin type a no-show. ₹900 ever billed, against ₹2,700 collected
+ * with no tally line behind it (F-AS). On per-session rates the unmarked register
+ * IS the invoice, and there is no second coach to route the nudge to.
+ *
+ * Half a gate again, and the resolution is the same shape as the coach ladder's:
+ * where suppression is right, the same decision supplies what the suppressed
+ * message existed to deliver. Here that is not a confirmation but a REFRAME —
+ * "two hours since Kabir's session, nothing billed yet" is news about money, and
+ * news is not a scolding. Same fact, same recipient, different message, and it is
+ * no longer an escalation about anybody, so nothing drops it.
  */
 export async function registerExpiry(job: Job): Promise<void> {
   const p = payloadOf(job)
@@ -292,28 +306,69 @@ export async function registerExpiry(job: Job): Promise<void> {
     const recipients = (await admins(tx, academyId)).filter((a) => a.contact_id)
     if (recipients.length === 0) skip('no admin to tell')
 
-    return { academy, session, coaches, recipients }
+    /**
+     * Every register this coach still owes, so the message can be told once per
+     * STATE rather than once per session.
+     *
+     * Arjun received the byte-identical register chase three times, for three
+     * sessions, in the one state "has unmarked registers". Rule 7: two unmarked
+     * registers is one message, not two — and never seven. The set is the state,
+     * so a fourth session going unmarked is a change and says so, while the same
+     * three said again is not.
+     */
+    const outstanding = await tx<{ session_id: string }[]>`
+      select s.id as session_id
+        from session s
+        join session_coach sc on sc.session_id = s.id and sc.declined_at is null
+       where s.academy_id = ${academyId}
+         and sc.coach_id in ${tx(coaches.map((c) => c.coach_id).length ? coaches.map((c) => c.coach_id) : [''])}
+         and s.status = 'scheduled'
+         and s.ends_at < app.now()
+         and not exists (select 1 from attendance a where a.session_id = s.id)
+       order by s.id`
+
+    return { academy, session, coaches, recipients, outstanding: outstanding.map((r) => r.session_id) }
   })
 
-  const { academy, session, coaches, recipients } = plan
+  const { academy, session, coaches, recipients, outstanding } = plan
   const tz = academy.timezone
   const when = `${dayLabel(session.starts_at, tz, nowAt)} ${timeLabel(session.starts_at, tz)}`
 
+  const coachPeople = new Set(coaches.map((c) => c.person_id))
   for (const admin of recipients) {
+    // Would this reach them as an escalation about themselves? Then it is not an
+    // escalation at all: nobody else was going to mark it, and nobody else needs
+    // telling. `coachPeople.size <= 1` keeps it to the genuinely self-directed
+    // case — an admin who coaches one of three assigned coaches still gets the
+    // ordinary escalation, because there is somebody else to chase.
+    const aboutThemselves = coachPeople.has(admin.person_id) && coachPeople.size <= 1
     await composeAndSend(serviceCtx(academy.id), {
       toContactId: admin.contact_id as string,
       header: clamp(academy.name, LIMITS.headerChars),
       body: clamp(
-        `The register for ${session.class_name} (${when}) still isn't marked.`,
+        aboutThemselves
+          // News, in the order a person cares about it: how long, whose session,
+          // and the consequence that is actually theirs — nothing is billed until
+          // this is marked. No "still isn't", because there is nobody to have
+          // been waiting on.
+          ? `Two hours since ${session.class_name} (${when}) and nothing is billed for it yet — ` +
+            `the register is what writes the charges.`
+          : `The register for ${session.class_name} (${when}) still isn't marked.`,
         LIMITS.bodyChars,
       ),
       buttons: [{
-        title: buttonTitle('Mark it myself'),
+        title: buttonTitle(aboutThemselves ? 'Take the register' : 'Mark it myself'),
         action: { kind: 'reply', text: `Mark the register for ${session.class_name}, ${when}` },
       }],
       catalogId: 'AD-REGISTER-MISSING',
-      isEscalation: true,
-      subjectPersonIds: coaches.map((c) => c.person_id),
+      // Neither flag when it is their own: an escalation about the recipient is
+      // dropped by §18 rule 2, and that drop is the whole finding.
+      ...(aboutThemselves
+        ? {}
+        : { isEscalation: true, subjectPersonIds: coaches.map((c) => c.person_id) }),
+      // The state is the SET of registers this coach still owes, not this one
+      // session — three sessions unmarked is one thing to be told about (F-AN).
+      stateKey: `AD-REGISTER-MISSING:${coaches.map((c) => c.coach_id).sort().join('+')}:${outstanding.join(',')}`,
     })
   }
   note(`register missing for ${session.class_name} (${when}) — ${recipients.length} admin(s) told`)

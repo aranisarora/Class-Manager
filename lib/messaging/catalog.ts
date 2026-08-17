@@ -75,6 +75,68 @@ export type CatalogEntry = {
   actionTtlMinutes: number
 }
 
+/**
+ * Which mute a moment answers to (0032 `comm_preference`).
+ *
+ * **"Please stop messaging me about money" is a scope, not an opt-out, and it is
+ * the commonest stop request.** The model went looking for somewhere to put it,
+ * enumerated `set_timing`'s keys, found nothing, fell back to a memory fact and
+ * said "Done" — and a `payment_due` job composing from a query sent her money
+ * nine days later (F-AV). A preference stored as prose stops nothing, because the
+ * jobs compose from queries.
+ *
+ * A table beside the catalog rather than a field on 33 rows, and exhaustive over
+ * `CatalogId` so a new moment cannot be added without deciding: an unclassified
+ * moment would silently become unmutable, which is the failure this closes.
+ *
+ * `null` means **only a full stop reaches it**. Two kinds qualify, and both are
+ * judgements worth stating: something the person themselves just set in motion
+ * (their own cancellation confirmed, their own trial booked), and news whose
+ * absence sends somebody to a locked hall — a cancelled or moved session is not a
+ * reminder, and muting reminders must not silently opt you out of being told your
+ * class is not happening.
+ */
+export type MuteScope = 'money' | 'reminders' | 'outcomes' | 'announcements'
+
+export const MUTE_SCOPE: Record<CatalogId, MuteScope | null> = {
+  'CL-INTRO': 'announcements',
+  'CL-FIRST-CONTACT': 'announcements',
+  'CL-REMINDER': 'reminders',
+  'CL-CANCEL-CONFIRM': null,
+  'CL-SESSION-TROUBLE': null,
+  'CL-OUTCOME': 'outcomes',
+  'CL-TALLY': 'money',
+  'CL-RECEIPT': 'money',
+  'CL-DUNNING': 'money',
+  'CL-SESSION-CANCELLED': null,
+  'CL-SESSION-MOVED': null,
+  'PR-WELCOME': 'announcements',
+  'PR-TRIAL-CONFIRMED': null,
+  'CO-INVITE-CONFIRM': null,
+  'CO-DAY': 'reminders',
+  'CO-COMING': 'reminders',
+  'CO-NUDGE': 'reminders',
+  'CO-REGISTER': 'reminders',
+  'CO-COVER-OFFER': 'announcements',
+  'CO-COVER-TAKEN': null,
+  'CO-PAYABLES': 'money',
+  'CO-FINAL-STATEMENT': 'money',
+  // The operator's own instrument. An owner who wants fewer of these has a
+  // better control than a mute — `morning_brief_at` and `evening_digest_at` are
+  // nullable columns, and a null there means they said no.
+  'AD-MORNING-BRIEF': null,
+  'AD-EVENING-DIGEST': null,
+  'AD-ESCALATE-UNCONFIRMED': null,
+  'AD-COACH-LATE': null,
+  'AD-COACH-NOT-ONBOARDED': null,
+  'AD-REGISTER-MISSING': null,
+  'AD-RECONCILE': null,
+  'AD-NEW-TRIAL': null,
+  'AD-OPT-OUT': null,
+  'AD-NEEDS-YOU': null,
+  'AD-DELIVERY-FAILURE': null,
+}
+
 const DAY = 1440
 
 export const CATALOG: Record<CatalogId, CatalogEntry> = {

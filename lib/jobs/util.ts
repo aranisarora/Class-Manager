@@ -13,6 +13,7 @@
 
 import { DateTime } from 'luxon'
 import { withSession, type SessionCtx, type Tx } from '@/lib/db'
+import { isQuietHour, quietWindow } from '@/lib/clock'
 import { adminsIn } from '@/lib/identity'
 import { TIMING_DEFAULTS, TIMING_KEYS, type TimingName } from './kinds'
 
@@ -430,17 +431,14 @@ export function pullOutOfQuietHours(
   tz: string,
   settings: Record<string, unknown> | null,
 ): Date {
-  const read = (k: string, fallback: string): string => {
-    const v = settings?.[k]
-    return typeof v === 'string' && /^\d{2}:\d{2}$/.test(v) ? v : fallback
-  }
-  const quietStart = read('quiet_start', '21:00')
-  const quietEnd = read('quiet_end', '07:00')
+  // The window itself comes from `lib/clock.ts`, which is also what the send path
+  // reads: two definitions of night is the two-authors trap, and the send path is
+  // the floor now rather than these two call sites being the whole of it.
+  const { start: quietStart, end: quietEnd } = quietWindow(settings)
+  if (!isQuietHour(at, tz, settings)) return at
   const local = DateTime.fromJSDate(at, { zone: tz })
   const hm = local.toFormat('HH:mm')
   const overnight = quietStart > quietEnd
-  const inQuiet = overnight ? hm >= quietStart || hm < quietEnd : hm >= quietStart && hm < quietEnd
-  if (!inQuiet) return at
   const [h, m] = quietStart.split(':').map(Number)
   const base = overnight && hm < quietEnd ? local.minus({ days: 1 }) : local
   return base.set({ hour: h, minute: m, second: 0, millisecond: 0 }).minus({ minutes: 1 }).toJSDate()
@@ -462,17 +460,14 @@ export function deferPastQuietHours(
   tz: string,
   settings: Record<string, unknown> | null,
 ): Date {
-  const read = (k: string, fallback: string): string => {
-    const v = settings?.[k]
-    return typeof v === 'string' && /^\d{2}:\d{2}$/.test(v) ? v : fallback
-  }
-  const quietStart = read('quiet_start', '21:00')
-  const quietEnd = read('quiet_end', '07:00')
+  // The window itself comes from `lib/clock.ts`, which is also what the send path
+  // reads: two definitions of night is the two-authors trap, and the send path is
+  // the floor now rather than these two call sites being the whole of it.
+  const { start: quietStart, end: quietEnd } = quietWindow(settings)
+  if (!isQuietHour(at, tz, settings)) return at
   const local = DateTime.fromJSDate(at, { zone: tz })
   const hm = local.toFormat('HH:mm')
   const overnight = quietStart > quietEnd
-  const inQuiet = overnight ? hm >= quietStart || hm < quietEnd : hm >= quietStart && hm < quietEnd
-  if (!inQuiet) return at
   const [h, m] = quietEnd.split(':').map(Number)
   const base = overnight && hm >= quietStart ? local.plus({ days: 1 }) : local
   return base.set({ hour: h, minute: m, second: 0, millisecond: 0 }).toJSDate()
