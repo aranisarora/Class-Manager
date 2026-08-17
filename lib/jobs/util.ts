@@ -58,8 +58,37 @@ export function note(line: string): void {
 // Sessions
 // -----------------------------------------------------------------------------
 
+/**
+ * **Which job**, for the length of that job.
+ *
+ * The same shape as `setNoteSink` beside it in the runner, and safe for the same
+ * reason: `runDueJobs` runs handlers one at a time, in a `for` loop, awaiting
+ * each. A concurrent runner would need this to become explicit — and would need
+ * `setNoteSink` to as well, so the two would move together.
+ */
+let currentJobKind: string | undefined
+
+export function setJobOrigin(kind: string | undefined): void {
+  currentJobKind = kind
+}
+
+/**
+ * Everything that reaches the wire from here is a JOB, and now says so (0032).
+ *
+ * `message.origin` was null on every job send, because attribution was carried
+ * by `turnId` and a job has no turn. 27 of 81 outbound messages in one drive
+ * were unattributed — the whole standing surface — which meant the truth axis
+ * could not be measured on exactly the surface where the product acts
+ * unsupervised. This is the one place the jobs layer opens a session, so it is
+ * the one place that has to know, and no handler has to remember.
+ */
 export function serviceCtx(academyId: string): SessionCtx {
-  return { role: 'service', academyId }
+  return {
+    role: 'service',
+    academyId,
+    origin: 'job',
+    ...(currentJobKind ? { originRef: currentJobKind } : {}),
+  }
 }
 
 /** Everything a handler does happens inside one academy's service session. */

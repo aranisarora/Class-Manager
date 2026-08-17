@@ -28,7 +28,7 @@
 
 import type { Job } from '@/lib/types'
 import { MAX_ATTEMPTS, MISSED_AFTER_MINUTES, type JobKind } from './kinds'
-import { JobSkip, msOf, setNoteSink, withInfra } from './util'
+import { JobSkip, msOf, setJobOrigin, setNoteSink, withInfra } from './util'
 import { materializeSessions, postClassRegister, registerExpiry } from './handlers/sessions'
 import { coachComing, coachDay, coachNudge } from './handlers/coach'
 import {
@@ -235,6 +235,8 @@ export async function runDueJobs(o?: { limit?: number }): Promise<RunReport> {
       }
 
       setNoteSink(notes)
+      // What put the next message on the wire, for the length of this handler.
+      setJobOrigin(job.kind)
       try {
         await handler(job)
         ran++
@@ -253,6 +255,7 @@ export async function runDueJobs(o?: { limit?: number }): Promise<RunReport> {
         }
       } finally {
         setNoteSink(null)
+        setJobOrigin(undefined)
       }
     }
   }

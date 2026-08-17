@@ -106,7 +106,18 @@ const HISTORY = 16
 /** How many past turns to mine for reads. Small: the newest lookups are the live ones. */
 const LOOKUP_TURNS = 4
 
-function sessionOf(identity: Identity, turnId?: string): SessionCtx {
+function sessionOf(
+  identity: Identity,
+  turnId?: string,
+  /**
+   * What put this session's work on the wire (0032). A turn by default; a tap
+   * when the payload is being replayed with no model in the room, because those
+   * are different acts and "did a person ask for this" should be a query rather
+   * than a guess.
+   */
+  origin: 'turn' | 'tap' = 'turn',
+  originRef?: string,
+): SessionCtx {
   return {
     role: 'user',
     academyId: identity.academyId,
@@ -115,6 +126,8 @@ function sessionOf(identity: Identity, turnId?: string): SessionCtx {
     // Carried into the session so `app.begin_audit` can stamp it on every row this
     // turn writes (0015). Attribution by construction rather than by remembering.
     ...(turnId ? { turnId } : {}),
+    origin,
+    ...(originRef ? { originRef } : {}),
   }
 }
 
@@ -166,7 +179,11 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         // A tap makes no model call, so without this the turn row for the most
         // consequential thing a person can do — committing a plan — was blank.
         const tappedAt = Date.now()
-        const res = await executeAction(session, identity, consumed.payload, turnId, input.flowData)
+        // A tap is not a turn: no model is in the room and the payload executes
+        // as stored, which is exactly the distinction `message.origin` exists to
+        // record. Same person, same turn id, different act.
+        const tapSession = sessionOf(identity, turnId, 'tap', consumed.payload.kind)
+        const res = await executeAction(tapSession, identity, consumed.payload, turnId, input.flowData)
         outcomes.push(...res.outcomes)
         replyText = res.summary
         trace.push({
