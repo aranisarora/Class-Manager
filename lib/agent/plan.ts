@@ -1440,10 +1440,11 @@ export async function executePlan(
       /**
        * Asked here as well as in the preview, so the property is the plan's
        * rather than the previewed plan's. Every model-authored write is gated
-       * by `needsPreview` before it reaches this function, but a Flow
-       * submission is not — the setup form writes a whole week in one plan,
-       * which is exactly where two 7am Mondays get typed — and a receipt that
-       * names the overlap is the only warning that path has.
+       * by `needsPreview` before it reaches this function, but not every write
+       * reaching it came through a preview — a whole timetable typed in one
+       * messy sentence commits as one plan, which is exactly where two 7am
+       * Mondays get in — and a receipt that names the overlap is the only
+       * warning that path has.
        */
       return {
         diffs,

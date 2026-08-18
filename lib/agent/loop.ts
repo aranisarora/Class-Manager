@@ -16,19 +16,6 @@ import { resolveIdentity } from '@/lib/identity'
 import { consumeAction, type ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { LIMITS, type SendOutcome } from '@/lib/messaging/types'
-import {
-  ADD_CLASS,
-  BUSINESS_SETUP,
-  FORM_INTRO,
-  parseFlowResponse,
-  REGISTER,
-  type AddClassValues,
-  type BusinessSetupValues,
-  type FormId,
-  type RegisterValues,
-} from '@/lib/messaging/flows'
-import { formFor } from '@/lib/messaging/forms'
-import { buildSetupSteps, summariseSetup } from '@/lib/setup-plan'
 import type { Identity, Job, Role } from '@/lib/types'
 import { generate, type Msg } from './deepseek'
 import { stablePrefix, variableTail } from './context'
@@ -51,12 +38,6 @@ export type TurnInput = {
   text?: string
   media?: { url: string; mimeType: string }[]
   actionId?: string
-  /**
-   * The answers from a completed WhatsApp Flow, with `actionId` carrying its
-   * `flow_token`. Present only on a Flow submission, which is a tap that arrives
-   * with data — so it consumes its action exactly like any other tap.
-   */
-  flowData?: Record<string, unknown>
   source: 'inbound' | 'job' | 'sim'
   /** Runtime-internal: a self-scheduled task's instruction and its data (§13.1). */
   task?: { instruction: string; queryResults?: unknown }
@@ -184,7 +165,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         // as stored, which is exactly the distinction `message.origin` exists to
         // record. Same person, same turn id, different act.
         const tapSession = sessionOf(identity, turnId, 'tap', consumed.payload.kind)
-        const res = await executeAction(tapSession, identity, consumed.payload, turnId, input.flowData)
+        const res = await executeAction(tapSession, identity, consumed.payload, turnId)
         outcomes.push(...res.outcomes)
         replyText = res.summary
         trace.push({
@@ -423,309 +404,25 @@ async function executeAction(
   identity: Identity,
   payload: ActionPayload,
   turnId: string,
-  flowData?: Record<string, unknown>,
 ): Promise<{ outcomes: SendOutcome[]; summary: string }> {
   const outcomes: SendOutcome[] = []
 
   /**
-   * A completed WhatsApp Flow.
+   * THE FORM SUBMISSION BRANCH IS GONE, AND SO IS THE FORM (§14.6).
    *
-   * What a submission DOES is decided here, by flow id, and never carried in the
-   * action payload — so a form can only ever reach work the runtime chose to put
-   * behind it, the same way `write.service` and `requireRows` are runtime-only
-   * fields. The answers themselves are untrusted input: they are parsed by the
-   * flow's own schema and then run as a plan under the submitter's own RLS
-   * session, which is what makes a Flow no more privileged than a typed sentence.
+   * A `flow` payload used to arrive here carrying a completed WhatsApp Flow: parse
+   * the response against the artifact's schema, then dispatch on flow id to one of
+   * three handlers — the business shape, a class, the register. All three wrote
+   * through the same named paths a typed sentence reaches (`buildSetupSteps`,
+   * `create_class`, `mark_attendance`), which is exactly why removing the form cost
+   * no write path: what went was the collection surface, not the work behind it.
+   *
+   * What replaces it is that the same three things are ASKED. That is more round
+   * trips and it is the trade this product chose: a published artifact can only ever
+   * return the fields it was published with, so the register form could render any
+   * roster and still had no answer for "Aarav left at half time". The ladder does,
+   * because the ladder is just the model reading a sentence.
    */
-  if (payload.kind === 'flow') {
-    const parsed = parseFlowResponse(payload.flow, flowData ?? {})
-    if (!parsed.ok) {
-      outcomes.push(
-        await composeAndSend(session, {
-          toContactId: identity.contact.id,
-          body: `That form didn't come through cleanly — ${parsed.error}. Tell me the details here instead and I'll set it up.`,
-        }),
-      )
-      return { outcomes, summary: `flow ${payload.flow} rejected: ${parsed.error}` }
-    }
-
-    if (payload.flow === BUSINESS_SETUP.id) {
-      const v = parsed.values as BusinessSetupValues
-      // The same builder every other setup path runs. A form is a different way to
-      // reach the setup plan, never a second implementation of it.
-      const venues = v.venue ? [{ name: v.venue, address: v.address || null }] : []
-      const setup = {
-        name: v.name,
-        category: v.category || null,
-        timezone: v.timezone || null,
-        cancellationWindowHours: v.cancellation_window_hours,
-        // Three answers, not two. "Don't send one" is `null` and clears the column;
-        // a time is itself; a blank field is `undefined` and leaves what is there.
-        // Collapsing the last two would mean an owner who edited their UPI handle
-        // silently lost the brief they had already set.
-        morningBriefAt: v.morning_brief_at === 'off' ? null : v.morning_brief_at || undefined,
-        eveningDigestAt: v.evening_digest_at === 'off' ? null : v.evening_digest_at || undefined,
-        upiHandle: v.upi_handle || null,
-        venues,
-      }
-      const steps = buildSetupSteps(identity.academyId, setup)
-      /**
-       * The default charging basis rides in `settings`, not on a column of its own.
-       *
-       * It is not a property of the business the way its timezone is — it is what to
-       * assume when a class arrives with no price on it, which is every class read off
-       * a photo. Putting it here keeps `class.rate_unit` the only place a real rate
-       * lives, so nothing downstream can mistake a default for a decision.
-       */
-      if (v.rate_unit) {
-        steps.push({
-          write: `update academy set settings = coalesce(settings, '{}'::jsonb)
-                    || jsonb_build_object('default_rate_unit', ${lit(v.rate_unit)})
-                  where id = ${uid(identity.academyId)}`,
-        })
-      }
-      const res = await executePlan(session, steps, 'Business set up from the form', audienceFor(identity))
-      if (!res.ok) {
-        outcomes.push(
-          await composeAndSend(session, {
-            toContactId: identity.contact.id,
-            body: /PRECONDITION_FAILED|CHANGED_NOTHING/.test(res.error ?? '')
-              ? 'Only the owner can change the business settings, so I left everything as it was.'
-              : `That didn't save: ${res.error ?? 'something went wrong'}. Nothing was changed.`,
-          }),
-        )
-        return { outcomes, summary: `form ${payload.flow} failed: ${res.error ?? 'unknown'}` }
-      }
-
-      const summary = summariseSetup(setup)
-      /**
-       * Straight into the timetable, naming the way it can arrive.
-       *
-       * This is the one message in the product where saying what is possible is worth
-       * more than saying what happened: what people expect is one form per class, and
-       * `onboarding.md` calls the timetable the biggest single saving here. A person
-       * who does not know they can type the whole week in one messy sentence fills in
-       * four forms by hand, or stops.
-       *
-       * It used to offer a photo of the whiteboard and a voice note. The model is
-       * text-only now (`deepseek.ts`), so that would be an invitation to send
-       * something that comes back apologised for — the worst possible first
-       * impression, caused by the message meant to save them the most work.
-       */
-      outcomes.push(
-        await composeAndSend(session, {
-          toContactId: identity.contact.id,
-          preLaunchOk: true,
-          body:
-            `${summary}\n\n`
-            + 'Now the part that usually takes an hour — your timetable. '
-            + 'Type the whole week in one go, however messy: "Mon & Wed 6:30 beginners at Green Park, '
-            + 'Sat 8am juniors". I\'ll read it back before I create anything.',
-          buttons: [
-            // 19 chars. "Add classes one by one" is 22, and `fitTitle` cut it at the word
-            // boundary to "Add classes one by" — a dangling preposition that shipped.
-            { title: 'Add them one by one', action: { kind: 'form', form: 'add_class' } },
-          ],
-        }),
-      )
-      return { outcomes, summary }
-    }
-
-    /**
-     * A class, from the form.
-     *
-     * Committed rather than previewed, because this is the one write in the product
-     * whose read-back the person has literally just done: the form showed them every
-     * field and they pressed Add. A confirmation step on top of that is asking the same
-     * question twice, which `bulk-change.md` names as pure friction on a single row in
-     * your own scope.
-     */
-    if (payload.flow === ADD_CLASS.id) {
-      const v = parsed.values as AddClassValues
-      /**
-       * The venue arrives as a NAME, because that is what a person picks from a
-       * list, and every id in this plan has to be an id. Resolved here rather
-       * than interpolated blind: a venue that does not exist must produce a class
-       * at no venue rather than a statement that fails, because the class is the
-       * thing the person asked for.
-       */
-      let venueId: string | null = null
-      if (v.venue) {
-        const hit = await modelQuery(session, `select id from venue where name = ${lit(v.venue)} limit 1`)
-        venueId = hit.error ? null : ((hit.rows[0]?.id as string) ?? null)
-      }
-      /**
-       * **A class is its rows.**
-       *
-       * This built a `create_class` step, and `create_class` was the operation
-       * whose consequence line said it was "the only thing that schedules the
-       * sessions" — which is why removing it needed the trigger in 0033 first.
-       * A slot implies its sessions now, on this path and on the model's and on
-       * one nobody has written, so the form writes exactly what a class is made
-       * of and the rest follows from the world.
-       *
-       * The class is selected back by name for the slots, because a plan cannot
-       * know the id of a row it just inserted. `class_academy_name_open_key` is
-       * what makes that safe: a second open class of the same name does not
-       * exist, so the subquery matches exactly one row or the insert that would
-       * have created the ambiguity was already refused.
-       */
-      const today = inZone(await now(identity.academyId), identity.academy.timezone || 'Asia/Kolkata').date
-      const cls = `(select id from class where name = ${lit(v.name)} and academy_id = app.academy_id() and active and ends_on is null)`
-      const res = await executePlan(
-        session,
-        [
-          {
-            write:
-              `insert into class (academy_id, name, starts_on` +
-              `${venueId ? ', venue_id' : ''}${v.rate !== undefined ? ', rate_amount' : ''}` +
-              `${v.rate_unit ? ', rate_unit' : ''})` +
-              ` values (app.academy_id(), ${lit(v.name)}, date ${lit(today)}` +
-              `${venueId ? `, ${uid(venueId)}` : ''}${v.rate !== undefined ? `, ${v.rate}` : ''}` +
-              `${v.rate_unit ? `, ${lit(v.rate_unit)}` : ''})`,
-          } as PlanStep,
-          ...v.days.map(
-            (d) =>
-              ({
-                write:
-                  `insert into class_slot (academy_id, class_id, weekday, start_time, end_time)` +
-                  ` values (app.academy_id(), ${cls}, ${d}, time ${lit(v.starts)}, time ${lit(v.ends)})`,
-              }) as PlanStep,
-          ),
-          { note: `${v.name}, ${v.days.length} time(s) a week` } as PlanStep,
-        ],
-        `Add ${v.name} from the form`,
-        audienceFor(identity),
-      )
-      outcomes.push(...res.outcomes)
-      const failed = res.ok ? null : (res.error ?? 'something went wrong')
-      outcomes.push(
-        await composeAndSend(session, {
-          toContactId: identity.contact.id,
-          preLaunchOk: true,
-          body: failed
-            ? `I couldn't add that class — ${failed}. Nothing was changed; tell me here and I'll sort it.`
-            : `${v.name} is in. Another one, or is that the week?`,
-          buttons: failed
-            ? undefined
-            : [
-                { title: 'Add another', action: { kind: 'form', form: 'add_class' } },
-                { title: "That's the week", action: { kind: 'reply', text: "that's my whole timetable" } },
-              ],
-        }),
-      )
-      return { outcomes, summary: failed ? `add_class failed: ${failed}` : `class ${v.name} created` }
-    }
-
-    /**
-     * The register, inverted: the form named the exceptions, so everyone else is present.
-     *
-     * The roster is re-read HERE rather than trusted from the submission, because the
-     * submission carries only who was ticked. Deriving "present" from what was NOT
-     * ticked against a roster the runtime reads itself is the difference between a
-     * register and a list of names a form happened to send back.
-     */
-    if (payload.flow === REGISTER.id) {
-      const v = parsed.values as RegisterValues
-      // Same exclusion the form was built with: present-by-default applies to
-      // the unresolved roster only, or a family's earlier cancellation is
-      // overwritten by a blanket "everyone else came" (F-I).
-      const roster = await modelQuery(
-        session,
-        `select player_id from app.session_roster r where session_id = ${uid(v.session_id)}
-            and not exists (select 1 from attendance a
-                             where a.session_id = r.session_id and a.player_id = r.player_id)`,
-      )
-      if (roster.error || !roster.rows.length) {
-        outcomes.push(
-          await composeAndSend(session, {
-            toContactId: identity.contact.id,
-            body: "I couldn't read that roster, so I haven't marked anything. Tell me who missed it and I'll do it here.",
-          }),
-        )
-        return { outcomes, summary: 'register: roster unreadable' }
-      }
-      const absent = new Set(v.absent)
-      const late = new Set(v.late)
-      const entries = (roster.rows as { player_id: string }[]).map((r) => {
-        const id = String(r.player_id)
-        return {
-          player_id: id,
-          // Ticked in both boxes means they turned up late, which is the reading that
-          // does not lose the session: `absent` bills without coaching, `late` does both.
-          status: late.has(id) ? 'late' : absent.has(id) ? 'absent' : 'present',
-          ...(v.note && !absent.has(id) ? { note: v.note } : {}),
-        }
-      })
-      const res = await executePlan(
-        session,
-        [
-          {
-            operation: {
-              name: 'mark_attendance' as OperationName,
-              args: { session_id: v.session_id, entries },
-            },
-          } as PlanStep,
-        ],
-        'Register, from the form',
-        audienceFor(identity),
-      )
-      outcomes.push(...res.outcomes)
-      const failed = res.ok ? null : (res.error ?? 'something went wrong')
-      if (failed) {
-        outcomes.push(
-          await composeAndSend(session, {
-            toContactId: identity.contact.id,
-            body: `That register didn't save — ${failed}. Nothing was marked.`,
-          }),
-        )
-        return { outcomes, summary: `register failed: ${failed}` }
-      }
-      const inCount = entries.filter((e) => e.status !== 'absent').length
-      /**
-       * The money question, asked at the register rather than discovered on the bill.
-       *
-       * An absence with no cancellation on record is the single most common true
-       * billing dispute in this product (`money-dispute.md`), and it is always
-       * discovered a month later, by a parent, in an argument. The coach knows the
-       * answer right now — somebody told them at the court — and the answer is one tap.
-       * Asking here turns next month's dispute into tonight's correction.
-       */
-      const unexplained = entries.filter((e) => e.status === 'absent')
-      outcomes.push(
-        await composeAndSend(session, {
-          toContactId: identity.contact.id,
-          body:
-            `Marked — ${inCount} in, ${unexplained.length} out.`
-            + (unexplained.length
-              ? `\n\nOne thing before I bill it: ${unexplained.length === 1 ? 'that absence has' : 'those absences have'} `
-                + 'no cancellation on record. Did anyone tell you in advance?'
-              : ''),
-          buttons: unexplained.length
-            ? [
-                {
-                  title: 'Told in advance',
-                  action: {
-                    kind: 'operation' as const,
-                    op: 'mark_attendance' as OperationName,
-                    args: {
-                      session_id: v.session_id,
-                      retro_timely_player_ids: unexplained.map((e) => e.player_id),
-                    },
-                  },
-                },
-                { title: 'No, just no-shows', action: { kind: 'noop', ack: 'Noted — charged as absent.' } },
-              ]
-            : undefined,
-        }),
-      )
-      return { outcomes, summary: `register marked: ${inCount} in, ${unexplained.length} out` }
-    }
-
-    // Deliberately loud rather than silent if a form is ever added without a consumer —
-    // which is the exact shape that produced the recipe feature.
-    return { outcomes, summary: `form ${payload.flow} has no handler` }
-  }
 
   if (payload.kind === 'noop') {
     outcomes.push(await composeAndSend(session, { toContactId: identity.contact.id, body: payload.ack }))
@@ -746,47 +443,6 @@ async function executeAction(
   if (payload.kind === 'menu') {
     outcomes.push(...(await sendMenu(session, identity, payload.menu)))
     return { outcomes, summary: `menu:${payload.menu}` }
-  }
-
-  /**
-   * A button that sends a form.
-   *
-   * Prefilled at TAP time, not at mint time, which is the whole reason this is an
-   * action rather than a Flow attached to the original message. `[Set up my classes]`
-   * tapped tomorrow opens a form showing what is true tomorrow, and `[Take register]`
-   * tapped after the class opens tonight's roster rather than the one that existed
-   * when the reminder was composed.
-   *
-   * The body says what the form is and, always, that they can say the same thing here
-   * instead. A form is an offer and never a toll — the rule now lives on the `reply`
-   * declaration's `form` parameter, where the model decodes against it rather than
-   * reading it as prose 40k characters upstream — and the one place it is most easily
-   * broken is the runtime's own copy, which no model reviews.
-   */
-  if (payload.kind === 'form') {
-    const built = await formFor(session, identity, payload.form as FormId, {
-      toContactId: identity.contact.id,
-      sessionId: payload.sessionId,
-      prefill: payload.prefill,
-    })
-    if ('error' in built) {
-      outcomes.push(
-        await composeAndSend(session, {
-          toContactId: identity.contact.id,
-          body: `I couldn't open that form — ${built.error}. Tell me here instead and I'll do it the same way.`,
-        }),
-      )
-      return { outcomes, summary: `form ${payload.form} refused: ${built.error}` }
-    }
-    outcomes.push(
-      await composeAndSend(session, {
-        toContactId: identity.contact.id,
-        preLaunchOk: true,
-        body: FORM_INTRO[payload.form as FormId] ?? 'Here it is.',
-        flow: built,
-      }),
-    )
-    return { outcomes, summary: `form ${payload.form}` }
   }
 
   if (payload.kind === 'reply') {

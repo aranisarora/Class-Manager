@@ -35,8 +35,6 @@ export const EXTRA_LIMITS = {
   listRowDescriptionChars: 72,
   listSections: 10,
   templateParamChars: 1024,
-  /** Cloud API: `flow_cta` is capped at 20 characters and rejects emoji outright. */
-  flowCtaChars: 20,
 } as const
 
 export type Button = { actionId: string; title: string }
@@ -83,55 +81,25 @@ export function isForwardableLink(url: string): boolean {
 }
 
 /**
- * A WhatsApp Flow, as it rides on an interactive message.
+ * THERE IS NO FORM ON THIS SURFACE, AND THAT IS DELIBERATE (§14.6).
  *
- * A Flow is the one affordance on this surface that collects SEVERAL fields in one
- * exchange. Everything else the product can send asks one question per message, and
- * onboarding is six questions — the shape of the business, where they play, the
- * hours, the cancellation window, the UPI handle — which is six round trips through
- * a chat window before anybody has typed a single class.
+ * A `FlowCta` used to live here: a WhatsApp Flow riding on an interactive message,
+ * carrying a published artifact id, an entry screen and a bag of prefill. It is gone.
+ * A Flow collects several fields in one exchange, which is genuinely fewer round
+ * trips — and it buys that by fixing every question, and the order of every question,
+ * at publish time. **A form cannot ask what it was not built to ask.** It cannot skip
+ * the field it can already see, follow the answer that turned out to matter, or take
+ * the correction typed a second after Save. The register is the case that decided it:
+ * an artifact renders whatever roster is passed in, and still cannot handle *"Aarav
+ * left at half time and Meera's dad says she's out all month"* — a sentence a
+ * conversation absorbs without being redesigned.
  *
- * `DRIVING.md` recorded "no WhatsApp Flows" as a standing decision, rejected for four
- * costs: an RSA keypair, an encrypted data-exchange endpoint, published versioned
- * artifacts, and a Meta review cycle per change. **Three of those four apply only to
- * endpoint-powered Flows.** Meta's own guidance is that a Flow should avoid an
- * endpoint when it does not need one, and a *static* Flow — every screen and every
- * value known when the message is sent — needs no keypair, no `/data` endpoint, no
- * AES-GCM, and no health check. What remains true is that the Flow JSON is a
- * versioned artifact published through the Flows API and immutable once published.
- * That is the one honest cost, and it is the cost of any declarative artifact.
- *
- * `flow_action` is always `navigate` here, which is what makes it static.
- *
- * **`flowToken` is an `action` row id**, which is the whole reason this fits the
- * product rather than sitting beside it. §2.2 is "mint once, replay verbatim": a
- * button carries an action authored at compose time, and a tap loads it, checks
- * expiry, checks single consumption, checks the tapping contact is the one it was
- * minted for, and executes it with no model call. A Flow submission is exactly that
- * with the person's answers attached — so it reuses every one of those guarantees
- * instead of inventing a parallel session concept with none of them.
+ * So the affordances on this surface are the ones that compose with prose: buttons, a
+ * list, and the message body. Anything form-shaped is a **chat ladder** — asked in
+ * order, one question per message, skipping what is already known and stopping as
+ * soon as it has enough. Nothing here needs a `flow_cta` limit, a screen name or a
+ * publish cycle, because nothing here is a published artifact.
  */
-export type FlowCta = {
-  /** The call to action on the bubble. Cloud API: <= 20 chars, and no emoji. */
-  cta: string
-  /** The published Flow's id. */
-  flowId: string
-  /** Opaque session token. Here: the `action` row this submission will replay. */
-  flowToken: string
-  /** The screen to open. Required whenever `flow_action` is `navigate`. */
-  screen: string
-  /**
-   * Prefill for the first screen, reachable in the Flow JSON as `${data.key}`.
-   *
-   * Not just scalars. A `data-source` may itself be a `${data.x}` reference, which is
-   * what lets one published register render tonight's twelve names and next week's
-   * nine — the alternative being a separate artifact per headcount. So a value here
-   * can be a list of `{id, title}` options, and the wire carries it as JSON.
-   */
-  data?: Record<string, unknown>
-  /** `draft` sends only work in test mode; anything real is `published`. */
-  mode?: 'published' | 'draft'
-}
 
 export type OutboundMessage = {
   toContactId: string
@@ -142,8 +110,6 @@ export type OutboundMessage = {
   list?: { buttonText: string; sections: ListSection[] }
   /** §14.6 — a link, as a button. Never in the body. Exclusive with buttons and list. */
   link?: LinkButton
-  /** A form, in the chat. Exclusive with buttons, list and link — the wire has one action. */
-  flow?: FlowCta
   media?: { url: string; kind: 'image' | 'audio' | 'document'; filename?: string }
   catalogId?: CatalogId | null // §12 — null for a composed message (§14.4)
   templateName?: TemplateName | null
@@ -342,10 +308,6 @@ export function msgError(code: string, message: string, userMessage?: string): A
 
 const printable = (s: string): number => Array.from(s).length
 
-/** Pictographs and the regional-indicator pairs that make flags. Deliberately narrow:
- *  this decides whether a send is refused, so it must not fire on ordinary punctuation. */
-const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{2190}-\u{21FF}]/u
-
 /**
  * Every way this message would fail to render on the real wire, as human sentences.
  * Empty array = renderable. Never mutates, never truncates.
@@ -356,7 +318,7 @@ export function validateOutbound(msg: OutboundMessage): string[] {
   if (!msg.toContactId) bad.push('toContactId is required')
   if (!msg.idempotencyKey) bad.push('idempotencyKey is required on every outbound (§6.5)')
 
-  const interactive = Boolean(msg.buttons?.length || msg.list || msg.link || msg.flow)
+  const interactive = Boolean(msg.buttons?.length || msg.list || msg.link)
   const bodyLimit = interactive ? LIMITS.bodyChars : LIMITS.textChars
   const bodyLen = printable(msg.body ?? '')
 
@@ -376,30 +338,6 @@ export function validateOutbound(msg: OutboundMessage): string[] {
 
   if (msg.buttons?.length && msg.list) {
     bad.push('a message carries buttons or a list, never both')
-  }
-
-  if (msg.flow) {
-    // The same exclusivity `cta_url` has, for the same reason: one interactive
-    // message carries one action, and the Flow is it.
-    if (msg.buttons?.length) bad.push('a message carries a flow or reply buttons, never both')
-    if (msg.list) bad.push('a message carries a flow or a list, never both')
-    if (msg.link) bad.push('a message carries a flow or a link, never both')
-
-    const cta = printable(msg.flow.cta ?? '')
-    if (cta === 0) bad.push('the flow has no call to action')
-    if (cta > EXTRA_LIMITS.flowCtaChars) {
-      bad.push(`flow cta is ${cta} chars, limit ${EXTRA_LIMITS.flowCtaChars}`)
-    }
-    // Meta rejects a `flow_cta` containing emoji, and it rejects it at SEND time —
-    // which on this surface would be a message that simply never arrives. Caught
-    // here so it is a compose bug with a sentence, not a silence on a phone.
-    if (EMOJI.test(msg.flow.cta ?? '')) bad.push('flow cta contains an emoji, which the wire rejects')
-
-    if (!msg.flow.flowId) bad.push('the flow has no flow id')
-    if (!msg.flow.flowToken) bad.push('the flow has no flow token — nothing could match the reply to it')
-    // Required precisely because `flow_action` is `navigate`: a static flow has to
-    // say which screen it opens on, and Meta refuses the send without it.
-    if (!msg.flow.screen) bad.push('a navigate flow must name the screen it opens on')
   }
 
   if (msg.link) {

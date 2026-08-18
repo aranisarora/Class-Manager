@@ -319,11 +319,6 @@ function asTemplateMessage(
     header: undefined,
     footer: undefined,
     list: undefined,
-    // A template's action is fixed at approval, so a Flow cannot ride one out of window
-    // any more than a `cta_url` can. Left set, the stored row still advertised a form
-    // the wire was not carrying, and the minted `flow_token` reached nobody — a live
-    // action row for a control that was never printed.
-    flow: undefined,
     // A template's buttons are fixed at approval, so a `cta_url` cannot ride one out of
     // window. The link is not lost — the template is a window-opener (§14.7), and the
     // rich interaction happens in-window, for free, after one tap.
@@ -361,11 +356,10 @@ function messagePayload(msg: OutboundMessage, extra: Record<string, unknown>): s
     footer: msg.footer ?? null,
     buttons: msg.buttons ?? null,
     list: msg.list ?? null,
-    link: msg.link ?? null,
     // The emulator's panes, the thread endpoint and the event log all read this row —
     // it is the store — so an affordance missing here is an affordance nobody can see
     // or tap, however correctly it went over the wire.
-    flow: msg.flow ?? null,
+    link: msg.link ?? null,
     media: msg.media ?? null,
     subject_person_ids: msg.subjectPersonIds ?? [],
     is_confirmation_request: Boolean(msg.isConfirmationRequest),
@@ -670,8 +664,8 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
 
     // ── Gate 4 · §2.6 ─────────────────────────────────────────────────────────
     // "Nothing is sent during onboarding until the admin says go. Building the roster
-    // messages nobody." Flows that legitimately message before launch — the admin's own
-    // setup conversation, the coach invite read-back — set `preLaunchOk`.
+    // messages nobody." The journeys that legitimately message before launch — the admin's
+    // own setup conversation, the coach invite read-back — set `preLaunchOk`.
     //
     // The admin is that first exception by definition, not by remembering a flag. Leaving
     // it to callers meant the owner of a brand-new academy could not be answered at all:

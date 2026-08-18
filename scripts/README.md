@@ -59,8 +59,6 @@ prose.
 | `check-rls-doc.ts` | Does the permission matrix still describe the real policies? |
 | `check-world.ts` | Is the driven world internally consistent? |
 | `check-clash.ts` | Double-booking detection, against the real tables. |
-| `check-flows.mts` | Would Meta publish every shipped Flow artifact? |
-| `check-forms.mts` | Does an answer somebody gave become the write they meant? |
 | `check-lint.mts` | Does the lint pass leave a correct message alone? |
 | `check-repair.mts` | Does anything machine-shaped survive to a person's screen? |
 | `check-steps.mts` | Does a rejected plan tell the model enough to fix it? |

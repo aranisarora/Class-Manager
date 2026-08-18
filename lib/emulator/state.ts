@@ -88,37 +88,6 @@ export type EmuListRow = {
 
 export type EmuListSection = { title: string; rows: EmuListRow[] }
 
-/**
- * A WhatsApp Flow riding on an outbound message — a form the person fills in inside the chat.
- *
- * The action fields are not decoration. `flowToken` IS an `action` row id (§2.2, "mint once,
- * replay verbatim"), so a Flow inherits expiry, single consumption and the minted-for-contact
- * check from the same table a button tap uses. A token that has been spent is a form that can
- * no longer be submitted, and that is the property this surface most needs to make visible —
- * without it a dead form looks exactly like a live one right up until the submission bounces.
- */
-export type EmuFlow = {
-  cta: string
-  flowId: string
-  flowToken: string
-  /** The screen `flow_action: 'navigate'` opens on. */
-  screen: string
-  /**
-   * Prefill, reachable inside the Flow JSON as `${data.key}`.
-   *
-   * `unknown`, not `string`, because a `data-source` may itself be a `${data.x}`
-   * reference — which is how one published register renders any roster size. Narrowing
-   * this to strings would have made the emulator unable to draw the shape the wire
-   * actually carries, and §17's rule is that the emulator is the other implementation
-   * of the same wire rather than a picture of it.
-   */
-  data: Record<string, unknown>
-  mode: string
-  consumedAt: string | null
-  expiresAt: string | null
-  mintedFor: string | null
-}
-
 export type EmuMedia = { url: string; kind: 'image' | 'audio' | 'document' | 'video'; filename: string | null }
 
 export type EmuMessage = {
@@ -132,8 +101,6 @@ export type EmuMessage = {
   list: { buttonText: string; sections: EmuListSection[] } | null
   /** §14.6 — the Cloud API's `cta_url`: a body plus one button that opens a URL. */
   link: { title: string; url: string } | null
-  /** A body plus one button that opens a form. Exclusive with buttons, list and link. */
-  flow: EmuFlow | null
   media: EmuMedia | null
   catalogId: string | null
   templateName: string | null
@@ -553,46 +520,6 @@ function normalizeLink(raw: Raw | null | undefined): EmuMessage['link'] {
   return { title: str(pick(raw, 'title', 'display_text', 'displayText')) ?? 'Open', url }
 }
 
-/**
- * `payload->'flow'` is written by `send.ts` in `FlowCta`'s own shape; the snake_case spellings
- * are the wire's, so a row copied straight off a webhook normalises too.
- *
- * The action index is folded in for the same reason `normalizeButton` folds it in: the token is
- * an action id, and whether that row is still live is not on the message payload — it is either
- * on an action row the server served or derivable from an inbound reply that already spent it.
- */
-function normalizeFlow(raw: Raw | null | undefined, index: ActionIndex): EmuMessage['flow'] {
-  if (!raw) return null
-  const flowId = str(pick(raw, 'flowId', 'flow_id'))
-  if (!flowId) return null
-  const flowToken = str(pick(raw, 'flowToken', 'flow_token')) ?? ''
-  /**
-   * Carried as it stands, not flattened to strings.
-   *
-   * This used to run every value through `str()` and drop anything that would not
-   * coerce — which silently deleted exactly the values that matter most: a
-   * `data-source` passed as a list of `{id,title}` options. The register's whole
-   * roster arrived as `undefined`, the sheet drew two empty checkbox groups, and the
-   * form was submittable with nobody on it. A normaliser that discards the shape it
-   * does not recognise is worse than one that refuses it, because the result still
-   * renders.
-   */
-  const dataRaw = (pick(raw, 'data') as Raw) ?? {}
-  const data: Record<string, unknown> = { ...dataRaw }
-  const meta = index[flowToken]
-  return {
-    cta: str(pick(raw, 'cta', 'flow_cta', 'flowCta')) ?? '',
-    flowId,
-    flowToken,
-    screen: str(pick(raw, 'screen')) ?? '',
-    data,
-    mode: str(pick(raw, 'mode')) ?? 'published',
-    consumedAt: iso(pick(raw, 'consumed_at', 'consumedAt')) ?? meta?.consumedAt ?? null,
-    expiresAt: iso(pick(raw, 'expires_at', 'expiresAt')) ?? meta?.expiresAt ?? null,
-    mintedFor: str(pick(raw, 'minted_for_contact_id', 'mintedForContactId')) ?? meta?.mintedFor ?? null,
-  }
-}
-
 function deriveStatus(raw: Raw, ts: { sentAt: string | null; deliveredAt: string | null; readAt: string | null }): MessageStatus {
   const explicit = (str(pick(raw, 'status')) ?? '').toLowerCase()
   if (explicit === 'failed') return 'failed'
@@ -661,7 +588,6 @@ export function normalizeMessage(raw: Raw, index: ActionIndex, fallbackContactId
     buttons,
     list: normalizeList((pick(raw, 'list') as Raw) ?? (pick(payload, 'list') as Raw), localIndex),
     link: normalizeLink((pick(raw, 'link') as Raw) ?? (pick(payload, 'link') as Raw)),
-    flow: normalizeFlow((pick(raw, 'flow') as Raw) ?? (pick(payload, 'flow') as Raw), localIndex),
     media,
     catalogId: str(pick(raw, 'catalog_id', 'catalogId')),
     templateName: str(pick(raw, 'template_name', 'templateName')),
@@ -1009,12 +935,10 @@ export function windowState(contact: EmuContact | null | undefined, nowIso: stri
   return { open: left > 0, msLeft: Math.max(0, left) }
 }
 
-const FLOW_CTA_EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{2190}-\u{21FF}]/u
-
 /** Structural honesty (§17): the emulator enforces the real Cloud API's limits. */
 export function limitViolations(m: EmuMessage): string[] {
   const out: string[] = []
-  const interactive = m.buttons.length > 0 || !!m.list || !!m.link || !!m.flow
+  const interactive = m.buttons.length > 0 || !!m.list || !!m.link
   const cap = interactive ? LIMITS.bodyChars : LIMITS.textChars
   if (m.body.length > cap) out.push(`body ${m.body.length}/${cap}`)
   // §14.6 — a link is a button. A url sitting in the text is the failure this whole
@@ -1027,25 +951,6 @@ export function limitViolations(m: EmuMessage): string[] {
     if (m.list) out.push('a link and a list cannot share a message')
     if (m.link.title.length > LIMITS.buttonTitleChars)
       out.push(`link title ${m.link.title.length}/${LIMITS.buttonTitleChars}`)
-  }
-  if (m.flow) {
-    // One interactive message carries one action, and a Flow is it — the same exclusivity
-    // `cta_url` has, checked here so the emulator refuses to draw what the wire would refuse
-    // to carry rather than showing a form and a row of buttons that could never coexist.
-    if (m.buttons.length) out.push('a flow and reply buttons cannot share a message')
-    if (m.list) out.push('a flow and a list cannot share a message')
-    if (m.link) out.push('a flow and a link cannot share a message')
-    // Code points, not UTF-16 units, because that is what `validateOutbound` counts and the
-    // two answers differ on exactly the characters most likely to be near the limit.
-    const cta = Array.from(m.flow.cta).length
-    if (cta === 0) out.push('the flow has no call to action')
-    if (cta > EXTRA_LIMITS.flowCtaChars) out.push(`flow cta ${cta}/${EXTRA_LIMITS.flowCtaChars}`)
-    // Meta rejects an emoji in `flow_cta` at SEND time, so on a handset it is not a broken
-    // button — it is a message that never arrives. This is a copy of `types.ts`'s own regex
-    // because that constant is module-private there and `lib/messaging/` is not this module's
-    // to change; keep the two byte-identical.
-    if (FLOW_CTA_EMOJI.test(m.flow.cta)) out.push('flow cta contains an emoji, which the wire rejects')
-    if (!m.flow.screen) out.push('a navigate flow must name the screen it opens on')
   }
   if (m.buttons.length > LIMITS.buttons) out.push(`${m.buttons.length} buttons / max ${LIMITS.buttons}`)
   for (const b of m.buttons) {
@@ -1249,7 +1154,6 @@ function echo(contactId: string, body: string, nowIso: string): EmuMessage {
     buttons: [],
     list: null,
     link: null,
-    flow: null,
     media: null,
     catalogId: null,
     templateName: null,
@@ -1406,12 +1310,6 @@ function reducer(state: EmulatorState, action: Action): EmulatorState {
                     })),
                   }
                 : null,
-              // A submitted form dies the instant it is submitted, exactly as a tapped button
-              // does — the token is the same single-use action row underneath.
-              flow:
-                m.flow && m.flow.flowToken === action.actionId && !m.flow.consumedAt
-                  ? { ...m.flow, consumedAt: action.atIso }
-                  : m.flow,
             })),
           },
         },
@@ -1582,17 +1480,6 @@ export type EmulatorActions = {
     caption?: string,
   ) => Promise<void>
   tapAction: (contactId: string, actionId: string, label?: string) => Promise<void>
-  /**
-   * A completed Flow. `responseJson` is the literal `nfm_reply.response_json` — a JSON
-   * **string** carrying `flow_token` beside the form's own fields — because that is what the
-   * real webhook hands the server, and an emulator that posted a tidy object would be testing
-   * a code path production never runs.
-   *
-   * `summary` is what the person sees in their own thread afterwards. It rides as the message
-   * text for the same reason the wire's `nfm_reply.body` does: `message` is the emulator's
-   * store, and a submission with no body would render as an empty bubble.
-   */
-  submitFlow: (contactId: string, flowToken: string, responseJson: string, summary: string) => Promise<void>
   /**
    * §2.4 has four rungs and the UI had one control, wired to the top of the ladder: every
    * hand-driven message jumped `sent → read` and `delivered` was unreachable, so the one
@@ -2065,18 +1952,8 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
           // The label goes with the tap, exactly as `button_reply.title` does on the wire.
           // Without it the optimistic echo above was the only place the chosen words ever
           // existed: the refresh that followed replaced it with the stored row, which had no
-          // body at all, so the bubble a person had just filled in went blank in front of
-          // them. `submitFlow` below always sent its summary — a tap is the same event.
+          // body at all, so the bubble a person had just tapped went blank in front of them.
           await post('/api/emulator/inbound', { contactId, actionId, ...(label ? { text: label } : {}) })
-          await afterMutation(contactId)
-        }),
-
-      submitFlow: (contactId, flowToken, responseJson, summary) =>
-        withBusy(`flow:${flowToken}`, async () => {
-          const nowIso = stateRef.current.clock.nowIso
-          dispatch({ type: 'thread/consume', contactId, actionId: flowToken, atIso: nowIso })
-          dispatch({ type: 'thread/optimistic', contactId, message: echo(contactId, summary, nowIso) })
-          await post('/api/emulator/inbound', { contactId, flowResponse: responseJson, text: summary })
           await afterMutation(contactId)
         }),
 

@@ -36,7 +36,6 @@ import {
   msUntil,
   type EmuButton,
   type EmuEvent,
-  type EmuFlow,
   type EmuMessage,
   type MessageStatus,
 } from '@/lib/emulator/state'
@@ -234,56 +233,6 @@ function ActionButton({
   )
 }
 
-/**
- * The Flow's call to action, attached inside the bubble.
- *
- * Attached, not floating below it: WhatsApp draws a reply button as its own card under the
- * message and a Flow CTA as a divided strip inside it, and the difference is the whole point —
- * a reply button sends a word back, this one opens a form.
- */
-function FlowButton({
-  flow,
-  nowIso,
-  onOpen,
-  busy,
-  chrome,
-}: {
-  flow: EmuFlow
-  nowIso: string
-  onOpen: () => void
-  busy: boolean
-  chrome: boolean
-}) {
-  const reason = buttonDisabled({ ...flow, actionId: flow.flowToken }, nowIso)
-  const left = reason ? null : msUntil(flow.expiresAt, nowIso)
-  return (
-    <button
-      type="button"
-      disabled={!!reason || busy}
-      onClick={onOpen}
-      title={reason ? `flow ${reason}` : `flow ${flow.flowId} · screen ${flow.screen}`}
-      className={cx(
-        'mt-1.5 -mr-[9px] -mb-[8px] -ml-[9px] flex items-center justify-center gap-1.5 border-t px-3 py-2 text-[14px] transition-colors',
-        'w-[calc(100%+18px)]',
-        reason ? 'cursor-not-allowed line-through' : 'hover:bg-white/5',
-      )}
-      style={{
-        borderColor: 'color-mix(in srgb, var(--wa-ink) 14%, transparent)',
-        color: reason ? 'var(--wa-ink-faint)' : 'var(--wa-link)',
-      }}
-    >
-      <Icon name="copy" size={15} />
-      <span className="truncate no-underline">{flow.cta || '(no cta)'}</span>
-      {chrome && reason ? <span className="probe no-underline opacity-70">· {reason}</span> : null}
-      {chrome && left !== null ? (
-        <span className="probe no-underline opacity-55" title="how long this flow_token stays submittable">
-          · {fmtDuration(left)}
-        </span>
-      ) : null}
-    </button>
-  )
-}
-
 /** §2.4's ladder, one rung at a time. `queued` is not on the wire, so it has nothing to give. */
 function nextRung(status: MessageStatus): 'delivered' | 'read' | null {
   if (status === 'sent') return 'delivered'
@@ -301,10 +250,8 @@ export function Bubble({
   tight = false,
   onTap,
   onOpenList,
-  onOpenFlow,
   onAdvanceStatus,
   busyTap,
-  busyFlow,
 }: {
   m: EmuMessage
   tz: string
@@ -317,10 +264,8 @@ export function Bubble({
   tight?: boolean
   onTap: (actionId: string, label: string) => void
   onOpenList: (m: EmuMessage) => void
-  onOpenFlow: (m: EmuMessage) => void
   onAdvanceStatus: (messageId: string, status: 'delivered' | 'read') => void
   busyTap: (actionId: string) => boolean
-  busyFlow: (flowToken: string) => boolean
 }) {
   const [showRaw, setShowRaw] = useState(false)
   const [lightbox, setLightbox] = useState(false)
@@ -354,14 +299,13 @@ export function Bubble({
   const inWindow = m.inWindow ?? meta?.inWindow ?? (templateName ? false : null)
   const sender = m.senderPhone ?? meta?.senderPhone ?? senderFallback
   const rung = nextRung(m.status)
-  const flowState = m.flow ? buttonDisabled({ ...m.flow, actionId: m.flow.flowToken }, nowIso) : null
 
   // The contact's own messages sit right in green; the academy's arrive left in grey.
   const side: 'in' | 'out' = inbound ? 'out' : 'in'
 
   const probeChips =
     chrome &&
-    (templateName || inWindow === false || m.catalogId || m.flow || violations.length || cost !== null)
+    (templateName || inWindow === false || m.catalogId || violations.length || cost !== null)
 
   return (
     // WhatsApp packs a run from one sender to a 2px gap and opens 12px when the sender
@@ -436,10 +380,6 @@ export function Bubble({
               {m.footer}
             </div>
           ) : null}
-
-          {m.flow ? (
-            <FlowButton flow={m.flow} nowIso={nowIso} onOpen={() => onOpenFlow(m)} busy={busyFlow(m.flow.flowToken)} chrome={chrome} />
-          ) : null}
         </div>
 
         {/* reply buttons — their own cards under the message, as the wire carries them */}
@@ -512,22 +452,6 @@ export function Bubble({
                 {m.catalogId}
               </Chip>
             ) : null}
-            {m.flow ? (
-              <>
-                <Chip tone="violet" title="a WhatsApp Flow — a form inside the chat, carried by this message's one action slot">
-                  flow {m.flow.flowId}
-                </Chip>
-                <Chip tone="quiet" title="the screen flow_action: navigate opens on">
-                  {m.flow.screen || 'no screen'}
-                </Chip>
-                <Chip
-                  tone={flowState ? 'danger' : 'window'}
-                  title={`flow_token ${m.flow.flowToken || '(none)'} — an action row (§2.2): minted once, submittable once`}
-                >
-                  token {flowState ?? 'live'}
-                </Chip>
-              </>
-            ) : null}
             {violations.length ? (
               <Chip tone="danger" title={`Cloud API limits: ${violations.join(' · ')}`}>
                 LIMIT
@@ -580,23 +504,6 @@ export function Bubble({
                 {b.expiresAt ? `· ttl ${fmtStamp(b.expiresAt, tz)}` : ''}
               </div>
             ))}
-            {m.flow ? (
-              <>
-                <div className="truncate">
-                  flow · {m.flow.flowId} · screen {m.flow.screen || '(none)'} · {m.flow.mode}
-                </div>
-                <div className="truncate">
-                  flow_token · {m.flow.flowToken || '(none)'}{' '}
-                  {m.flow.consumedAt ? `· consumed ${fmtStamp(m.flow.consumedAt, tz)}` : ''}{' '}
-                  {m.flow.expiresAt ? `· ttl ${fmtStamp(m.flow.expiresAt, tz)}` : ''}
-                </div>
-                {Object.keys(m.flow.data).length ? (
-                  <div className="truncate">
-                    flow data · {Object.entries(m.flow.data).map(([k, v]) => `${k}=${v}`).join(' ')}
-                  </div>
-                ) : null}
-              </>
-            ) : null}
           </div>
         ) : null}
       </div>

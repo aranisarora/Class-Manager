@@ -42,7 +42,6 @@ import { resolveInbound } from '@/lib/identity'
 import { runTurn, type TurnOutput } from '@/lib/agent/loop'
 import { CURATE_THRESHOLD } from '@/lib/agent/memory'
 import { markStatus } from '@/lib/messaging/send'
-import { splitFlowResponse } from '@/lib/messaging/flows'
 // The 24h window rule, from the file that owns it (§14.7). This read model used to
 // inline the arithmetic against a `WINDOW_MS` of its own, in two places.
 import { isInWindowAt } from '@/lib/messaging/window'
@@ -3031,8 +3030,6 @@ export async function ingestInbound(input: {
   profileName?: string
   text?: string
   actionId?: string
-  /** The answers from a completed WhatsApp Flow. `actionId` is its `flow_token`. */
-  flowData?: Record<string, unknown>
   mediaUrl?: string
   mediaMimeType?: string
   waMessageId?: string
@@ -3110,7 +3107,6 @@ export async function ingestInbound(input: {
     contactId,
     text: input.text,
     actionId: input.actionId,
-    flowData: input.flowData,
     media: input.mediaUrl
       ? [{ url: input.mediaUrl, mimeType: guessMime(input.mediaUrl, input.mediaMimeType) }]
       : undefined,
@@ -3130,8 +3126,6 @@ export async function inboundFromContact(input: {
   actionId?: string
   mediaUrl?: string
   mediaMimeType?: string
-  /** The literal `nfm_reply.response_json` — a JSON string, as the wire delivers it. */
-  flowResponse?: string
 }): Promise<InboundResult | { ok: false; notFound: true }> {
   for (const academyId of await worldAcademyIds()) {
     const found = await withSession(svc(academyId), async (tx) => {
@@ -3146,17 +3140,12 @@ export async function inboundFromContact(input: {
     })
     if (!found) continue
 
-    // Unpacked exactly as `processChangeValue` unpacks a real webhook, so the
-    // emulator and the wire hand `ingestInbound` the same two values.
-    const { token: flowToken, data: flowData } = splitFlowResponse(input.flowResponse)
-
     return ingestInbound({
       fromPhoneE164: String(found.phone_e164),
       senderPhoneE164: String(found.sender_phone),
       profileName: (found.profile_name as string) ?? String(found.full_name),
       text: input.text,
-      actionId: input.actionId ?? flowToken,
-      flowData,
+      actionId: input.actionId,
       mediaUrl: input.mediaUrl,
       mediaMimeType: input.mediaMimeType,
       source: 'emulator',
@@ -3302,13 +3291,6 @@ async function processChangeValue(v: MetaChangeValue, part: string): Promise<str
          */
         button_reply?: { id?: string; title?: string }
         list_reply?: { id?: string; title?: string; description?: string }
-        /**
-         * A completed WhatsApp Flow. `response_json` is a JSON **string** on the
-         * wire, not an object, and it carries `flow_token` alongside the form's own
-         * fields — so the token is what matches the submission back to the `action`
-         * row that minted it, exactly as `button_reply.id` does for a tap.
-         */
-        nfm_reply?: { name?: string; body?: string; response_json?: string }
       }
       button?: { payload?: string; text?: string }
       image?: { id?: string; mime_type?: string; caption?: string }
@@ -3318,14 +3300,11 @@ async function processChangeValue(v: MetaChangeValue, part: string): Promise<str
     if (!m.from) continue
     if (onlyMessage && String(m.id) !== onlyMessage) continue
 
-    // A Flow submission is a tap that carries answers: the token IS the action id. Same
-    // unpack the emulator's inbound route uses, so the surface this is actually exercised
-    // on cannot drift from the one that reaches production.
-    const nfm = m.interactive?.nfm_reply
-    const { token: flowToken, data: flowData } = splitFlowResponse(nfm?.response_json)
-
+    // `nfm_reply` — a completed WhatsApp Flow — used to be unpacked here into a token and
+    // a bag of answers. Flows are gone (§14.6), so the interactive shapes that reach this
+    // product are the two that carry a single action id: a reply-button tap and a list pick.
     const actionId =
-      m.interactive?.button_reply?.id ?? m.interactive?.list_reply?.id ?? flowToken ?? m.button?.payload
+      m.interactive?.button_reply?.id ?? m.interactive?.list_reply?.id ?? m.button?.payload
     const media = m.image ?? m.audio ?? m.document
     // Binary media lives behind the Graph API, and no Meta call may exist outside
     // transport-cloud.ts — so the media id is carried, not fetched, here.
@@ -3344,10 +3323,8 @@ async function processChangeValue(v: MetaChangeValue, part: string): Promise<str
         m.image?.caption ??
         m.button?.text ??
         m.interactive?.button_reply?.title ??
-        m.interactive?.list_reply?.title ??
-        nfm?.body,
+        m.interactive?.list_reply?.title,
       actionId: actionId ?? undefined,
-      flowData,
       mediaUrl,
       mediaMimeType: media?.mime_type,
       waMessageId: m.id,

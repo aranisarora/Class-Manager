@@ -20,8 +20,6 @@ import { newId } from '@/lib/ids'
 import type { ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { CATALOG, type CatalogId } from '@/lib/messaging/catalog'
-import { FORM_IDS, type FormId } from '@/lib/messaging/flows'
-import { formFor } from '@/lib/messaging/forms'
 import { LIMITS, validateOutbound, type SendOutcome, type SuppressReason } from '@/lib/messaging/types'
 import { AGENT_TASK_CAP, dedupe, enqueue, liveAgentTasks, watchSubjectKey } from '@/lib/jobs'
 import { adminContactIds } from '@/lib/identity'
@@ -477,11 +475,21 @@ function resolveAction(raw: unknown, ctx: ToolCtx): { ok: true; action: any } | 
     if (typeof a.op === 'string') a = { ...a, kind: 'operation' }
     else if (a.steps !== undefined) a = { ...a, kind: 'steps' }
     else if (typeof a.text === 'string') a = { ...a, kind: 'reply' }
-    else if (typeof a.form === 'string') a = { ...a, kind: 'form' }
-    // `{screen:'setup'}` was how the web surface spelled this, and the model still
-    // reaches for it out of habit. It means the business form; say so rather than
-    // rejecting a button whose intent is unambiguous.
-    else if (typeof a.screen === 'string') a = { kind: 'form', form: a.screen === 'setup' ? 'business_setup' : a.screen }
+  }
+  // `{kind:'form', form:'register'}` and `{screen:'setup'}` are how the two surfaces
+  // that used to exist — the WhatsApp Flow and, before it, the web page — spelled a
+  // form-shaped button. Both are gone (§14.6) and the model still reaches for them out
+  // of habit. The intent is unambiguous, so mean it rather than dropping the button:
+  // what the person wanted was to be ASKED, and a `reply` is what asks them.
+  if ((a.kind === 'form' || a.kind === 'screen') && typeof (a.form ?? a.screen) === 'string') {
+    const which = String(a.form ?? a.screen)
+    const opener: Record<string, string> = {
+      business_setup: 'Set my business up',
+      setup: 'Set my business up',
+      add_class: 'Add a class',
+      register: 'Take the register',
+    }
+    a = { kind: 'reply', text: opener[which] ?? which.replace(/_/g, ' ') }
   }
   // `{kind:'replyOption', text}` — a spelling of `reply` that costs the message
   // its buttons. Measured: a model minted `[Add a coach]` and `[Add players]`
@@ -592,40 +600,6 @@ function defangedButton(stripped: string[]): string {
  * only the second: one tap, one class, no error, and an admin with no way to
  * know. A read-back that names two things has to commit two things.
  */
-/**
- * The form a `reply` asked for, resolved at the moment the message is composed.
- *
- * There used to be a second answer to "the thing I want to say is form-shaped": a
- * signed short-TTL JWT into a web page. It is gone (§15). Everything form-shaped is
- * a Flow now, which is the same fields with none of the three costs — no tap out of
- * WhatsApp, no bearer token anybody can forward, and no second rendering surface the
- * emulator has to be honest about.
- *
- * The model names the form. It never assembles one: what a submission DOES is decided
- * by the runtime on the way back in (`executeAction`), so a form can only ever reach
- * work somebody chose to put behind it. Prefill comes from the database, here, because
- * a form that overwrites what it does not show is a data-loss bug wearing a convenience
- * feature's clothes.
- *
- * Returns `{error}` for a form this person may not be sent, and null for no form asked.
- */
-async function formForReply(
-  ctx: ToolCtx,
-  args: any,
-  toContactId: string,
-): Promise<{ flow: string; data: Record<string, unknown> } | { error: string } | null> {
-  const wanted = String(args?.form ?? '').trim()
-  if (!wanted) return null
-  if (!(FORM_IDS as readonly string[]).includes(wanted)) {
-    return { error: `there is no form called "${wanted}" — they are ${FORM_IDS.join(', ')}` }
-  }
-  return await formFor(ctx.session, ctx.identity, wanted as FormId, {
-    toContactId,
-    sessionId: args?.form_session_id ? String(args.form_session_id) : undefined,
-    prefill: args?.form_prefill && typeof args.form_prefill === 'object' ? args.form_prefill : undefined,
-  })
-}
-
 /**
  * **`withFollowUps` and `withRuntimeDiffLine` are gone, and they were the two
  * best-argued edits in the product.**
@@ -940,14 +914,19 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
   {
     name: 'reply',
     description:
-      'Send a message now, to this person or to someone else, with buttons, a list, or a form. Every button carries an action minted here and replayed verbatim on tap. Offer the natural next step as a button. NEVER write a web address into the body — there is no browser in this product. ' +
+      'Send a message now, to this person or to someone else, with buttons or a list. Every button carries an action minted here and replayed verbatim on tap. Offer the natural next step as a button. NEVER write a web address into the body — there is no browser in this product, and there is no form either. ' +
       'And know your channel: prose you write in a round that calls tools reaches NOBODY — it is your notebook, not a message. What a person sees is what you pass here, or the closing text of your final round on an interactive turn — and that trailing text ships with NO buttons at all, because nothing is attached to it for you. ' +
       'So a choice you have worked out is not offered until each option is a button on a reply — options written into the body as prose or bullets cannot be tapped, and a line of [Bracketed labels] is refused rather than harvested. An option that has no operation behind it is still a button: {kind:\'reply\', text:"…"} just types those words back as their message, is always legal, and needs no arguments you do not have. ' +
       // The three restrictions the audit found the model was never told, each of
       // which it previously learned only by being refused, once per flow, forever
       // — history is rebuilt from message text, so the lesson cannot persist.
       'ONE MESSAGE PER PERSON PER TURN: a second call to the same recipient is refused, whatever it says. Whatever you learn after sending waits for their next message or rides a button on the one already in front of them. ' +
-      'BUTTONS OR A LIST, NEVER BOTH, and a form carries neither. ' +
+      'BUTTONS OR A LIST, NEVER BOTH. ' +
+      // The replacement for the three Flows this product used to send. Stated as
+      // method rather than prohibition: the model does not need to be told forms are
+      // gone, it needs to be told what to do with the nine facts onboarding wants.
+      'FORM-SHAPED WORK IS A LADDER, NOT A FORM. There is no form to attach. When something needs several facts — setting the business up, adding a class, marking a register — ASK, one message at a time, in the order that a person would say them, and never send a wall of numbered questions. Three rules make a ladder cheap instead of tedious: never ask what you can already see or safely assume (read the row first and say what you are assuming — "I have you down as Asia/Kolkata and a 24-hour cancellation notice, say if not"); take everything a single sentence gives you, because people answer three questions at once and the ladder must not re-ask what they just said; and stop the moment you have enough to do the thing, leaving the rest to be filled in when it matters. ' +
+      'Prefer one open invitation to a chain of closed ones: "tell me the timetable however it comes out — all of it in one message is fine" gets a whole week in a breath, where "what day?" gets one day and five more round trips. Read back what you understood and put the commit behind a button; a correction typed instead of tapped is normal and is cheaper than any form, because it can say the thing no form had a field for. ' +
       // What is sent is what is written. This is new, and it is the fact the model
       // most needs when reasoning about its own previous message.
       'What you write here is what they read, byte for byte — nothing downstream trims, rewrites or decorates it. The two exceptions are stated where they apply: markdown becomes WhatsApp markup, and out of window the whole body is replaced by an approved template (the result tells you when that happened). ' +
@@ -960,30 +939,38 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
           description:
             "Defaults to the person you are talking to. Pass 'admin' to address whoever runs the business — you never need to look their contact up, and from most sessions you cannot (who the admin is stays out of view by design). A proposal routed to the admin carries the change as a steps button; their tap approves it under their own permission.",
         },
-        body: {
-          type: 'string',
-          description:
-            // The one limit whose breach is silent, stated where the model is
-            // writing (F-AH). Every neighbour already declares its cap; this is
-            // the cap that decides whether the buttons survive.
-            `Plain text may run to ${LIMITS.textChars} characters, but a message carrying buttons, a list or a form is capped at ${LIMITS.bodyChars} — attaching anything tappable spends three-quarters of the room. Over ${LIMITS.bodyChars} the words still go out and EVERY BUTTON IS SILENTLY DROPPED, so a long explanation and a tap cannot ride one message: when you attach buttons, keep the body under ${LIMITS.bodyChars} characters, and cut the explanation before you cut the affordance.`,
-        },
-        header: { type: 'string' },
-        footer: { type: 'string', description: `≤ ${LIMITS.footerChars} characters` },
-        form: {
-          type: 'string',
-          enum: [...FORM_IDS],
-          description:
-            "Attach a form the person fills in without leaving the chat. 'business_setup' is the shape of the business in one screen — name, what they teach, where, how they charge, the cancellation notice, when they want their brief and their summary, where money goes; the owner's, and it is how onboarding starts rather than six questions in a row. 'add_class' is one class — name, days, times, venue, rate; pass form_prefill with whatever they have already told you, so they are correcting rather than typing. 'register' is one session's attendance and needs form_session_id: it asks who was NOT there, so a normal night is nought taps. A message with a form carries no other buttons and no list — say the alternative in words instead, because a form is always an offer and never a toll.",
-        },
-        form_session_id: { type: 'string', description: "Which session, for form:'register'." },
-        form_prefill: {
-          type: 'object',
-          description:
-            "What to fill the form in with, for form:'add_class' — any of name, days (e.g. \"mon,wed,fri\"), starts (\"18:30\"), ends (\"19:30\"), venue, rate, rate_unit. Everything you could read goes in, including the parts you are unsure of; they can see and fix them, which is cheaper than you asking.",
-        },
-        catalog_id: { type: 'string', description: 'A catalog moment id, when this is one of them.' },
-        subject_person_ids: { type: 'array', items: { type: 'string' } },
+        /**
+         * ── Declared BEFORE `body`, and that is the whole of this change ───────
+         *
+         * A decoder emits properties roughly in the order the schema lists them.
+         * `buttons` was ninth of eleven and `body` was second, so by the time the
+         * model reached the affordance it had already spent the composition on a
+         * thousand characters of prose — and an optional trailing array is the
+         * cheapest thing in the world to not emit.
+         *
+         * That is what the record shows, rather than a model that does not
+         * value buttons. Over twenty driven turns, EVERY button that appeared
+         * came from machinery forcing a confirmation — a preview, a two-tap
+         * protocol — and `{kind:'reply', text}`, the free one that needs no
+         * arguments and no operation, was minted **zero times**. Meanwhile turn 1
+         * says in its own reasoning, three separate times, *"offer buttons" /
+         * "offer next step as a button" / "the note says … offer next step as
+         * button"*, then ships a long body and ends on "Which do you want to sort
+         * first?" with nothing to tap. The intention was there and evaporated
+         * between the reasoning and the call.
+         *
+         * Not made REQUIRED, deliberately. Turns that refuse an attack, relay a
+         * child's injury, or answer "👍" are right to carry none, and forcing an
+         * explicit empty array buys compliance at the cost of friction on every
+         * reply. Order is free; a required field is not.
+         *
+         * **This is an experiment and is kept only on evidence.** PREFIX.md
+         * accepts one argument for behaviour — the same suite driven twice, one
+         * variable apart. If the count does not move, this reverts and the
+         * finding is recorded unfixed. What must NOT be built either way is a
+         * check that reads the body for talk of tapping: every pattern ever
+         * pointed at prose in this repo misfired in both directions.
+         */
         buttons: {
           type: 'array',
           maxItems: LIMITS.buttons,
@@ -994,13 +981,25 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
               action: {
                 type: 'object',
                 description:
-                  "One of: {kind:'operation',op,args} · {kind:'steps',steps,summary} · {kind:'reply',text} · {kind:'form',form} · {kind:'menu',menu} · {kind:'noop',ack}",
+                  "One of: {kind:'operation',op,args} · {kind:'steps',steps,summary} · {kind:'reply',text} · {kind:'menu',menu} · {kind:'noop',ack}",
               },
             },
             required: ['title', 'action'],
           },
         },
         list: LIST_PARAM,
+        body: {
+          type: 'string',
+          description:
+            // The one limit whose breach is silent, stated where the model is
+            // writing (F-AH). Every neighbour already declares its cap; this is
+            // the cap that decides whether the buttons survive.
+            `Plain text may run to ${LIMITS.textChars} characters, but a message carrying buttons or a list is capped at ${LIMITS.bodyChars} — attaching anything tappable spends three-quarters of the room. Over ${LIMITS.bodyChars} the words still go out and EVERY BUTTON IS SILENTLY DROPPED, so a long explanation and a tap cannot ride one message: when you attach buttons, keep the body under ${LIMITS.bodyChars} characters, and cut the explanation before you cut the affordance.`,
+        },
+        header: { type: 'string' },
+        footer: { type: 'string', description: `≤ ${LIMITS.footerChars} characters` },
+        catalog_id: { type: 'string', description: 'A catalog moment id, when this is one of them.' },
+        subject_person_ids: { type: 'array', items: { type: 'string' } },
       },
       required: ['body'],
     },
@@ -1838,29 +1837,21 @@ export async function runTool(
       }
 
       /**
-       * Everything form-shaped is a form IN THE CHAT (§14.6).
+       * A form asked for is a ladder started (§14.6).
        *
-       * Onboarding asks a new business several things before anything useful can happen,
-       * and the two ways to ask used to be both bad: a round trip per question, or one
-       * signed URL that takes somebody out of WhatsApp into a browser on a phone. A Flow
-       * is the third way — the same fields, one exchange, no browser, no login, and a
-       * response bound to this conversation rather than to whoever holds a link.
+       * `formForReply` used to stand here and resolve `args.form` into a WhatsApp Flow,
+       * prefilled from the database. Forms are gone: they fixed every question, and the
+       * order of every question, at publish time, so the one thing they could never do
+       * was follow the answer. What replaces them is asking — which costs round trips
+       * and takes the correction no field existed for.
        *
-       * Resolved before the backstops below decide the message is bare, because a form is
-       * this message's one action and nothing else may share it.
+       * The argument is still ACCEPTED rather than refused, because a model that has
+       * settled on `form:'register'` has correctly identified form-shaped work; it has
+       * only reached for a surface that no longer exists. Refusing spends the round and
+       * teaches nothing that survives the turn (history is rebuilt from message text).
+       * So the message goes as written and the result says what to do instead.
        */
-      const form = await formForReply(ctx, args, to)
-      if (form && 'error' in form) return { result: { error: form.error } }
-      if (form && (buttons?.length || args?.list)) {
-        // The same exclusivity the wire imposes. Said as a sentence the model can act on
-        // rather than discovered as a suppressed message.
-        return {
-          result: {
-            error: 'a message carries a form or reply buttons, never both — that is the wire, not a house rule',
-            hint: 'Send the form on its own; offer anything else on the message after it. Say in the body that they can tell you the same things here instead.',
-          },
-        }
-      }
+      const askedForForm = String(args?.form ?? '').trim()
 
       /**
        * `pointsAtMissingAffordance` used to stand here, refusing a message whose
@@ -2027,7 +2018,7 @@ export async function runTool(
           // `OperationName` — `String(op)` is the reader used everywhere else.
           (b.action?.kind === 'operation' && String(b.action.op) === 'commit'),
       )
-      const asksSomeoneElse = routedElsewhere && commits && !form
+      const asksSomeoneElse = routedElsewhere && commits
       /**
        * The subject is what makes it one question rather than many.
        *
@@ -2064,7 +2055,6 @@ export async function runTool(
         footer: args?.footer ? String(args.footer) : undefined,
         buttons,
         list,
-        flow: form ?? undefined,
         catalogId,
         fixed: catalogId ? CATALOG[catalogId].fixed : false,
         subjectPersonIds: Array.isArray(args?.subject_person_ids) ? args.subject_person_ids : undefined,
@@ -2146,6 +2136,21 @@ export async function runTool(
                   "not resend it. To offer the action properly next time: to commit a plan you previewed, pass " +
                   "{kind:'steps', steps:<the steps>, summary:'…'} or {kind:'operation', op:'commit', args:{handle}} with a " +
                   'handle from THIS turn. Never put a tool name (plan, commit, act, read) where an operation name belongs.',
+              }
+            : {}),
+          // Said after the send, never instead of it. The message was fine; only the
+          // attachment was imaginary, and dropping the message to say so would cost
+          // the person their answer to make a point about an argument name.
+          ...(askedForForm
+            ? {
+                no_form_attached: askedForForm,
+                note:
+                  `There is no form to attach — \`form\` does nothing and the message went out without one (§14.6). ` +
+                  `Your words arrived exactly as written. Get the rest of what "${askedForForm}" would have collected by ` +
+                  'asking for it: one question per message, in the order a person would say them, skipping anything you ' +
+                  'can already read off the row, and taking everything a single sentence gives you rather than re-asking. ' +
+                  'One open invitation ("tell me the timetable however it comes out") beats five closed ones. Read back ' +
+                  'what you understood and put the commit behind a button.',
               }
             : {}),
         },
