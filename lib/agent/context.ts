@@ -6,7 +6,7 @@
  * VARIABLE TAIL  (never cached)
  *   who this is · academy · memory hot sets · today · situation · query results
  *
- * **`PREFIX.md` at the repo root governs what may go in here.** Read it before adding
+ * **`PREFIX-RULES.md` at the repo root governs what may go in here.** Read it before adding
  * a line to any block above the boundary. It carries the admission test, the placement
  * ladder, and the graveyard of things already removed — re-adding one of those needs a
  * drive showing its absence cost something, not a hunch that the model needs telling.
@@ -100,7 +100,7 @@ You are not a notification system. You author SQL against the whole database, un
 the permissions of whoever is talking to you. You have operations whose arguments are
 already resolved for you, and where none of them fit you compose the consequence
 chain yourself, as a transaction. You can look at anything you can reach, as often as
-you like, before you decide anything.
+you like, before you say or decide anything.
 
 So you are expected to notice things nobody asked you to look for, compose messages
 nobody specified, and answer questions nobody anticipated. The structure around you
@@ -146,7 +146,7 @@ let cachedPrefix: string | null = null
  * had no principle content at all, and a platform limit filed among values is a limit
  * nobody re-reads.
  *
- * Admission test is `PREFIX.md`'s. Nothing here is derivable, and nothing here is a
+ * Admission test is `PREFIX-RULES.md`'s. Nothing here is derivable, and nothing here is a
  * recipe: the old "what earns a cold message a read" list and the staged-batch
  * outreach procedure were both cut as choreography — see the graveyard.
  */
@@ -167,11 +167,13 @@ None of this is derivable, and all of it changes what is worth attempting.
   inside it; the header, the footer, a list, a form and a link are all dropped; the
   second and third buttons are dropped; the first survives only if it does not commit
   anything, and even then its label is replaced with a generic one like "See the
-  details". Your line breaks become " · ". **You cannot tell from here whether a given
-  person's window is open**, so a carefully built message is a gamble every time it
-  goes to someone who has not written to you recently — which is the real reason to
-  prefer being messaged first, and the reason a message out of window should be plain
-  and aimed at one useful tap.
+  details". Your line breaks become " · ". **Whether a given person's window is open
+  is something you can look up** — person_directory.window_open, which is
+  contact.last_inbound_at falling inside that same 24 hours — and it is worth
+  knowing before you build, because the message worth sending into an open window
+  and the message worth sending into a shut one are not the same message. Into a
+  shut one: plain, no structure to lose, aimed at one useful tap. Somebody whose
+  window you cannot see is somebody to write for the shut case.
 - **In window, messages carry light formatting and it survives.** What you write is
   converted to WhatsApp's own markup before it goes out: \`**bold**\` and a \`##\`
   heading both become bold, \`- item\` lines become bullets, and a markdown table
@@ -199,12 +201,17 @@ None of this is derivable, and all of it changes what is worth attempting.
   re-batched, never tried with a different template; if it was a mistake, the recovery
   conversation belongs to the admin, from the admin's own number. And one block in a
   small batch is a signal about the batch, not the person — the sender number is
-  shared with other businesses, and a bad run there costs them too.`
+  shared with other businesses, and a bad run there costs them too.
+- **A read can fail, and a failed read means nothing.** A lookup that timed out, a
+  database with no connection free, a query that never finished — these happen, and
+  they say nothing about what exists and nothing about what this person may see. A
+  failed read and an empty one are opposite facts: empty means the answer is nothing,
+  failed means there is no answer yet.`
 
 /**
  * The business facts that used to live inside the behavior modules, extracted and
  * kept when the choreography was retired. The test for a line's presence here is in
- * `PREFIX.md` and it is short: it is a FACT — about money in Indian coaching
+ * `PREFIX-RULES.md` and it is short: it is a FACT — about money in Indian coaching
  * businesses, about what this product does on its own, about the people on the other
  * end — that no amount of reasoning from doctrine would produce. Anything a principle
  * regenerates was deleted; anything the schema, an operation's own declaration or the
@@ -339,7 +346,7 @@ Escalation
  * Preamble → schema → operations framing → catalog → platform → business facts →
  * doctrine. MUST be byte-identical across turns (§4.4).
  *
- * The order is deliberate and is documented in `PREFIX.md`: what the world contains
+ * The order is deliberate and is documented in `PREFIX-RULES.md`: what the world contains
  * before how to judge it, and doctrine against the boundary rather than at the top.
  *
  * Memoised on first call rather than at module load: `catalogDigest()` lives in
@@ -1043,10 +1050,38 @@ export async function variableTail(
       `This academy is the solo case — one active coach who is also the admin. Shape around it: the day and the brief are one message in one chat, there is nobody to escalate a coverage problem to, and there is no cover to offer. It is not a mode and it gates nothing.`,
     )
   }
+  /**
+   * Three branches, because there were two and the closed one was false twice.
+   *
+   * `seesMoney` is `app.sees_money()`, and it gates exactly two tables:
+   * `tally_line` and `payment` — THE FAMILIES' money. The old sentence read "do
+   * not quote a balance, A RATE or a due amount", which is wider than the thing
+   * it was describing, in both directions:
+   *
+   * - **A coach's own pay is not the families' money.** It is `pay_amount` on
+   *   their own `coach` row, and 0003 grants it on purpose ("own row INCLUDING
+   *   own pay_amount"); SCHEMA_DOC says so in two places. This line is more
+   *   specific and arrives later, so it won — and a coach asking what he is paid
+   *   was told the product could not see it, twice, once on the last day of a
+   *   month, while the same figure was read out to the owner in another thread.
+   *   Nothing here is what protects another coach's pay: the `coach` policy is
+   *   own-row-only and `coach_public` has no pay column to leak. This sentence
+   *   only decides whether a round is spent finding that out.
+   * - **What a class costs is not the families' money either.** `rate_amount`
+   *   lives on `class`, which everybody may read, and a prospect asking the price
+   *   is the moment doctrine's *name the real friction before the booking* exists
+   *   for. Told not to quote a rate, the model has been talked out of the one
+   *   number the conversation was about.
+   */
+  const familyMoneyClosed =
+    `The families' money is not visible to this person: tally lines, payments and balances never route here. ` +
+    `What a class COSTS is a different thing — rate_amount sits on the class, anybody may read it, and saying it plainly is usually the point.`
   who.push(
     id.seesMoney
       ? `Money is visible to this person: tally lines, payments and balances may be discussed.`
-      : `Money is NOT visible to this person. Tally lines, payments and balances never route here — do not quote a balance, a rate or a due amount to them.`,
+      : id.coachId
+        ? `${familyMoneyClosed} And their OWN pay is theirs to know: pay_amount and pay_unit are on their own coach row, which they may read, so what they are paid and what they have earned for work already done are answerable to them in full. Never another coach's.`
+        : `${familyMoneyClosed} Do not quote a balance or a due amount to them.`,
   )
   if (id.person.notes) who.push(`Notes on file: ${id.person.notes}`)
   // The standing states, last in this block because they outrank everything above
@@ -1054,6 +1089,33 @@ export async function variableTail(
   if (standingStates.length) {
     who.push('', ...standingStates.map((s) => `- ${s}`))
   }
+  /**
+   * The boundary of this block, said out loud — because every turn otherwise
+   * teaches the same false lesson.
+   *
+   * `standing()` queries `where contact_id = <the seat>`. So the background a
+   * turn needs arrives unasked 100% of the time for the person in front of the
+   * model and 0% of the time for anybody else, and nothing anywhere marked the
+   * edge. The seat that talks ABOUT other people — the owner — is the seat that
+   * scored lowest of the four on whether it checked the rows behind the people it
+   * was describing, which is doctrine's *work with complete information* failing
+   * for a structural reason rather than a careless one.
+   *
+   * Telling the model to go and look was not enough on its own: roles are four
+   * tables and standing is three more, and the sentence that would have sent it to
+   * `pending_request` is written INSIDE the description of `pending_request`.
+   * `person_directory` is the one place to send it, so now there is one.
+   *
+   * Unconditional, including when the list above is empty — the empty case is
+   * exactly when "nothing outstanding" is easiest to read as being about
+   * everybody.
+   */
+  who.push(
+    '',
+    `Everything in this block is about this one person. Nobody else's opt-out, mute, unanswered question or open ` +
+      `window is in it, and its absence here says nothing about them — person_directory holds the same facts for ` +
+      `anybody they mention, and reading it costs no more than the round you are already in.`,
+  )
   out.push(who.join('\n'))
 
   // --- ids, for SQL only -----------------------------------------------------
@@ -1114,9 +1176,9 @@ export async function variableTail(
       `## What existed when this turn started (as this person can see it)\n\n${whatExists}\n\n` +
         // The closing clause earns its place in an uncached block because it is the
         // one thing the prefix structurally cannot say: the prefix does not know when
-        // this text was built. "Never state a number you did not read" is doctrine
-        // rule 11 and is already cached — restating it here would be billed on every
-        // round and cached on none.
+        // this text was built. The provenance rule (doctrine's *do not assume*: every
+        // value stated comes off something in front of you this turn) is already
+        // cached — restating it here would be billed on every round and cached on none.
         `Counts and rows already read out of the database, not a plan. They are here so you never have to guess ` +
         `whether something is set up, and so an empty count is something you can act on rather than something you ` +
         `discover mid-sentence. They were read before this turn's first round — a write you have committed since ` +

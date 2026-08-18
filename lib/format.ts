@@ -135,8 +135,7 @@ export function plural(n: number, singular: string, pluralForm?: string): string
  *
  *   the UI idiom     `formatTime` above — "6:30 pm", "8 am". What the emulator,
  *                    the web screens and the spec's own prose write.
- *   the chat idiom   below — "6:30pm", "8am". Doctrine's own examples
- *                    ("tomorrow 6:30pm", "Sat 8am"), and what goes to a phone.
+ *   the chat idiom   below — "6:30pm", "8am". What goes to a phone.
  *
  * **They both existed already; what was missing was that either knew about the
  * other.** `lib/agent/lint.ts` held a second, hand-rolled date/time formatter —

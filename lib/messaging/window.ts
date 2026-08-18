@@ -13,6 +13,20 @@
  * advancing the emulator's clock past the window would change nothing (§17).
  */
 
+/**
+ * There is now a second reader of this rule, and it is deliberate:
+ * `person_directory.window_open` (migration 0036) is the same comparison in SQL,
+ * `last_inbound_at > app.now() - interval '24 hours'`. If this constant moves,
+ * that view moves with it.
+ *
+ * It exists because the prefix used to tell the model, in as many words, "you
+ * cannot tell from here whether a given person's window is open" — while the fact
+ * sat in a column the model reads all the time and this file decided it with one
+ * subtraction. That is worse than an unmentioned capability: a stale fact in the
+ * prefix denies a decision the model is perfectly able to make, and the decision
+ * it was denying is a real one, because the message worth sending into an open
+ * window and the message worth sending into a shut one are not the same message.
+ */
 export const WINDOW_MS = 24 * 60 * 60 * 1000
 
 /**

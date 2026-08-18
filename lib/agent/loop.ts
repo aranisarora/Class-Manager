@@ -1178,7 +1178,7 @@ async function modelTurn(
             role: 'user',
             content:
               'Answer them now, in plain words, using only what those results actually say. ' +
-              'No tools left to call. If the results do not answer it, say so plainly (§4.1 rule 10).\n\n' +
+              'No tools left to call. If the results do not answer it, say so plainly.\n\n' +
               'You have no tools in this round, so nothing you describe can happen. Do not say what ' +
               'you are about to do, are going to do, or will now set up — this is the last thing sent, ' +
               'and a promise here is a promise nothing keeps. And anything you say you have done must ' +

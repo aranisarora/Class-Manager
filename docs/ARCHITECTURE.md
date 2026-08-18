@@ -3,13 +3,13 @@
 The shape of the product, why it is shaped that way, and where any new thing belongs.
 
 `product-spec.md` says what the product does. `DRIVING.md` says how to find out whether it
-does it. `PREFIX.md` governs the prompt. `conversation-rules.md` holds what is currently
+does it. `PREFIX-RULES.md` governs the prompt. `conversation-rules.md` holds what is currently
 broken. **This file governs the shape** — read it before you build any capability, add any
 table, write any guard, or create any new way for a message to reach a person.
 
 Every rule here has evidence behind it. Nothing in this file is taste. Where a rule exists
 because something went wrong, the incident is named, because a rule with no record of what
-it rejected does not hold — that is PREFIX.md's founding lesson and it applies to the whole
+it rejected does not hold — that is PREFIX-RULES.md's founding lesson and it applies to the whole
 system, not just the prompt.
 
 ---
@@ -207,7 +207,7 @@ guarantees.
 plan — CRUD plus notes — is gone, because layers 0 and 1 hold its invariants (dedupe in
 the schema, collisions and fan-out in the transaction guards, materialization in the
 world) and the prefix holds its knowledge (billing rules and consequences as facts in
-`SCHEMA_DOC`, per PREFIX.md's ladder). The evidence for this is the model's own behavior:
+`SCHEMA_DOC`, per PREFIX-RULES.md's ladder). The evidence for this is the model's own behavior:
 it already routed around opaque operations and composed the rows itself, correctly, while
 the operations layer is where the wrong explanations concentrated (F-AG, F-AX, F-AY,
 F-AW, the "0 in, 0 out" ack). Two documents describing one truth always drift; the shape
@@ -286,7 +286,7 @@ did not).
 
 ## Layer 3 — context
 
-PREFIX.md governs what goes in the prompt and how to decide; it is subordinate to nothing
+PREFIX-RULES.md governs what goes in the prompt and how to decide; it is subordinate to nothing
 in this file and this file does not repeat it. The architectural rules on top of it:
 
 **Everything the model is shown is either byte-stable forever or stamped with when it was
@@ -312,7 +312,7 @@ write; curation retires what slips through.
 
 **The model is told the vacuum exists.** One fact: the business's policies are not
 written anywhere unless the owner has stated them, and an unstated policy is the owner's
-decision to make, not a gap to fill in the asker's favour. This passes PREFIX.md's
+decision to make, not a gap to fill in the asker's favour. This passes PREFIX-RULES.md's
 admission test because it is not derivable — to a model, a zero-row world reads as "no
 restriction", and it answered "yes, we take four-year-olds" and "yes, we refund unused
 weeks" from exactly that reading.
@@ -429,7 +429,7 @@ thing allows.
    an elevation → a protocol.** Layer 2. This list grows reluctantly.
 4. **A hard constraint on what the model generates → the declaration.** Layer 2, at the
    decode point.
-5. **Knowledge the model cannot derive → the prefix**, through PREFIX.md's admission
+5. **Knowledge the model cannot derive → the prefix**, through PREFIX-RULES.md's admission
    test. Layer 3.
 6. **A recurring message the world owes someone → a job keyed on a state change.**
    Layer 4.
@@ -482,7 +482,7 @@ Each has an incident behind it. They are the shapes to check any new design agai
 
 ---
 
-*This file changes the way PREFIX.md changes: by evidence. A drive that shows the shape
+*This file changes the way PREFIX-RULES.md changes: by evidence. A drive that shows the shape
 costing something is the argument; a hunch that a layer might need more is not. When a
 finding names a defect, the fix belongs in the layer whose job it is — and if you
 genuinely cannot find the layer, write the finding down unfixed rather than patching the

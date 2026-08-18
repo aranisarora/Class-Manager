@@ -46,7 +46,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
-const LEDGER = 'conversation-rules.md'
+const LEDGER = join('findings', 'conversation-rules.md')
 
 /** Where a finding might be staged. Order is cheapest-to-run first. */
 export const INSTRUMENTS = [

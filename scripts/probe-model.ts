@@ -136,6 +136,9 @@ const ONLY_PERSONA = flag('persona')
  */
 const LIMIT = Number(flag('limit', '0')) || 0
 const OUT_DIR = flag('out', join(process.cwd(), '.probe'))
+
+/** When this process started — the run's wall-clock origin, stamped into `record.json`. */
+const STARTED = new Date().toISOString()
 /**
  * Which arc to walk. `arc` is the lifecycle sweep; `f-o` is the regression suite
  * for the findings the month drive raised and the 15 Aug commits claim to have
@@ -4185,4 +4188,42 @@ if (has('child')) {
   }
   if (!all.length) console.log(c.red('no records — every child failed'))
   else report(all)
+
+  /**
+   * The record every other instrument writes, so the one reader can open this run.
+   *
+   * `scripts/report.mjs` finds a run by sorting `.probe/runs/` and opening
+   * `record.json`. This instrument wrote only `<arm>.json` and `score.md`, so its
+   * runs — the hardest suites in the repo — were the ones nobody could open in the
+   * standard reader. The conversion lives in `_record-from-probe.ts` and is shared
+   * with the CLI that backfills older runs, so a fresh record and a backfilled one
+   * are the same bytes for the same input.
+   *
+   * **Only for a single-arm run, and that is not a limitation to route around.** A
+   * thinking sweep writes one file per arm; those are different runs of the same
+   * suite against different academies, and merging them would make every count on
+   * the page the sum of two worlds. Pick one with `record-from-probe --arm`.
+   */
+  if (all.length && ARMS.length === 1) {
+    const arm = ARMS[0]!
+    const armPath = join(OUT_DIR, `${armFile(arm.model, arm.thinking)}.json`)
+    if (existsSync(armPath)) {
+      try {
+        const { toRunFromFile } = await import('./_record-from-probe')
+        const run = toRunFromFile(armPath, { suite: SUITE, model: arm.model, startedAt: STARTED })
+        const out = join(OUT_DIR, 'record.json')
+        writeFileSync(out, JSON.stringify(run, null, 2))
+        console.log(c.dim(`  ${out} — the same shape every instrument writes; npm run report opens it`))
+      } catch (e) {
+        // Never fail a completed run over its own bookkeeping: the arm file and
+        // score.md are already on disk and they are the measurement.
+        console.log(c.red(`  could not write record.json — ${(e as Error).message}`))
+      }
+    }
+  } else if (all.length && ARMS.length > 1) {
+    console.log(
+      c.dim(`  ${ARMS.length} arms — no record.json written; pick one:`) +
+        `\n  npx tsx scripts/record-from-probe.ts --run ${OUT_DIR} --arm <model>`,
+    )
+  }
 }

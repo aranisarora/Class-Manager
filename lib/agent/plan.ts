@@ -1819,7 +1819,7 @@ async function readDiffSafe(tx: Tx, ctx: SessionCtx, auditId: string): Promise<T
  * the business's own words, so the overlap rides into `buildSummary` and out
  * through every surface that already carries a summary — the preview the admin
  * taps, the receipt, and the runtime's own line under a `steps` button
- * (`withRuntimeDiffLine`). Doctrine 14 asks for the cost before the tap, and
+ * (`withRuntimeDiffLine`). Doctrine's *the cost goes before the tap* asks for it, and
  * this is the sentence that puts it there without anybody composing it.
  *
  * The same sentence in both note lists, in lockstep with `runSteps`. A coach

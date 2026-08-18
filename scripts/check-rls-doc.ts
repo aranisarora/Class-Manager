@@ -101,6 +101,13 @@ const VIEW_CLAIMS: { schema: string; name: string; invoker: boolean }[] = [
   { schema: 'public', name: 'session_coverage', invoker: true },
   { schema: 'public', name: 'uncovered_session', invoker: true },
   { schema: 'app', name: 'session_roster', invoker: true },
+  { schema: 'public', name: 'unmarked_billable_session', invoker: true },
+  { schema: 'public', name: 'session_detail', invoker: true },
+  { schema: 'public', name: 'class_roster', invoker: true },
+  { schema: 'public', name: 'account_standing', invoker: true },
+  { schema: 'public', name: 'person_directory', invoker: true },
+  // The one exception, and the block says so: every coach in the business, to
+  // anybody who asks, with no pay column on it to leak.
   { schema: 'public', name: 'coach_public', invoker: false },
 ]
 

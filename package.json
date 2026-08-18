@@ -22,10 +22,12 @@
     "check:schema-doc": "tsx scripts/check-schema-doc.ts",
     "check:rls-doc": "tsx scripts/check-rls-doc.ts",
     "check:clash": "tsx scripts/check-clash.ts",
+    "check:layout": "tsx scripts/check-layout.ts",
     "judge": "node scripts/judge.mjs",
     "report": "node scripts/report.mjs",
     "runs": "node scripts/report.mjs --list",
     "findings": "tsx scripts/_findings.ts",
+    "record:backfill": "tsx scripts/record-from-probe.ts --all",
     "verify:static": "node scripts/verify-static.mjs"
   },
   "dependencies": {

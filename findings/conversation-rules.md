@@ -1088,7 +1088,7 @@ answer is what writes pending_request* — and the permission matrix tells it th
 insert cell is `-`, nobody, including the owner. So it correctly believed the row
 was written for it and correctly believed it could not write the row itself.
 There was no third option. **A guarantee the prefix describes and the runtime did
-not provide**, which is PREFIX.md's own lesson pointed the other way.
+not provide**, which is PREFIX-RULES.md's own lesson pointed the other way.
 
 **Closed by:** derivation at the mint point, in `lib/agent/tools.ts` (the `reply`
 executor) and `lib/agent/plan.ts` (the message step). A button that COMMITS
@@ -1144,7 +1144,7 @@ send_invite_draft (coach)"* — is the model reading the declaration correctly.
 ladder, ~80 characters in the cached block, and it makes a built feature reachable.
 The catalog was telling the truth and was left alone.
 
-**The general shape is worth more than the fix.** PREFIX.md warns to look for
+**The general shape is worth more than the fix.** PREFIX-RULES.md warns to look for
 capabilities the runtime built that the prompt never mentions; this one was hiding
 behind a tool the model could already see. **A parameter with no description is a
 capability with no advertisement.**
@@ -1170,7 +1170,7 @@ a read — the admin sees the business, anybody else sees what was promised in t
 own conversation. `liveAgentTasks` already existed and was already being called on
 every `schedule` for the cap check; the rows were computed and discarded.
 
-**A prefix line came out with it** (see PREFIX.md's graveyard): *"what you have
+**A prefix line came out with it** (see PREFIX-RULES.md's graveyard): *"what you have
 scheduled is a thing to say from what you did, not to look up."*
 
 ### F-AP and F-C · re-read, not ticked

@@ -39,7 +39,8 @@
  * every round's reasoning, every message anybody received — from a turn OR from a
  * standing job — and the state of the world at the end of each day.
  */
-import { mkdir, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { loadEnvFiles, c } from './_env'
 
 loadEnvFiles()
@@ -522,7 +523,6 @@ async function report(
   q: <T = any>(s: string) => Promise<T[]>,
 ): Promise<void> {
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')
-  await mkdir('.probe/week', { recursive: true })
 
   // The world as it ended up — the only evidence that does not come from the
   // thing under test describing itself.
@@ -549,7 +549,9 @@ async function report(
    * one reader now (`scripts/report.mjs`) and it finds a run by sorting
    * `.probe/runs/`, so a week and an arc and a toolless ask are all openable the
    * same way — and a judgement written against one is written the same way as a
-   * judgement against another.
+   * judgement against another. The narrative below is this driver's own question,
+   * so it is written as `week.md` INSIDE the run directory rather than into a
+   * corner that sorted separately from the record of the same run.
    */
   const dir = await runDir('week')
   await saveRun(dir, {
@@ -706,8 +708,8 @@ async function report(
     }
   }
 
-  await writeFile(`.probe/week/${stamp}.md`, L.join('\n'))
-  console.log(c.dim(`\n  .probe/week/${stamp}.md`))
+  await writeFile(join(dir, 'week.md'), L.join('\n'))
+  console.log(c.dim(`\n  ${join(dir, 'week.md')}`))
   console.log(
     `\n  ${c.bold(`${allSql.length} statements`)} · ${c.red(`${allSql.filter((s) => s.error).length} failed`)} · ` +
       `${c.yellow(`${emptyWrites.length} empty writes`)} · ${c.bold(`₹${cost.toFixed(2)}`)}`,

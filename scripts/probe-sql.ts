@@ -68,7 +68,8 @@
  * same event as one that reached it in a single read, and no verdict can carry
  * that difference. The statements are the finding.
  */
-import { mkdir, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { loadEnvFiles, c } from './_env'
 
 loadEnvFiles()
@@ -935,28 +936,36 @@ function safeParse(s: string): Round[] {
 
 async function report(results: Result[], academyId: string): Promise<void> {
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')
-  await mkdir('.probe/sql', { recursive: true })
-  const jsonPath = `.probe/sql/${stamp}.json`
-  const mdPath = `.probe/sql/${stamp}.md`
+
+  /**
+   * One run, one directory — the ladder included.
+   *
+   * `.probe/sql/` used to be this probe's own corner, dated by its own stamp, so a
+   * ladder and the record of the same run sorted into two different places and
+   * nothing said they were the same run. The corner is gone; `ladder.json` and
+   * `ladder.md` are written INSIDE the run directory, which is the only thing that
+   * carries a run's identity.
+   */
+  const dir = await runDir('sql')
+  const jsonPath = join(dir, 'ladder.json')
+  const mdPath = join(dir, 'ladder.md')
 
   await writeFile(jsonPath, JSON.stringify({ model: env.MODEL_MAIN, academyId, results }, null, 2))
 
   /**
    * The same record every other instrument writes, so the one reader can open it.
-   *
-   * `.probe/sql/` was this probe's own corner with its own renderer, and the
-   * renderer is gone — there is one now (`scripts/report.mjs`), and it finds a run
-   * by sorting `.probe/runs/`. The suite-shaped files above are kept because the
-   * per-case ladder is genuinely this probe's own question.
+   * `scripts/report.mjs` finds a run by sorting `.probe/runs/`, and this record is
+   * what it opens. The ladder files above sit beside it because the per-case ladder
+   * is genuinely this probe's own question — but they are the same run, so they are
+   * in the same directory.
    *
    * **This probe still carries per-case `check` closures, and they are the last
    * deterministic verdicts left in the instrument.** They are deliberately NOT
    * copied into the record: the record holds evidence, and a verdict written into
    * it is a verdict the next reader cannot argue with. Judge it from JUDGING.md
-   * like anything else, and read `verdict`/`why` in the file above as one earlier
+   * like anything else, and read `verdict`/`why` in `ladder.json` as one earlier
    * reader's opinion rather than as a result.
    */
-  const dir = await runDir('sql')
   await saveRun(dir, {
     suite: 'sql',
     model: env.MODEL_MAIN,

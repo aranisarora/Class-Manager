@@ -4,10 +4,10 @@ A WhatsApp-native manager for Indian coaching businesses. The chat is the interf
 book, pay and get reminded; coaches get their day and mark attendance with taps; admins run the
 business in natural language.
 
-Built from [`product-spec.md`](./product-spec.md), which remains the authority on behavior.
-[`DRIVING.md`](./DRIVING.md) is how you drive it and find real defects — the ten roots
+Built from [`product-spec.md`](./docs/product-spec.md), which remains the authority on behavior.
+[`DRIVING.md`](./docs/DRIVING.md) is how you drive it and find real defects — the ten roots
 every failure so far has been an instance of, what to measure, and the traps that make a
-bad run look like a good one. [`PREFIX.md`](./PREFIX.md) governs what the model is told:
+bad run look like a good one. [`PREFIX-RULES.md`](./docs/PREFIX-RULES.md) governs what the model is told:
 read it before adding a line to the prompt, and read its graveyard before adding one that
 has already been removed twice.
 
@@ -101,7 +101,7 @@ Open a pane per contact from the tray, then:
 12. **Drive it from the command line** — `npm run drive` is the harness, and it posts
     to this same API. `drive say` prints the reply, the buttons and every query that turn
     ran; `drive link` reaches the web screens without waiting for the bot to offer one.
-    [`DRIVING.md`](./DRIVING.md) is the method.
+    [`DRIVING.md`](./docs/DRIVING.md) is the method.
 
 ## Checks
 
@@ -121,7 +121,7 @@ it** — with an empty world it skips its cross-role and family-privacy sections
 
 `drive evidence` prints the measurements each axis is judged on and stops — it computes no
 score, because nothing in a query knows what good looks like. The axes, the 0–10 calibration
-and where the verdict goes are [`JUDGING.md`](./JUDGING.md).
+and where the verdict goes are [`JUDGING.md`](./docs/JUDGING.md).
 
 ---
 
@@ -182,18 +182,27 @@ refuses what it can, operations carry their own consequences, and only what's le
 ## Layout
 
 ```
+CLAUDE.md                 orientation for an agent working in this repo — read first
+docs/                     the spec, the architecture, and the runbooks
+findings/                 the ledgers — what has broken, and what is still open
 lib/db.ts                 the session boundary — roles, GUCs, model queries
 lib/clock.ts              the drivable clock (app.now())
 lib/agent/                prompt layering, tools, plans, operations, the loop
 lib/doctrine.md           the rules every reply is derived from, always in context
 lib/messaging/            the catalog, templates, window, transports, the one send path
-lib/jobs/                 20 job kinds, each re-checking its own precondition
-lib/web/                  signed links, the component registry, view specs
+lib/jobs/                 the job kinds, each re-checking its own precondition
+lib/emulator/             the emulator's own server-side state
 app/emulator/             the world, tray, panes, clock, event log, faults
-app/w/[token]/            setup, the register, rendered views — no login
-supabase/migrations/      28 tables, RLS on every one
+app/api/                  the Meta webhook, the emulator API, the ops gate, the cron tick
+components/emulator/      the phone, rendered
+supabase/migrations/      the schema — RLS on every table
+scripts/                  the instruments and the checks — `scripts/README.md` indexes them
 scripts/drive.ts          the harness — talk to it, then read the tables back
 ```
+
+Every path above is asserted by `npm run check:layout`, so this block cannot quietly rot the
+way it had: it used to list `lib/web/` and `app/w/[token]/`, neither of which has existed for
+some time, and a count of tables that was five short.
 
 ## Known gaps
 
@@ -225,7 +234,7 @@ scripts/drive.ts          the harness — talk to it, then read the tables back
 - **There is no agent-simulation harness**, and the README used to claim one. Personas, a judge
   agent and diffable runs (§17, phase 12) were built and removed as over-engineered; `npm run
   drive` is the harness now, and a person driving it is the eval. `drive evidence`,
-  `npm run report` and [`JUDGING.md`](./JUDGING.md) are what turn that from an impression
+  `npm run report` and [`JUDGING.md`](./docs/JUDGING.md) are what turn that from an impression
   into a written verdict.
 - **Recipes (§14.3) were deleted, not deferred** — the table, `lib/agent/recipes.ts`, the capture
   site and the prompt fragment are gone as of `0017_drop_recipe.sql`. Capture, generalisation and

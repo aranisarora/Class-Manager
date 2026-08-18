@@ -140,7 +140,7 @@ npx tsx scripts/live.ts close                    # fold in the world, notes and 
 ```
 
 Between `window` and `endday`, drive each seat the schedule calls for. A seat reads
-[`scripts/SEAT.md`](./scripts/SEAT.md) and may run **only** these:
+[`scripts/SEAT.md`](../scripts/SEAT.md) and may run **only** these:
 
 ```bash
 npx tsx scripts/live.ts brief  <who>             # who you are, what you want, your phone
@@ -202,6 +202,6 @@ one page; this is for producing a judgement rather than reading one.
 The first live week is `.probe/runs/2026-08-17-18-07-live` — 82 conversational turns over
 seven days, judged by five readers into `judgement.json`, written up in
 `.probe/reports/2026-08-18-live-week-analysis.html`, with the findings staged in
-[`findings-live-week.md`](./findings-live-week.md).
+[`findings-live-week.md`](../findings/findings-live-week.md).
 
 ---

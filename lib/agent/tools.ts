@@ -814,7 +814,7 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
        * after two reads that only resolved ids. Rows are free; the scarce unit
        * is the round, and saying which is which is the whole fix.
        */
-      'Reads are free and never wasted — ask for everything the decision needs, including the rows around the one you came for. Breadth costs nothing. ' +
+      'Reads are free and never wasted — ask for everything the answer needs, including the rows around the one you came for and the row behind every person you are about to mention. Breadth costs nothing. ' +
       // The loop has always executed every function call in a round concurrently
       // (`for (const call of res.functionCalls)`), and nothing anywhere said so — so
       // the model asked one question per round and paid a whole prefix for each. A
@@ -964,7 +964,7 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
          * explicit empty array buys compliance at the cost of friction on every
          * reply. Order is free; a required field is not.
          *
-         * **This is an experiment and is kept only on evidence.** PREFIX.md
+         * **This is an experiment and is kept only on evidence.** PREFIX-RULES.md
          * accepts one argument for behaviour — the same suite driven twice, one
          * variable apart. If the count does not move, this reverts and the
          * finding is recorded unfixed. What must NOT be built either way is a
@@ -1698,7 +1698,7 @@ export async function runTool(
         }
       }
 
-      // Doctrine rule 1 is quiet by default, and a turn is the unit: whatever
+      // Doctrine's *quiet by default* rules here, and a turn is the unit: whatever
       // else this turn discovers goes in the NEXT message, when they have said
       // something. A first attempt that was suppressed or failed does not count —
       // that person has heard nothing, so a second try is the point.
@@ -1983,7 +1983,7 @@ export async function runTool(
        * `-`, nobody, including the owner. So it correctly believes the row is
        * written for it and correctly believes it may not write the row itself.
        * There was no third option. That is a guarantee the prefix describes and
-       * the runtime did not provide, which is PREFIX.md's own lesson: an
+       * the runtime did not provide, which is PREFIX-RULES.md's own lesson: an
        * instruction that describes a guarantee is a guarantee that does not
        * exist.
        *

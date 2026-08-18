@@ -21,7 +21,7 @@
  * and that gap survived every reading of `context.ts` — it was found by reading the
  * runtime and asking what it does that the prompt never says. So the method is:
  * inventory the runtime independently, then grep THIS artifact for each item.
- * See `PREFIX.md`.
+ * See `PREFIX-RULES.md`.
  */
 import { loadEnvFiles, c } from './_env'
 

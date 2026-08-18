@@ -2388,7 +2388,7 @@ const sendInviteDraft: OperationDef = {
    * tools besides send_invite_draft (coach)"* — a correct reading of what it had
    * been shown.
    *
-   * The general lesson is PREFIX.md's trap in the mirror: that document warns to
+   * The general lesson is PREFIX-RULES.md's trap in the mirror: that document warns to
    * look for capabilities the runtime built that the prompt never mentions, and
    * this one was hiding behind a tool the model could already see. A parameter
    * with no description is a capability with no advertisement.
