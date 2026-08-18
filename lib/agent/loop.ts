@@ -315,16 +315,10 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     }
   }
 
-  // §5 — "the bot writes facts asynchronously after a turn, never blocking a reply."
-  // This runs after everything has been sent, so nobody is waiting on it.
-  if (!error) {
-    const reflected = await reflect(session, identity, turnId, {
-      said: input.text ?? (input.actionId ? '(tapped a button)' : ''),
-      replied: replyText,
-      trace,
-    }).catch(() => null)
-    if (reflected?.length) trace.push(...reflected)
-  }
+  // §5's pass — "the bot writes facts asynchronously after a turn, never
+  // blocking a reply" — used to run here as a second model call. It is the
+  // turn's last ROUND now, inside the model loop where the schema, the tools and
+  // its own trace are still in context. See the note above the `return` there.
 
   await writeTurn({
     turnId,
@@ -1760,6 +1754,138 @@ async function modelTurn(
     text = outgoing
   }
 
+  /* ----------------------------------------------------------------------- *
+   * §5 — what the turn learned, asked as the turn's LAST ROUND.
+   *
+   * This was a second model call with its own ~300-token system prompt, no
+   * stable prefix, no schema and two tools. ARCHITECTURE.md had already deleted
+   * a component of that exact shape and written down why: *"There is no separate
+   * synthesis path — no bespoke model call, no dearer model, no toolless prompt
+   * fed pre-queried rows... As a turn it has tools, which fixes a real defect
+   * class: the old synth was spoon-fed query results it could not verify or
+   * widen."* `MODEL_SYNTH` died for that; reflection was the same shape and
+   * survived the pass.
+   *
+   * What being a round buys, in defects rather than tidiness:
+   *
+   *  - **`context_query` stops being imagination.** The separate call had never
+   *    been shown the schema and had no `read`, so naming a table after the
+   *    concept was the only move available to it — driven twice in one week,
+   *    `FROM booking` and `FROM register`, neither a table. F-AP's mint-time
+   *    check refused both and there was no round in which to recover, so both
+   *    watches were lost silently; one of them was the only thing that would
+   *    have chased a parent's session move. Here the schema is already in
+   *    context and a refusal has a round to be fixed in, like every other.
+   *  - **The slot filter is deleted rather than adjusted.** The old pass was
+   *    denied `schedule` if the main loop had CALLED it — bookkeeping that
+   *    inverted on the case that mattered, because a loop which reasoned its way
+   *    to "no second watch here" and called nothing left the slot open and got
+   *    offered the tool anyway. A round can see its own trace and its own
+   *    reasoning, so there is nothing to bookkeep.
+   *  - **Everything before it is a cache hit.** Rounds append rather than
+   *    rebuild, so this shares a byte-identical opening with the round before
+   *    it. The old call's claim to be cheaper rested on skipping a prefix that
+   *    is the discounted part.
+   *
+   * **C30's counter-evidence, kept in view.** An extra round after the reply was
+   * removed once for producing `STOP · 0 output tokens` at the cost of a full
+   * prefix. That round asked nothing; this one asks two named questions, which
+   * is the whole difference — and if a drive shows it earning nothing, it goes
+   * the same way and this comment is the record of what was tried.
+   *
+   * Nobody is waiting: the reply is already on their phone.
+   * ----------------------------------------------------------------------- */
+  if (!forcedError && (text.trim() || spoke())) {
+    try {
+      // Belt and braces. The declarations below make `reply` unreachable, and
+      // this makes the one-message-per-person guard refuse it too if that ever
+      // stops being true — the same guard the main loop uses, not a second rule.
+      toolCtx.repliedTo?.add(identity.contact.id)
+
+      messages.push({
+        role: 'user',
+        content:
+          '[The reply has gone and nobody is waiting. Two questions are left open; anything not listed ' +
+          'here was handled during the turn and must not be repeated. "Neither" is the common and correct ' +
+          'answer, and calling nothing at all is the system working.\n\n' +
+          '1. Is there a fact worth carrying? Vocabulary they use, a habit, a preference, something about ' +
+          'how this person works. Facts, not transcripts. Facts, not rows — a rate, a schedule, a balance, ' +
+          'who pays for whom: the database holds those and a memory copy of a row is a future wrong answer. ' +
+          'A fact comes from what THEY said or what a row held, NEVER from a sentence you wrote: a policy ' +
+          'invented mid-conversation and then remembered acquires the authority of one the owner stated. ' +
+          'How the business is run belongs in business_rule, stated by the owner.\n\n' +
+          '2. Did they ask you to look at something later, or did you promise to come back to something? ' +
+          'That is a `schedule`. You can see what you are already watching at the top of this conversation — ' +
+          'a second watch on the same subject replaces the first, so restating one is safe and duplicating ' +
+          'it is not possible. A promise the standing jobs already keep is not a watch: reminders, register ' +
+          'chases, briefs, the monthly bill and the dunning ladder all run without you.\n\n' +
+          `${turnState(toolCtx)}]`,
+      })
+
+      const ref = await generate({
+        system,
+        messages,
+        // The same declarations the loop uses, filtered — so they cannot drift
+        // from the ones the model has been reading all turn.
+        tools: toolDecls().filter((t) => t.name === 'remember' || t.name === 'schedule'),
+        model: env.MODEL_MAIN,
+        temperature: 0.2,
+        thinking: 'low',
+        maxOutputTokens: 2048,
+      })
+      promptTokens += ref.usage.promptTokens
+      outputTokens += ref.usage.outputTokens
+      cachedTokens += ref.usage.cachedTokens
+
+      if (typeof ref.assistant?.reasoning_content === 'string' && ref.assistant.reasoning_content.trim()) {
+        trace.push({
+          round: rounds + 1,
+          name: '(reflection)',
+          ms: ref.ms,
+          reasoning: evidence(ref.assistant.reasoning_content, REASONING_TRACE_CAP),
+        })
+      }
+
+      for (const call of ref.functionCalls.slice(0, 4)) {
+        if (call.name !== 'remember' && call.name !== 'schedule') continue
+        // The name keeps its `reflect:` prefix: `recentActions` skips these when
+        // it replays a turn's actions into the next one's tail, and a rename here
+        // would quietly start feeding bookkeeping back as context.
+        if (call.parseError) {
+          trace.push({
+            round: rounds + 1,
+            name: `reflect:${call.name}`,
+            ms: 0,
+            error: `MALFORMED_FUNCTION_CALL: ${call.parseError}`,
+          })
+          continue
+        }
+        const startedAt = Date.now()
+        try {
+          const r = await runTool(call.name, call.args, toolCtx)
+          trace.push({
+            round: rounds + 1,
+            name: `reflect:${call.name}`,
+            ms: Date.now() - startedAt,
+            args: evidence(call.args, 1000),
+            result: evidence(r.result, 800),
+          })
+        } catch (e) {
+          trace.push({
+            round: rounds + 1,
+            name: `reflect:${call.name}`,
+            ms: Date.now() - startedAt,
+            args: evidence(call.args, 1000),
+            error: e instanceof Error ? e.message : String(e),
+          })
+        }
+      }
+    } catch {
+      // Nothing here may cost a person their reply, and the reply has already
+      // been sent — so a failure is recorded by its absence and the turn ends.
+    }
+  }
+
   /**
    * R10's shadow report, on the flight recorder and nowhere else.
    *
@@ -2016,178 +2142,6 @@ async function recentActions(identity: Identity): Promise<string | undefined> {
   }
 }
 
-/* ------------------------------------------------------------------------- *
- * §5 — the pass that writes down what the turn learned
- * ------------------------------------------------------------------------- */
-
-/**
- * **The two most discretionary tools in the product had nowhere to be called from.**
- *
- * The main loop ends the turn the moment a reply lands (C30, and it was right to —
- * the extra round produced `STOP · 0 output tokens` and cost a full prefix). But the
- * variable tail tells the model, in as many words, *"write new facts after replying,
- * never instead of replying"* — a sequence the break makes structurally impossible.
- * The only surviving path was a parallel `remember` emitted in the same breath as
- * `reply`, decided with no deliberation at all. Measured over 93 driven turns: **3
- * memory facts and zero `schedule` calls, ever.**
- *
- * That is not a model that dislikes remembering. It is a slot that does not exist.
- *
- * §5 already says where it belongs — *"the bot writes facts asynchronously after a
- * turn, never blocking a reply"* — so this runs once the message is out and nobody
- * is waiting. Three properties make it cheap enough to always run:
- *
- *  - **It does not carry the stable prefix.** Deciding "is there a fact here?" needs
- *    the conversation, not the schema, the catalog or the domain facts. ~300
- *    tokens instead of ~16k, which is why this costs less than the round C30 removed.
- *  - **Two tools, so there is no tool to get wrong.** The declarations are the same
- *    objects the main loop uses, filtered, so they cannot drift.
- *  - **Silence is the expected answer** and is stated as such. Most turns contain
- *    nothing worth keeping, and a reflection pass that always finds something is a
- *    diary (§5), which is the failure this is meant to avoid.
- *
- * Failures are swallowed by the caller: nothing here may cost a person their reply.
- */
-async function reflect(
-  session: SessionCtx,
-  identity: Identity,
-  turnId: string,
-  turn: { said: string; replied: string; trace: ToolTrace[] },
-): Promise<ToolTrace[] | null> {
-  if (!turn.said.trim() && !turn.replied.trim()) return null
-
-  /**
-   * **Only offer what the turn did not already do.**
-   *
-   * Caught on the first live turn after this pass was added: the admin said "remind me
-   * on Friday to chase the fees", the main loop scheduled `admin-fees-chase-friday`,
-   * and reflection then scheduled `chase-fees-badminton-beginners` for the same thing.
-   * One request, two watches, and the person gets chased twice — a new defect created
-   * by the fix for an old one.
-   *
-   * The instructional version of this fix ("don't duplicate what you already did") is
-   * the version that fails intermittently, because it depends on the model reading its
-   * own trace correctly. The structural version cannot: if `schedule` already ran this
-   * turn, reflection is not given `schedule`. The slot exists for the tools that had
-   * nowhere to be called from, so once one has been called there is nothing left for it
-   * to fix. `dedupe_key` stops two *identical* watches; nothing stopped two differently
-   * named watches for one intent, and nothing at the schema layer could.
-   */
-  // A call that was REFUSED did not do the thing, so it does not fill the slot:
-  // a remember bounced by the placement gate ("keep the preference, drop the
-  // figure") leaves the legitimate half of the fact unstored, and reflection is
-  // exactly where the cleaned version gets its chance (review find — the old
-  // set counted refused calls as done).
-  const already = new Set(turn.trace.filter((t) => !t.error).map((t) => t.name))
-  const decls = toolDecls().filter(
-    (t) => (t.name === 'remember' || t.name === 'schedule') && !already.has(t.name),
-  )
-  if (!decls.length) return null
-
-  // Names alone cannot tell an attempt from an outcome, so a refused call
-  // reached reflection looking exactly like a thing that happened. Whether each
-  // one actually ran travels with it — the same distinction the tail's actions
-  // block makes for the main loop (F-K).
-  const did = turn.trace
-    .filter((t) => !t.name.startsWith('(') && t.name !== 'read')
-    .map((t) => (t.error ? `${t.name} (refused — it did not happen)` : t.name))
-  const at = await now(identity.academyId)
-
-  const system = `You have just finished a turn as Class Manager, the manager for ${identity.academy.name}. It is already sent; you are not talking to anybody now.
-
-Below are the only questions left open — anything not listed here was already handled during the turn and must not be repeated.
-
-"Neither" is the common and correct answer:
-
-1. **Is there a fact worth carrying?** Vocabulary they use, a habit, a preference, something about how this person works. Facts, not transcripts — "prefers voice notes" is a fact, "asked about fees" is a log line. And facts, not rows: a rate, a schedule, a venue, a phone number, who pays for whom, a balance — the database holds those, and a memory copy of a row is a future wrong answer, so if a table holds it, do not write it. One instance is never a policy: store what happened and for whom, never a rule you inferred from it. A fact that changes no future behaviour was not worth storing. Correct an existing fact by superseding it, never by writing a contradiction.
-   **A fact comes from what THEY said or what a row held — never from a sentence you wrote.** You are not shown your own reply below, and that is deliberate: a policy invented mid-conversation, then remembered, acquires the authority of memory and is indistinguishable from one the owner stated. If the only evidence for something is that you said it, there is no evidence. How the business is run belongs in \`business_rule\`, stated by the owner, and an unstated policy is theirs to decide rather than yours to record.
-2. **Did they ask you to look at something later, or is there something you said you would come back to?** "Check if she's paid by Friday", "keep an eye on Saturday", "remind me Thursday", or a promise you made in the reply. That is a \`schedule\` — it runs later as an ordinary turn under this person's own permissions, and deciding to do nothing then is fine. \`expires_at\` is required. Know what already runs without you: standing jobs remind every family before every session, chase every unmarked register, send each coach their day and the owner their brief and digest, bill the month, and chase every unpaid bill (a dunning ladder: a few spaced nudges, then it puts the bill in front of the admin — so "make sure they get a nudge about the bill" is already kept). A promise the standing machinery already keeps is not a schedule call — a watch duplicating one sends somebody the same thing twice.
-
-Do not invent work. Do not schedule a watch nobody asked for and you did not promise. If neither applies, call nothing at all and say nothing — that is the system working.
-
-Their id, for \`subject_id\`: person = ${identity.person.id}, business = ${identity.academyId}. It is ${at.toISOString()} now.`
-
-  const res = await generate({
-    system,
-    messages: [
-      {
-        role: 'user',
-        /**
-         * The reply stays, and it is labelled for the one question it may answer.
-         *
-         * It is the evidence for a PROMISE — "I'll check back Friday" is a
-         * commitment to a person and the watch is how it is kept, which is F-AO's
-         * whole finding — so removing it would close one hole by opening another.
-         * It is not evidence for a FACT, and that is where the refund invention
-         * came from: the model answered a prospect with a pro-rata rule nobody had
-         * stated, reflection read its own sentence back, and wrote it down.
-         *
-         * The prompt says so, and the write refuses it independently
-         * (`policyShapedFact`) — because a rule about how the business runs has a
-         * home now, with provenance, and it is not this one.
-         */
-        content:
-          `They said: ${turn.said || '(nothing — a tap)'}\n\n` +
-          `You replied (evidence for question 2 ONLY — a promise here is a promise to keep; ` +
-          `nothing in it is evidence for a fact, because you wrote it): ` +
-          `${turn.replied || '(nothing)'}\n\n` +
-          `What you ran this turn: ${did.length ? did.join(', ') : 'nothing'}`,
-      },
-    ],
-    tools: decls,
-    model: env.MODEL_MAIN,
-    temperature: 0.2,
-    // A pure judgement over two flat schemas — the same low the rest of the
-    // model path runs at, stated here so nobody has to chase the default.
-    thinking: 'low',
-    maxOutputTokens: 2048,
-  })
-
-  if (!res.functionCalls.length) return null
-
-  const ctx: ToolCtx = {
-    session,
-    identity,
-    turnId,
-    pendingPlans: new Map(),
-    outcomes: [],
-    // A reflection may not talk to anybody. `repliedTo` is pre-loaded with this
-    // contact so that anything which tries is refused by the same guard the main
-    // loop uses, rather than by a rule written twice.
-    repliedTo: new Set<string>([identity.contact.id]),
-  }
-
-  const out: ToolTrace[] = []
-  for (const call of res.functionCalls.slice(0, 4)) {
-    if (call.name !== 'remember' && call.name !== 'schedule') continue
-    // Nobody is waiting on a reflection, and there is no round in which to ask
-    // again — a call whose arguments did not parse is simply not made.
-    if (call.parseError) {
-      out.push({ round: 0, name: `reflect:${call.name}`, ms: 0, error: `MALFORMED_FUNCTION_CALL: ${call.parseError}` })
-      continue
-    }
-    const startedAt = Date.now()
-    try {
-      const r = await runTool(call.name, call.args, ctx)
-      out.push({
-        round: 0,
-        name: `reflect:${call.name}`,
-        ms: Date.now() - startedAt,
-        args: evidence(call.args, 1000),
-        result: evidence(r.result, 800),
-      })
-    } catch (e) {
-      out.push({
-        round: 0,
-        name: `reflect:${call.name}`,
-        ms: Date.now() - startedAt,
-        args: evidence(call.args, 1000),
-        error: e instanceof Error ? e.message : String(e),
-      })
-    }
-  }
-  return out.length ? out : null
-}
 
 /* ------------------------------------------------------------------------- *
  * §14.8 — two failed turns is an automatic trigger, not a judgement call.

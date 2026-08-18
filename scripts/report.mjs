@@ -364,13 +364,29 @@ for (const t of turns) {
     body += `<h4>What it was thinking</h4><p class="dim">No reasoning recorded on any round. If the model
     deliberated, the instrument did not see it — check the run, not the model.</p>`
   }
+  // Prose a round wrote before any tool ran. Kept apart from the reasoning
+  // because it is a different thing: a draft is a sentence the model considered
+  // SENDING, and a draft that never reached anybody is how "it knew and said it
+  // anyway" is told apart from "it never knew".
+  const drafts = rounds.filter((r) => r.drafted)
+  if (drafts.length) {
+    body += `<h4>What it drafted <span class="dim">— before any tool ran</span></h4>`
+    for (const r of drafts) {
+      body += `<div class="think"><div class="hd">round ${r.round}</div><pre>${capped(r.drafted)}</pre></div>`
+    }
+  }
 
   /* the tool calls */
   const calls = rounds.filter((r) => r.name && !String(r.name).startsWith('('))
   if (calls.length) {
     body += `<h4>What it reached for <span class="dim">— ${calls.map((r) => r.name).join(', ')}</span></h4>`
     for (const r of calls) {
-      body += `<div class="stmt"><div class="hd">round ${r.round} · <code>${esc(r.name)}</code> · ${r.ms}ms${
+      // `ms` is what the recorder wrote, and not every driver writes one. Printed
+      // only when it exists: `undefinedms` on a page of evidence reads as a
+      // measurement that was taken and lost.
+      body += `<div class="stmt"><div class="hd">round ${r.round} · <code>${esc(r.name)}</code>${
+        Number.isFinite(r.ms) ? ` · ${r.ms}ms` : ''
+      }${
         r.error ? ' · <span class="bad">error</span>' : ''
       }</div><pre>${capped(r.args)}</pre>`
       if (r.result !== undefined && r.result !== null) body += `<div class="hd">came back</div><pre>${capped(r.result)}</pre>`

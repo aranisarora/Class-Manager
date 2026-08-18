@@ -146,7 +146,12 @@ function parseSignatures(doc: string): Sig[] {
 /** `app.session_roster(…)` and bare `session_coverage(…)` mentioned as views. */
 function parseViewMentions(doc: string): { schema: string; name: string }[] {
   const out: { schema: string; name: string }[] = []
-  for (const m of doc.matchAll(/\b(app\.)?(session_roster|session_coverage|uncovered_session|coach_public)\b/g)) {
+  // A view added to SCHEMA_DOC and not to this list is checked by nothing — the
+  // list is the check, and a name missing from it passes vacuously rather than
+  // failing loudly. Add the name here in the same change that adds the view.
+  for (const m of doc.matchAll(
+    /\b(app\.)?(session_roster|session_coverage|uncovered_session|unmarked_billable_session|coach_public)\b/g,
+  )) {
     out.push({ schema: m[1] ? 'app' : 'public', name: m[2] as string })
   }
   return out

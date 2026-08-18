@@ -135,6 +135,9 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
     templateParams: spec.templateParams,
     stateKey: spec.stateKey,
     confirmation: spec.confirmation,
+    // The same TTL the buttons are minted with, further down. Carried so `send`
+    // can give the pending question the lifetime of the tap that answers it.
+    actionTtlMinutes: spec.ttlMinutes ?? entry?.actionTtlMinutes,
   }
 
   // Validate the shape BEFORE minting: an unrenderable message must not leave a trail of

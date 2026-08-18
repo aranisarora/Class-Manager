@@ -1977,6 +1977,86 @@ export async function runTool(
       const untraced = traceabilityNote(body, ctx.evidence ?? [])
       if (untraced) ctx.untraced?.push({ body, found: untraced })
 
+      /**
+       * ── A question routed to somebody else is an OUTSTANDING QUESTION ────────
+       *
+       * `pending_request` is written at the wire (`send.ts`), and only when the
+       * spec says a confirmation was asked. Three callers set that flag, all of
+       * them built-in protocols — so the two-tap operations wrote the row and
+       * **nothing the model composed itself ever did.**
+       *
+       * The model cannot fix that from where it stands, and it is not for want of
+       * being told. `SCHEMA_DOC` says, above the cache boundary on every turn,
+       * that *asking a question that only one person's tap can answer is what
+       * writes pending_request*; the permission matrix says the insert cell is
+       * `-`, nobody, including the owner. So it correctly believes the row is
+       * written for it and correctly believes it may not write the row itself.
+       * There was no third option. That is a guarantee the prefix describes and
+       * the runtime did not provide, which is PREFIX.md's own lesson: an
+       * instruction that describes a guarantee is a guarantee that does not
+       * exist.
+       *
+       * **Driven, `st-client-move-session`** — the lowest-scoring turn of the
+       * stress week at 5/10, in which every individual act was right. A parent
+       * asked for a session to be moved; RLS refused, correctly; the model told
+       * her the truth and put the ask in front of the owner with a button on it.
+       * Nothing recorded that a question was outstanding, so the next turn's tail
+       * showed nothing, no expiry could fire, and five days later the session
+       * still stood while she had had two reminders and not one word about the
+       * thing she asked for.
+       *
+       * **Derived, never declared.** The alternative was a parameter the model
+       * fills in, and that makes an always-property depend on remembering — the
+       * list layer 0 exists to take off the model. The runtime already knows: it
+       * minted these buttons and it knows their action kinds. A button that
+       * COMMITS something (`steps`, or an operation whose whole job is to run a
+       * staged plan) on a message to someone OTHER than the person who raised the
+       * thing is, definitionally, a question only that person's tap can answer.
+       *
+       * **Deliberately narrow.** An `undo` on a receipt commits and is an
+       * affordance, not an ask; a reply-button offering a next step is a choice,
+       * not an outstanding question. Filling the tail with those would devalue
+       * the block that made the honest opt-out turn work. Widen on the evidence
+       * of a drive, never on tidiness.
+       */
+      const routedElsewhere = to !== ctx.identity.contact.id
+      const commits = (buttons ?? []).some(
+        (b) =>
+          b.action?.kind === 'steps' ||
+          // commit is a TOOL, not an operation, so it is absent from
+          // `OperationName` — `String(op)` is the reader used everywhere else.
+          (b.action?.kind === 'operation' && String(b.action.op) === 'commit'),
+      )
+      const asksSomeoneElse = routedElsewhere && commits && !form
+      /**
+       * The subject is what makes it one question rather than many.
+       *
+       * 0032's partial unique index is per contact per kind per subject, so this
+       * string decides whether re-routing the same request replaces the old row
+       * or stacks a second one beside it. It is built from ids — the people the
+       * message is ABOUT, falling back to the catalog moment — for the reason
+       * `send.ts` gives where it derives its own: prose would make two askings of
+       * one question look like two questions.
+       *
+       * It carries the ASKER too. This row lives on the OWNER's contact, because
+       * his tap resolves it, while the person owed the outcome is the one who
+       * raised it — and a sweep that re-asks the owner and leaves the asker in
+       * silence has rebuilt the defect one layer along.
+       */
+      const subjectIds = Array.isArray(args?.subject_person_ids)
+        ? [...args.subject_person_ids].map(String).sort()
+        : []
+      const confirmation = asksSomeoneElse
+        ? {
+            kind: 'routed_request',
+            subject: [
+              `from:${ctx.identity.contact.id}`,
+              ...(subjectIds.length ? subjectIds : catalogId ? [catalogId] : []),
+            ].join('+'),
+            question: body,
+          }
+        : undefined
+
       const outcome = await composeAndSend(ctx.session, {
         toContactId: to,
         body,
@@ -1988,6 +2068,8 @@ export async function runTool(
         catalogId,
         fixed: catalogId ? CATALOG[catalogId].fixed : false,
         subjectPersonIds: Array.isArray(args?.subject_person_ids) ? args.subject_person_ids : undefined,
+        isConfirmationRequest: asksSomeoneElse,
+        confirmation,
       })
       ctx.outcomes?.push(outcome)
       if (outcome.status === 'sent' || outcome.status === 'queued') {
@@ -2027,6 +2109,25 @@ export async function runTool(
       return {
         result: {
           status: outcome.status,
+          /**
+           * What the message that just left actually carried, as counts.
+           *
+           * Counting an array, not reading a sentence — so it is a fact about
+           * the send rather than an opinion about the prose, and it cannot
+           * misfire the way every pattern pointed at language here has. It
+           * exists because the model's only picture of its own message is its
+           * draft, and a later round reasoning about "the message in front of
+           * them" was reasoning about affordances it could not check. It also
+           * gives the flight recorder the count without the report having to
+           * derive it, which is how "6 of 20 turns carried a button" had to be
+           * counted by hand.
+           *
+           * Deliberately not advice. `tappable: 0` is a true statement about
+           * what went out; whether that was right is the model's call and the
+           * reader's, and a `hint` here would be the runtime editing a message
+           * it has already sent.
+           */
+          tappable: (buttons?.length ?? 0) + (list ? 1 : 0),
           ...('reason' in outcome ? { reason: outcome.reason } : {}),
           ...(altered.length
             ? {

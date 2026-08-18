@@ -119,10 +119,12 @@ nothing to try and nothing to learn by trying.
 What the grid cannot say:
 
 - **The runtime's own books — job, audit_entry, turn — are closed in both
-  directions.** So never answer "nothing is scheduled" or "nothing changed" from
-  one: what you have scheduled is a thing to say from what you did, not to look
-  up. Cancelling a standing reminder is not a row you edit — use drop_watch for
-  a watch, and leave the rest to the runtime, which already drops the prompts a
+  directions.** So never answer "nothing changed" from one. You do not have to
+  look up what you are WATCHING either: every live watch is listed for you at
+  the top of this conversation, with the subject it is filed under, so a watch
+  you already hold is a thing you can see rather than a thing you remember.
+  Cancelling a standing reminder is not a row you edit — use drop_watch for a
+  watch, and leave the rest to the runtime, which already drops the prompts a
   cancellation makes moot.
 - **Each read-only table has the tool that writes it.** \`remember\` writes
   memory_fact (a correction passes supersedes — do not compose the INSERT
@@ -385,12 +387,24 @@ It is a property of the session, which is why a coach dropping out while others
 remain assigned changes nothing it returns.
 
 Views, and **their names are exactly as written here.** The roster view is the
-only one under the app schema; these two are unqualified, and prefixing them
+only one under the app schema; these three are unqualified, and prefixing them
 with app. is an error rather than a near-miss:
 
   session_coverage(session_id, academy_id, starts_at, status, covered,
   pending_count, confirmed_count, declined_count)
   uncovered_session — the same, filtered to scheduled, uncovered, starts_at > app.now()
+
+  unmarked_billable_session(academy_id, session_id, class_id, class_name,
+  starts_at, unmarked_players, unbilled_amount)
+  -- Finished, uncancelled sessions on a PER-SESSION rate whose register is still
+  -- unmarked, so no tally_line exists for them yet and none will until somebody
+  -- marks it. This is the answer to "is anything sitting unbilled" — ask it here
+  -- rather than deriving it, because the derivation is where it goes wrong: a
+  -- per_month, per_term or per_package class bills on the 1st (or on the pack)
+  -- whatever the register says, so an unmarked register on one of those owes
+  -- NOTHING and saying otherwise sends an owner hunting for money that was never
+  -- missing. Those rows are excluded here by construction. An empty result is a
+  -- real answer: nothing is waiting on a register.
 
 **Effective rate** lives on the enrollment and defaults from the class:
 coalesce(enrollment.rate_amount, class.rate_amount), and the same for rate_unit

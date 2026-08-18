@@ -229,18 +229,52 @@ export async function cancelSessionJobs(sessionId: string): Promise<number> {
   return rows.length
 }
 
-/** §13.1 — "the admin can ask what are you watching, get the list, and drop any of them." */
+/**
+ * §13.1 — "the admin can ask what are you watching, get the list, and drop any of them."
+ *
+ * **`subject` and `minted_by_contact_id` are selected because the TAIL renders
+ * these now, not only the cap check.** `job` is closed to the model in both
+ * directions and correctly so — it is global, with no `academy_id` column to
+ * scope a policy on — but that left the model unable to see its own commitments
+ * at all, and the prefix told it to answer from what it remembered doing
+ * instead. Carrying pending state across turns from memory is on the never-trust
+ * list for good reason: driven, the model recalled a watch correctly and said so
+ * (`st-watch-again`), and the recall was luck rather than a property.
+ *
+ * `subject` matters most. F-C's fix supersedes a second watch on the same
+ * subject, and both callers — the turn and its reflection — had to phrase that
+ * key identically while neither could see the keys it was matching against. A
+ * supersession key nobody can read is a fix with its own evidence hidden.
+ */
 export async function liveAgentTasks(academyId: string): Promise<
-  { id: string; slug: string; run_at: Date; instruction: string; expires_at: string | null }[]
+  {
+    id: string
+    slug: string
+    subject: string | null
+    run_at: Date
+    instruction: string
+    expires_at: string | null
+    minted_by_contact_id: string | null
+  }[]
 > {
   return withInfra((tx) => tx<
-    { id: string; slug: string; run_at: Date; instruction: string; expires_at: string | null }[]
+    {
+      id: string
+      slug: string
+      subject: string | null
+      run_at: Date
+      instruction: string
+      expires_at: string | null
+      minted_by_contact_id: string | null
+    }[]
   >`
     select id,
            coalesce(payload->>'slug', split_part(dedupe_key, ':', 3)) as slug,
+           payload->>'subject' as subject,
            run_at,
            coalesce(payload->>'instruction', '') as instruction,
-           payload->>'expires_at' as expires_at
+           payload->>'expires_at' as expires_at,
+           payload->>'minted_by_contact_id' as minted_by_contact_id
       from job
      where kind = 'agent_task' and status = 'pending'
        and payload->>'academy_id' = ${academyId}

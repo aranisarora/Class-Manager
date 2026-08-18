@@ -157,13 +157,65 @@ export async function planAheadFor(academyId: string): Promise<number> {
      * everything else. Above the go-live return on purpose: a question raised
      * during setup expires the same way.
      */
-    await tx`
+    const expired = await tx<
+      { id: string; contact_id: string; kind: string; subject: string; question: string }[]
+    >`
       update pending_request
          set resolved_at = app.now(), resolution = 'expired'
        where academy_id = ${academyId}
          and resolved_at is null
          and expires_at is not null
-         and expires_at < app.now()`
+         and expires_at < app.now()
+      returning id::text, contact_id::text, kind, subject, question`
+
+    /**
+     * -- and somebody hears about it -------------------------------------------
+     *
+     * Resolving the row silently is half a gate: the question stops being
+     * reported, and the person who asked still has no answer. That is the shape
+     * that produced 38 false alarms to paying families — a suppression that
+     * never resolved what it suppressed — and this sweep was one `update` away
+     * from being the same thing.
+     *
+     * **It changes nothing about the question itself, and that is deliberate.**
+     * An expired opt-out request is not an opt-out; an expired plan confirmation
+     * is not an approval. Acting on an unanswered question because it got old is
+     * the relabeled state, which is the worst failure this product has recorded.
+     * So the row resolves, and a TURN is opened — the model reads what happened
+     * and decides, including deciding to say nothing, which is the common and
+     * correct outcome for most of these.
+     *
+     * Opened for whoever is OWED the answer, which is not always who was asked.
+     * A request routed to the owner sits on the OWNER's contact because his tap
+     * resolves it, while the parent who raised it is the one left in silence —
+     * so `reply`'s derived subject carries `from:<contact>` and it is read back
+     * here. Without that the sweep would chase the owner and leave the asker
+     * exactly where turn 7 left her.
+     */
+    for (const p of expired) {
+      const from = /(?:^|\+)from:([0-9a-f-]{36})/i.exec(p.subject ?? '')?.[1]
+      const owed = from || p.contact_id
+      const slug = `expired-${p.id.slice(0, 8)}`
+      push(
+        'agent_task',
+        nowAt,
+        dedupe.agentTask(academyId, slug),
+        {
+          slug,
+          subject: `unanswered: ${p.subject}`,
+          minted_by_contact_id: owed,
+          expires_at: new Date(nowAt.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          instruction:
+            `A question put to somebody has expired without an answer, and nothing behind it has happened. ` +
+            `It was a "${p.kind}" about "${p.subject}", and what they read was: "${String(p.question ?? '').slice(0, 300)}". ` +
+            `Nothing has changed and nothing has been decided — do NOT treat the silence as a yes or a no. ` +
+            `Work out whether the thing still matters: if it does not, say nothing and stop. If it does, the ` +
+            `person who raised it is owed an answer about where it got to, and the person who never tapped may ` +
+            `need it put to them again — decide which, and whether either is worth a message at all.`,
+        },
+        true,
+      )
+    }
 
     // §2.6 — building the roster messages nobody. Everything below this line
     // talks to a human, so it waits for the admin to say go.

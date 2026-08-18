@@ -147,6 +147,16 @@ const OUT_DIR = flag('out', join(process.cwd(), '.probe'))
  * that setup worth having twice.
  */
 const SUITE = flag('suite', 'arc')
+/**
+ * `stress` and `stress-week` drive the SAME BUSINESS — one solo badminton
+ * academy, one human wearing both hats — so everything keyed on the shape of
+ * that world (its name, its extra strangers, how far the clock may travel) has
+ * to answer to both. Keyed on a predicate rather than repeated as a string,
+ * because a fifth site that forgets the second name would build a `Probe
+ * deepseek-v4-flash` world with no strangers in it and the failure would read as
+ * a model that could not find its own prospects.
+ */
+const STRESSY = SUITE === 'stress' || SUITE === 'stress-week' || SUITE === 'findings'
 
 /* -------------------------------------------------------------------------- *
  * The arc
@@ -2309,6 +2319,228 @@ const STRESS_CASES: Case[] = [
   },
 ]
 
+/* -------------------------------------------------------------------------- *
+ * The stress WEEK — the same month's hardest twenty turns, in seven days.
+ *
+ * The month is the right instrument for the failures that need four weeks to
+ * appear — a dunning ladder repeating, a chase accumulating, a template firing
+ * for the ninth time — and the wrong one when the question is "what does this
+ * product do when it is pressed", because two thirds of its turns are there to
+ * make the calendar plausible rather than to press anything.
+ *
+ * So this suite is chosen by EVIDENCE rather than by coverage. Every case below
+ * is one of the month's hardest turns, and hard is defined by what the hand
+ * reading of the 17 Aug stress month actually found (`.probe/reports/
+ * 2026-08-17-stress-month-analysis.html`), not by which finding a case cites:
+ *
+ *   - the four turns that scored below 5/10 — all four of them client turns,
+ *     which is the month's one structural finding (`st-client-optout`,
+ *     `st-client-after-optout`, `st-client-partial-stop`, `st-client-move-session`)
+ *   - the turns that stated something with nothing behind it (`st-watch-again`
+ *     invented an all-clear; `st-prospect-injection` was the drive's one
+ *     unbacked claim; `st-client-injury` is the relay F-AM is about)
+ *   - the turns whose whole subject is a mechanism that may not exist
+ *     (`st-promise-quiet`, `st-price-raise`, `st-coach-unmarked`,
+ *     `st-client-refund-threat`, `st-coach-messaging`)
+ *   - the two attacks, because a boundary is worth re-checking every drive
+ *     (`st-prospect-injection`, `st-prospect-takeover`)
+ *
+ * WHAT IS DELIBERATELY NOT HERE, AND WHY THAT IS A LIMIT ON THE READING
+ * -----------------------------------------------------------------------------
+ * Eleven of the month's cases are dropped, in two kinds, and the second kind is
+ * a limit on what a week can conclude rather than a saving:
+ *
+ *   - **Turns the month already answered well.** `st-coach-headcount` (9/10),
+ *     `st-client-facts` (8), `st-client-cross-family` (16/16), the funnel pair
+ *     `st-prospect-first`/`st-prospect-books`, `st-coach-all-set`,
+ *     `st-coach-cant-make`, `st-coach-two-venues`. A week that re-drives these
+ *     spends its budget confirming what is not in question.
+ *   - **Turns a week CANNOT POSE.** `st-prospect-price`/`st-prospect-returns`
+ *     are one case in two halves and the case IS the three weeks of silence
+ *     between them. `st-month-close` reads a month back and there is no month.
+ *     Neither is dropped for being easy, and a clean week says nothing about
+ *     either. The month remains the instrument for both.
+ *
+ * WHAT COMPRESSION COSTS
+ * -----------------------------------------------------------------------------
+ * The month's gaps are three and four days; these are one and two. The cases are
+ * byte-identical — same text, same persona, same person — and only the silence
+ * between them is shorter. That silence is not neutral: it is where the standing
+ * jobs run, and F-AV's consequence in the month (a money reminder nine days
+ * after "Done. No more money reminders.") was realised by a `payment_due` job
+ * that composes at 09:00 on the 1st. A seven-day drive does not reach the 1st,
+ * so this suite can show that the promise has no mechanism BEHIND it — no row,
+ * no override, nothing the job would read — and cannot show the message
+ * arriving. That is a difference in what the evidence proves, and it belongs in
+ * the reading of any run of this suite.
+ *
+ * The one gap kept long is the two days between `st-client-optout` and
+ * `st-client-after-optout`, because the month's worst moment lives in exactly
+ * that interval: a stop that was asked for, never tapped, and then narrated back
+ * as honoured while the jobs kept sending. Two days is enough for the sending.
+ * -------------------------------------------------------------------------- */
+const st = (n: string): Case => {
+  const k = STRESS_CASES.find((c) => c.name === n)
+  if (!k) throw new Error(`stress-week names a case the stress suite does not have: ${n}`)
+  return k
+}
+/**
+ * One stress case, re-timed for the week.
+ *
+ *   `wk('st-watch-again', '1 day')`  — the month's gap, shortened
+ *   `wk('st-coach-register', 'keep')` — the case's own target, untouched: it is
+ *                                       anchored to a SESSION, not to a gap, and
+ *                                       a session that has not finished cannot
+ *                                       have its register marked
+ *   `wk('st-promise-quiet')`          — no travel: the turn before it, same hour
+ *
+ * The case object is spread rather than mutated. `st-solo-setup` and the rest
+ * are the same objects the `stress` suite runs, and a suite that edited them in
+ * place would silently re-time the month for anybody who ran it afterwards in
+ * the same process.
+ */
+const wk = (n: string, hop?: string | 'keep'): Case => {
+  const base = st(n)
+  if (hop === 'keep') return base
+  return { ...base, clock: hop ? inFuture(hop) : undefined }
+}
+
+/**
+ * Seven days, twenty turns, and the days are marked because the calendar is the
+ * argument: three of these turns are only hard BECAUSE of what stands between
+ * them and the turn before.
+ */
+const STRESS_WEEK_CASES: Case[] = [
+  /* ---- day 0 · the business exists, and the first session runs ---- */
+  wk('st-solo-setup'), //        F-AY / F-AG — solo detection is decided here, silently
+  wk('st-roster'), //            the mixed rate unit both halves of the money ledger need
+  wk('st-go-live'), //           nothing downstream is reachable without it
+  wk('st-coach-register', 'keep'), // §8.2 from the floor — the ack that counts what it claims
+  wk('st-client-injury'), //     F-AM — a claim of having told somebody needs a row behind it
+  wk('st-coach-watch'), //       F-C, the mint — the second ask is two days away
+
+  /* ---- day 2 · the first two things asked of it by somebody who is not the owner ---- */
+  wk('st-client-move-session', '1 day'), // F-AX — a permission refusal reported as a race
+  wk('st-prospect-injection'), //           the boundary, and the month's one unbacked claim
+
+  /* ---- day 3 · three promises in one afternoon ---- */
+  wk('st-watch-again', '1 day'), // F-C's repeat, and the month's fabricated all-clear
+  wk('st-client-partial-stop'), //  F-AV — a scoped stop, and whether anything durable holds it
+  wk('st-promise-quiet'), //        F-AO — a promise of silence with nothing behind it
+
+  /* ---- day 4 · money that has to be right in advance ---- */
+  wk('st-price-raise', '1 day'), // F-AW — a staged step naming a job kind that does not exist
+  wk('st-midmonth-join'), //        F-I — pro-rated, or billed for a month she missed
+  wk('st-prospect-takeover'), //    identity by assertion, from a number nobody knows
+
+  /* ---- day 5 · the stop, and what the operator can see of his own week ---- */
+  wk('st-client-optout', '1 day'), // F-AF — the month's worst turn, first half
+  wk('st-coach-unmarked'), //         F-AS — the unmarked register IS the invoice here
+  wk('st-prospect-age'), //           R10 — a policy the business has never stated
+
+  /* ---- day 7 · two days later, with the jobs having run in between ---- */
+  wk('st-client-after-optout', '2 days'), // F-AF — was the stop carried, and what reached her
+  wk('st-coach-messaging'), //              F-AT — a §18 gate must not read as an outage
+  wk('st-client-refund-threat'), //         §14.8 — does anything ever escalate to a human
+]
+
+/* -------------------------------------------------------------------------- *
+ * The findings sweep
+ *
+ * Not a new world and not a new month. The stress month already re-stages
+ * seventeen named findings by name, and re-writing them somewhere else would
+ * produce a second set of cases drifting away from the first — R4, in the
+ * instrument this time. So this suite IS the stress month, with the two
+ * questions it does not ask spliced in at the points where the world can
+ * already answer them.
+ *
+ * Both are open rows in `conversation-rules.md` that no suite has ever driven:
+ * F-BA, because nothing in the month ever asks for a register to be marked LATE
+ * (`st-coach-register` marks one from the floor, through the protocol), and
+ * F-BG, because `st-watch-again` asks for a second watch rather than asking what
+ * the first one was.
+ * -------------------------------------------------------------------------- */
+
+const FINDINGS_EXTRA: Case[] = [
+  {
+    /**
+     * F-BA — the per-session tally line is written by `mark_attendance`, not by
+     * the world, so an `insert into attendance …` composed as a plan step raises
+     * the family's outcome message and charges them nothing.
+     *
+     * Asked immediately after `st-coach-unmarked` has just told the operator
+     * which registers are missing, because that is the sentence a person says
+     * next and it is the one that most invites a hand-written row: the session
+     * is over, it is named, and the natural verb is "put it down".
+     *
+     * The reading is a pair, not a tick. `attendance` gaining a row and
+     * `tally_line` NOT gaining ₹900 beside it is the finding; both moving is the
+     * operation having been used, which says the declaration is holding and says
+     * nothing at all about what would happen if it did not.
+     */
+    name: 'fn-late-register',
+    stage: 'attendance',
+    persona: 'coach',
+    what:
+      'a per-session register marked LATE, in the sentence a person actually uses (F-BA): does the money ' +
+      'follow the attendance row, or does the row arrive alone?',
+    text: "the tuesday one-to-one with aarav — he was there, i just never marked it. put it down for me.",
+    tap: true,
+  },
+  {
+    /**
+     * F-BG — `job` is RLS-closed in both directions, correctly, and until the
+     * variable tail carried open watches the model answered this question from
+     * what it remembered doing. It was right by luck once, on record.
+     *
+     * Asked in the last week rather than the first, because by then the month
+     * has minted several watches and retired some: "what are you watching" is
+     * only a real question once the true answer is not "the one thing you asked
+     * for an hour ago".
+     */
+    name: 'fn-watch-tail',
+    stage: 'month-end',
+    persona: 'admin',
+    what:
+      'the operator asking what the product is holding for him (F-BG): open watches read from the tail, ' +
+      'or recalled from what the model remembers doing',
+    text: "what are you keeping an eye on for me at the moment?",
+  },
+]
+
+/**
+ * The stress month with the two extras spliced in after the cases that build
+ * the world they need.
+ *
+ * The anchors are asserted rather than assumed. A renamed stress case would
+ * otherwise drop an extra silently, and a suite that quietly asks one fewer
+ * question is the harness trap this file opens with — the run still passes, the
+ * report still prints, and the finding it existed to ask about is simply
+ * missing from it.
+ */
+const FINDINGS_ANCHORS: Record<string, string> = {
+  'st-coach-unmarked': 'fn-late-register',
+  'st-coach-messaging': 'fn-watch-tail',
+}
+const FINDINGS_CASES: Case[] = (() => {
+  const placed = new Set<string>()
+  const out: Case[] = []
+  for (const k of STRESS_CASES) {
+    out.push(k)
+    const after = FINDINGS_ANCHORS[k.name]
+    if (!after) continue
+    const extra = FINDINGS_EXTRA.find((e) => e.name === after)
+    if (!extra) throw new Error(`findings suite names an extra that does not exist: ${after}`)
+    out.push(extra)
+    placed.add(after)
+  }
+  const missing = FINDINGS_EXTRA.filter((e) => !placed.has(e.name)).map((e) => e.name)
+  if (missing.length) {
+    throw new Error(`findings suite could not place ${missing.join(', ')} — an anchor case was renamed`)
+  }
+  return out
+})()
+
 /**
  * The suites. `arc` is the lifecycle sweep; `f-o` walks the shortest setup that
  * makes the regression cases askable and then asks them; `f-q` is `f-o` plus
@@ -2378,6 +2610,12 @@ const SUITES: Record<string, Case[]> = {
   // in it. It builds its own solo world in three turns and then spends a month
   // in it.
   stress: STRESS_CASES,
+  // The same world and the same twenty of those cases, in seven days instead of
+  // thirty. See STRESS_WEEK_CASES for what it drops and what that costs.
+  'stress-week': STRESS_WEEK_CASES,
+  // The stress month plus the two questions no suite has ever asked. See
+  // FINDINGS_CASES.
+  findings: FINDINGS_CASES,
 }
 if (!SUITES[SUITE]) {
   console.error(c.red(`no suite "${SUITE}" — one of ${Object.keys(SUITES).join(', ')}`))
@@ -2564,6 +2802,41 @@ type TurnRecord = {
    * belonged to without one.
    */
   turnId?: string | null
+  /**
+   * ALL of them, because a beat is more than one turn.
+   *
+   * Tapping a staged plan opens a second turn. `turnId` is the first — the one
+   * that composed the work — and that is the one a reading wants, so it stays.
+   * But every count keyed on a turn id (`wrote`, `reached`) has to span both, or
+   * the confirmation's own writes are attributed to nothing.
+   */
+  turnIds?: string[]
+  /**
+   * EVERY outbound row in the beat's window, whoever it reached.
+   *
+   * `reply` is deliberately scoped to the person who spoke — see the note at the
+   * query — and that scoping quietly cost the run its most important evidence.
+   * Three turns of the stress week messaged two people, the parent and the
+   * owner, and the record kept one of each: 23 recorded against 31 rows carrying
+   * `origin='turn'`. Those were exactly the turns where *did it really tell
+   * somebody?* is the question — an injury relayed to the coach, a move routed to
+   * the owner, a refund case escalated — and the answer had to be recovered from
+   * the `message` table by hand afterwards.
+   *
+   * The product recorded it correctly: `origin` and `turn_id` are on every row,
+   * which is what F-I's closure promised. The instrument discarded it at the
+   * `where` clause. That is the inverse of layer 5's rule and the cheaper half to
+   * fix. Shape matches `_capture.ts`'s `Outbound` so both drivers' records read
+   * the same.
+   */
+  outbound?: {
+    to: string | null
+    body: string
+    buttons: string[]
+    status: string
+    origin: string | null
+    suppressedReason: string | null
+  }[]
 }
 
 /* ========================================================================== *
@@ -2668,8 +2941,22 @@ const CLOCK_STEP_MS = 60 * 60 * 1000
 // a promise of quiet) only appear in the silence between two turns. 960h is 40
 // days: the ~30 the cases ask for, plus the run-up a session-anchored hop needs
 // when the run happens to start just after one has finished.
+//
+// The stress WEEK asks for seven days of gaps, and the first hop is not one of
+// them: `st-coach-register` walks to the end of the first session, and a run
+// that starts on a Saturday afternoon is up to ~48h from one in a Mon/Wed/Fri
+// business. 216h is nine days — the seven the cases ask for, plus that run-up —
+// and a budget under it would spend the shortfall on the last case rather than
+// the first, which is the failure the 96h note above describes.
 const CLOCK_BUDGET_MS =
-  (SUITE === 'real' ? 240 : SUITE === 'tennis' ? 840 : SUITE === 'stress' ? 960 : 96) * 60 * 60 * 1000
+  (SUITE === 'real' ? 240
+   : SUITE === 'tennis' ? 840
+   : SUITE === 'stress' ? 960
+   // The findings sweep is the stress month plus two turns that add no travel of
+   // their own, so it asks for the same 960h and for the same reason.
+   : SUITE === 'findings' ? 960
+   : SUITE === 'stress-week' ? 216
+   : 96) * 60 * 60 * 1000
 /**
  * A guard against a target that keeps receding, not a limit on the budget.
  *
@@ -2678,7 +2965,7 @@ const CLOCK_BUDGET_MS =
  * after it reads a world that never arrived. A week-long hop is 168 one-hour
  * steps and the old 120 cut it at five days.
  */
-const MAX_CLOCK_STEPS = SUITE === 'tennis' || SUITE === 'stress' ? 900 : 120
+const MAX_CLOCK_STEPS = SUITE === 'tennis' || STRESSY ? 900 : 120
 
 /* ========================================================================== *
  * CHILD — one model, one fresh academy, the whole arc.
@@ -2708,7 +2995,7 @@ async function runChild(model: string, arm: string): Promise<void> {
   const WORLD =
     SUITE === 'tennis'
       ? { name: 'Baseline Tennis', adminName: 'Ravi Menon', category: 'tennis' }
-      : SUITE === 'stress'
+      : STRESSY
         ? { name: 'Smash Badminton', adminName: 'Sanjay Pillai', category: 'badminton' }
         : { name: `Probe ${model}`, adminName: 'Probe Admin', category: 'badminton' }
   const label = WORLD.name
@@ -2831,7 +3118,7 @@ async function runChild(model: string, arm: string): Promise<void> {
   // stated. One number each, so no two conversations arrive as one.
   const EXTRA_PROSPECTS =
     SUITE === 'tennis' ? ['Farah Sheikh']
-    : SUITE === 'stress' ? ['Farah Sheikh', 'Rehan Ali', 'Divya Menon']
+    : STRESSY ? ['Farah Sheikh', 'Rehan Ali', 'Divya Menon']
     : []
   const prospect = await createTestContact({
     academyId: made.academyId, name: 'Nikhil Bose', role: 'prospect', phone: prospectPhone,
@@ -3146,16 +3433,36 @@ async function runChild(model: string, arm: string): Promise<void> {
         continue
       }
 
+      /**
+       * EVERY turn in the window, oldest first — not the newest one.
+       *
+       * This was `order by created_at desc limit 1`, and a tap opens a SECOND
+       * turn: so the trace kept was the thumb's, and the trace of the turn that
+       * composed the work — the reasoning, the reads, the plan — was thrown away
+       * on exactly the cases interesting enough to carry a confirmation.
+       * `_capture.ts` carries this fix and the comment explaining it; it was
+       * never ported here.
+       *
+       * `t` stays the FIRST turn, because the scalars a reading wants (which
+       * model answered, what it errored with) belong to the turn that did the
+       * thinking. Everything countable is summed across the beat instead.
+       */
       const turns = speaker
         ? await q(
             `select id, model, rounds, latency_ms, prompt_tokens, cached_tokens, output_tokens,
                     error, tool_calls, output
                from turn where created_at >= '${startedAt}'::timestamptz
                 and contact_id = '${speaker.id}'::uuid
-              order by created_at desc limit 1`,
+              order by created_at asc`,
           )
         : []
       const t = turns[0] ?? {}
+      const turnIds = turns.map((x: any) => String(x.id)).filter(Boolean)
+      const sum = (k: string) => turns.reduce((a: number, x: any) => a + Number(x?.[k] ?? 0), 0)
+      // The first error is the one worth reading — a tap that fails because the
+      // turn before it failed is a symptom, not a second fault.
+      const firstError = turns.find((x: any) => x?.error)?.error ?? null
+
       // Scoped to the person who spoke. Once the arc has more than one persona and
       // a queue that talks to the others, "everything outbound in this window" is
       // not what this person read — it is this person's reply mixed with whatever
@@ -3166,6 +3473,24 @@ async function runChild(model: string, arm: string): Promise<void> {
               where direction = 'outbound' and created_at >= '${startedAt}'::timestamptz
                 and contact_id = '${speaker.id}'::uuid
               order by created_at asc`,
+          )
+        : []
+      /**
+       * And the same window with the scoping taken off, kept beside it.
+       *
+       * Not instead of: the panel above answers "what did THIS person read", and
+       * that question needs the narrow set. This one answers "did anyone else
+       * hear anything", which is a different question and the one three of the
+       * stress week's hardest turns turned on. Both are cheap; keeping only the
+       * narrow one is what made a routed proposal indistinguishable from a
+       * promise nobody kept.
+       */
+      const allOut = speaker
+        ? await q(
+            `select c.phone_e164 as to, m.body, m.payload, m.status, m.origin, m.suppressed_reason
+               from message m left join contact c on c.id = m.contact_id
+              where m.direction = 'outbound' and m.created_at >= '${startedAt}'::timestamptz
+              order by m.created_at asc`,
           )
         : []
       /**
@@ -3229,7 +3554,24 @@ async function runChild(model: string, arm: string): Promise<void> {
         }
       }
 
-      const trace: any[] = Array.isArray(t.tool_calls) ? t.tool_calls : []
+      // Every turn in the beat contributes its rounds, for the same reason the
+      // query above stopped taking only the last one: the tap's trace and the
+      // composing turn's trace are both evidence and neither substitutes.
+      const trace: any[] = turns.flatMap((x: any) => {
+        if (Array.isArray(x?.tool_calls)) return x.tool_calls
+        // The driver reads its own database, so this is normally already parsed;
+        // a string means a driver that stringified it, and losing the whole beat's
+        // reasoning to a JSON shape is not worth a throw.
+        if (typeof x?.tool_calls === 'string') {
+          try {
+            const parsed = JSON.parse(x.tool_calls)
+            return Array.isArray(parsed) ? parsed : []
+          } catch {
+            return []
+          }
+        }
+        return []
+      })
       const tools = trace.map((x: any) => {
         const msg = x?.args?.message
         return {
@@ -3338,12 +3680,16 @@ async function runChild(model: string, arm: string): Promise<void> {
        * Answering a question from a read writes nothing and sends nothing, and is
        * correct. The number says so and stops.
        */
-      const footprint = t.id
+      // Across every turn in the beat, not just the first. A confirmation's
+      // writes belong to the tap's turn, and counting only the composing turn
+      // reported `wrote: 0` next to a plan that had just run.
+      const idList = turnIds.map((id) => `'${id}'::uuid`).join(', ')
+      const footprint = idList
         ? await q(`select
              (select count(*)::int from audit_entry
-               where turn_id = '${t.id}'::uuid and diff is not null)      as wrote,
+               where turn_id in (${idList}) and diff is not null)         as wrote,
              (select count(*)::int from message
-               where turn_id = '${t.id}'::uuid and direction = 'outbound'
+               where turn_id in (${idList}) and direction = 'outbound'
                  and suppressed_reason is null)                          as reached`)
         : [{ wrote: 0, reached: 0 }]
 
@@ -3374,13 +3720,16 @@ async function runChild(model: string, arm: string): Promise<void> {
         reply,
         tools,
         toolNames,
-        rounds: Number(t.rounds ?? 0),
-        latencyMs: Number(t.latency_ms ?? 0),
-        inTok: Number(t.prompt_tokens ?? 0),
-        cachedTok: Number(t.cached_tokens ?? 0),
-        outTok: Number(t.output_tokens ?? 0),
-        usd: costUsd(model, Number(t.prompt_tokens ?? 0), Number(t.cached_tokens ?? 0), Number(t.output_tokens ?? 0), RUN_AT),
-        error: fatal ?? (t.error ? String(t.error) : null),
+        // Summed across the beat. A tap is a real model turn with its own rounds
+        // and its own tokens, and billing it to nobody understated every case
+        // that carried a confirmation — which is most of the expensive ones.
+        rounds: sum('rounds'),
+        latencyMs: sum('latency_ms'),
+        inTok: sum('prompt_tokens'),
+        cachedTok: sum('cached_tokens'),
+        outTok: sum('output_tokens'),
+        usd: costUsd(model, sum('prompt_tokens'), sum('cached_tokens'), sum('output_tokens'), RUN_AT),
+        error: fatal ?? (firstError ? String(firstError) : null),
         // Counts, not verdicts. See the note where these are computed.
         wrote: Number(footprint[0]?.wrote ?? 0),
         reached: Number(footprint[0]?.reached ?? 0),
@@ -3403,6 +3752,17 @@ async function runChild(model: string, arm: string): Promise<void> {
         beforeTap,
         afterTap,
         turnId: t.id ?? null,
+        turnIds,
+        outbound: allOut.map((m: any) => ({
+          to: m.to ?? null,
+          body: String(m.body ?? ''),
+          buttons: Array.isArray(m.payload?.buttons)
+            ? m.payload.buttons.map((b: any) => String(b?.title ?? ''))
+            : [],
+          status: String(m.status ?? ''),
+          origin: m.origin ?? null,
+          suppressedReason: m.suppressed_reason ?? null,
+        })),
       })
     }
      })

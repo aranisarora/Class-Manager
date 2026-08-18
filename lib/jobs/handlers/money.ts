@@ -32,6 +32,7 @@ import {
   admins, buttonTitle, clamp, contactFor, firstName, joinLines, loadAcademy, monthLabel,
   need, note, num, numberOf, payloadOf, serviceCtx, skip, withAcademy,
 } from '../util'
+import type { AcademyRow } from '../util'
 
 // -----------------------------------------------------------------------------
 // Descriptions are shown verbatim to the parent (§6.4), so they are built in
@@ -80,9 +81,20 @@ export async function monthlyLines(job: Job): Promise<void> {
   const enrollmentId = need(p, 'enrollment_id')
   const period = need(p, 'period')
 
+  /**
+   * Filled inside the transaction, acted on after it commits. See `writeLine`.
+   */
+  const partial: { found: PartialPeriod | null; tz: string; months: number } = {
+    found: null,
+    tz: 'Asia/Kolkata',
+    months: 1,
+  }
+  let academyRow: AcademyRow | null = null
+
   await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)
     if (!academy) skip('academy gone')
+    academyRow = academy
     const tz = academy.timezone
 
     const [e] = await tx<EnrollmentRow[]>`
@@ -125,9 +137,12 @@ export async function monthlyLines(job: Job): Promise<void> {
 
     if (unit === 'per_month') {
       const description = monthlyDescription(e.class_name, period, tz)
+      partial.tz = tz
+      partial.months = 1
       await writeLine(
         tx, academyId, e, period, 'monthly', description, amount,
         billingKey.monthly(e.player_id, e.class_id, period),
+        partial,
       )
       note(`${e.player_name}: ${description} ${formatINR(amount)}`)
       return
@@ -144,9 +159,12 @@ export async function monthlyLines(job: Job): Promise<void> {
       if (elapsed < 0) skip('term has not started')
       if (elapsed % months !== 0) skip(`mid-term (month ${(elapsed % months) + 1} of ${months})`)
       const description = termDescription(e.class_name, period, months, tz)
+      partial.tz = tz
+      partial.months = months
       await writeLine(
         tx, academyId, e, period, 'term', description, amount,
         billingKey.term(e.player_id, e.class_id, period),
+        partial,
       )
       note(`${e.player_name}: ${description} ${formatINR(amount)}`)
       return
@@ -193,6 +211,119 @@ export async function monthlyLines(job: Job): Promise<void> {
 
     skip(`unknown rate unit ${unit}`)
   })
+
+  await raisePartialPeriod(academyRow, partial.found)
+}
+
+/**
+ * The owner is told a period was only partly covered — once, and then never
+ * again if they say what they want done about it.
+ *
+ * **`enforced_by` gets its first meaning here.** `business_rule` has carried the
+ * column since 0032 and nothing has ever read the table: a rule stated in the
+ * owner's words steers a conversation the model is present for, and does exactly
+ * nothing to a job composing from a query on the 1st. `enforced_by` is the field
+ * that names the typed row which actually gates the automation — and until
+ * something reads it, every rule in there is `enforced_by = null` in practice
+ * whatever it says.
+ *
+ * So the settled answer is a SETTING, and the rule points at it. One tap says
+ * "this one", the other says "always" and writes both. Doing nothing leaves the
+ * full charge standing, which is what the owner already has today.
+ *
+ * Quiet by default cuts the other way here too: a business that has answered is
+ * never asked again, and a business that has not is asked once per line rather
+ * than once per month per family, because a period only partly covered happens
+ * at a join or an ending and not in between.
+ */
+async function raisePartialPeriod(academy: AcademyRow | null, found: PartialPeriod | null): Promise<void> {
+  if (!academy || !found) return
+  const settled = String((academy.settings as Record<string, unknown> | null)?.partial_period ?? '')
+  // 'full' and 'prorate' are both ANSWERS. Only an unanswered business is asked,
+  // and an unrecognised value is treated as unanswered rather than guessed at.
+  if (settled === 'full' || settled === 'prorate') return
+  if (academy.onboarding_state !== 'live') return
+
+  const credit = Math.round((found.charged - found.prorata) * 100) / 100
+  if (credit <= 0) return
+
+  await withAcademy(academy.id, async (tx) => {
+    const recipients = await admins(tx, academy.id)
+    for (const admin of recipients) {
+      if (!admin.contact_id) continue
+      const when =
+        found.end === 'finish'
+          ? `left part-way through`
+          : found.end === 'both'
+            ? `was only with you for part of`
+            : `joined part-way through`
+      await composeAndSend(serviceCtx(academy.id), {
+        toContactId: admin.contact_id,
+        header: clamp(academy.name, LIMITS.headerChars),
+        body: clamp(
+          `${found.playerName} ${when} ${monthLabel(found.period, academy.timezone)} — ` +
+            `${found.covered} of ${found.days} days — and the bill is the full ${formatINR(found.charged)} ` +
+            `for ${found.className}.\n\n` +
+            `Pro-rata would be ${formatINR(found.prorata)}, so the difference is ${formatINR(credit)}. ` +
+            `Nothing is wrong with the bill; this is your call, and leaving it alone is an answer.`,
+          LIMITS.bodyChars,
+        ),
+        buttons: [
+          {
+            title: 'Credit this one',
+            action: {
+              kind: 'steps',
+              summary: `Credit ${formatINR(credit)} to ${found.playerName}'s ${monthLabel(found.period, academy.timezone)}`,
+              steps: [
+                {
+                  adjust: {
+                    account_id: found.accountId,
+                    player_id: found.playerId,
+                    period: found.period,
+                    amount: -credit,
+                    reason: `${found.covered} of ${found.days} days enrolled`,
+                    description: `Pro-rata adjustment — ${found.className}`,
+                  },
+                },
+              ],
+            },
+          },
+          {
+            title: 'Always pro-rate',
+            action: {
+              kind: 'steps',
+              summary: `Credit ${formatINR(credit)} now, and pro-rate part-months from here on`,
+              steps: [
+                {
+                  adjust: {
+                    account_id: found.accountId,
+                    player_id: found.playerId,
+                    period: found.period,
+                    amount: -credit,
+                    reason: `${found.covered} of ${found.days} days enrolled`,
+                    description: `Pro-rata adjustment — ${found.className}`,
+                  },
+                },
+                // The rule in their words, and the row that makes it bind. Both,
+                // or it is a preference the 1st of next month cannot read.
+                {
+                  write:
+                    `insert into business_rule (statement, topic, provenance, enforced_by, visibility) ` +
+                    `values ('Part-months are pro-rated to the days actually enrolled.', 'billing', ` +
+                    `'owner_stated', 'academy.settings.partial_period', 'internal')`,
+                },
+                {
+                  write:
+                    `update academy set settings = coalesce(settings, '{}'::jsonb) ` +
+                    `|| '{"partial_period":"prorate"}'::jsonb where id = app.academy_id()`,
+                },
+              ],
+            },
+          },
+        ],
+      })
+    }
+  })
 }
 
 /**
@@ -215,10 +346,79 @@ export async function monthlyLines(job: Job): Promise<void> {
  * `class_id` is written because the row should record what it is FOR — the reason
  * the old guard had to read the description at all was that nothing else did.
  */
+/**
+ * A recurring line that covers time the enrolment does not.
+ *
+ * The generic fact, and it is deliberately not "somebody joined mid-month": a
+ * line was written for a period the enrolment only PARTLY spans. That is one
+ * shape with two ends — joined after the period opened, or left before it
+ * closed — and it is a property of the rows, knowable with no conversation
+ * having happened and nobody having complained.
+ */
+type PartialPeriod = {
+  playerName: string
+  className: string
+  accountId: string
+  playerId: string
+  period: string
+  charged: number
+  covered: number
+  days: number
+  prorata: number
+  /** Which end of the period the enrolment fell short of, for the sentence. */
+  end: 'start' | 'finish' | 'both'
+}
+
+/**
+ * How much of a billed window this enrolment was actually live for.
+ *
+ * Dates, not timestamps: a period is a calendar month (or `months` of them) and
+ * an enrolment starts and ends on days. Returns null when the window is fully
+ * covered, which is the overwhelming majority and costs one comparison.
+ */
+function partOfPeriod(
+  e: EnrollmentRow, period: string, tz: string, months: number,
+): PartialPeriod | null {
+  const start = DateTime.fromISO(period, { zone: tz }).startOf('day')
+  const finish = start.plus({ months: Math.max(1, months) }).minus({ days: 1 })
+  const days = Math.round(finish.diff(start, 'days').days) + 1
+  if (days <= 0) return null
+
+  const from = DateTime.fromISO(e.started_on, { zone: tz }).startOf('day')
+  const to = e.ended_on ? DateTime.fromISO(e.ended_on, { zone: tz }).startOf('day') : null
+
+  const liveFrom = from > start ? from : start
+  const liveTo = to && to < finish ? to : finish
+  const covered = Math.round(liveTo.diff(liveFrom, 'days').days) + 1
+  if (covered >= days || covered <= 0) return null
+
+  return {
+    playerName: e.player_name,
+    className: e.class_name,
+    accountId: e.account_id,
+    playerId: e.player_id,
+    period,
+    charged: 0,
+    covered,
+    days,
+    prorata: 0,
+    end: from > start && to && to < finish ? 'both' : from > start ? 'start' : 'finish',
+  }
+}
+
 async function writeLine(
   tx: Tx, academyId: string, e: EnrollmentRow, period: string,
   kind: 'monthly' | 'term' | 'package', description: string, amount: number,
   dedupeKey: string,
+  /**
+   * Where a partly-covered period is reported, if this line is one.
+   *
+   * Collected rather than acted on, because this runs inside the handler's
+   * transaction and a message is not a thing to send from inside one. The
+   * handler sends after it commits — which also means a rolled-back line never
+   * produces a moment about a charge that does not exist.
+   */
+  partial?: { found: PartialPeriod | null; tz: string; months: number },
 ): Promise<void> {
   const written = await tx<{ id: string }[]>`
     insert into tally_line (academy_id, account_id, player_id, class_id, period,
@@ -230,6 +430,40 @@ async function writeLine(
     returning id
   `
   if (written.length === 0) skip('line already written')
+
+  /**
+   * **The machinery will not decide this, and it will not decide it silently
+   * either.**
+   *
+   * DOMAIN_FACTS is right that a rate change or an ending is a decision a person
+   * makes — inventing a pro-rata rule nobody stated is how an invention acquires
+   * the authority of policy, and this repo has the scar. But "will not decide"
+   * and "will decide the maximum, quietly" are different sentences, and the code
+   * did the second: a full month billed to somebody enrolled for a fortnight,
+   * with no row, no note and nobody told. Driven — three enrolments that started
+   * on the 17th were billed a whole August by the go-live tap, and the first
+   * human to notice was a parent threatening legal advice on day 7. The model
+   * pro-rates correctly the moment a person asks it to; the job never asks.
+   *
+   * So the full line stands and the owner is told, with the figure worked out.
+   * Both ends of the period, not just joining: leaving on the 3rd bills the same
+   * whole month for the same reason.
+   *
+   * Here — where the line is written — rather than in the `per_month` branch,
+   * for the reason the free-trial credit above gives about itself: this is the
+   * one place a recurring line is written, and a rule repeated in three branches
+   * is a rule that will be right in two of them.
+   */
+  if (partial && (kind === 'monthly' || kind === 'term')) {
+    const found = partOfPeriod(e, period, partial.tz, partial.months)
+    if (found) {
+      found.charged = amount
+      // Rounded to paise, the column's own precision. A figure the owner is
+      // shown has to be the figure a tap would actually write.
+      found.prorata = Math.round(amount * (found.covered / found.days) * 100) / 100
+      partial.found = found
+    }
+  }
 
   /**
    * §6.4's free first class, for the three units that do not bill on attendance.

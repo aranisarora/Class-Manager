@@ -218,6 +218,21 @@ export type OutboundMessage = {
    */
   confirmation?: { kind: string; subject: string; question?: string }
   /**
+   * How long the buttons on this message live, in minutes — carried so the
+   * QUESTION can be given the same lifetime as the tap that answers it.
+   *
+   * `pending_request.expires_at` was written by nobody. Every row went in with a
+   * NULL expiry, and the sweep in `plan-ahead.ts` that resolves stale questions
+   * is predicated on `expires_at is not null` — so it was correct code that
+   * could never match a row, and an unanswered question was permanent. Two sat
+   * open at the end of the stress week for exactly this reason.
+   *
+   * A question dies when the button dies. Once the action has expired there is
+   * no tap left that could answer it, so any other expiry would be a number
+   * somebody chose; this one is the truth about the affordance.
+   */
+  actionTtlMinutes?: number
+  /**
    * Additive (not in CONTRACTS §5, safe to omit): named parameters for the §16.2 template
    * used when this message goes out of window. Omitted, `send` fills them from what it
    * knows — academy name, the catalog row's event phrase, the composed body as the detail —

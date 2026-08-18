@@ -44,6 +44,10 @@ import { catalogDigest } from '@/lib/messaging/catalog'
 import { SCHEMA_DOC } from '@/lib/agent/schema-doc'
 import { hotSet } from '@/lib/agent/memory'
 import { vocabularyPreferences } from '@/lib/agent/lint'
+// The model cannot read `job` — it is global and closed in both directions — so
+// its own standing promises reach it the way every other unstorable state does:
+// as a line in the tail, put there by the runtime.
+import { liveAgentTasks } from '@/lib/jobs'
 
 /**
  * Doctrine lives on disk as markdown. Resolution tries the working directory
@@ -245,10 +249,13 @@ Money
   owner has been sent it.
 - A money handover to the admin carries the one fact that changes the reading:
   whether the child is still turning up.
-- The tally writes itself, and nothing asks first. So a mid-month join is billed the
-  whole month until an adjustment fixes it — after the out-of-band cancellation, the
-  commonest fair dispute — and a rate change or an ending is a decision a person
-  makes: the machinery will not make it for them.
+- The tally writes itself, and nothing asks first. A period the person was only
+  enrolled for part of is still billed whole — joining on the 17th, leaving on the
+  3rd — because pro-rating is a decision a person makes and the machinery will not
+  make it for them. What it does do is say so: the owner is shown the days, the
+  figure and the difference, once, and can settle it for good. Until they do, the
+  full charge stands and an adjustment is what fixes it. Same for a rate change or
+  an ending.
 - Money from before this product existed is never chased. Billing starts where the
   admin said it starts.
 
@@ -930,6 +937,48 @@ async function standing(id: Identity): Promise<string[]> {
             `a second way — one question on a screen is answered by one tap.`,
         )
       }
+    }
+
+    /**
+     * What this turn has already promised to look at, and under what name.
+     *
+     * The `job` table is closed to the model in both directions — it is global
+     * and has no `academy_id` column for a policy to scope on — so this cannot
+     * come from a query the model writes. It came from memory instead, because
+     * the prefix said to answer it from what you did rather than look it up, and
+     * memory across turns is exactly what layer 0 exists to replace.
+     *
+     * Two things are load-bearing here and neither is the list itself:
+     *
+     *   - **The SUBJECT is shown, in the words the key is built from.** A second
+     *     watch on the same subject supersedes the first (F-C), and that only
+     *     works if the next caller can phrase the subject the same way. It could
+     *     not see the phrasing. Driven: the turn reasoned correctly that no
+     *     second watch was needed, and reflection minted one anyway under a
+     *     different name — the duplicate was prevented by an unrelated failure.
+     *   - **Restating is safe and is said so**, because the alternative reading
+     *     of "you are already watching this" is "do not mention it", and a person
+     *     who asks to be chased on Monday should hear that they will be.
+     *
+     * Scoped like a read: the admin's business is theirs to see whole, and
+     * anybody else sees only what was promised in their own conversation.
+     */
+    try {
+      const watches = await liveAgentTasks(id.academyId)
+      const mine = id.roles.includes('admin')
+        ? watches
+        : watches.filter((w) => w.minted_by_contact_id === id.contact.id)
+      for (const w of mine.slice(0, 8)) {
+        const subject = String(w.subject ?? w.slug ?? '').replace(/\s+/g, ' ').slice(0, 80)
+        const when = inZone(w.run_at, id.academy.timezone || 'Asia/Kolkata').label
+        out.push(
+          `ALREADY WATCHING "${subject}" — it next looks on ${when}. You promised this and it is real: do not ` +
+            `mint a second watch for it, and do not say it is not set up. Scheduling this same subject again ` +
+            `REPLACES this one rather than adding to it, so restating the promise is safe.`,
+        )
+      }
+    } catch {
+      /* Never a precondition. A turn without this line is worse, not broken. */
     }
 
     if (!mutes.error) {

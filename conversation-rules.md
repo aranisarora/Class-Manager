@@ -29,12 +29,13 @@ exists" into "the behaviour happened". Read the next drive against this list.
 | # | What is wrong | Where the fix lives | Found |
 | --- | --- | --- | --- |
 | **F-D** | Memory still takes parentage restatements — the shape with no figure for the gate to catch. *(The self-authored-policy half closed: `policyShapedFact` refuses it and `business_rule` is its real home.)* | `lib/agent/memory.ts` — partial by design; the rest is prompt boundary + curation | 15 Aug |
-| **F-I** | Mid-month joins bill in full; an unknown number is dropped without trace; §14.8 escalation unenforced. *(`turn_id` on job sends closed — `serviceFrom` carries it and `message.origin` says what sent it.)* | several — named per bullet | 15 Aug |
+| **F-I** | An unknown number is dropped without trace; §14.8 escalation unenforced. *(`turn_id` on job sends closed. The mid-month half closed 17 Aug — a partly-covered period raises a moment and the owner's answer becomes a rule the writer reads. Part 7.)* | several — named per bullet | 15 Aug |
 | **F-R** | `app.session_roster` times out at 5s on a large world. *(The duplicate sends closed — see F-AN.)* | the view itself, undiagnosed | 16 Aug |
 | **F-AR** | The answer dies beside a tool call on the final round, and an operation's side-message stands in as the reply | `lib/agent/loop.ts` — recovery must fire on discarded prose, not just on silence | 16 Aug |
 | **F-BA** | A hand-written `insert into attendance` messages the family and bills nobody — the per-session line is written by the operation, not by the world | a trigger, the way 0033 did sessions. Part 6 | 17 Aug |
 | **F-BB** | The plan result names anyone put in two places at once, and nothing makes the model pass it on | `lib/agent/plan.ts` / the declaration. Part 6 | 17 Aug |
-| **F-BC** | 7 of 27 replies carry anything to tap, and families got 0 of 6 — flagged independently by the probe arm on 14 of 18 turns. Told twice already, so not a prompt fix | `backstopButtons` in `lib/agent/tools.ts`. Part 6 | 17 Aug |
+| **F-BC** | 6 of 20 replies carry anything to tap, and **every one came from machinery forcing a confirmation** — `{kind:'reply',text}` minted 0 times in 20 turns. Told three times now, so not a prompt fix, and a prose guard is banned | declaration order + `tappable` in the result, **as an experiment** — reverts unless a two-arm drive moves the count. Part 7 | 17 Aug |
+| **F-BH** | `business_rule` had no reader anywhere, so `enforced_by` was enforced by nothing and every stated rule behaved as `null`. *(First reader built for partly-covered periods; the general case is still one reader, not a mechanism.)* | wherever a job composes from a query. Part 7 | 17 Aug |
 
 ### Closed 17 Aug 2026, by the architecture pass
 
@@ -1051,3 +1052,210 @@ And two that were real and not the model's:
   window now. The statements themselves were never affected: `sql-trace` sits at
   the database and does not care which turn a statement belonged to, which is a
   large part of why it exists.
+
+---
+
+## Part 7 — the stress week pass, 17 Aug 2026
+
+Twenty turns, seven simulated days, one solo badminton business, ₹5.46. Six named
+findings were re-staged and none recurred. What the run left behind was one shape,
+stated in its own verdict: *the product says what it will do next, and nothing is
+written down that would make it happen.*
+
+Read against the machinery rather than the transcripts, that shape is **not a
+behavioural weakness**, and most of it was not reachable from the prompt at all.
+What follows is what was found in the code, and what was built. Nothing here was
+fixed by adding doctrine; the two prefix edits are a reword and a replacement,
+both landing beside the structural change that made the old sentence false.
+
+### F-BD · A model-composed question wrote no `pending_request` — **closed**
+
+**Saw:** `st-client-move-session`, the run's lowest turn at 5/10, in which every
+individual act was right. A parent asked for a session to be moved; RLS refused,
+correctly; the model told her the truth and put the ask in front of the owner with
+a button on it. Nothing recorded that a question was outstanding. Five days later
+the session still stood, and she had had two session reminders and not one word
+about the thing she asked for.
+
+**Why it was not the model's to fix.** `send.ts` writes the row only when the spec
+says a confirmation was asked, and the three callers that set that flag are all
+built-in protocols. Meanwhile `SCHEMA_DOC` tells the model, above the cache
+boundary on every turn, that *asking a question that only one person's tap can
+answer is what writes pending_request* — and the permission matrix tells it the
+insert cell is `-`, nobody, including the owner. So it correctly believed the row
+was written for it and correctly believed it could not write the row itself.
+There was no third option. **A guarantee the prefix describes and the runtime did
+not provide**, which is PREFIX.md's own lesson pointed the other way.
+
+**Closed by:** derivation at the mint point, in `lib/agent/tools.ts` (the `reply`
+executor) and `lib/agent/plan.ts` (the message step). A button that COMMITS
+something, on a message to somebody other than the person who raised the thing, is
+definitionally a question only that person's tap can answer — and the runtime
+minted the button, so it knows. Nothing is declared and nothing depends on the
+model remembering. Deliberately narrow: an `undo` on a receipt commits and is an
+affordance, not an ask. Widen on a drive, never on tidiness.
+
+The derived subject carries `from:<asker>`, because the row lives on the OWNER's
+contact — his tap resolves it — while the person owed the outcome is the one who
+raised it. A sweep that re-asks the owner and leaves the asker in silence has
+rebuilt the defect one layer along.
+
+### F-BE · `pending_request.expires_at` was written by nobody — **closed**
+
+**Saw:** two rows still open at the end of the week, one scoped to money and one
+to everything, with nothing in the world reflecting either.
+
+**The actual cause, and it is not the one the report guessed.** A sweep already
+existed — `plan-ahead.ts` resolves stale questions — and it is predicated on
+`expires_at is not null and expires_at < app.now()`. Correct SQL that could never
+match a row, because **no path ever set the column.** Dead code guarding a state
+that could therefore never end.
+
+**Closed by:** `send.ts` writes the expiry from the same TTL the buttons are minted
+with, threaded through `OutboundMessage.actionTtlMinutes`. A question dies when the
+button dies — once the action has expired there is no tap left that could answer
+it, so any other figure would be a number somebody chose.
+
+And the sweep now tells somebody. It resolves the row and opens an ordinary turn
+for whoever is owed the answer, and **changes nothing about the question itself**:
+an expired opt-out request is not an opt-out, an expired confirmation is not an
+approval, and acting on an unanswered question because it got old is the relabeled
+state — the worst failure this product has recorded. The turn decides, including
+deciding to say nothing, which is the common outcome.
+
+### F-BF · The family invite existed and the declaration hid it — **closed**
+
+**Saw:** turn 1 told the owner to *"share an invite link with them — a parent taps
+it, books a trial"*. The run's own analysis read this as an invention.
+
+**It is not an invention.** `operations.ts` heads `send_invite_draft` as *"§8.1
+step 2 / §9.1 step 2"* — the coach invite **and** the parent invite — accepts
+`person_id`, and mints a real `wa.me` deep link. `product-spec.md` specifies it for
+families in those terms. What was missing is that the declaration was one sentence
+and **both id parameters carried no description at all**, so nothing in 24,754
+characters of tool schema said it served families. Turn 2's reasoning — *"there
+isn't an explicit operation for family invites in the tools besides
+send_invite_draft (coach)"* — is the model reading the declaration correctly.
+
+**Closed by:** two parameter descriptions and one clause. Rung 1 of the placement
+ladder, ~80 characters in the cached block, and it makes a built feature reachable.
+The catalog was telling the truth and was left alone.
+
+**The general shape is worth more than the fix.** PREFIX.md warns to look for
+capabilities the runtime built that the prompt never mentions; this one was hiding
+behind a tool the model could already see. **A parameter with no description is a
+capability with no advertisement.**
+
+### F-BG · Nothing could see its own watches — **closed**
+
+**Saw:** `st-watch-again`, where the model reasoned *"I can't read the job table
+(closed to me)... let me recall: yes, I set a schedule"* — and was right, by luck.
+And F-C recurring through the back door: the turn declined to mint a second watch,
+reflection minted one anyway under a different name, and the only thing that kept
+the duplicate out was an unrelated failure.
+
+**Why F-C's fix could not hold.** Supersession keys on a declared `subject`, and
+both callers had to phrase that subject identically **while neither could see the
+strings it was matching against.** `job` is RLS-closed in both directions, correctly
+— it is global with no `academy_id` column to scope a policy on — and the tail
+rendered no watches at all. So the prefix told the model to answer from what it
+remembered doing, which is carrying pending state across turns from memory: on
+ARCHITECTURE's never-trust list, by name.
+
+**Closed by:** open watches in the variable tail, with their subjects, scoped like
+a read — the admin sees the business, anybody else sees what was promised in their
+own conversation. `liveAgentTasks` already existed and was already being called on
+every `schedule` for the cap check; the rows were computed and discarded.
+
+**A prefix line came out with it** (see PREFIX.md's graveyard): *"what you have
+scheduled is a thing to say from what you did, not to look up."*
+
+### F-AP and F-C · re-read, not ticked
+
+Both are listed as closed by the architecture pass, and this pass **replaced the
+mechanism that closed them**, so the old entries no longer describe what holds
+them shut.
+
+- **F-AP** was closed by validating `context_query` at mint. That check is still
+  there, but it is a backstop now rather than the only line of defence: the cause
+  was a reflection pass that had never been shown the schema and had no `read`, so
+  naming a table after the concept was the only move available to it. It is a
+  round in the main loop now and writes SQL against a schema it can see.
+- **F-C** is held by the subject key *plus* F-BG's tail block. The key alone was a
+  fix with its own evidence hidden from both parties.
+
+### F-I · the mid-month half — **closed, as a decision the owner makes**
+
+`monthly_lines` wrote the full monthly amount with no reference to `started_on`,
+while `per_term` eight lines below already anchored on it. The prefix endorsed the
+behaviour outright and this file called it a defect — the two-authors trap, inside
+the project's own documents.
+
+**What was wrong is not that it billed the full month.** Pro-rating is a policy
+nobody stated, and inventing one is how an invention acquires the authority of
+policy. What was wrong is that *"the machinery will not decide"* and *"the
+machinery decides the maximum, quietly"* are different sentences and the code did
+the second.
+
+**Closed by:** a moment, raised where the line is written so it covers `per_month`
+and `per_term` alike rather than being copied into each branch. Stated as a state
+and not a situation — **a line was written for a period the enrolment only partly
+spans** — which is one shape with two ends, joining late and leaving early, and is
+knowable from the rows with no conversation having happened.
+
+The owner's answer is made durable or the moment becomes a monthly interruption
+doctrine 4 forbids: one button credits this one, the other credits it and writes a
+`business_rule` with `provenance='owner_stated'` and `enforced_by` naming the
+setting, which the writer then reads. **This is `business_rule`'s first reader.**
+Until now nothing read the table at all, so every rule in it behaved as
+`enforced_by = null` whatever it said.
+
+### F-BC · the affordance — an experiment, not a fix
+
+**The measurement, sharper than the count.** Six of twenty turns carried a button
+and **every one of the six came from machinery forcing a confirmation** — a
+preview, or a two-tap protocol. Not one was a voluntary next step, and
+`{kind:'reply', text}` — the free button that needs no arguments and no operation
+— was minted **zero times in twenty turns**, despite being stated in the `reply`
+declaration and in doctrine 7.
+
+**It is not that the model does not want them.** Turn 1's reasoning says *"offer
+buttons"*, *"offer next step as a button"* and *"the note says … offer next step as
+button"* — three times — and then ships a thousand-character body ending on *"Which
+do you want to sort first?"* with nothing to tap. Turn 16 reasons its way to the
+right affordance and hits a composition dead end. The intention is formed and
+evaporates before the call.
+
+**Tried:** `buttons` and `list` declared BEFORE `body` in the `reply` schema (a
+decoder emits roughly in schema order, and an optional trailing array is the
+cheapest thing in the world to not emit), and the `reply` result now states
+`tappable`, which is a count of an array rather than a reading of prose.
+
+**Not made required**, deliberately: the injury relay and both attack refusals were
+right to carry none, and a required field buys compliance at the cost of friction on
+every reply.
+
+**This is the one item kept only on evidence.** The same suite driven twice, one
+variable apart, and reverted if the count does not move. **What must never be built,
+in either outcome:** a check that reads a body for talk of tapping. Every pattern
+ever pointed at language in this repo misfired silently in both directions — the
+promise detector that matched "try" and missed "retry", the leak check that fired
+inside a correct refusal, the overclaim counter that read 0 on a drive containing
+one. A regex for *"one tap"* would join that list within a drive. If the ordering
+change earns nothing, this finding stays open and unfixed, which is what
+ARCHITECTURE says to do when no layer owns a defect.
+
+### The instrument
+
+`probe-model` recorded only the speaking contact's messages and only the last turn
+in the window. Three turns of this run messaged two people and the record kept one
+of each — 23 recorded against 31 rows carrying `origin='turn'` — and those were
+exactly the turns where *did it really tell somebody?* is the question. The product
+recorded it correctly; the instrument discarded it at the `where` clause, which is
+the inverse of layer 5's rule and the cheaper half to fix.
+
+`_capture.ts` already carried the fix for the second half, with a comment
+describing the bug; `probe-sql`'s harness had it too (recorded at the end of Part
+6). It was never ported. Both queries are ported now, and the speaker-scoped set
+is kept beside the full one — the narrow question and the wide one are different
+questions and both are cheap.

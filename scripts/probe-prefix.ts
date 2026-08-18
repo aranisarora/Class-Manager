@@ -2,11 +2,20 @@
  * probe-prefix — where the stable prefix actually goes, in characters.
  *
  *   npx tsx scripts/probe-prefix.ts
+ *   npx tsx scripts/probe-prefix.ts --text   # the prefix itself, byte for byte
+ *   npx tsx scripts/probe-prefix.ts --tools  # the tool declarations, as sent
  *
  * FINDINGS open item 3 says the prefix is 2× its §4.4 budget and names the two
  * suspects by feel. This prints the split, plus the size of the tool
  * declarations — which travel in the same cached block and are the other half of
  * any argument about moving information from prose into schema.
+ *
+ * The measurements are an argument ABOUT the prefix. `--text` is the prefix, and
+ * it is the only way to answer questions the character counts cannot: whether a
+ * section that was edited actually made it in, what order the model reads things
+ * in, whether two paragraphs contradict each other. Both come from the same
+ * `stablePrefix()` call the runtime makes at `lib/agent/loop.ts:1130`, so what is
+ * printed is what is sent — not a reconstruction of it.
  */
 import { loadEnvFiles, c } from './_env'
 
@@ -21,6 +30,20 @@ const { catalogDigest } = await import('@/lib/messaging/catalog')
 const prefix = stablePrefix()
 const tools = toolDecls()
 const toolsJson = JSON.stringify(tools)
+
+/**
+ * Raw dumps exit before the report. stdout carries the artifact and nothing
+ * else, so `> prefix.txt` and `| less` and a diff against yesterday's copy all
+ * work without anyone having to strip a header off the top first.
+ */
+if (process.argv.includes('--text')) {
+  process.stdout.write(prefix)
+  process.exit(0)
+}
+if (process.argv.includes('--tools')) {
+  process.stdout.write(JSON.stringify(tools, null, 2))
+  process.exit(0)
+}
 
 const catalog = catalogDigest()
 

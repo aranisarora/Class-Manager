@@ -2431,11 +2431,37 @@ const onboardCoach: OperationDef = {
 const sendInviteDraft: OperationDef = {
   name: 'send_invite_draft',
   ownScope: true,
+  /**
+   * **This is the family invite as well as the coach one, and nothing said so.**
+   *
+   * The operation has always served §9.1 step 2 — it takes `person_id`, resolves
+   * the name and mints the same `wa.me` deep link — but the declaration named
+   * neither id and the description implied a coach. The catalog, meanwhile,
+   * asserts the parent deep link twice as a trigger (CL-INTRO, CL-FIRST-CONTACT)
+   * without naming the tool that mints it. So the model was told the mechanism
+   * exists, given no way to reach it, and did the only thing left: it described
+   * the link in prose. Driven, `st-solo-setup`: *"share an invite link with them
+   * — a parent taps it, books a trial"*, and one message later its own reasoning
+   * worked out that *"there isn't an explicit operation for family invites in the
+   * tools besides send_invite_draft (coach)"* — a correct reading of what it had
+   * been shown.
+   *
+   * The general lesson is PREFIX.md's trap in the mirror: that document warns to
+   * look for capabilities the runtime built that the prompt never mentions, and
+   * this one was hiding behind a tool the model could already see. A parameter
+   * with no description is a capability with no advertisement.
+   */
   description:
-    'Draft the invite the ADMIN forwards from their own number, carrying a wa.me deep link with prefilled text. The bot never sends it. The draft itself carries the [Sent it] button that records the forward — never compose your own.',
+    'Draft the invite the ADMIN forwards from their own number, carrying a wa.me deep link with prefilled text. Works for a COACH or a FAMILY — it is the only invite in the product, and there is no other route a parent can be brought in by. The bot never sends it. The draft itself carries the [Sent it] button that records the forward — never compose your own.',
   params: z.object({
-    coach_id: uuid.nullish(),
-    person_id: uuid.nullish(),
+    coach_id: uuid
+      .nullish()
+      .describe('The coach being invited. Pass this OR person_id, never both.'),
+    person_id: uuid
+      .nullish()
+      .describe(
+        'For a FAMILY invite: the parent, by their person id. Same draft, same deep link — a parent who taps it opens the window from their side, which is what CL-INTRO fires on.',
+      ),
     mark_sent: z.boolean().optional().default(false),
   }),
   async build(ctx, args, id) {
