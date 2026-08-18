@@ -372,13 +372,19 @@ create view public.person_directory with (security_invoker = true) as
        order by p2.created_at
        limit 1
     ) pl on true
+    -- Joined for the timezone alone, which the mute filter below needs. academy is
+    -- readable by everybody in the tenant, so this never drops a person.
+    join academy ac on ac.id = pe.academy_id
     left join lateral (
       select coalesce(jsonb_agg(jsonb_build_object(
                'kind',       pr.kind,
                'subject',    pr.subject,
                'question',   pr.question,
                'asked_at',   pr.created_at,
-               'expires_at', pr.expires_at)
+               'expires_at', pr.expires_at,
+               -- The tail says "now past its expiry" against the seat-holder's own
+               -- questions. Same fact, same words, for everybody else.
+               'expired',    (pr.expires_at is not null and pr.expires_at < app.now()))
              order by pr.created_at desc), '[]'::jsonb) as open_questions
         from pending_request pr
        where pr.person_id = pe.id and pr.resolved_at is null
@@ -391,6 +397,15 @@ create view public.person_directory with (security_invoker = true) as
              order by cp.created_at desc), '[]'::jsonb) as mutes
         from comm_preference cp
        where cp.person_id = pe.id and cp.released_at is null
+         -- **The same predicate as `standing()` in lib/agent/context.ts, and it has
+         -- to be.** That block already renders these facts for the person in the
+         -- seat; this view renders them for everybody else. Two authors of one
+         -- truth is the trap, so the two are made to read the same way — and the
+         -- first draft of this view did not, which meant a mute that lapsed last
+         -- week came back looking live. "They asked not to hear about money" is a
+         -- sentence that stops a message, so a stale one stops a message the
+         -- person is now expecting.
+         and (cp.until is null or cp.until >= (app.now() at time zone ac.timezone)::date)
     ) m on true;
 
 comment on view public.person_directory is
@@ -398,7 +413,9 @@ comment on view public.person_directory is
   'whether its 24h window is open, whether they coach, hold an account or play, what '
   'they have been asked and not answered, and what they have muted. The sideways read, '
   'as one query. No is_admin column: academy_admin is own-row-only, so any such column '
-  'would report false for the owner to everybody but the owner. Inherits the reader.';
+  'would report false for the owner to everybody but the owner. mutes and open_questions '
+  'use the same predicates as standing() in lib/agent/context.ts, which renders the same '
+  'facts for the person in the seat — they move together. Inherits the reader.';
 
 grant select on public.person_directory to cm_service, cm_user, cm_readonly;
 

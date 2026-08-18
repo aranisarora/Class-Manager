@@ -521,9 +521,13 @@ than a near-miss.
   -- Anybody, and what they are to this business. What the top of this
   -- conversation tells you about the person in front of you, this tells you
   -- about the person they are talking ABOUT: what that person was asked and has
-  -- not answered (open_questions), what they asked not to hear about (mutes),
-  -- whether they have opted out, and whether their 24-hour window is open right
-  -- now. A row with no coach_id, account_id or player_id is somebody who holds
+  -- not answered (open_questions, each carrying whether it is past its expiry),
+  -- what they asked not to hear about (mutes, the live ones — a mute whose until
+  -- date has passed is not here, because it no longer stops anything), whether
+  -- they have opted out, and whether their 24-hour window is open right now.
+  -- These are the same facts, on the same terms, that the top of this
+  -- conversation gives you for the person in the seat.
+  -- A row with no coach_id, account_id or player_id is somebody who holds
   -- no role yet — never somebody who is not there. Names are matched here, so a
   -- person who turns out to be a coach rather than a parent still comes back,
   -- which is not true of a join that starts at account.

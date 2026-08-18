@@ -893,6 +893,17 @@ async function census(id: Identity): Promise<string | null> {
  *
  * Never a precondition: if this fails the turn continues without it. It runs
  * under the person's own session like everything else here.
+ *
+ * **This block has a twin now, and the two are made to read the same way.**
+ * `person_directory` (migration 0036) carries `open_questions` and `mutes` for
+ * anybody, because this one only ever covered the person in the seat and that
+ * taught every turn a false lesson — that the background you need arrives on its
+ * own. The predicates below are the view's predicates: `resolved_at is null` on
+ * the questions, and `released_at is null AND the until date has not passed` on
+ * the mutes. That second half is the one that matters and the view's first draft
+ * left it out, which made a mute that lapsed last week come back looking live —
+ * two authors of one truth, drifting inside a week of each other. If either
+ * predicate changes, both change.
  */
 async function standing(id: Identity): Promise<string[]> {
   const ctx: SessionCtx = {
