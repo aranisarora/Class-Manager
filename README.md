@@ -108,7 +108,7 @@ Open a pane per contact from the tray, then:
 ```bash
 npm run typecheck             # tsc --noEmit
 node scripts/rls-check.mjs    # the security boundary
-node scripts/verify-static.mjs # four absolutes, as a build failure rather than a note
+node scripts/verify-static.mjs # five absolutes, as a build failure rather than a note
 npm run drive -- evidence     # what the seven axes are judged on, straight off the tables
 npx tsx scripts/probe-model.ts   # the real loop through a scripted arc, plus SQL invariants
 node scripts/q.mjs --academy "Ace" "select …"   # ask the database what actually happened

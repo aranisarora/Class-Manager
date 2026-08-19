@@ -8,9 +8,9 @@ What the model is told, why it is shaped this way, and what may be added to it.
 > npx tsx scripts/probe-surface.ts > .probe/surface.txt     # or: npm run surface
 > ```
 >
-> That is the assembled `stablePrefix()` **plus** the 23 tool declarations, in one greppable
+> That is the assembled `stablePrefix()` **plus** every tool declaration, in one greppable
 > file — the complete set of things the model knows before the per-turn tail is built. The
-> declarations are ~37% of the surface and live in a different file, so reading `context.ts`
+> declarations are ~29% of the surface and live in a different file, so reading `context.ts`
 > alone shows you neither them nor how a fact in one layer reads against another. It writes
 > nothing but the dump, needs no database, and takes a few seconds. The per-turn tail is not
 > in it: `variableTail()` in `context.ts` is the only place that lives.
@@ -48,6 +48,47 @@ varies goes in the tail, which is rebuilt and re-billed at full price on every r
 none.** When you find a duplicate spanning the boundary, the prefix copy is the one that
 survives.
 
+### The declarations are inside it
+
+The tool block is not an argument travelling beside the prompt. It serialises between the
+system string and the messages, which puts it *inside* the block the cache matches on — so
+everything above governs it too, and two things follow.
+
+**A changed tool description invalidates the prefix.** One miss-priced call, and then the new
+block is the cached one. That is a deploy, not a defect.
+
+**Every model call in a turn sends `toolDecls()` in full.** A round that filters the list down
+to the tools it means to honour has edited the prefix: the match walks the entire system
+prompt, diverges at the tool block, and everything behind the divergence — the filtered
+declarations *and* the whole conversation — is billed fresh.
+
+The post-send reflection round did that for five days with a two-name filter, and the meter
+shows it as cleanly as anything in this repo has been shown. Its `cached` was **exactly 17,024
+on 57 of 57 calls**, invariant across five days, every persona and every conversation length,
+while the main loop never cached below **22,656**; the 5,632-token gap is the tool block, and
+the 17 Aug run has the same flat signature against a constant of 14,592. It ran at a 69.9% hit
+rate against the loop's 94.3% and 7,348 miss tokens a call against 1,625 — a quarter of the
+run's input volume, **64% of every cache miss in it**, ₹6.48 of a ₹29.52 run off-peak and
+double that at peak. The filter bought nothing it was there for: the dispatcher was already
+dropping every call outside its two names, and `repliedTo` was already refusing a second reply.
+Sending 22 more declarations made the round 57% cheaper.
+
+It was never only money, either, and this is the part that generalises past caching: **the
+cached block above the tools still describes every tool the product has.** A filtered list
+withdraws declarations the prefix is still advertising, so the round is handed a surface that
+contradicts what it has been reading all turn — and 13 of those 57 rounds reasoned their way
+toward calling one of the 22 that had been taken away. Narrowing what the model is shown is
+not the same as narrowing what it can do, and only one of those two is free.
+
+**So: constrain a round at its dispatcher, never by narrowing what it is shown.** More prompt
+is the cheap direction — a hit costs 3.2% of a miss, and the filtered round paid full price for
+the *same* two declarations plus the entire conversation behind them. `npm run verify:static`
+holds this one now: a `tools:` argument under `lib/agent` that is not `toolDecls()` fails the
+build. What it cannot see is a round that sends *no* tools, which two of `loop.ts`'s rounds do
+on purpose — the recovery round and the prose retry say "no tools" in their prompts and mean
+it. Those pay the whole block as a miss, and both run only after a turn has already gone wrong.
+A round on the every-turn path cannot be paid for that way.
+
 ## The layers, and the question each answers
 
 In assembly order. Order above the boundary is **free** — the block caches identically
@@ -62,6 +103,7 @@ whatever sequence it is in — so the sequence is chosen entirely for the reader
 | `PLATFORM` | What can this surface actually do? | `context.ts` |
 | `DOMAIN_FACTS` | How does this business behave on its own? | `context.ts` |
 | `lib/doctrine.md` | When two good answers conflict, which wins? | on disk |
+| tool declarations | What can I do, and with exactly which arguments? | `tools.ts` |
 | — boundary — | | |
 | variable tail | Who is this, what time is it, what did I already look up? | `context.ts` |
 
@@ -70,7 +112,10 @@ Two properties of that order are load-bearing:
 - **Facts before principles.** A rule about sessions is unreadable before `session` exists.
   Doctrine used to sit at position two, ~35k characters before the model saw a table name.
 - **Doctrine last, against the boundary.** It is the thing every judgement derives from, so
-  it should be the last thing read before the situation. Moving it cost nothing.
+  it should be the last thing read before the situation. Moving it cost nothing. It is last in
+  the *string*; the declarations come after it and before the messages, and nobody chose that
+  — the server places them, which is exactly why they are billed like prefix and have to be
+  treated like prefix.
 
 ## The admission test
 
@@ -259,8 +304,9 @@ point at — `toWhatsAppMarkup` converted markdown for as long as it existed whi
 the boundary mentioned formatting, and that survived every reading of `context.ts`. So work
 backwards: inventory the runtime **blind to the prompt**, then grep the surface for each item.
 A blind reader is the point; anyone who has read the prefix is anchored to it and will confirm
-rather than audit. The dump includes the tool declarations, which are ~37% of what the model
-sees and are invisible to anyone reviewing `context.ts` alone.
+rather than audit. The dump includes the tool declarations, which are a large fraction of what the
+model sees (the share is quoted once, at the top of this file) and are invisible to anyone
+reviewing `context.ts` alone.
 
 **`npm run ask` measures comprehension, which is not the same as presence.** Toolless questions
 against the real prefix, so only the prefix can be responsible for the answer; scenarios are

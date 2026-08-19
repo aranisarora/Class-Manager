@@ -479,6 +479,13 @@ Each has an incident behind it. They are the shapes to check any new design agai
   a plausible answer restated by memory becomes policy.
 - **Circular evidence.** A check, a fact, or a claim validated against something the same
   turn produced proves only that the turn agrees with itself.
+- **The narrower request that costs more.** Sending the model less is not sending less. The
+  cached prefix is the discounted part, so anything that leaves it behind — a bespoke call
+  with its own small system prompt, a round with a filtered tool list, a trimmed history —
+  pays full price for its whole request. Both times it was measured the smaller request was
+  the dearer one: `MODEL_SYNTH` at 3.5× the human conversation, and the reflection round's
+  two-tool filter at 64% of a run's cache misses for a constraint its own dispatcher was
+  already applying. Cheapness here is a property of *sameness*, not of size.
 
 ---
 

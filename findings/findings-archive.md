@@ -782,3 +782,58 @@ have crossed — and `downgraded_buttons` proves the mechanism for telling it al
 `downgraded_buttons` already does: report what the runtime changed, in the same voice, on the same
 result. Cheapest correct version is one field naming what was altered.
 
+---
+
+## Closed — the cache audit, 19 Aug 2026
+
+### F-BI · The reflection round filtered its tool list, so its whole context billed fresh — **FIXED 19 Aug 2026**
+
+**Status:** fixed 19 Aug 2026 — `lib/agent/loop.ts` sends `toolDecls()` unfiltered to the
+post-send reflection round, the two names it honours are now `REFLECT_TOOLS` read by both the
+prompt sentence and the dispatcher, and `verify:static` gained a fifth absolute that fails the
+build on any `tools:` argument under `lib/agent` that is not the whole block. No instrument
+stages this one and none should: it is a build failure now, which is stricter than a drive.
+
+**Root:** the tool block serialises between the system string and the messages, so it is inside
+the prefix the cache matches on — and the round was handing it 2 declarations where the main
+loop handed it 24. The match walked the whole system prompt, diverged at the tools, and
+everything behind the divergence — the filtered declarations and the entire conversation — was
+billed at full price. The code comment defending the round claimed *"everything before it is a
+cache hit"*, which was true of the messages and false of the tools, and the tools sit above the
+messages.
+
+**Saw, over the live week:** reflection's `cached` was **exactly 17,024 on 57 of 57 calls**,
+invariant across five days, every persona and every conversation length, while the main loop
+never cached below **22,656**. The 5,632-token gap is the tool block; the 17 Aug run shows the
+same flat signature against a constant of 14,592.
+- 69.9% hit rate against the loop's 94.3%; 7,348 miss tokens per call against 1,625.
+- A quarter of the run's input volume and **64% of every cache miss in it**.
+- ₹11.36 of a ₹29.52 run, against ₹4.89 fixed: ₹6.48 saved off-peak, ₹12.96 at peak, 22% of
+  the run.
+
+**Verified on the wire, 19 Aug 2026, four calls at `max_tokens: 1` and no database:** the same
+prefix with all 24 declarations cached **22,656** on every repeat; the same prefix with the two
+filtered ones cached **17,024** and could cache nothing behind it; back to 24, **22,656** again.
+The tool block is 5,632 tokens and the plateau is the system prompt, exactly as the run records
+read it. That is also the whole mechanism in one line: the cache stops where the tool list
+differs, and everything after the tool block is behind it — in production that is the entire
+conversation.
+
+**And it was not free of behaviour either.** The prefix above the tools describes all 24 of
+them, and it is the same cached string whatever list follows it — so filtering the declarations
+withdrew tools the block was still advertising. 13 of the 57 rounds (including 11 of the 43
+silences) reasoned toward calling one of the 22 that had been removed, which is the same defect
+as *RR-1, the round does not know its own tool surface*, in the 19 Aug remember-round report.
+One edit closes both, and it closes them in the direction that costs less.
+
+**Why the filter bought nothing:** `loop.ts` already dropped every call outside `remember` and
+`schedule` before `runTool` saw it, and `repliedTo` already refused a second reply. The
+declarations were a third statement of a rule two mechanisms were enforcing — and the only one
+of the three that cost money.
+
+**The general lesson, written where it will be read:** PREFIX-RULES.md, *the declarations are
+inside it* — every model call in a turn sends the whole block, and a round is constrained at
+its dispatcher, never by narrowing what it is shown. ARCHITECTURE.md carries the same shape as
+a trap (*the narrower request that costs more*), which `MODEL_SYNTH` had already demonstrated
+once at 3.5× the cost of the conversation it was summarising.
+

@@ -1,14 +1,15 @@
 /**
- * scripts/verify-static.mjs — the four absolutes, checked by a machine (§16.3, §17).
+ * scripts/verify-static.mjs — the five absolutes, checked by a machine (§16.3, §17).
  *
  *   node scripts/verify-static.mjs   ·   npm run verify:static
  *
- * Four of the load-bearing sentences in this repo are absolutes:
+ * Five of the load-bearing sentences in this repo are absolutes:
  *
  *   1. `transport-cloud.ts` is the only file that may talk to Meta.
  *   2. Nothing reads the host clock for DOMAIN time — `lib/clock.ts` is the clock.
  *   3. Nothing in SQL compares against the database's own clock — `app.now()` is.
  *   4. No unthrottled send exists; `send` is reachable from two files.
+ *   5. A model call that declares tools declares all of them (PREFIX-RULES.md).
  *
  * Every one of them was documentation. `scripts/verify-invariants.mjs` demonstrates
  * behaviour against a running server and a seeded world and then exits 0 whatever it
@@ -338,7 +339,7 @@ function allow(entries) {
   }
 }
 
-console.log('\nverify-static — four absolutes, and the exemptions that excuse them\n')
+console.log('\nverify-static — five absolutes, and the exemptions that excuse them\n')
 
 /* ------------------------------------------------------------------------- *
  * 1 · One file may talk to Meta
@@ -570,7 +571,46 @@ const SPECIFIER_POSITION = /(?:\bfrom\s*|\brequire\s*\(\s*|\bimport\s*\(\s*|\bim
 }
 
 /* ------------------------------------------------------------------------- *
- * 5 · The exemptions are still real
+ * 5 · Every model call declares the whole tool block
+ *
+ * PREFIX-RULES.md, *the declarations are inside the prefix*: the tool block
+ * serialises above the messages, so a call that sends a narrowed list has edited
+ * the prefix the cache matches on. The match walks the whole system prompt,
+ * diverges at the tools, and everything behind the divergence — the narrowed
+ * declarations AND the entire conversation — bills at full price. The post-send
+ * reflection round did exactly this with a two-name filter: its `cached` was
+ * exactly 17,024 on 57 of 57 calls against a main loop that never cached below
+ * 22,656, and it took 64% of the run's cache misses buying a constraint its own
+ * dispatcher already applied. Sending it 22 more declarations cut its bill 57%.
+ *
+ * So a narrowed list is never how a round is constrained. The dispatcher that
+ * runs the calls is: it refuses a name in one line, and it costs nothing.
+ *
+ * What this cannot see is a round that sends NO tools — an omission has no
+ * argument to read. Two rounds do that deliberately (`loop.ts`'s recovery and
+ * its prose retry are toolless because their prompts say so, and their flattened
+ * histories have left the cached path by then anyway). They pay the whole block
+ * as a miss, and they run only after a turn has already gone wrong; a round on
+ * the every-turn path cannot be paid for that way.
+ * ------------------------------------------------------------------------- */
+
+const TOOLS_ARG = /\btools:\s*([^\n]*)/g
+const WHOLE_BLOCK = /^toolDecls\(\)\s*,?$/
+
+{
+  const violations = []
+  for (const f of FILES) {
+    if (!f.path.startsWith('lib/agent/')) continue
+    for (const m of matches(TOOLS_ARG, f.code)) {
+      if (WHOLE_BLOCK.test(m[1].trim())) continue
+      violations.push(at(f, m.index))
+    }
+  }
+  rule('every model call in lib/agent declares the whole tool block — toolDecls(), unfiltered', violations)
+}
+
+/* ------------------------------------------------------------------------- *
+ * 6 · The exemptions are still real
  *
  * An allowlist entry that matches nothing excuses nothing, and it is the shape a
  * rule rots into: the line it was written for is gone, the entry stays, and the

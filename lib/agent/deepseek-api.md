@@ -111,6 +111,13 @@ handles, no TTL to manage, no storage fee, no explicit-cache machinery.
   and academy-independent; everything variable (clock line, tenant facts,
   media-less tail) stays *after* it. A changed tool description invalidates
   the prefix — one miss-priced call, not a failure.
+- **The tool block caches with the prefix, and sits above the messages.** A call
+  sending a different tool list matches only to the end of the system prompt and
+  re-bills everything behind it — its own declarations and the whole conversation.
+  Measured: a round declaring 2 of 24 tools cached exactly 17,024 tokens on 57 of
+  57 calls, where every other round of the same turns cached 22,656 and up. Send
+  the same declarations on every call of a turn; constrain a round at the
+  dispatcher that runs its calls, not by narrowing what it is shown.
 - **Never set `user_id` per academy.** `user_id` buys per-user KVCache
   isolation, which would partition the shared prefix per tenant and destroy
   the cross-tenant cache hits the academy-independent prefix exists to earn.
