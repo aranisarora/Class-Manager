@@ -99,16 +99,24 @@ const SELF_WORDS = /\b(own|themselves|theirs|self)\b/
 /** Views the grid makes a runtime claim about: true = security_invoker. */
 const VIEW_CLAIMS: { schema: string; name: string; invoker: boolean }[] = [
   { schema: 'public', name: 'session_coverage', invoker: true },
-  { schema: 'public', name: 'uncovered_session', invoker: true },
   { schema: 'app', name: 'session_roster', invoker: true },
   { schema: 'public', name: 'unmarked_billable_session', invoker: true },
   { schema: 'public', name: 'session_detail', invoker: true },
   { schema: 'public', name: 'class_roster', invoker: true },
+  { schema: 'public', name: 'class_offering', invoker: true },
   { schema: 'public', name: 'account_standing', invoker: true },
+  { schema: 'public', name: 'account_ledger', invoker: true },
+  { schema: 'public', name: 'coach_pay', invoker: true },
   { schema: 'public', name: 'person_directory', invoker: true },
-  // The one exception, and the block says so: every coach in the business, to
-  // anybody who asks, with no pay column on it to leak.
+  // The exceptions, and the block says so: every coach in the business, and the
+  // whole class-to-coach map, to anybody who asks — with no pay column on
+  // either to leak. They are definer BECAUSE `coach` and `class_coach` are
+  // own-row-only, and they carry full_name because a caller who has to join
+  // `person` for a name puts that restriction straight back on and empties the
+  // result without erroring.
   { schema: 'public', name: 'coach_public', invoker: false },
+  { schema: 'public', name: 'coach_directory', invoker: false },
+  { schema: 'public', name: 'class_coach_public', invoker: false },
 ]
 
 type Cell = { text: string; none: boolean }

@@ -206,7 +206,8 @@ const CASES: Case[] = [
     persona: 'admin',
     text: 'anything next week without a coach on it?',
     probes:
-      'coverage is derived, never stored, and `uncovered_session` already computes it. ' +
+      'coverage is derived, never stored, and `session_detail.coverage` already states it ' +
+      "(`where coverage <> 'confirmed'`). " +
       'Rebuilt by hand the usual error is treating a declined row as coverage.',
   },
   {

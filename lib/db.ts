@@ -154,13 +154,39 @@ function createPool(): postgres.Sql<{}> {
   const pool = postgres(env.DATABASE_URL, {
     ssl: 'require',
     /**
-     * Per process. The pooler's ceiling is `pool_size: 15` for the whole project
-     * and it is shared by every instance — so two busy instances exhaust it on
-     * arithmetic alone, with no leak involved, and everyone else gets
-     * `(EMAXCONNSESSION) max clients reached in session mode`. Left at 10 on
-     * purpose: `worldState()` fans out one transaction per tenant and this is the
-     * width that made `GET /api/emulator/state` 1.2 s instead of 6.0 s. The
-     * number that wants raising is the pooler's, not this one.
+     * Per process, and it now sits behind the TRANSACTION pooler (port 6543)
+     * rather than the session one (5432).
+     *
+     * On session mode the ceiling was `pool_size: 15` for the whole project,
+     * shared by every instance, and a connection was held for the life of the
+     * client rather than the life of a statement. Two busy instances exhausted it
+     * on arithmetic alone, with no leak involved, and everyone else got
+     * `(EMAXCONNSESSION) max clients reached in session mode`. That is not a
+     * hypothetical: 23 of the first live week's 29 SQL errors were this one class,
+     * 14 of them on its worst-scoring day, and what they broke was the prefetch
+     * that builds the prompt — so the failure surfaced as the model telling a
+     * coach his own pay was not visible to it.
+     *
+     * The demand was the arithmetic. Building one coach's tail fires seven
+     * transactions at once (two memory reads, three census queries, two standing
+     * queries); two conversations overlapping wanted fourteen of the fifteen.
+     * Transaction mode is what makes that survivable — a connection is borrowed
+     * for one transaction and handed straight on, so short reads multiplex instead
+     * of queueing behind each other.
+     *
+     * Everything this file does was already written for it and is verified under
+     * it: `SET LOCAL ROLE`, the GUCs, `statement_timeout` and `set transaction
+     * read only` all hold, because nothing here ever touches a connection outside
+     * `sql.begin()`. `prepare: false` below is the one thing transaction mode
+     * requires and it was already set.
+     *
+     * `max` stays at 10. It is a demand ceiling, not a supply one — raising it
+     * makes exhaustion likelier, never rarer — and 10 is the width that made
+     * `GET /api/emulator/state` 1.2 s instead of 6.0 s when `worldState()` fans
+     * out one transaction per tenant.
+     *
+     * MIGRATION_DATABASE_URL stays on 5432 on purpose: migrations take advisory
+     * locks and run DDL across statements, which is what session mode is for.
      */
     max: 10,
     // Supabase's transaction pooler cannot carry prepared statements.
