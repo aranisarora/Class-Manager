@@ -61,7 +61,7 @@ prose.
 
 | | |
 |---|---|
-| `verify-static.mjs` | Four absolutes, as a build failure rather than a note. |
+| `verify-static.mjs` | Five absolutes, as a build failure rather than a note. |
 | `rls-check.mjs` | The security boundary: cross-tenant and cross-role reads return zero rows. Seed a fixture first, or it skips its real sections and still reports 0 failed. |
 | `check-schema-doc.ts` | Does the schema block still describe the real database? |
 | `check-rls-doc.ts` | Does the permission matrix still describe the real policies? |
@@ -90,7 +90,7 @@ prose.
 | `probe-prefix.ts`, `probe-prefix-tokens.ts`, `probe-ceiling.ts` | What the prefix costs, in characters, in real tokens, and in tool declarations. |
 | `guard-value.ts` | What each runtime guard has actually caught. |
 | `ops-cookie.mjs` | How a script gets through the ops gate. |
-| `_env.ts`, `_danger.ts`, `_capture.ts`, `_world.ts`, `_personas.ts`, `_record-from-probe.ts`, `_findings.ts` | Shared. Leading underscore means "not a command" — `_findings.ts` is the exception, and runs. `_capture.ts` owns the one record shape; `_record-from-probe.ts` converts `probe-model`'s per-arm files into it. |
+| `_env.ts`, `_danger.ts`, `_capture.ts`, `_world.ts`, `_personas.ts`, `_ramp.ts`, `_record-from-probe.ts`, `_findings.ts` | Shared. Leading underscore means "not a command" — `_findings.ts` is the exception, and runs. `_capture.ts` owns the one record shape; `_record-from-probe.ts` converts `probe-model`'s per-arm files into it. `_ramp.ts` overlays `_personas.ts`'s `life` with the five-tier ramp, under `SIM_RAMP=1`. |
 
 ---
 

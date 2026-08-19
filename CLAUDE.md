@@ -46,8 +46,8 @@ is how six report generators grew, and they are gone.
 converts.
 
 **The leading underscore in `scripts/` means "not a command."** `_capture.ts`, `_env.ts`,
-`_world.ts`, `_personas.ts`, `_danger.ts`, `_record-from-probe.ts` are shared modules.
-`_findings.ts` is the one exception and it runs.
+`_world.ts`, `_personas.ts`, `_ramp.ts`, `_danger.ts`, `_record-from-probe.ts` are shared
+modules. `_findings.ts` is the one exception and it runs.
 
 ## Commands
 
@@ -67,7 +67,7 @@ npm run runs                # every recorded run, newest first
 npm run report              # render the newest run as one standalone page
 npm run findings            # which open findings no instrument stages
 
-npm run verify:static       # four absolutes, as a build failure
+npm run verify:static       # five absolutes, as a build failure
 npm run check:layout        # this repo's own structure indexes still describe it
 npm run check:schema-doc    # SCHEMA_DOC still describes the real database
 npm run check:rls-doc       # the permission grid still describes the real policies

@@ -85,6 +85,15 @@ const { costInr } = await import('@/lib/pricing')
 const { env } = await import('@/lib/env')
 const { buildSettledAcademy } = await import('./_world')
 const { PERSONAS, SCHEDULE, WINDOW_AT, windowCounts, INPUT_REALISM } = await import('./_personas')
+/**
+ * The five-tier ramp, as an overlay on `life` rather than a second persona file.
+ *
+ * `SIM_RAMP=1` swaps what happens TO each person on each day for `_ramp.ts`'s
+ * version, and changes nothing else — same seats, same blindfold, same voices,
+ * same record. Off by default so a plain `live` week is unaffected.
+ */
+const { RAMP_LIFE, TIERS } = await import('./_ramp')
+const RAMP = process.env.SIM_RAMP === '1'
 type PersonaKey = import('./_personas').PersonaKey
 type WindowName = import('./_personas').Window
 
@@ -503,11 +512,20 @@ async function main(): Promise<void> {
       const day = Number(flag('day') ?? s.day)
       s.day = day
       await writeSession(s)
+      /**
+       * `--at HH:MM` overrides the window's default hour.
+       *
+       * The two fixed hours cannot express the moments a real academy is actually
+       * lived at: a coach asking who is in tonight has to ask BEFORE the six
+       * o'clock class, and 20:15 is an hour after it finished. A window that can
+       * only land after the thing it is about measures the harness.
+       */
+      const at = flag('at') || WINDOW_AT[w]
       // Inside the lock, exactly as `drive` is: the record is read, appended and
       // written as one critical section, or a seat speaking at the same moment
       // erases whichever of the two wrote first.
       const jobs = await withLock(`window:${day}:${w}`, () =>
-        queueTurn(s, `d${day}-${w}-queue`, () => walkTo(s.academyId, WINDOW_AT[w])),
+        queueTurn(s, `d${day}-${w}-queue`, () => walkTo(s.academyId, at)),
       )
       const here = clock.inZone(await clock.now(s.academyId), TZ)
       await appendFile(
@@ -515,6 +533,7 @@ async function main(): Promise<void> {
         JSON.stringify({ day, window: w, at: here.label, jobs }) + '\n',
       )
       console.log(`  day ${day} ${w} — ${here.label}`)
+      if (RAMP && TIERS[day]) console.log(`  tier ${day} · ${TIERS[day]!.name} — ${TIERS[day]!.what}`)
       console.log(`  seats: ${(SCHEDULE[day]?.[w] ?? []).join(', ') || '(none)'}`)
       console.log(`  jobs: ${jobs.length ? [...new Set(jobs)].join(', ') : 'none'}`)
       break
@@ -585,7 +604,10 @@ async function main(): Promise<void> {
       for (const r of p.redLines) L.push(`  - ${r}`)
       L.push('')
       L.push(`TODAY — day ${day}, ${here.label}`)
-      L.push(`  ${p.life[day] ?? 'Nothing unusual is happening to you today.'}`)
+      // The tier is never named to the seat. A persona who has been told today is
+      // "the hard one" stops being a persona and starts being a test case.
+      const today = (RAMP ? RAMP_LIFE[key]?.[day] : undefined) ?? p.life[day]
+      L.push(`  ${(today ?? 'Nothing unusual is happening to you today.').trim()}`)
       L.push('')
       L.push('YOUR NOTEBOOK SO FAR')
       L.push(diary.trim() ? diary.trim().split('\n').map((l) => `  ${l}`).join('\n') : '  (empty — this is your first time)')
