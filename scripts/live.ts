@@ -386,6 +386,48 @@ async function drive(
   })
 }
 
+/**
+ * Drain the queue AS A TURN, so the proactive surface is measured like every
+ * other thing this product does.
+ *
+ * Until 20 Aug 2026 the three drains below ran outside `rec.turn()` entirely.
+ * Every morning brief, evening digest, coach nudge and dunning message therefore
+ * ran with no tokens, no milliseconds, no SQL, no reasoning and no rupees against
+ * it — 49 of the 137 messages delivered in `2026-08-18-14-38-live`, on a surface
+ * `lib/clock.ts` opens by calling "~70% of this product". The instrument was
+ * measuring the conversational third and extrapolating the whole.
+ *
+ * It was not even that the evidence was thrown away: `days.jsonl` kept the job
+ * names and the unprompted bodies, and `close` folds them into `run.days`. But
+ * `report.mjs` renders `record.json`'s TURNS, so a shape nothing renders is a
+ * shape nobody reads, and the run's own cost table quietly excluded the majority
+ * of what the product says.
+ *
+ * There is nobody in the seat for these, so `who` and `persona` are both
+ * `queue` — which is what makes them legible in the report's split table, where
+ * the proactive surface now sits beside the four people as its own row. `say` is
+ * empty because nobody typed anything, and an invented sentence there would be
+ * the harness putting words in the product's mouth.
+ *
+ * The caller passes a thunk that returns the drain log; `_capture.ts` takes it
+ * from the sink rather than asking the database, because the database cannot
+ * answer — see `TurnSink`.
+ */
+async function queueTurn(s: Session, id: string, run: () => Promise<string[]>): Promise<string[]> {
+  const rec = await reopenRun(s.dir, {
+    academyId: s.academyId,
+    q: (sql: string) => q(s.academyId, sql),
+    domainNow: () => clock.now(s.academyId),
+  })
+  const t = await rec.turn(
+    { id, who: 'queue', persona: 'queue', say: '', day: s.day },
+    async (sink) => {
+      sink.jobs.push(...(await run()))
+    },
+  )
+  return t.jobs
+}
+
 /* ------------------------------------------------------------- commands */
 
 async function main(): Promise<void> {
@@ -442,7 +484,10 @@ async function main(): Promise<void> {
 
       // Materialise the timetable before anybody speaks, so day 1 is a business
       // with sessions in it rather than one whose first question has no answer.
-      const jobs = await drain(world.academyId)
+      // Recorded as turn 1: it is the first thing the product does in this run,
+      // it costs money, and a run whose opening move is missing from its own
+      // record starts by understating itself.
+      const jobs = await queueTurn(session, 'd1-open-queue', () => drain(world.academyId))
       console.log(`  academy  ${world.academyId}`)
       console.log(`  record   ${dir}`)
       console.log(`  clock    ${clock.inZone(await clock.now(world.academyId), TZ).label}`)
@@ -458,7 +503,12 @@ async function main(): Promise<void> {
       const day = Number(flag('day') ?? s.day)
       s.day = day
       await writeSession(s)
-      const jobs = await withLock(`window:${day}:${w}`, () => walkTo(s.academyId, WINDOW_AT[w]))
+      // Inside the lock, exactly as `drive` is: the record is read, appended and
+      // written as one critical section, or a seat speaking at the same moment
+      // erases whichever of the two wrote first.
+      const jobs = await withLock(`window:${day}:${w}`, () =>
+        queueTurn(s, `d${day}-${w}-queue`, () => walkTo(s.academyId, WINDOW_AT[w])),
+      )
       const here = clock.inZone(await clock.now(s.academyId), TZ)
       await appendFile(
         join(s.dir, 'days.jsonl'),
@@ -473,13 +523,15 @@ async function main(): Promise<void> {
     /* ---------------------------------------------------------- endday */
     case 'endday': {
       const s = await readSession()
-      const jobs = await withLock(`endday:${s.day}`, async () => {
-        const a = await walkTo(s.academyId, '23:30')
-        const b = await drain(s.academyId)
-        await clock.advance(45 * 60_000, s.academyId)
-        const cc = await drain(s.academyId)
-        return [...a, ...b, ...cc]
-      })
+      const jobs = await withLock(`endday:${s.day}`, () =>
+        queueTurn(s, `d${s.day}-overnight-queue`, async () => {
+          const a = await walkTo(s.academyId, '23:30')
+          const b = await drain(s.academyId)
+          await clock.advance(45 * 60_000, s.academyId)
+          const cc = await drain(s.academyId)
+          return [...a, ...b, ...cc]
+        }),
+      )
       const unprompted = await q<any>(
         s.academyId,
         `select p.full_name as who, m.body, coalesce(m.origin,'?') as origin, m.status,

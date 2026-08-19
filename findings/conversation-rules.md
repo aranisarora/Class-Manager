@@ -1733,3 +1733,89 @@ remove a coach from one future session, run the materialiser, and read the row b
 still be absent. Then the same for a *declined* coach, whose `declined_at` must survive.
 
 Do not settle for a green tool result — `node scripts/q.mjs` and read the rows, per DRIVING.md.
+
+---
+
+## Part 10 — the instrument was not measuring most of the product. 20 Aug 2026
+
+Found by verifying a claim in `.probe/reports/2026-08-19-instrument-critique.html` (its A2 and
+C2) against the code at HEAD, the record of `.probe/runs/2026-08-18-14-38-live`, and the live
+`job` table. Both claims hold. Neither is about the model: this is the instrument mis-measuring
+the product, which is worse, because every cost and coverage reading taken since inherits it.
+
+| # | What was wrong | Mechanism built | State |
+| --- | --- | --- | --- |
+| **F-BU** | Job drains ran outside `rec.turn()`, so every brief, digest, nudge and dunning message was recorded with no tokens, no seconds, no SQL, no reasoning and no rupees | `queueTurn` in `live.ts` — each drain is a turn with `who: 'queue'` | fixed, undriven |
+| **F-BV** | The `jobs` field windowed a table that has no completion timestamp, so it listed the future instead of the turn | `TurnSink` in `_capture.ts` — the drain hands over what it ran; the query is deleted | fixed, undriven |
+
+### F-BU · The proactive surface was unpriced, and it is most of what the product says
+
+`live.ts` called `walkTo`/`drain` at three sites — `open`, `window`, `endday` — and none was
+inside a `rec.turn()`. The only `rec.turn()` in the file was the seat turn. So the queue's work
+was recorded as a list of job names in `days.jsonl` and nothing else.
+
+The evidence is not that the record was thin; it is that the arithmetic was wrong:
+
+- **49 of 137 delivered messages (36%)** in `2026-08-18-14-38-live` went out from a job, with
+  ₹0 against them. The run's own cost table therefore priced the conversational third and
+  presented it as the run.
+- `lib/clock.ts` opens by saying **"~70% of this product is proactive."** The instrument was
+  measuring the other 30% and extrapolating a monthly figure from it.
+- `days.jsonl` *is* folded into `record.json` as `run.days` by `close`. It was never rendered:
+  `report.mjs` reads `rec.world` and `rec.turns`, so a shape nothing renders is a shape nobody
+  reads. The data existed and was invisible, which is the harder failure to notice.
+
+The fix is the one the critique named. `queueTurn` opens the record inside the same lock the seat
+turns use and wraps the drain, so the queue gets the identical treatment: its handlers' model
+calls land in `rounds`, their statements in `sql`, their messages in `messages`, and their cost in
+`inr`. `who` and `persona` are both `queue`, which puts the proactive surface in `report.mjs`'s
+split table as its own row beside the four people — the reading that was impossible before.
+
+`say` is empty, because nobody typed. An invented sentence there would be the harness putting
+words in the product's mouth, and `report.mjs` renders these turns under *What ran* and *What
+went out unprompted* rather than *What they typed*.
+
+### F-BV · A window over `job` cannot answer "what ran in this turn", and never could
+
+`_capture.ts` asked for `coalesce(locked_at, run_at, created_at) >= cursor and status <> 'pending'`.
+Every part of that is defensible and the whole is unanswerable, because **no column on `job`
+records when a job finished**: `run_at` is when it was DUE, `created_at` is when it was MADE, and
+both `live.ts`'s drain and `lib/jobs/runner.ts`'s `finish` set `locked_at = null` on completion
+(0002_schema.sql:355-368 is the whole column list). The `coalesce` therefore fell through to
+`run_at`, and every already-finished job still scheduled ahead of the cursor re-listed on every
+turn for the rest of the run.
+
+Measured, not argued:
+
+- **6,912 job strings across 68 turns** — mean 101.6 — from **31 distinct values**, 1,324 of them
+  the same `materialize_sessions:done`.
+- The count falls **161 → 66** and plateaus exactly on simulated-day boundaries; **61 of 67**
+  consecutive turns are a strict sub-multiset of the turn before. That is a shrinking horizon
+  being rendered as per-turn work.
+- Against the live database on 20 Aug: **560 of 567** finished jobs have `locked_at` null, and
+  with the cursor at `app.now()` the old predicate returns **25 finished jobs from 9 distinct
+  values** — 14 `done`, 10 `cancelled`, 1 `skipped`, all with `run_at` ahead of the clock — for a
+  turn in which nothing ran at all.
+- `report.mjs` rendered this as `Queue: …` under each turn, so a reader saw ~100 queue events per
+  turn and concluded the queue was heavily instrumented.
+
+`drain()` has always returned exactly the right answer — a `string[]` of `kind:status` for the
+jobs it just ran — and `live.ts` was discarding it. The fix is to record that: `fn` now receives a
+`TurnSink` and pushes into `sink.jobs`, and the query is gone. There is no predicate left to get
+wrong.
+
+**A `ran_at` column was considered and deliberately not added.** It would let the table answer the
+question directly, and `lib/jobs/runner.ts` has the same blind spot in production. But no product
+behaviour needs it — `job_tick` (0029) already covers whether the beat is alive — and adding a
+column to the product's schema to serve an instrument inverts this repo's own layering. Recorded
+here so the next reader does not re-derive the choice.
+
+### How to know it is fixed
+
+Not by a green typecheck. The proof is the next `live` week: `record.json` gains a `queue` turn per
+window, the split table in `report.mjs` shows a `queue` row with a non-zero rupee figure, and every
+turn's `jobs` array is either empty or short and non-repeating. If a seat turn ever carries a job
+string again, something drained inside it and the attribution needs re-reading.
+
+The pre-fix numbers above are the baseline. `2026-08-18-14-38-live` is the run they came from, and
+`.probe/` is not version controlled — archive it, do not delete it.

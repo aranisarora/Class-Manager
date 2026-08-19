@@ -126,7 +126,11 @@ export type Turn = {
   buttons: string[]
   /** Title of the affordance the harness pressed, or null if it pressed nothing. */
   tapped: string | null
-  /** Jobs the queue ran in this window, as `kind → outcome`. */
+  /**
+   * Jobs the queue ran INSIDE this turn, as `kind:outcome`, handed over by
+   * whatever drained them — see `TurnSink`. Empty is the honest value for a turn
+   * that drained nothing, and most seat turns drain nothing.
+   */
   jobs: string[]
   tokens: { prompt: number; cached: number; output: number }
   inr: number | null
@@ -205,6 +209,30 @@ export type TurnMeta = {
   day?: number
   tapped?: string | null
 }
+
+/**
+ * What a turn collects from the driver WHILE it runs, because it cannot be read
+ * back afterwards.
+ *
+ * `jobs` is the only member and it exists because the `job` table cannot be
+ * asked what ran. `run_at` is when a job was DUE, `created_at` is when it was
+ * made, and both the live drain and the production runner (`lib/jobs/runner.ts`
+ * `finish`) set `locked_at = null` on completion — so after a job finishes, no
+ * column on the row carries the moment it ran.
+ *
+ * This was not a theoretical gap. The window query that used to stand here —
+ * `coalesce(locked_at, run_at, created_at) >= cursor and status <> 'pending'` —
+ * therefore fell through to `run_at` and listed every already-finished job still
+ * scheduled ahead of the cursor. In `2026-08-18-14-38-live` that is 6,912 job
+ * strings over 68 turns from **31 distinct values**, 1,324 of them the same
+ * `materialize_sessions:done`, shrinking 161 → 66 as the remaining horizon
+ * shrank and plateauing on day boundaries. It was rendering the future as though
+ * it were the turn.
+ *
+ * The drain already returns exactly the right answer and always did. This is
+ * where it is put, and there is no query to get it wrong.
+ */
+export type TurnSink = { jobs: string[] }
 
 const stamp = (d: Date): string => d.toISOString().slice(0, 16).replace(/[:T]/g, '-')
 
@@ -296,15 +324,16 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
    * whatever evidence was collected before it died — a crashed turn is often the
    * most interesting one in a run, and the old harnesses discarded exactly it.
    */
-  async function turn(meta: TurnMeta, fn: () => Promise<void>): Promise<Turn> {
+  async function turn(meta: TurnMeta, fn: (t: TurnSink) => Promise<void>): Promise<Turn> {
     const before = await opts.domainNow()
     const cursor = before.toISOString()
     const startedAt = Date.now()
+    const sink: TurnSink = { jobs: [] }
     let sql: SqlRecord[] = []
     let error: string | null = null
 
     try {
-      const got = await captureSql({ rows: true }, () => captureFullTrace(fn))
+      const got = await captureSql({ rows: true }, () => captureFullTrace(() => fn(sink)))
       sql = got.sql
     } catch (e) {
       error = e instanceof Error ? (e.stack ?? e.message) : String(e)
@@ -352,14 +381,6 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
       suppressedReason: m.suppressed_reason ?? null,
     }))
 
-    const jobs = await opts
-      .q<any>(
-        `select kind, status from job
-          where coalesce(locked_at, run_at, created_at) >= '${cursor}'::timestamptz
-            and status <> 'pending' order by coalesce(locked_at, run_at, created_at) asc`,
-      )
-      .catch(() => [] as any[])
-
     const wrote = await opts
       .q<any>(
         `select count(*)::int as n from audit_entry where created_at >= '${cursor}'::timestamptz`,
@@ -386,7 +407,7 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
       reply: out.filter((m) => !m.suppressedReason).map((m) => m.body).join('\n---\n') || null,
       buttons: out.flatMap((m) => m.buttons),
       tapped: meta.tapped ?? null,
-      jobs: jobs.map((j: any) => `${j.kind}:${j.status}`),
+      jobs: sink.jobs,
       tokens,
       inr: await costOf(tokens),
       ms: Date.now() - startedAt,

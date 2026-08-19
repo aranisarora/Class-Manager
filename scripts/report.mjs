@@ -132,6 +132,17 @@ const scoreOf = (t) => {
 }
 const band = (s) => (s === null ? '' : s >= 8 ? 'good' : s >= 6 ? 'mid' : 'bad')
 
+/**
+ * A turn nobody sat in — the queue draining on its own.
+ *
+ * `live.ts` records its drains as turns so the proactive surface is priced like
+ * everything else (before 20 Aug 2026 it was priced not at all). They are turns
+ * in every way that matters — they cost tokens, they write rows, they put
+ * messages on phones — but two of the headings below would lie about them:
+ * nobody typed, and nobody was waiting to read.
+ */
+const isQueue = (t) => t.who === 'queue'
+
 const AXES = [
   ['truth', 'did it do what it said?'],
   ['correctness', 'was it the right thing?'],
@@ -192,7 +203,10 @@ const totalWrote = turns.reduce((a, t) => a + (Number(t.wrote) || 0), 0)
 const allSql = turns.flatMap((t) => t.sql ?? [])
 const refused = allSql.filter((s) => s.error)
 const emptyWrites = allSql.filter((s) => s.kind !== 'read' && s.rowCount === 0)
-const silent = turns.filter((t) => !t.reply)
+// Seat turns only. A person who typed and got nothing back is a finding; a
+// window where the queue came due and had nothing to say is a quiet Tuesday, and
+// counting the two together buries the first in the second.
+const silent = turns.filter((t) => !t.reply && !isQueue(t))
 const days = new Set(turns.map((t) => t.day).filter((d) => d !== undefined))
 
 body += `<div class="stats">
@@ -212,6 +226,14 @@ if (personas.length > 1) {
   <p>Averaging a run hides the only thing worth knowing about it. Split by whose phone the message came
   from and a list of incidents becomes a finding — the previous month's every-catastrophic-turn-is-a-client-turn
   was invisible in its mean and obvious in this table.</p>
+  ${
+    turns.some(isQueue)
+      ? `<p><code>queue</code> is not a person. It is the proactive surface — every brief, digest, nudge and
+  dunning message that went out because a job came due rather than because somebody asked. It is a row here
+  because until 20 Aug 2026 it was in no row at all: the drains ran outside the recorder, so the majority of
+  what this product says cost, by the instrument's own arithmetic, nothing.</p>`
+      : ''
+  }
   <div class="scroll"><table><thead><tr><th>persona</th><th>turns</th>${mean === null ? '' : '<th>mean</th><th>worst</th>'}<th>rows written</th><th>sent</th><th>refused SQL</th><th>cost</th></tr></thead><tbody>`
   for (const p of personas) {
     const mine = turns.filter((t) => t.persona === p)
@@ -341,7 +363,9 @@ for (const t of turns) {
   if (s !== null) body += `<span class="score">${s}</span>`
   body += `<b>#${t.n} ${esc(t.id)}</b> <span class="tag">${esc(t.persona)}</span> <span class="tag">${esc(t.who)}</span>`
   if (j?.finding) body += ` <span class="tag">${esc(j.finding)}</span>`
-  body += `<div class="who">${esc(String(t.say ?? '').slice(0, 150))}</div></summary>`
+  body += `<div class="who">${esc(
+    isQueue(t) ? [...new Set(t.jobs ?? [])].join(' · ').slice(0, 150) : String(t.say ?? '').slice(0, 150),
+  )}</div></summary>`
 
   if (j?.reason) body += `<blockquote><p><b>Read as:</b> ${esc(j.reason)}</p></blockquote>`
   if (j?.axes) {
@@ -350,7 +374,15 @@ for (const t of turns) {
       .join(' · ')}</p>`
   }
 
-  body += `<h4>What they typed</h4><blockquote><p>${esc(t.say)}</p></blockquote>`
+  if (isQueue(t)) {
+    const kinds = [...new Set((t.jobs ?? []).map((j) => String(j).split(':')[0]))]
+    body += `<h4>What ran <span class="dim">— nobody typed; the queue came due</span></h4>
+    <p>${(t.jobs ?? []).length} job${(t.jobs ?? []).length === 1 ? '' : 's'}${
+      kinds.length ? `, ${kinds.length} kind${kinds.length === 1 ? '' : 's'}: ${kinds.map((k) => `<code>${esc(k)}</code>`).join(', ')}` : ''
+    }.</p>`
+  } else {
+    body += `<h4>What they typed</h4><blockquote><p>${esc(t.say)}</p></blockquote>`
+  }
 
   /* the thinking */
   const rounds = t.rounds ?? []
@@ -427,7 +459,11 @@ for (const t of turns) {
   if (t.jobs?.length) body += `<p class="dim">Queue: ${esc(t.jobs.join(' · '))}</p>`
 
   /* what they read */
-  body += `<h4>What the person read</h4><pre>${esc(t.reply ?? '(nothing was sent)')}</pre>`
+  body += isQueue(t)
+    ? `<h4>What went out unprompted <span class="dim">— nobody had asked for any of this</span></h4><pre>${esc(
+        t.reply ?? '(the queue ran and said nothing to anybody)',
+      )}</pre>`
+    : `<h4>What the person read</h4><pre>${esc(t.reply ?? '(nothing was sent)')}</pre>`
   if (t.buttons?.length) body += `<p>${t.buttons.map((b) => `<span class="btn">${esc(b)}</span>`).join(' ')}</p>`
   if (t.tapped) body += `<p class="dim">The harness tapped <b>${esc(t.tapped)}</b>.</p>`
   const suppressed = (t.messages ?? []).filter((m) => m.suppressedReason)

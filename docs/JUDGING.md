@@ -56,6 +56,14 @@ byte with what Postgres answered (the refused ones included), every message that
 phone with its buttons, what the queue ran, the world counted either side of the turn, and
 the tokens, seconds and rupees.
 
+**Not every turn has a person in it.** A turn whose `who` is `queue` is the queue draining —
+a window where standing jobs came due and the product spoke first: briefs, digests, coach
+nudges, dunning. Nobody typed, so `say` is empty and nobody was waiting on the reply. Judge
+these on what was sent and what it cost, not on friction or affordance for a person who was
+not there. They are in the record from 20 Aug 2026; before that the drains ran outside the
+recorder and the proactive surface — the majority of what this product says — was priced at
+nothing.
+
 It holds no booleans. The rule the record keeps:
 
 > **Numbers and text are evidence; booleans are verdicts.**
