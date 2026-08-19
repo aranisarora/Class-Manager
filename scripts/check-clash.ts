@@ -38,8 +38,23 @@ const { previewPlan, needsPreview } = await import('@/lib/agent/plan')
 const { coachClashes } = await import('@/lib/agent/clash')
 const { newId } = await import('@/lib/ids')
 
-/** The sandbox sender every seeded world already uses. */
-const SENDER = '88ec9075-dcd5-482f-835e-1f488a082e39'
+/**
+ * Any sender will do — nothing here sends anything, it just needs a row to hang
+ * the scratch tenant off.
+ *
+ * Hardcoding the sandbox uuid worked until the database was reseeded and then
+ * failed on a foreign key, which reads as a broken check rather than as a missing
+ * row — the shape this repo keeps paying for. Resolved the same way
+ * `check-attendance-bills`, `check-partial-period` and `check-roster-scale`
+ * already do.
+ */
+const SENDER = await withSession({ role: 'service', academyId: null as unknown as string }, async (tx) =>
+  String(((await tx.unsafe(`select id from sender order by created_at limit 1`)) as unknown as any[])[0]?.id ?? ''),
+).catch(() => '')
+if (!SENDER) {
+  console.error('  no sender row in this database — seed one before running this check')
+  process.exit(2)
+}
 const MONDAY = 1
 const TUESDAY = 2
 

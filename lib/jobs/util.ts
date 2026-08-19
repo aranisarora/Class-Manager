@@ -293,11 +293,31 @@ export type EnrolledPlayer = {
   holder_name: string
   holder_settings: Record<string, unknown> | null
   contact_id: string | null
+  holder_contact_id: string | null
   enrollment_id: string
   is_trial: boolean
 }
 
-/** Everyone actively enrolled in a class on a given date, with the number that pays. */
+/**
+ * Everyone actively enrolled in a class on a given date, with the number to tell.
+ *
+ * **`contact_id` is the number to TELL, which is not always the number that pays.**
+ * It used to be the holder's, always, and that was the whole of "send reminders to
+ * my son instead" being impossible: the recipient was derived from
+ * `account.holder_person_id` with no override anywhere, so a teenager with his own
+ * phone still had his classes announced to his mother.
+ *
+ * Now: the player's own number if they have one, else the holder's. A player only
+ * has one if an admin approved `link_contact`, which is scoped to their own account
+ * — so this cannot start messaging somebody the family did not ask for.
+ *
+ * The money is untouched and stays that way. `holder_contact_id` is carried
+ * separately for anything that needs the payer specifically, and the money handlers
+ * resolve through `contactFor(holder_person_id)` rather than through this at all.
+ * The permission side needs no work either: a player who holds no account gets
+ * `app.sees_money() = false`, so a linked teenager sees his sessions and never a
+ * rupee of the family's.
+ */
 export async function enrolledPlayers(
   tx: Tx, academyId: string, classId: string, onDate: string,
 ): Promise<EnrolledPlayer[]> {
@@ -306,12 +326,19 @@ export async function enrolledPlayers(
            p.id as player_id, p.person_id as player_person_id, pp.full_name as player_name,
            a.id as account_id, a.holder_person_id, hp.full_name as holder_name,
            hp.settings as holder_settings,
-           ct.id as contact_id
+           coalesce(own.id, ct.id) as contact_id,
+           ct.id as holder_contact_id
       from enrollment e
       join player p on p.id = e.player_id and p.active
       join person pp on pp.id = p.person_id
       join account a on a.id = p.account_id
       join person hp on hp.id = a.holder_person_id
+      left join lateral (
+        select c.id from contact c
+         where c.academy_id = e.academy_id and c.person_id = p.person_id
+           and c.opted_out_at is null
+         order by c.is_primary desc, c.created_at asc limit 1
+      ) own on true
       left join lateral (
         select c.id from contact c
          where c.academy_id = e.academy_id and c.person_id = a.holder_person_id

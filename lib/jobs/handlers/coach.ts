@@ -301,6 +301,11 @@ export async function coachComing(job: Job): Promise<void> {
     catalogId: 'CO-COMING',
     isConfirmationRequest: true,
     subjectPersonIds: audience,
+    // Named, and deliberately the SAME subject the nudge below uses: T-60 and T-15 ask
+    // one question twice, so the later ask must supersede the earlier row rather than
+    // leave two open against one session. Derived, the kind would be the catalog id and
+    // the subject the audience list, which differ between the two rungs.
+    confirmation: { kind: 'confirm_coach', subject: `${session.id}+${me.coach_id}` },
   })
   note(`asked ${firstName(me.full_name)} about ${session.class_name}`)
 
@@ -370,6 +375,8 @@ export async function coachNudge(job: Job): Promise<void> {
     catalogId: 'CO-NUDGE',
     isConfirmationRequest: true,
     subjectPersonIds: audience,
+    // The same subject as CO-COMING above, on purpose — see the note there.
+    confirmation: { kind: 'confirm_coach', subject: `${session.id}+${me.coach_id}` },
   })
   note(`nudged ${firstName(me.full_name)} about ${session.class_name}`)
 

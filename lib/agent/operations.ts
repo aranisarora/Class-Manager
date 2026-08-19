@@ -311,6 +311,36 @@ async function rosterOf(ctx: SessionCtx, classId: string, onDate: string): Promi
   )
 }
 
+/**
+ * What the register already says about one player on one session.
+ *
+ * `rosterOf` above cannot answer this and should not be made to: it is keyed by class
+ * and date, and the attendance row is keyed by session. So the operations that need to
+ * know what they are about to overwrite ask here, through the view that already owns
+ * the join — `app.session_roster` left-joins `attendance` and exposes
+ * `attendance_status`, and its own comment says it exists because the join "kept
+ * getting guessed wrong". A parent may read their own child's row
+ * (0028's `attendance_cm_user_select`), so this is not a service-only question; it goes
+ * through `svc` only for the same reason the rest of this operation does.
+ *
+ * Written because `client_cancel` had no way to see its own earlier effect. It asked a
+ * mother to cancel a session she had already cancelled, and the second answer was worse
+ * than the first.
+ */
+async function attendanceOf(
+  ctx: SessionCtx,
+  sessionId: string,
+  playerId: string,
+): Promise<{ status: string | null; markedAt: string | null }> {
+  const rows = await q<{ attendance_status: string | null; marked_at: string | null }>(
+    svc(ctx),
+    `select attendance_status, marked_at
+       from app.session_roster
+      where session_id = ${uid(sessionId)} and player_id = ${uid(playerId)}`,
+  )
+  return { status: rows[0]?.attendance_status ?? null, markedAt: rows[0]?.marked_at ?? null }
+}
+
 type CoachOnSession = {
   coach_id: string
   person_id: string
@@ -386,6 +416,7 @@ export type OperationName =
   | 'forget'
   | 'drop_watch'
   | 'set_up_business'
+  | 'link_contact'
 
 export type OperationDef = {
   name: OperationName
@@ -577,25 +608,64 @@ const endCoach: OperationDef = {
     // were on it and did not decline. `arrived_at` remains the stronger claim
     // (§11.1) and is still what coverage is derived from; it is just not what
     // being owed money depends on.
-    const [taken] = await q<{ sessions: string; hours: string }>(
+    /**
+     * **Read off the rows, never recomputed from today's rate.**
+     *
+     * This used to count every session in the coach's history and multiply by
+     * `coach.pay_amount` as it stands right now. That is one mutable number
+     * deciding what somebody earned across months it was never in force for — so
+     * a coach who had a raise in September left with their whole career repriced
+     * at the September number, in the one message the comment above calls
+     * unrecoverable.
+     *
+     * `coach_ledger` (0038) is the record: every closed month, with the rate that
+     * applied frozen into the row. The month in progress has not been closed yet
+     * and is the only part still derived — from `coach_pay`, which owns `worked`
+     * and the per-unit arithmetic, rather than from a second hand-written copy.
+     */
+    const [settled] = await q<{ total: string; months: string }>(
       ctx,
-      `select count(*) as sessions,
-              coalesce(sum(extract(epoch from (s.ends_at - s.starts_at)) / 3600.0), 0) as hours
-         from session_coach sc join session s on s.id = sc.session_id
-        where sc.coach_id = ${uid(args.coach_id)}
-          and s.status = 'completed'
-          and sc.declined_at is null`,
+      `select coalesce(sum(amount), 0)::text as total, count(distinct period)::text as months
+         from coach_ledger
+        where coach_id = ${uid(args.coach_id)} and academy_id = ${uid(ctx.academyId)}`,
     )
-    const sessions = num(taken?.sessions)
-    const hours = num(taken?.hours)
-    const rate = coach.pay_amount === null ? null : num(coach.pay_amount)
+    const settledTotal = num(settled?.total)
+    const settledMonths = num(settled?.months)
+
+    // The open month. A per_month coach earns it whole — the same rule the tally
+    // states for a family joining mid-period, and for the same reason: pro-rating
+    // is a decision a person makes, and an adjustment line is how they make it.
+    let openTotal = 0
+    if (coach.pay_amount !== null) {
+      if (coach.pay_unit === 'per_month') {
+        openTotal = num(coach.pay_amount)
+      } else {
+        const [open] = await q<{ total: string }>(
+          ctx,
+          `select coalesce(sum(amount_for_session), 0)::text as total
+             from coach_pay
+            where coach_id = ${uid(args.coach_id)} and academy_id = ${uid(ctx.academyId)}
+              and worked
+              and (starts_at at time zone ${lit(a.timezone)})::date
+                  >= date_trunc('month', (app.now() at time zone ${lit(a.timezone)}))::date`,
+        )
+        openTotal = num(open?.total)
+      }
+    }
+
+    const total = settledTotal + openTotal
     let payLine: string
-    if (rate === null) payLine = "Your pay isn't tracked here, so there's no total to show."
-    else if (coach.pay_unit === 'per_session')
-      payLine = `${sessions} session${sessions === 1 ? '' : 's'} at ${formatINR(rate)} — ${formatINR(sessions * rate)}.`
-    else if (coach.pay_unit === 'per_hour')
-      payLine = `${hours.toFixed(1)} hours at ${formatINR(rate)} — ${formatINR(hours * rate)}.`
-    else payLine = `Your rate was ${formatINR(rate)} ${String(coach.pay_unit ?? '').replace('_', ' ')}.`
+    if (coach.pay_amount === null) {
+      payLine = "Your pay isn't tracked here, so there's no total to show."
+    } else if (total === 0) {
+      payLine = 'Nothing has been recorded against your pay yet, so there is no total to show.'
+    } else {
+      const settledPart = settledMonths
+        ? `${formatINR(settledTotal)} across ${settledMonths} settled month${settledMonths === 1 ? '' : 's'}`
+        : null
+      const openPart = openTotal > 0 ? `${formatINR(openTotal)} this month` : null
+      payLine = `${formatINR(total)} in all — ${[settledPart, openPart].filter(Boolean).join(', and ')}.`
+    }
 
     const coachContact = await contactForPerson(ctx, coach.person_id)
     if (coachContact) {
@@ -1670,6 +1740,31 @@ const markAttendance: OperationDef = {
     const unexplained = entries.filter(
       (e) => e.status === 'absent' && existingStatus.get(e.player_id) !== 'cancelled_timely',
     )
+
+    /**
+     * The same hole as the one above, pointed the other way — and it was quieter.
+     *
+     * `unexplained` deliberately excludes a player already recorded as a timely
+     * cancellation, which is right for the question it asks ("nothing on record — did
+     * anyone tell you?"). But the exclusion also meant that marking such a player
+     * absent — which this operation's own upsert happily does, and which puts the
+     * charge back on — was the ONE case nobody was asked about. A parent cancels in
+     * good time, the coach taps through the register, and a free cancellation silently
+     * becomes a billed no-show.
+     *
+     * The coach is allowed to do it: a child who actually turned up is a real
+     * correction, and the register is where corrections belong. What was missing is
+     * that they were never told what they had just undone. So this surfaces exactly
+     * the case the filter above removes, and offers the one-tap way back through
+     * `retro_timely_player_ids`, which already exists for the other direction.
+     *
+     * The family-initiated path is guarded rather than surfaced — see `client_cancel`.
+     * A tap there runs with no model in the room, and a parent cancelling cannot be a
+     * correction to their own earlier cancellation.
+     */
+    const overrode = entries.filter(
+      (e) => e.status !== 'cancelled_timely' && existingStatus.get(e.player_id) === 'cancelled_timely',
+    )
     const markerContact = ctx.role === 'service' ? null : ctx.contactId
     if (unexplained.length && markerContact) {
       const names = unexplained.map((e) => byPlayer.get(e.player_id)?.player_name ?? 'someone')
@@ -1689,6 +1784,31 @@ const markAttendance: OperationDef = {
               },
             })),
             { title: 'No, just absent', action: { kind: 'noop' as const, ack: 'Left as absent. Thanks.' } },
+          ],
+        },
+      })
+    }
+
+    if (overrode.length && markerContact) {
+      const names = overrode.map((e) => byPlayer.get(e.player_id)?.player_name ?? 'someone')
+      const plural = names.length > 1
+      steps.push({
+        message: {
+          to_contact_id: markerContact,
+          body:
+            `One thing worth knowing — ${names.join(', ')} ${plural ? 'were' : 'was'} already down as ` +
+            `cancelled in good time, with no charge. Marking the register has put the charge back on. ` +
+            `If that's not right, I'll undo it.`,
+          buttons: [
+            ...overrode.slice(0, 2).map((e) => ({
+              title: `${(byPlayer.get(e.player_id)?.player_name ?? 'They').split(' ')[0]} did tell us`.slice(0, 20),
+              action: {
+                kind: 'operation' as const,
+                op: 'mark_attendance' as const,
+                args: { session_id: s.id, retro_timely_player_ids: [e.player_id] },
+              },
+            })),
+            { title: 'No, leave it', action: { kind: 'noop' as const, ack: 'Left as marked. Thanks.' } },
           ],
         },
       })
@@ -1807,6 +1927,12 @@ const declineCoach: OperationDef = {
             // beside this one — driven in the F-O suite, two "Just to be sure"
             // messages a minute apart, the second with its yes-button refused.
             is_confirmation_request: true,
+            // The protocol names its own question rather than letting `send` derive
+            // one — `decline_coach` is what SCHEMA_DOC documents this column to hold,
+            // and the session plus the coach is the subject a second ask should
+            // supersede on. Derived, the kind would be a null catalog id and the
+            // subject the bare contact.
+            confirmation: { kind: 'decline_coach', subject: `${s.id}+${coachId}` },
             body: `Just to be sure — you can't make ${s.class_name} ${whenLabel(s.starts_at, a.timezone, today)}?${
               stillCovered
                 ? ''
@@ -2006,6 +2132,26 @@ const clientCancel: OperationDef = {
     confirmed: z.boolean().optional().default(false),
     scope: z.enum(['session', 'series']).optional().default('session'),
     reason: z.string().nullish(),
+    /**
+     * RUNTIME-STAMPED, and in `HUMAN_ASSERTION_PARAMS` so a model-authored call can
+     * never set them — the answer would then be whatever the model decided the money
+     * should be. The confirmation below mints them; the tap replays them.
+     *
+     * They exist because the decision used to be recomputed at TAP time, against a
+     * later clock and against whatever the window says now. A mother cancelled 57.5h
+     * before a session — comfortably free, and she was told so — and the product then
+     * took a day to ask her the same question again. Her second tap landed 21.7h out,
+     * so the operation rebuilt itself, decided "late", and wrote `absent` over the
+     * `cancelled_timely` her first tap had earned, with a charge behind it
+     * (`.probe/runs/2026-08-17-18-07-live`, turns 15 and 30).
+     *
+     * She did cancel in good time. That is a fact about HER, and it stopped being true
+     * only because the product was slow. §2.2 already says everything a tap can run is
+     * validated when minted; a button whose meaning changes between minting and tapping
+     * is precisely the failure that rule exists to prevent.
+     */
+    decided_timely: z.boolean().nullish(),
+    decided_window_hours: z.number().nullish(),
   }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
@@ -2017,9 +2163,48 @@ const clientCancel: OperationDef = {
     if (!r) throw new Error('that player is not on this session')
     const when = whenLabel(s.starts_at, a.timezone, today)
 
+    // The window as it stood when the question was asked, not as it stands now. The
+    // owner may widen or narrow it at any time, and every un-tapped button on every
+    // phone would otherwise change meaning underneath the people holding them —
+    // including the sentence they already read, which names the hours.
+    const windowHours = args.decided_window_hours ?? a.cancellation_window_hours
     const hoursOut = (new Date(s.starts_at).getTime() - nowD.getTime()) / 3_600_000
-    const inWindow = hoursOut >= a.cancellation_window_hours
+    const inWindow = args.decided_timely ?? hoursOut >= windowHours
     const perSession = r.rate_unit === 'per_session'
+
+    /**
+     * Look at the register before asking about it.
+     *
+     * This operation used to be structurally blind to its own earlier effect:
+     * `rosterOf` returns the player, the account, the rate and the holder, and nothing
+     * about attendance, so nothing anywhere could say "this is already done". A mother
+     * cancelled a Thursday class on the Monday and tapped Yes. On the Tuesday she wrote
+     * "cancel tomorrow too" — and tomorrow WAS that Thursday. Nothing contradicted the
+     * reading that it had never happened, so the product asked again, she tapped again,
+     * and by then the session was inside the notice window.
+     *
+     * Answering instead of re-asking is the whole fix for that turn. It also means the
+     * model is told the truth in words it can act on, rather than composing a guess from
+     * the only two relations it thought to read — one of which was the SESSION status,
+     * which is about the whole class being called off and says nothing about one child.
+     */
+    const already = await attendanceOf(ctx, s.id, r.player_id)
+    if (already.status === 'cancelled_timely') {
+      return [
+        {
+          note: `${r.player_name} was already out of ${s.class_name} ${when}, with no charge`,
+        },
+        {
+          message: {
+            to_person_id: r.holder_person_id,
+            body:
+              `${r.player_name} is already out of ${s.class_name} ${when} — that went through` +
+              `${already.markedAt ? ` on ${zoned(already.markedAt, a.timezone).toFormat('d LLL')}` : ''}` +
+              `, and there's no charge for it. Nothing more to do.`,
+          },
+        },
+      ]
+    }
 
     // §9.2 — "Can't make it" confirms before it acts. A pocket mis-tap must
     // never give away a seat, so the unconfirmed call only ever produces the
@@ -2036,12 +2221,31 @@ const clientCancel: OperationDef = {
             // this was missing from. One confirmation per action is enforced at
             // the runtime only when the runtime knows one was asked.
             is_confirmation_request: true,
+            /**
+             * Named, because `send` deriving it produced both halves wrong.
+             *
+             * The KIND fell back to `catalog_id`, so the row read `CL-CANCEL-CONFIRM`
+             * while `SCHEMA_DOC` told the model this column holds `client_cancel`. The
+             * model looked for exactly the documented value, got zero rows, and read
+             * that as "no cancellation was ever asked about" — one of the three reads
+             * behind the double-charge in `.probe/runs/2026-08-17-18-07-live`.
+             *
+             * The SUBJECT fell back to the contact id, because this step sets no
+             * `subject_person_ids`. That makes every cancellation this family ever asks
+             * about share one key, so asking about a second child SUPERSEDES the open
+             * question about the first — one open row per contact where the truth is one
+             * per child per session.
+             */
+            confirmation: {
+              kind: 'client_cancel',
+              subject: `${s.id}+${r.player_id}`,
+            },
             body:
               `Just to be sure — cancel ${r.player_name} for ${s.class_name} ${when}?` +
               (perSession
                 ? inWindow
                   ? " That's inside the notice period, so there's no charge."
-                  : ` That's less than ${a.cancellation_window_hours}h notice, so the class is still charged.`
+                  : ` That's less than ${windowHours}h notice, so the class is still charged.`
                 : ''),
             buttons: [
               {
@@ -2050,7 +2254,16 @@ const clientCancel: OperationDef = {
                 action: {
                   kind: 'operation',
                   op: 'client_cancel',
-                  args: { session_id: s.id, player_id: r.player_id, confirmed: true, reason: args.reason ?? null },
+                  args: {
+                    session_id: s.id,
+                    player_id: r.player_id,
+                    confirmed: true,
+                    reason: args.reason ?? null,
+                    // The decision travels WITH the button, so the tap writes the answer
+                    // she was given rather than the one the clock has drifted to.
+                    decided_timely: inWindow,
+                    decided_window_hours: windowHours,
+                  },
                 },
               },
               { title: 'Never mind', ttl_minutes: 60, action: { kind: 'noop', ack: "No change — I've left it as it was." } },
@@ -2067,12 +2280,43 @@ const clientCancel: OperationDef = {
         // A family has no policy on `attendance` (§6.7) — this is the runtime
         // recording a cancellation on their behalf, not the parent writing to
         // the register.
+        /**
+         * The backstop, and the rule is deliberately narrow.
+         *
+         * A FAMILY-initiated cancellation may never turn a recorded
+         * `cancelled_timely` into a chargeable status. A coach marking the register
+         * still may — a child who actually turned up is a real correction, and that
+         * path is `mark_attendance`, not this one.
+         *
+         * It has to live at the write rather than only in the two guards above,
+         * because a tap runs with no model in the room to notice anything and this
+         * statement executes as the service role, so nothing else can stop it. The
+         * unguarded version wrote `absent` over a two-days-early cancellation and
+         * charged for it.
+         */
         write: `insert into attendance (academy_id, session_id, player_id, status, note, marked_at)
                 values (${uid(ctx.academyId)}, ${uid(s.id)}, ${uid(r.player_id)}, ${lit(status)},
                         ${lit(args.reason ?? 'cancelled by the family')}, app.now())
                 on conflict (session_id, player_id) do update set
-                  status = excluded.status, note = excluded.note, marked_at = excluded.marked_at`,
+                  status = excluded.status, note = excluded.note, marked_at = excluded.marked_at
+                where attendance.status is distinct from 'cancelled_timely'`,
         service: true,
+        /**
+         * **Because a blocked guard must not leave the receipt saying "Done".**
+         *
+         * A guarded upsert that refuses affects zero rows, and a zero-row write with
+         * no `requireRows` is only recorded in `emptyWrites` — which is reported to
+         * the MODEL. There is no model on the tap path. So without this the plan
+         * would sail on and stage *"Done — she is out of Evening Batch"* about a
+         * write that did not happen, which is the same false-receipt shape the
+         * `synthDiffs` note above this line exists to kill.
+         *
+         * Aborting rolls the plan back and messages nobody, which is the honest
+         * outcome. It is only reachable as a race: `attendanceOf` returns early when
+         * the row already reads `cancelled_timely`, so by the time this runs the
+         * guard is a backstop rather than the working path.
+         */
+        requireRows: 1,
       },
       {
         write: `update job set status = 'cancelled'
@@ -2092,7 +2336,16 @@ const clientCancel: OperationDef = {
                        ${lit(`${s.class_name} — ${zoned(s.starts_at, a.timezone).toFormat('d LLL')} (late cancellation)`)},
                        ${moneyLit(num(r.rate_amount))}, ${uid(s.id)}
                  where not exists (select 1 from tally_line t
-                                    where t.session_id = ${uid(s.id)} and t.player_id = ${uid(r.player_id)})`,
+                                    where t.session_id = ${uid(s.id)} and t.player_id = ${uid(r.player_id)})
+                   -- And never charge for a session the register still records as a
+                   -- timely cancellation. The guard above may have refused the status
+                   -- change; without this the money would go on anyway, which is the
+                   -- half of the defect that actually reached her account. Reads the
+                   -- row as it stands AFTER the write above, in the same transaction.
+                   and not exists (select 1 from attendance att
+                                    where att.session_id = ${uid(s.id)}
+                                      and att.player_id = ${uid(r.player_id)}
+                                      and att.status = 'cancelled_timely')`,
         service: true,
       })
     }
@@ -2105,7 +2358,7 @@ const clientCancel: OperationDef = {
           (perSession
             ? inWindow
               ? ' No charge for it.'
-              : ` It was inside ${a.cancellation_window_hours}h so it's still on the tally.`
+              : ` It was inside ${windowHours}h so it's still on the tally.`
             : ''),
         buttons: [
           {
@@ -2571,6 +2824,11 @@ const undo: OperationDef = {
             // one confirmation per action holds only when the runtime knows one
             // was asked.
             is_confirmation_request: canReverse,
+            // Only when there is actually a question: the un-reversible branch below
+            // states a fact and offers no committing tap, so recording it as an
+            // outstanding question would leave a row nothing can ever answer.
+            // Subject is the audit entry, because that is what a second ask is about.
+            ...(canReverse ? { confirmation: { kind: 'undo', subject: String(args.audit_id) } } : {}),
             body: canReverse
               ? `I'll put ${rows} ${rows === 1 ? 'row' : 'rows'} back${willTell}. Messages already sent can't be unsent — the correction is the best I can do.`
               : `I can't safely undo that one: I don't have before-images of what it changed. I can tell you exactly what it did, or you can tell me what to set it back to.`,
@@ -2815,6 +3073,202 @@ const dropWatch: OperationDef = {
  *   clothes, and each stays only until its RLS question is answered properly in
  *   layer 0.
  */
+/* =========================================================================== *
+ * link_contact — a number for somebody who is already here
+ * =========================================================================== */
+
+/**
+ * **Linking a number is not a small thing, and the schema is why.**
+ *
+ * There is no password anywhere in this product. A message arrives, the phone
+ * resolves to a `contact`, the contact resolves to a `person`, and that person's
+ * roles are what the sender may see and do. So a `contact` row IS the credential,
+ * and "add this number to that person" is the same sentence as "give this phone
+ * that person's login". `contact_cm_user_insert` requires `app.is_admin()` for
+ * exactly that reason, and that stays true — this operation writes as the service
+ * role only after an admin has tapped.
+ *
+ * What it exists for: a mother asking that her son hear about his own classes. He
+ * is already a `person` — he is a player — and there was no way to reach him. The
+ * two things the product could do instead were both wrong. Attaching his number to
+ * HER person record would let his phone read her whole family, her balance, her
+ * mutes. Making him the account holder would strip her of visibility of her own
+ * children as the side effect of asking that reminders move.
+ *
+ * So this is a LINK and never a create. It joins a number to a person who is
+ * already on the caller's own account, which means it cannot invent anybody and
+ * cannot reach outside the family. That is also what keeps the duplicate-person
+ * trap shut: without it the son messages in cold, `createProspect` makes a SECOND
+ * person for him, and the business now has two of him — the same trap
+ * `resolvePlayerPerson` exists to avoid in `book_trial`.
+ *
+ * The money boundary needs no work here and is worth saying out loud: he holds no
+ * account, so `app.sees_money()` is false for him. He gets his classes and his
+ * reminders and never a rupee of the family's money.
+ */
+const linkContact: OperationDef = {
+  name: 'link_contact',
+  ownScope: true,
+  description:
+    "Attach a WhatsApp number to a PLAYER who is already on the caller's own account — a teenager who should hear about their own classes rather than have them announced to a parent. Give the number with its country code. It links an existing person to a number and cannot create anybody, so it is not the way to add a new family member or a second parent: for those, the person has to exist first. The owner approves it — the operation routes the request and says so. Once linked they get their own class reminders and changes, they can message about their own sessions, and they never see the family's money.",
+  params: z.object({
+    player_id: uuid,
+    phone: z.string().min(6).max(24),
+    confirmed: z.boolean().optional().default(false),
+  }),
+  async build(ctx, args, id) {
+    const a = await academyOf(ctx)
+
+    // Digits and a country code, or nothing. A bare ten-digit number would have to
+    // be given a country by guessing, and a guessed phone number is a message to a
+    // stranger — so this refuses and says what is missing rather than inventing one.
+    const phone = args.phone.replace(/[\s()\-.]/g, '')
+    if (!/^\+\d{8,15}$/.test(phone)) {
+      throw new Error(
+        'that number needs its country code and nothing else — like +919876543210',
+      )
+    }
+
+    /**
+     * Read through the CALLER's own session, never `svc`. RLS then decides whether
+     * this player is theirs, so the scope of the operation is the scope of the
+     * person asking, by construction rather than by a predicate somebody remembered.
+     * An admin sees every player and may link for anyone; a parent sees their own.
+     */
+    const [player] = await q<{ player_id: string; person_id: string; full_name: string; account_id: string }>(
+      ctx,
+      `select p.id as player_id, p.person_id, pe.full_name, p.account_id
+         from player p join person pe on pe.id = p.person_id
+        where p.id = ${uid(args.player_id)} and p.academy_id = ${uid(ctx.academyId)}`,
+    )
+    if (!player) throw new Error('that is not somebody on your account')
+
+    /**
+     * RLS alone is too wide HERE, and only here.
+     *
+     * `player_cm_user_select` deliberately lets a coach read every player on a
+     * session they are assigned to — the roster is their job. So "the read
+     * succeeded" would have meant a coach could ask for a phone number to be
+     * attached to any student they teach. The owner still approves, so it is not a
+     * breach; it is a claim this operation makes about itself being false, which is
+     * the shape that turns into a wrong sentence one turn later.
+     *
+     * `my_player_ids()` is the narrower question and the right one: yourself, plus
+     * everyone on an account you hold. A coach gets an empty array unless they are
+     * also a parent here.
+     */
+    const [scope] = await q<{ allowed: boolean }>(
+      ctx,
+      `select (app.is_admin() or ${uid(args.player_id)} = any (app.my_player_ids())) as allowed`,
+    )
+    if (!scope?.allowed) {
+      throw new Error('a number can only be added for somebody on your own account')
+    }
+
+    // A number already in this business belongs to whoever has it. Re-pointing it is
+    // an identity change, not a link, and it is not what anybody is asking for.
+    const [taken] = await q<{ person_id: string; full_name: string }>(
+      svc(ctx),
+      `select c.person_id, pe.full_name
+         from contact c join person pe on pe.id = c.person_id
+        where c.academy_id = ${uid(ctx.academyId)} and c.phone_e164 = ${lit(phone)}`,
+    )
+    if (taken && taken.person_id !== player.person_id) {
+      throw new Error(`that number is already ${taken.full_name}'s here — I will not move it`)
+    }
+    if (taken) {
+      return [{ note: `${player.full_name} already has ${phone} on file` }]
+    }
+
+    const adminIds = await adminPersonIds(ctx)
+
+    if (!args.confirmed) {
+      const asker = id.person?.full_name ?? 'someone on the account'
+      const steps: PlanStep[] = [
+        { note: `a request to reach ${player.full_name} on ${phone}` },
+      ]
+      for (const adminPerson of adminIds) {
+        steps.push({
+          message: {
+            to_person_id: adminPerson,
+            subject_person_ids: [player.person_id],
+            is_confirmation_request: true,
+            confirmation: { kind: 'link_contact', subject: `${player.player_id}+${phone}` },
+            body:
+              `${asker} has asked that ${player.full_name} be reachable on ${phone} — ` +
+              `so ${player.full_name.split(' ')[0]} gets their own reminders. ` +
+              `They would see their own sessions and nothing about money. Add it?`,
+            buttons: [
+              {
+                title: 'Yes, add it',
+                action: {
+                  kind: 'operation',
+                  op: 'link_contact',
+                  args: { player_id: player.player_id, phone, confirmed: true },
+                },
+              },
+              { title: 'No', action: { kind: 'noop', ack: 'Left as it is — nothing added.' } },
+            ],
+          },
+        })
+      }
+      // Said plainly to the person who asked, because "I have asked the owner" is
+      // true only once the owner has actually been sent it — and these steps are
+      // what makes it true.
+      // Addressed the way `undo` does it: a contact when there is a live seat, the
+      // person when this is running as the runtime. Setting neither would stage a
+      // message with no recipient.
+      steps.push({
+        message: {
+          to_contact_id: ctx.role === 'service' ? undefined : ctx.contactId,
+          to_person_id: ctx.role === 'service' ? id.person?.id : undefined,
+          body: adminIds.length
+            ? `I have put that to ${a.name} — adding a number is theirs to approve. I will tell you when it is done.`
+            : `There is nobody set up to approve that here yet, so I cannot add a number. I have written down what you asked for.`,
+        },
+      })
+      return steps
+    }
+
+    // The confirmed arm runs on the owner's tap, with no model in the room. The
+    // belt to the button: a tap replays stored arguments, so the only thing that
+    // makes this safe is checking WHO is tapping, here, at run time.
+    if (!id.person || !adminIds.includes(id.person.id)) {
+      throw new Error('only the owner can add a number to this business')
+    }
+
+    return [
+      { note: `${player.full_name} can now be reached on ${phone}` },
+      {
+        /**
+         * `is_primary` is computed rather than defaulted. The column defaults to
+         * true, and every reader of "the number for this person" orders
+         * `is_primary desc, created_at asc` — so a second number defaulting to
+         * primary would quietly demote the one they already use. A person may hold
+         * two numbers; only the first is theirs by default.
+         */
+        write: `insert into contact (academy_id, person_id, phone_e164, state, is_primary)
+                select ${uid(ctx.academyId)}, ${uid(player.person_id)}, ${lit(phone)}, 'registered',
+                       not exists (select 1 from contact x
+                                    where x.academy_id = ${uid(ctx.academyId)}
+                                      and x.person_id = ${uid(player.person_id)})
+                on conflict (academy_id, phone_e164) do nothing`,
+        service: true,
+        requireRows: 1,
+      },
+      {
+        message: {
+          to_person_id: player.person_id,
+          subject_person_ids: [player.person_id],
+          body:
+            `Hi ${player.full_name.split(' ')[0]} — ${a.name} will send your class reminders to this number from now on. ` +
+            `Message me any time about your own sessions.`,
+        },
+      },
+    ]
+  },
+}
+
 export const OPERATIONS: Record<OperationName, OperationDef> = {
   end_coach: endCoach,
   cancel_session: cancelSession,
@@ -2835,6 +3289,7 @@ export const OPERATIONS: Record<OperationName, OperationDef> = {
   forget,
   drop_watch: dropWatch,
   set_up_business: setUpBusiness,
+  link_contact: linkContact,
 }
 
 /* ------------------------------------------------------------------------- *

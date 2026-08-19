@@ -269,7 +269,21 @@ export async function clientOutcome(job: Job): Promise<void> {
     )
     const player = roster.find((r) => r.player_id === playerId)
     if (!player) skip('player is no longer on this roster')
-    if (!player.contact_id) skip('no reachable number for this family')
+    /**
+     * **The holder's number, explicitly, where the reminder uses the player's.**
+     *
+     * `enrolledPlayers.contact_id` is "whom to tell" and now prefers a player's own
+     * number when they have one — that is what makes "send the reminders to my son"
+     * work. A recap is a different message: it is a report ABOUT a child, to whoever
+     * is following them, and it is grouped one-per-family by exactly this column.
+     * Left as `contact_id`, a linked teenager would split from his own siblings and
+     * the family would get two "how it went" messages in the same minute — the
+     * defect rule 7 below was written to kill, rebuilt by a change somewhere else.
+     *
+     * Identical for every family with no linked player, which is all of them today:
+     * the two columns are the same number until somebody is linked.
+     */
+    if (!player.holder_contact_id) skip('no reachable number for this family')
 
     // "Stop the recaps" as a setting, not a memory (TIMING_KEYS): a truthy
     // The outcome mute is a `comm_preference` row now, read at the send path for
@@ -284,7 +298,9 @@ export async function clientOutcome(job: Job): Promise<void> {
     // travel in one body, and the idempotency key below makes the sibling's
     // own job a no-op. The rare loser: a sibling marked in a later pass rides
     // the next thing this family is told — one message per event wins.
-    const familyIds = roster.filter((r) => r.contact_id === player.contact_id).map((r) => r.player_id)
+    const familyIds = roster
+      .filter((r) => r.holder_contact_id === player.holder_contact_id)
+      .map((r) => r.player_id)
     const familyAtt = await tx<
       { player_id: string; status: string; note: string | null; marked_by_coach_id: string | null }[]
     >`
@@ -330,7 +346,7 @@ export async function clientOutcome(job: Job): Promise<void> {
 
   const absentees = members.filter((m) => m.status === 'absent')
   await composeAndSend(serviceCtx(academy.id), {
-    toContactId: player.contact_id as string,
+    toContactId: player.holder_contact_id as string,
     header: clamp(academy.name, LIMITS.headerChars),
     body: clamp(joinLines([...members.map(lineFor), ...noteLines]), LIMITS.bodyChars),
     buttons: absentees.length
@@ -344,7 +360,9 @@ export async function clientOutcome(job: Job): Promise<void> {
       : undefined,
     catalogId: 'CL-OUTCOME',
     subjectPersonIds: [...new Set(members.map((m) => m.person_id))],
-    idempotencyKey: `outcome:${sessionId}:${player.contact_id}`,
+    // Keyed on the holder too, so it stays one key per family per session — the
+    // same grouping the family list above uses.
+    idempotencyKey: `outcome:${sessionId}:${player.holder_contact_id}`,
   })
   note(`outcome sent for ${members.map((m) => m.name).join(', ')} — ${members.map((m) => m.status).join('/')}`)
 }

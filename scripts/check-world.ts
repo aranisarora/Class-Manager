@@ -29,9 +29,29 @@ loadEnvFiles()
 
 const { withSession } = await import('@/lib/db')
 const { newId } = await import('@/lib/ids')
+// The tap path, imported rather than reproduced: the ROLE it runs under is the
+// defect case 5b exists for, so a hand-rolled service-role copy would pass while
+// the product failed.
+const { attachActionsToMessage, consumeAction, mintAction } = await import('@/lib/actions')
 
-/** The sandbox sender every seeded world already uses. */
-const SENDER = '88ec9075-dcd5-482f-835e-1f488a082e39'
+/**
+ * Any sender will do — nothing here sends anything, it just needs a row to hang
+ * the scratch tenant off.
+ *
+ * Hardcoding the sandbox uuid worked until the database was reseeded and then
+ * failed on a foreign key, which reads as a broken check rather than as a missing
+ * row — the shape this repo keeps paying for. A checker that cannot start is
+ * indistinguishable from one that passes. Resolved the same way
+ * `check-attendance-bills`, `check-partial-period` and `check-roster-scale`
+ * already do.
+ */
+const SENDER = await withSession({ role: 'service', academyId: null as unknown as string }, async (tx) =>
+  String(((await tx.unsafe(`select id from sender order by created_at limit 1`)) as unknown as any[])[0]?.id ?? ''),
+).catch(() => '')
+if (!SENDER) {
+  console.error('  no sender row in this database — seed one before running this check')
+  process.exit(2)
+}
 const MONDAY = 1
 
 let failures = 0
@@ -47,6 +67,9 @@ function assert(label: string, ok: boolean, detail?: unknown): void {
 const academyId = newId()
 const ctx = { role: 'service', academyId } as const
 const A = `'${academyId}'::uuid`
+
+/** Carried out of the main block so case 5b can run once the tenant is committed. */
+let tapCase: { contactId: string; personId: string } | null = null
 
 console.log('\ncheck-world — what the schema guarantees, whatever wrote the row\n')
 
@@ -207,6 +230,10 @@ try {
     }
     assert('because the constraint, not the convention, is what stops the third', collided)
 
+    // Case 5b runs after this block commits — `mintAction` and `consumeAction`
+    // open their own sessions and cannot see a tenant that is still uncommitted.
+    tapCase = { contactId: contact.id, personId: owner.id }
+
     /* -- 6 · a mute is a row a job can read --------------------------------- */
     await tx.unsafe(
       `insert into comm_preference (academy_id, contact_id, person_id, scope, stated)
@@ -242,6 +269,65 @@ try {
     }
     assert("'suppressed' is a status a message may hold", suppressedOk)
   })
+
+  /* -- 5b · a TAP is what ends a question (F-BM) --------------------------
+   *
+   * The assertion whose absence let the defect live for the life of the table.
+   * `consumeAction` recorded the tap and, in the same statement, marked the
+   * question answered — but the claim runs under the TAPPER, and 0032 gives
+   * cm_user no write policy on `pending_request`. So the second half matched zero
+   * rows, silently, and nothing read the count it asked for.
+   *
+   * Every assertion in case 5 above still passed while that was true: the row is
+   * written, superseding works, the constraint holds. What nothing asked was
+   * whether a person ANSWERING the question changes anything.
+   *
+   * Runs through the real functions, under a real user session, because the ROLE
+   * is the defect — a service-role reproduction passes either way and proves
+   * nothing. Out here rather than inside the block above because both open their
+   * own sessions and cannot see an uncommitted tenant.
+   */
+  if (tapCase) {
+    const { contactId, personId } = tapCase
+    const svcCtx = { role: 'service' as const, academyId, contactId, personId }
+    const msgId = newId()
+    await withSession(ctx, async (tx) => {
+      await tx.unsafe(
+        `insert into message (id, academy_id, contact_id, sender_id, direction, body)
+         values ('${msgId}'::uuid, ${A}, '${contactId}'::uuid, '${SENDER}'::uuid, 'outbound', 'tap me')`,
+      )
+      await tx.unsafe(
+        `insert into pending_request (academy_id, contact_id, person_id, kind, subject, question, message_id)
+         values (${A}, '${contactId}'::uuid, '${personId}'::uuid, 'client_cancel', 'a-session',
+                 'cancel it?', '${msgId}'::uuid)`,
+      )
+    })
+
+    const actionId = await mintAction(svcCtx, {
+      payload: { kind: 'noop', ack: 'no change' },
+      forContactId: contactId,
+      ttlMinutes: 60,
+    })
+    await attachActionsToMessage(svcCtx, msgId, [actionId])
+
+    const tapped = await consumeAction(
+      { role: 'user', academyId, contactId, personId },
+      actionId,
+      contactId,
+    )
+    assert('a tap is claimed under the tapper own session', tapped.ok, tapped)
+
+    await withSession(ctx, async (tx) => {
+      const rows = (await tx.unsafe(
+        `select resolution from pending_request where message_id = '${msgId}'::uuid`,
+      )) as unknown as { resolution: string | null }[]
+      assert(
+        'and the question that tap answered is recorded as tapped, not left open',
+        rows.length === 1 && rows[0]?.resolution === 'tapped',
+        rows,
+      )
+    })
+  }
 } finally {
   await withSession(ctx, async (tx) => {
     await tx.unsafe(`delete from job where payload->>'academy_id' = '${academyId}'`)

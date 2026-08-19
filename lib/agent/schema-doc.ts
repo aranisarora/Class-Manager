@@ -42,6 +42,15 @@
  * exists at all. A model that has not formed the concept *the database holds
  * answers* rebuilds every answer.
  *
+ * **The section is ordered by grain now** (19 Aug 2026, migration 0037). A
+ * business is asked about at four: the OFFER it sells, the COMMITMENT somebody
+ * made to it, the dated OCCURRENCE, and the money CONSEQUENCE. 0036 built for
+ * three of them and left the offer with nothing — which is the only grain a
+ * stranger can ask at, since a prospect has no enrolment, no session and no
+ * account. Hence class_offering, account_ledger and coach_pay, and hence the
+ * order below: a reader who knows which grain they are on can find the one
+ * relation that answers, and that is the whole job of this section.
+ *
  * With them came the deletions that make them land. `app.account_balance()` had
  * existed since the first commit and the model called it **zero times in every run
  * ever recorded**, because this block handed over the arithmetic — "Balance for a
@@ -130,6 +139,7 @@ nothing to try and nothing to learn by trying.
 | session_coach | admin · coach, their own · anyone on a session of theirs | admin | admin · coach, their own row | admin |
 | attendance | admin · family, their own · coach, their sessions | admin · coach, their sessions | admin · coach, their sessions | admin |
 | tally_line · payment | admin · family, their own accounts | admin | admin | admin |
+| coach_ledger | admin · coach, their own | admin | admin | - |
 | business_rule | admin · the shared ones | admin | admin | - |
 | comm_preference | admin · their own | admin · their own | admin · their own | - |
 | memory_fact | admin · their own person facts | - | - | - |
@@ -161,8 +171,10 @@ What the grid cannot say:
   of the person you are serving, so a register read in a family's session is
   their own children and nothing else, a coach's coverage is their own sessions,
   and an account nobody may see is a row that is not there rather than a balance
-  of zero. coach_public is the one exception: it is every coach in the business,
-  to anybody who asks.
+  of zero. coach_directory and class_coach_public are the two exceptions: they
+  are every coach in the business, and the whole class-to-coach map, to anybody
+  who asks. Both carry the name for that reason — reaching for one through
+  person puts the reader's own limits back on and quietly empties them.
 - **academy is update only.** You may change the business's own settings. There
   is no route to a second academy and no reason to look for one.
 
@@ -203,8 +215,10 @@ coach(person_id! uuid, pay_amount numeric, pay_unit text 'per_session|per_hour|p
   -- Pay is private from OTHER coaches, not from themselves, and rows cannot hide
   -- one column — so in a COACH's session this table is their own row and nothing
   -- else. "Who else is on this session?" reads zero rows here and is not an
-  -- answer; coach_public is the way through. The admin sees all of coach, so
-  -- from an admin session this does not arise.
+  -- answer; coach_directory is the way through, and it carries the name. The
+  -- admin sees all of coach, so from an admin session this does not arise.
+  -- What a coach is OWED is coach_pay, which inherits the reader the same way
+  -- this table does.
 academy_admin(person_id! uuid)
   -- a non-admin session sees only its own row here (usually none), by design:
   -- an empty read means "not yours to see", never "no admin exists". To reach
@@ -219,7 +233,7 @@ Three tables that exist because a state nobody stores is a state nobody can
 report — and, eventually, one the product mis-reports.
 
 pending_request(contact_id! uuid, person_id! uuid, kind! text /* the protocol:
-  opt_out, decline_coach, client_cancel, confirm_plan */, subject! text
+  client_cancel, decline_coach, confirm_coach, opt_out, undo, routed_request */, subject! text
   /* what it is about, normalised */, question! text /* the sentence they read */,
   expires_at tstz, asked_turn_id uuid, message_id uuid -> message,
   resolved_at tstz, resolution text 'tapped|expired|superseded|withdrawn')
@@ -386,22 +400,22 @@ memory_fact.supersedes -> memory_fact, audit_entry.undo_of -> audit_entry
 
 ## Derived values — never stored, always computed
 
-**Coverage** is the most important derived value in the product:
-
-    exists (select 1 from session_coach sc
-            where sc.session_id = :id
-              and sc.declined_at is null
-              and (sc.confirmed_at is not null or sc.arrived_at is not null))
-
-It is a property of the session, which is why a coach dropping out while others
-remain assigned changes nothing it returns.
+**Coverage** is the most important derived value in the product, and it is
+already computed: session_detail.coverage. It is a property of the SESSION, not
+of any one coach — which is why a coach dropping out while others remain
+confirmed changes nothing it says. The fact underneath, and the reason a name is
+not an answer: being assigned is a row in session_coach, and being cover is that
+row carrying a confirmed_at or an arrived_at and no declined_at. Those are
+different rows on different days, and only the second one means somebody is
+turning up.
 
 **The rate that applies** lives on the enrollment and falls back to the class —
 amount, unit and count each independently. So class.rate_amount is a default and
 not the price anybody is necessarily paying, and that one fallback is what
 carries drop-ins inside a monthly batch, sibling discounts, scholarship players
 and legacy rates without a schema branch. class_roster has it resolved per
-player already; app.effective_rate(enrollment_id) resolves a single one.
+player already, and its rate_source says which side answered;
+app.effective_rate(enrollment_id) resolves a single one.
 
 **Billing rules, complete — all four rate units:**
 - per_session: a 'session' line when attendance is marked present, late or
@@ -423,13 +437,14 @@ player already; app.effective_rate(enrollment_id) resolves a single one.
 holds.** tally_line carries a period; payment does not. So a charge belongs to a
 month and a payment belongs to nothing, and deciding which month a payment
 settles is an allocation policy nobody here has stated — inventing one is how an
-invention acquires the authority of policy. Two real numbers exist and they
-answer different questions: the running balance, which is account_standing.
-balance, everything ever charged less everything confirmed paid; and one month's
-CHARGES, which is sum(amount) from tally_line for that period. The arithmetic
-that looks like a monthly balance — a month of charges less every payment ever
-made — is neither of them, and it is the shape that puts a family in credit for a
-month they have not paid for.
+invention acquires the authority of policy. Because the two sides cannot be
+matched to each other, time order is the only way to read them together — which
+is exactly what account_ledger is, and why it is a ledger rather than a summary.
+Two real numbers exist and they answer different questions: the running balance,
+which is account_standing.balance and equally the last running_balance in the
+ledger; and one month's CHARGES, which is the ledger's charge rows for that
+period. Anything that looks like a monthly balance is neither, and it is the
+shape that puts a family in credit for a month they have not paid for.
 
 ## The views — the same answers, already joined
 
@@ -446,24 +461,39 @@ and it is the one that is most expensive to compose from scratch.
 under the app schema; prefixing any of the others with app. is an error rather
 than a near-miss.
 
+**The offer — what the business sells.**
+
+  class_offering(academy_id, class_id, class_name, active, starts_on, ends_on,
+  standing, rate_amount, rate_unit, rate_count, venue_id, venue_name,
+  venue_address, slot_count, schedule_label, slots, coaches)
+  -- One row per class: what it costs, where it is, who is named on it, and when
+  -- it runs with the weekly slots ALREADY RENDERED — schedule_label is
+  -- "Mon 7 am-8 am; Wed 7 am-8 am", slots a json array of
+  -- {weekday, day, starts, ends, label}. Render none of it yourself: a slot has
+  -- no timestamp, so app.local_label cannot reach it, and to_char(weekday,'ID')
+  -- is a numeric mask that returns junk for every row without erroring.
+  -- standing is closed | ended | upcoming | running — the whole of "is this
+  -- class on", so do not rebuild it from active and ends_on.
+  -- The one relation that answers somebody with no enrolment, session or
+  -- account. It carries no headcount; that is class_roster.
+
 **The day.**
 
   session_detail(academy_id, session_id, class_id, class_name, starts_at,
   ends_at, status, cancel_reason, local_date, local_start, local_end, venue_id,
-  venue_name, venue_address, covered, pending_count, confirmed_count,
-  declined_count, coaches, due_players, marked_players, attended_players)
+  venue_name, venue_address, coverage, coaches, due_players, marked_players,
+  attended_players)
   -- One session as a person hears it, with the start already rendered in this
   -- academy's zone: local_start is "Mon 18 Aug, 6:30 pm", local_end the closing
-  -- time alone. coaches is a json array of {coach_id, name, state}, and the
-  -- states are confirmed, arrived, declined, and assigned_no_answer. The last
-  -- one means they are down for it and nothing has come back — it does not say
-  -- anybody asked them, and it is not a settled session. Reading it as settled
-  -- while other coaches are still assigned is how a session with nobody
-  -- confirmed gets reported as somebody's.
-
-  session_coverage(session_id, academy_id, starts_at, status, covered,
-  pending_count, confirmed_count, declined_count)
-  uncovered_session — the same, filtered to scheduled, uncovered, starts_at > app.now()
+  -- time alone.
+  -- coverage answers "is this covered" and is the only column that does:
+  -- cancelled | confirmed | nobody has answered | all declined | nobody
+  -- assigned. coaches is a json array of {coach_id, name, state} and answers a
+  -- DIFFERENT question — who is down for it. A name there is not cover;
+  -- 'assigned_no_answer' means nothing has come back and does not say anybody
+  -- was even asked. Reading the names instead of coverage reports a week nobody
+  -- has confirmed as a covered one.
+  -- Not covered, from here: where coverage not in ('confirmed','cancelled')
 
 **The register.**
 
@@ -479,14 +509,19 @@ than a near-miss.
 
   class_roster(academy_id, class_id, class_name, enrollment_id, is_trial,
   started_on, player_id, player_name, account_id, account_holder, rate_amount,
-  rate_unit, rate_count)
-  -- Who is on a class's register today, and what each of them is actually
-  -- paying: the rate columns are the effective rate, already resolved. Two
-  -- things fall out of a hand-written version and both change the answer — a
-  -- player who has LEFT the academy still sits on an enrolment that never ended
-  -- (active is the column on player), and "ended_on is null" is the right test
-  -- for today and the wrong one for any other day. This is who is on it now; for
-  -- what a class used to hold, read enrollment itself.
+  rate_unit, rate_count, ended_on, standing, player_active, rate_source)
+  -- Who is on a class's register, in every tense, and what each is actually
+  -- paying: the rate columns are the effective rate, already resolved.
+  -- standing is upcoming | current | ended — FILTER ON IT, never on dates. It
+  -- folds in the two things a hand-written version drops: a player who LEFT the
+  -- academy still sits on an enrolment that never ended (active is on player),
+  -- and "ended_on is null" is the right test for today and wrong for any other
+  -- day. An enrolment starting next week is here as 'upcoming' rather than
+  -- missing, which is what makes "is he in the class or not" answerable.
+  -- rate_source is 'enrolment' or 'class' — which side the fallback took, and
+  -- so whether a price was written down for this player or merely inherited.
+  -- That is how you check that "everyone already in it stays on the old rate"
+  -- actually happened.
 
   unmarked_billable_session(academy_id, session_id, class_id, class_name,
   starts_at, unmarked_players, unbilled_amount)
@@ -513,6 +548,22 @@ than a near-miss.
   -- last_payment_at is usually the real question behind a question about a
   -- month: whether anything has come in at all.
 
+  account_ledger(academy_id, account_id, movement_id, kind, at, local_at,
+  description, amount, effect_on_balance, running_balance, period, charge_kind,
+  status, method, reference, player_id, session_id, reason, charges_in_period)
+  -- The statement behind the balance: one row per movement, charges and
+  -- payments interleaved, oldest first. account_standing says how much, this
+  -- says why — which charges, was July billed twice, has the UPI landed.
+  -- kind is 'charge' or 'payment'. Three money columns, one thing each: amount
+  -- is what the row says (negative on a credit or waiver); effect_on_balance is
+  -- what it MOVED the balance by, zero for a payment only requested;
+  -- running_balance is the balance after it, and the last equals
+  -- account_standing.balance.
+  -- charges_in_period counts charge lines sharing that period on that account.
+  -- Two is a fact, not a verdict — a second line in a month is legitimate for a
+  -- sibling, a package or a pro-rate — but it is what "have I been charged
+  -- twice" turns on, and no total can show it.
+
 **The people.**
 
   person_directory(academy_id, person_id, full_name, contact_id, phone_e164,
@@ -532,10 +583,53 @@ than a near-miss.
   -- person who turns out to be a coach rather than a parent still comes back,
   -- which is not true of a join that starts at account.
 
-  coach_public(id, person_id, status, ended_on)
-  -- Every coach in the business, with no pay column to leak. The coach table
+  coach_directory(academy_id, coach_id, person_id, full_name, status, ended_on)
+  -- Every coach in the business, BY NAME, with no pay column to leak. coach
   -- itself is own-row-only for anybody but the admin, so "who else is on this
   -- session" reads zero rows there and that zero is not an answer.
+  -- READ IT ON ITS OWN. Joining person for a name undoes it — person is scoped
+  -- to your own row, your family, your rosters and the co-coaches on YOUR
+  -- sessions, so the join deletes the very coaches this exists to show and the
+  -- shortfall reads as an answer.
+
+  class_coach_public(academy_id, class_id, coach_id, person_id, full_name,
+  status)
+  -- Which coach is named on which CLASS, with names and no pay, and the same
+  -- warning: read it on its own. class_coach is own-row-only for a coach, so
+  -- reading that directly says "nobody is on it" of every class but their own.
+  -- Who is on a dated SESSION is session_detail.coaches.
+
+**What a coach is owed.**
+
+  coach_pay(academy_id, coach_id, coach_name, session_id, class_id, class_name,
+  starts_at, local_start, session_status, coach_state, pay_unit, pay_amount,
+  session_hours, worked, amount_for_session)
+  -- One row per coach per session they are named on. Inherits the reader, so a
+  -- coach reads their own pay and no one else's and the admin reads all of it —
+  -- which is what makes "what have I earned" and "what do I pay them" one
+  -- number instead of two guesses.
+  -- worked = the session is OVER, was not cancelled, and they did not decline.
+  -- Not that a register was marked, and never status='scheduled', which is true
+  -- only of sessions that have NOT happened — counting on it reports a month of
+  -- work as none.
+  -- amount_for_session is NULL on a per_month coach: they are owed the same
+  -- whatever the register says, so sessions × rate is a number nobody is owed.
+  -- Also NULL when pay_amount is, which is "not tracked" and a real state.
+  -- It multiplies by coach.pay_amount, which is the rate they are on NOW. So it
+  -- describes the month in progress, and a month already closed has a row of its
+  -- own in coach_ledger.
+
+  coach_ledger(academy_id, coach_id, period, kind 'session|hourly|monthly|adjustment',
+  description, amount, rate_amount, rate_unit, session_id, reason, approved_by)
+  -- One row per coach per session worked, or one per month for a per_month coach,
+  -- written when the month closes — with the rate that applied at the time copied
+  -- into rate_amount rather than referenced.
+  -- That copy is what makes a closed month answerable: coach.pay_amount is a single
+  -- mutable number, so a raise granted today moves every figure coach_pay derives,
+  -- including for months already worked. These rows do not move.
+  -- A rate agreed in advance is a row written early — a September line can exist in
+  -- August, and the close finds it by dedupe_key and leaves it alone.
+  -- Append-only. A correction is an 'adjustment' row, as on tally_line.
 
 ## What follows what — the consequences a row carries
 

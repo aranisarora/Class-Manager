@@ -817,6 +817,11 @@ const SINGULARS: Record<string, string> = {
   attendance: 'attendance mark',
   class_slot: 'weekly slot',
   tally_line: 'charge',
+  // The coach's side of `tally_line`, and named the way a person says it. Without
+  // an entry here the receipt reads "wrote 1 coach_ledger", which is the table-noun
+  // leak the outbound lint refuses — completing these maps is the fix, not a rewrite
+  // on the way out.
+  coach_ledger: 'pay line',
   contact: 'phone number',
   account: 'family account',
   session_coach: 'coach assignment',
@@ -847,6 +852,7 @@ const PLURALS: Record<string, string> = {
   player: 'players',
   attendance: 'attendance marks',
   tally_line: 'charges',
+  coach_ledger: 'pay lines',
   session_coach: 'coach assignments',
   class_coach: 'coach assignments',
   class_slot: 'weekly slots',

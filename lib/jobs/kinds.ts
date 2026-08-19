@@ -17,7 +17,7 @@ export type JobKind =
   | 'admin_escalate_uncovered' | 'client_session_trouble' | 'client_reminder'
   | 'post_class_register' | 'register_expiry' | 'client_outcome'
   | 'admin_morning_brief' | 'admin_evening_digest'
-  | 'monthly_lines' | 'month_end_tally' | 'dunning'
+  | 'monthly_lines' | 'month_end_tally' | 'coach_month_lines' | 'dunning'
   | 'first_contact_batch' | 'memory_curate' | 'coach_not_onboarded'
   | 'reconcile' | 'agent_task'
 
@@ -26,7 +26,7 @@ export const JOB_KINDS: readonly JobKind[] = [
   'admin_escalate_uncovered', 'client_session_trouble', 'client_reminder',
   'post_class_register', 'register_expiry', 'client_outcome',
   'admin_morning_brief', 'admin_evening_digest',
-  'monthly_lines', 'month_end_tally', 'dunning',
+  'monthly_lines', 'month_end_tally', 'coach_month_lines', 'dunning',
   'first_contact_batch', 'memory_curate', 'coach_not_onboarded',
   'reconcile', 'agent_task',
 ] as const
@@ -51,6 +51,8 @@ export const dedupe = {
   adminEveningDigest: (academyId: string, date: string) => `ad_digest:${academyId}:${date}`,
   monthlyLines: (enrollmentId: string, period: string) => `monthly:${enrollmentId}:${period}`,
   monthEndTally: (accountId: string, period: string) => `tally:${accountId}:${period}`,
+  /** The coach side of `monthlyLines`: one close per coach per month, ever. */
+  coachMonthLines: (coachId: string, period: string) => `co_month:${coachId}:${period}`,
   dunning: (accountId: string, period: string, n: number) => `dun:${accountId}:${period}:${n}`,
   firstContactBatch: (academyId: string, batchN: number) => `fc:${academyId}:${batchN}`,
   memoryCurate: (subjectId: string, n: number) => `mem:${subjectId}:${n}`,
@@ -187,6 +189,7 @@ export type JobPayloadMap = {
   admin_evening_digest: { academy_id: string; date: string }
   monthly_lines: { academy_id: string; enrollment_id: string; period: string }
   month_end_tally: { academy_id: string; account_id: string; period: string }
+  coach_month_lines: { academy_id: string; coach_id: string; period: string }
   dunning: { academy_id: string; account_id: string; period: string; n: number }
   first_contact_batch: { academy_id: string; batch_n: number }
   memory_curate: { academy_id: string; subject_kind: 'academy' | 'person'; subject_id: string; n: number }

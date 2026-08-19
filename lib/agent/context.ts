@@ -38,6 +38,7 @@ import { join } from 'node:path'
 import type { Identity } from '@/lib/types'
 import { modelQuery, type SessionCtx } from '@/lib/db'
 import { repoRoot } from '@/lib/env'
+import { errorMessage } from '@/lib/errors'
 import { now, inZone } from '@/lib/clock'
 import { dayDiff, longDate } from '@/lib/format'
 import { catalogDigest } from '@/lib/messaging/catalog'
@@ -499,6 +500,109 @@ function formatQueryResults(v: unknown): string {
  * ------------------------------------------------------------------------- */
 
 /**
+ * A prefetch result, carrying the one thing the runtime knew and used to throw away.
+ *
+ * `value` null with `why` set is a lookup that FAILED. `value` `[]` with `why`
+ * null is a lookup that ran and found nothing. The two were the same value here,
+ * and `res.error` — the whole reason, already in hand from `modelQuery` — was
+ * dropped on the line that produced it.
+ *
+ * What that cost is on the record. Three turns of the first live week hit
+ * `(EMAXCONNSESSION) max clients reached in session mode`, the tail said only
+ * "could not be read this turn", and doctrine's *do not assume* forbids inventing
+ * a cause — so the model reached for the one cause its prompt did offer, the
+ * permission note, and told a coach his own pay was not visible to it. The same
+ * figure had come back under the identical seat four times that week, and one
+ * message later the same turn read it out to the owner. The gap was stated, the
+ * cause was withheld, and the model filled it exactly as doctrine says a mind
+ * fills an absence.
+ *
+ * The model's OWN failed reads have always come back with the full error text
+ * (`tools.ts`), and its earlier ones are replayed carrying it (`loop.ts`), whose
+ * comment says *knowing a query errored is worth more than silence about it*.
+ * This type is that principle applied to the half the runtime writes.
+ */
+type Read<T> = { value: T | null; why: string | null }
+
+/**
+ * The head of a Postgres error, which is the half that names the class.
+ *
+ * Not the whole text. The useful end of a long error is its detail line, and a
+ * detail line naming a column of a table this person may not read is a sentence
+ * the tail should not be quoting into a prompt. What decides the model's next
+ * move is the class of failure, and the class is on line one.
+ */
+function firstLine(e: string): string {
+  return String(e).split('\n')[0].trim().slice(0, 200)
+}
+
+/**
+ * The clause that turns a stated gap into an actionable one.
+ *
+ * Two things travel and neither is derivable from the gap alone: WHAT failed, and
+ * that the failure belongs to this runtime rather than to the person. The last
+ * clause is the one the record asks for — on two of the three turns above, the
+ * model reasoned correctly that it could compute the figure, wrote "let me run the
+ * queries fresh", and issued no read at all. Nothing had told it a retry would
+ * behave differently, because nothing had told it what went wrong.
+ *
+ * It does not say "retry": a permanent error (a column that does not exist) and a
+ * transient one (a refused connection) arrive through this same clause, and only
+ * the text distinguishes them. Handing over the text is what lets the model tell.
+ *
+ * One sentence, because it repeats — a connection failure kills the whole
+ * `Promise.all`, so three blocks render it at once. That repetition is affordable
+ * where a long paragraph would not be: this returns '' on every healthy turn, so
+ * the tail pays nothing until the moment the words are the point.
+ */
+function because(why: string | null): string {
+  return why
+    ? ` The read failed — ${why} — which is this runtime's error, not a fact about them. If that looks ` +
+      `transient, run the query yourself before you call anything unavailable.`
+    : ''
+}
+
+/**
+ * The line a failed lookup MUST produce, and the only sanctioned way to turn a
+ * `Read` into prose.
+ *
+ * **A block that renders nothing on failure is the one shape never allowed here.**
+ * The tail is the only push channel in the product that must DEGRADE rather than
+ * fail — a job that dies is retried and a plan that dies rolls back, but a turn
+ * that dies because memory timed out leaves a person with silence, which is the
+ * one outcome they cannot tell apart from being ignored. So `census` and
+ * `standing` carry on with less, and "carrying on with less", written as string
+ * concatenation, is silent by construction: you do not leave a field empty,
+ * because there is no field. You append one line fewer and the result is a
+ * perfectly well-formed paragraph about a coach with nothing on this week.
+ *
+ * That was five of the nine ways a prefetch can fail. The admin census returned
+ * null and `variableTail` dropped the entire "what existed" section with nothing
+ * marking the hole; the coach's sessions and registers were guarded by a count
+ * read off the same row that had just failed, so `Number(undefined ?? 0)` made
+ * the guard false exactly when it was needed; the family's counts had no `else`
+ * at all; and `standing()` — the block built after a woman's stop request
+ * evaporated between turns — skipped both its halves on `if (!x.error)`.
+ *
+ * `fromRead` is the fix that does not rely on anyone remembering. Its failure
+ * text is a REQUIRED argument, so a call site cannot exist without one, and
+ * `render` is never handed a failure to think about. An empty array back from
+ * `render` still means "ran, nothing worth saying" — that state is real and
+ * stays available.
+ */
+function unread(what: string, licenses: string, why: string | null): string {
+  return `- ${what} could not be read this turn. ${licenses}${because(why)}`
+}
+
+function fromRead<T>(
+  read: Read<T>,
+  failure: { what: string; licenses: string },
+  render: (value: T) => string[],
+): string[] {
+  return read.value === null ? [unread(failure.what, failure.licenses, read.why)] : render(read.value)
+}
+
+/**
  * A census of the business, from the point of view of whoever is talking.
  *
  * The tail already carried who this is, what the business is called, what is
@@ -528,9 +632,26 @@ function formatQueryResults(v: unknown): string {
  * name what the predicate actually tests, and hand over the neighbouring fact that
  * makes the true sentence the available one.
  *
- * Never a precondition: if the census fails, the turn continues without it.
+ * **NOTHING IN THIS REPO EVER EXECUTES THE SQL BELOW EXCEPT A LIVE TURN.**
+ * `check:schema-doc` compares `SCHEMA_DOC` against the database and `check:rls-doc`
+ * compares the permission grid against `pg_policies`; neither reads a line of this,
+ * and `probe-ask` skips the census on purpose because it declines to need a
+ * database. These statements name real columns — `session_coach.declined_at`,
+ * `attendance.session_id`, `coach.status` — by hand.
+ *
+ * So a migration that renames one does not fail a check, a build or a test. It
+ * makes every turn for that role lose its census, on every turn, permanently,
+ * and — until `fromRead` below — in complete silence. That is strictly worse than
+ * the outage this block was hardened against: an outage is intermittent and gets
+ * noticed, and this would simply become how the product behaves. If you change a
+ * column any statement here touches, the only thing that will tell you is reading
+ * this file.
+ *
+ * Never a precondition: if the census fails, the turn continues without it — but
+ * it now SAYS it failed, because a turn continuing without it and a turn where
+ * that thing does not exist are opposite sentences to the person on the phone.
  */
-async function census(id: Identity): Promise<string | null> {
+async function census(id: Identity): Promise<string> {
   const ctx: SessionCtx = {
     role: 'user',
     academyId: id.academyId,
@@ -551,9 +672,11 @@ async function census(id: Identity): Promise<string | null> {
    * comment shifts the pairing of every literal after it in the validator's view of
    * the statement.
    */
-  const q = async (sql: string): Promise<Record<string, unknown> | null> => {
-    const res = await modelQuery(ctx, sql)
-    return res.error ? null : ((res.rows[0] as Record<string, unknown>) ?? null)
+  const q = async (sql: string, note: string): Promise<Read<Record<string, unknown>>> => {
+    const res = await modelQuery(ctx, sql, note)
+    return res.error
+      ? { value: null, why: firstLine(res.error) }
+      : { value: (res.rows[0] as Record<string, unknown>) ?? null, why: null }
   }
   const n = (row: Record<string, unknown> | null, key: string): number => Number(row?.[key] ?? 0)
 
@@ -570,9 +693,11 @@ async function census(id: Identity): Promise<string | null> {
    * Every list in the census goes through here, so the distinction is made once
    * rather than remembered at three call sites.
    */
-  const many = async (sql: string): Promise<Record<string, unknown>[] | null> => {
-    const res = await modelQuery(ctx, sql)
-    return res.error ? null : (res.rows as Record<string, unknown>[])
+  const many = async (sql: string, note: string): Promise<Read<Record<string, unknown>[]>> => {
+    const res = await modelQuery(ctx, sql, note)
+    return res.error
+      ? { value: null, why: firstLine(res.error) }
+      : { value: res.rows as Record<string, unknown>[], why: null }
   }
 
   /**
@@ -602,7 +727,7 @@ async function census(id: Identity): Promise<string | null> {
 
   try {
     if (id.roles.includes('admin')) {
-      const row = await q(`select
+      const rec = await q(`select
           (select count(*) from venue) as venues,
           (select count(*) from class where active) as classes_active,
           -- Named apart because the slot count below is NOT filtered to active
@@ -637,76 +762,86 @@ async function census(id: Identity): Promise<string | null> {
           (select count(*) from message where direction = 'outbound'
              and coalesce(suppressed_reason, '') = ''
              and status in ('sent','delivered','read')
-             and contact_id <> '${id.contact.id}'::uuid) as sent_to_others`)
-      if (!row) return null
-      // Each line carries what the count MEANS, because a bare zero is the same
-      // mistake doctrine's *do not assume* names: true, and not the answer. "0 active
-      // coaches" reads as nothing-to-see; "two added, neither invited, so
-      // neither can see a thing" is the sentence somebody can act on — and it is
-      // still a fact, derived here, not a plan invented by anybody.
-      const archived = n(row, 'classes_archived')
-      const uninvited = n(row, 'coaches_uninvited')
-      const invited = n(row, 'coaches_invited')
-      const outbound = n(row, 'outbound_to_others')
-      const sent = n(row, 'sent_to_others')
-      /**
-       * R8 — a door with no sign. `onboarding_state` is the most consequential
-       * value in the product and for a long time the only thing that wrote it was
-       * an operation the model had to happen to choose, with nothing anywhere
-       * naming the moment that calls for it. So an academy with a full roster
-       * could sit in `setup` indefinitely while every proactive path silently
-       * suppressed — no error on either side, just a business that never started.
-       * The operation is gone (it was one UPDATE and a note) and its one real
-       * precondition is a trigger now, so the door is a plain write with a guard
-       * behind it; this line is still what puts the sign on it.
-       *
-       * It goes FIRST because it changes what every line under it means: "12 sessions
-       * scheduled ahead" reads as a working business, and until this flips, not one of
-       * those reminders will go out.
-       */
-      const live = id.academy.onboarding_state === 'live'
-      const readyToGoLive = !live && n(row, 'classes_active') > 0
-      const bits = [
-        live
-          ? null
-          : `NOT LIVE (${id.academy.onboarding_state}) — no reminder, digest or announcement reaches anybody yet, ` +
-            `and every count below is a roster nobody has been told about. ` +
-            (readyToGoLive
-              ? 'There is a timetable in, so going live is now a real next step to offer.'
-              : 'Nothing to go live with yet — the timetable is what is missing.'),
-        `${n(row, 'venues')} venue(s)`,
-        `${n(row, 'classes_active')} active class(es) with ${n(row, 'slots_all_classes')} weekly slot(s)` +
-          (n(row, 'classes_active') === 0 ? ' — so there is nothing to remind anyone about yet' : '') +
-          (archived
-            ? ` — but the slot count is every class's, ${archived} archived one(s) included, so it is not the weekly load`
-            : ''),
-        `${n(row, 'coaches_active')} active coach(es)` +
-          (uninvited || invited
-            ? `, and ${uninvited + invited} who cannot see a session, will not be reminded, and will not know they are expected anywhere: ` +
-              [
-                uninvited ? `${uninvited} added but never invited — nothing has been sent to them at all` : '',
-                invited ? `${invited} invited and not yet confirmed — the invite is out; they have not tapped it` : '',
-              ]
-                .filter(Boolean)
-                .join('; ')
-            : ''),
-        `${n(row, 'families')} family account(s), ${n(row, 'players_active')} active player(s), ${n(row, 'enrolled')} live enrolment(s)`,
-        `${n(row, 'upcoming')} session(s) scheduled ahead (${n(row, 'this_week')} in the next 7 days)`,
-        `${outbound} message(s) ever addressed to anyone outside this conversation` +
-          (outbound === 0
-            ? ' — nobody outside this conversation has heard from this business at all'
-            : sent < outbound
-              ? `, of which ${sent} actually went out — the other ${outbound - sent} are still queued or failed, so nobody received those`
-              : ''),
-        id.academy.upi_handle
-          ? `UPI handle set`
-          : `no UPI handle on file, so a payment request goes out with nothing to pay to`,
-      ]
-      return bits.filter(Boolean).map((b) => `- ${b}`).join('\n')
+             and contact_id <> '${id.contact.id}'::uuid) as sent_to_others`, 'prefetch: admin census')
+      return fromRead(
+        rec,
+        {
+          what: 'the business summary — venues, classes, coaches, families, enrolments, sessions ahead',
+          licenses:
+            'Every count below is missing, not zero. Say nothing about what this business does or does not have ' +
+            'set up until you have looked, and never read the hole as an empty business.',
+        },
+        (row) => {
+          // Each line carries what the count MEANS, because a bare zero is the same
+          // mistake doctrine's *do not assume* names: true, and not the answer. "0 active
+          // coaches" reads as nothing-to-see; "two added, neither invited, so
+          // neither can see a thing" is the sentence somebody can act on — and it is
+          // still a fact, derived here, not a plan invented by anybody.
+          const archived = n(row, 'classes_archived')
+          const uninvited = n(row, 'coaches_uninvited')
+          const invited = n(row, 'coaches_invited')
+          const outbound = n(row, 'outbound_to_others')
+          const sent = n(row, 'sent_to_others')
+          /**
+           * R8 — a door with no sign. `onboarding_state` is the most consequential
+           * value in the product and for a long time the only thing that wrote it was
+           * an operation the model had to happen to choose, with nothing anywhere
+           * naming the moment that calls for it. So an academy with a full roster
+           * could sit in `setup` indefinitely while every proactive path silently
+           * suppressed — no error on either side, just a business that never started.
+           * The operation is gone (it was one UPDATE and a note) and its one real
+           * precondition is a trigger now, so the door is a plain write with a guard
+           * behind it; this line is still what puts the sign on it.
+           *
+           * It goes FIRST because it changes what every line under it means: "12 sessions
+           * scheduled ahead" reads as a working business, and until this flips, not one of
+           * those reminders will go out.
+           */
+          const live = id.academy.onboarding_state === 'live'
+          const readyToGoLive = !live && n(row, 'classes_active') > 0
+          const bits = [
+            live
+              ? null
+              : `NOT LIVE (${id.academy.onboarding_state}) — no reminder, digest or announcement reaches anybody yet, ` +
+                `and every count below is a roster nobody has been told about. ` +
+                (readyToGoLive
+                  ? 'There is a timetable in, so going live is now a real next step to offer.'
+                  : 'Nothing to go live with yet — the timetable is what is missing.'),
+            `${n(row, 'venues')} venue(s)`,
+            `${n(row, 'classes_active')} active class(es) with ${n(row, 'slots_all_classes')} weekly slot(s)` +
+              (n(row, 'classes_active') === 0 ? ' — so there is nothing to remind anyone about yet' : '') +
+              (archived
+                ? ` — but the slot count is every class's, ${archived} archived one(s) included, so it is not the weekly load`
+                : ''),
+            `${n(row, 'coaches_active')} active coach(es)` +
+              (uninvited || invited
+                ? `, and ${uninvited + invited} who cannot see a session, will not be reminded, and will not know they are expected anywhere: ` +
+                  [
+                    uninvited ? `${uninvited} added but never invited — nothing has been sent to them at all` : '',
+                    invited ? `${invited} invited and not yet confirmed — the invite is out; they have not tapped it` : '',
+                  ]
+                    .filter(Boolean)
+                    .join('; ')
+                : ''),
+            `${n(row, 'families')} family account(s), ${n(row, 'players_active')} active player(s), ${n(row, 'enrolled')} live enrolment(s)`,
+            `${n(row, 'upcoming')} session(s) scheduled ahead (${n(row, 'this_week')} in the next 7 days)`,
+            `${outbound} message(s) ever addressed to anyone outside this conversation` +
+              (outbound === 0
+                ? ' — nobody outside this conversation has heard from this business at all'
+                : sent < outbound
+                  ? `, of which ${sent} actually went out — the other ${outbound - sent} are still queued or failed, so nobody received those`
+                  : ''),
+            id.academy.upi_handle
+              ? `UPI handle set`
+              : `no UPI handle on file, so a payment request goes out with nothing to pay to`,
+          ]
+          return bits.filter(Boolean).map((b) => `- ${b}`)
+        },
+      ).join('\n')
     }
 
     if (id.coachId) {
-      const [row, next, unmarked] = await Promise.all([
+      const [rec, next, unmarked] = await Promise.all([
         q(`select
           (select status from coach where id = '${id.coachId}'::uuid) as status,
           (select count(*) from class_coach where coach_id = '${id.coachId}'::uuid) as classes,
@@ -726,7 +861,8 @@ async function census(id: Identity): Promise<string | null> {
           -- also the cross-check that tells this block apart from a failed lookup.
           (select count(*) from session_coach sc join session s on s.id = sc.session_id
             where sc.coach_id = '${id.coachId}'::uuid and s.status = 'scheduled' and s.ends_at < app.now()
-              and not exists (select 1 from attendance a where a.session_id = s.id)) as unmarked_total`),
+              and not exists (select 1 from attendance a where a.session_id = s.id)) as unmarked_total`,
+          'prefetch: coach record and counts'),
         // `confirmed_at` rides along because "they are down for it" and "they said
         // yes" are different facts, and only the first was ever in front of the
         // model — the same conflation that made the digest tell an owner a covered
@@ -739,7 +875,7 @@ async function census(id: Identity): Promise<string | null> {
                where sc.coach_id = '${id.coachId}'::uuid
                  and sc.declined_at is null
                  and s.status = 'scheduled' and s.starts_at > app.now()
-               order by s.starts_at limit 4`),
+               order by s.starts_at limit 4`, 'prefetch: coach next sessions'),
         // The one thing a coach is chased about, prefetched with the id needed to
         // act on it — so "did I mark Tuesday?" is answered, and marking it is one
         // round rather than three.
@@ -750,8 +886,9 @@ async function census(id: Identity): Promise<string | null> {
                where sc.coach_id = '${id.coachId}'::uuid
                  and s.status = 'scheduled' and s.ends_at < app.now()
                  and not exists (select 1 from attendance a where a.session_id = s.id)
-               order by s.starts_at desc limit 3`),
+               order by s.starts_at desc limit 3`, 'prefetch: coach unmarked registers'),
       ])
+      const row = rec.value
       const bits: string[] = []
       if (row) {
         const declined = n(row, 'upcoming_declined')
@@ -776,46 +913,85 @@ async function census(id: Identity): Promise<string | null> {
         )
       } else {
         bits.push(
-          `- their coach record and session counts could not be read this turn. Say nothing about either, and do not read the gap as "none".`,
+          `- their coach record and session counts could not be read this turn. Say nothing about either, ` +
+            `and do not read the gap as "none".${because(rec.why)}`,
         )
       }
-      if (next && next.length) {
-        bits.push(`- their next session(s), soonest first (up to 4 shown) — use these times verbatim:`)
-        for (const r of next) {
-          bits.push(`    · ${sessionLine(r)}${r.confirmed_at ? '' : ` — they have NOT confirmed this one yet`}`)
-        }
-      } else if (n(row, 'upcoming') - n(row, 'upcoming_declined') > 0) {
-        // Two reads of the same fact, and they disagree — the count found sessions
-        // and the list came back empty or refused. The disagreement is the finding;
-        // resolving it silently in favour of the empty list is how "nothing coming
-        // up" gets said to a coach who is expected somewhere tomorrow.
-        bits.push(
-          `- their next sessions could not be listed this turn, though the count above says there are some — look them up before you name a time.`,
-        )
-      }
+      bits.push(
+        ...fromRead(
+          next,
+          {
+            what: 'their next sessions',
+            licenses:
+              'Look them up before you name a time, and do NOT tell them nothing is coming up — the list is ' +
+              'missing, not empty.',
+          },
+          (rows) => {
+            if (rows.length) {
+              return [
+                `- their next session(s), soonest first (up to 4 shown) — use these times verbatim:`,
+                ...rows.map(
+                  (r) =>
+                    `    · ${sessionLine(r)}${r.confirmed_at ? '' : ` — they have NOT confirmed this one yet`}`,
+                ),
+              ]
+            }
+            // Ran, and came back empty. The count is a second read of the same fact,
+            // and where the two disagree the disagreement IS the finding — resolving
+            // it silently in favour of the empty list is how "nothing coming up" gets
+            // said to a coach who is expected somewhere tomorrow. (A failed list no
+            // longer reaches here: `fromRead` answered it above, which is why this
+            // sentence can now say "empty" rather than hedging between the two.)
+            return n(row, 'upcoming') - n(row, 'upcoming_declined') > 0
+              ? [
+                  `- the list of their next sessions came back EMPTY, though the count above says there are ` +
+                    `${n(row, 'upcoming') - n(row, 'upcoming_declined')}. Two reads of one fact disagree — look ` +
+                    `them up before you name a time or say there is nothing.`,
+                ]
+              : []
+          },
+        ),
+      )
       const unmarkedTotal = n(row, 'unmarked_total')
-      if (unmarked && unmarked.length) {
-        bits.push(
-          `- register(s) still unmarked${
-            unmarkedTotal > unmarked.length ? ` — ${unmarkedTotal} in total, the ${unmarked.length} most recent below` : ''
-          }, with the id to mark them:`,
-        )
-        for (const r of unmarked) {
-          bits.push(`    · ${sessionLine(r)} — session_id = ${String(r.session_id)}`)
-        }
-      } else if (unmarkedTotal > 0) {
-        bits.push(
-          `- ${unmarkedTotal} register(s) are still unmarked but the list of them could not be read this turn — look them up before you say which.`,
-        )
-      }
+      bits.push(
+        ...fromRead(
+          unmarked,
+          {
+            what: 'the registers they have not marked',
+            licenses:
+              'Do NOT read the gap as "all marked" — that is the one sentence this line exists to prevent. ' +
+              'Look them up before you tell them they are up to date.',
+          },
+          (rows) => {
+            if (rows.length) {
+              return [
+                `- register(s) still unmarked${
+                  unmarkedTotal > rows.length
+                    ? ` — ${unmarkedTotal} in total, the ${rows.length} most recent below`
+                    : ''
+                }, with the id to mark them:`,
+                ...rows.map((r) => `    · ${sessionLine(r)} — session_id = ${String(r.session_id)}`),
+              ]
+            }
+            // Same disagreement as the sessions above, one relation over.
+            return unmarkedTotal > 0
+              ? [
+                  `- the list came back EMPTY though the count above says ${unmarkedTotal} register(s) are ` +
+                    `unmarked. Two reads of one fact disagree — look them up before you say which, or that ` +
+                    `there are none.`,
+                ]
+              : []
+          },
+        ),
+      )
       return bits.join('\n')
     }
 
     if (id.accountIds.length || id.playerIds.length) {
-      const [row, next] = await Promise.all([
+      const [rec, next] = await Promise.all([
         q(`select
           (select count(*) from player where active) as players,
-          (select count(*) from enrollment where ended_on is null) as enrolled`),
+          (select count(*) from enrollment where ended_on is null) as enrolled`, 'prefetch: family counts'),
         // §9's most-asked question is "what time is his class", and it cost a round
         // every time because the tail carried a count and a bare timestamp. These are
         // the actual rows, already in their words.
@@ -827,32 +1003,47 @@ async function census(id: Identity): Promise<string | null> {
                 join person pe on pe.id = pl.person_id
                 left join venue v on v.id = coalesce(s.venue_id, c.venue_id)
                where s.status = 'scheduled' and s.starts_at > app.now()
-               order by s.starts_at limit 4`),
+               order by s.starts_at limit 4`, 'prefetch: family next sessions'),
       ])
       const bits: string[] = []
-      if (row) {
-        bits.push(
-          `- ${n(row, 'players')} of their children/players active on the roster, ${n(row, 'enrolled')} live enrolment(s)`,
-        )
-      }
-      if (next && next.length) {
-        bits.push(`- their next session(s), soonest first (up to 4 shown) — use these times verbatim:`)
-        for (const r of next) bits.push(`    · ${sessionLine(r)}`)
-      } else if (next) {
-        // Only when the query actually RAN and returned nothing. This sentence is the
-        // most consequential one in the census — a parent who reads it stays home —
-        // and until `many` separated failure from emptiness, a refused or timed-out
-        // lookup produced it word for word.
-        bits.push(
-          `- **nothing is scheduled ahead for them at all.** Not "nothing this week" — nothing. ` +
-            `Say so plainly and say what the class normally is; do not infer a next date from the weekly pattern.`,
-        )
-      } else {
-        bits.push(
-          `- their upcoming sessions could not be read this turn. Look them up before you answer anything about when a class is, ` +
-            `and do not tell them there are none — this is a failed lookup, not an empty diary.`,
-        )
-      }
+      bits.push(
+        ...fromRead(
+          rec,
+          {
+            what: 'how many children they have on the roster, and how many live enrolments',
+            licenses: 'Do not read the gap as none of either.',
+          },
+          (row) => [
+            `- ${n(row, 'players')} of their children/players active on the roster, ${n(row, 'enrolled')} live enrolment(s)`,
+          ],
+        ),
+      )
+      bits.push(
+        ...fromRead(
+          next,
+          {
+            what: 'their upcoming sessions',
+            licenses:
+              'Look them up before you answer anything about when a class is, and do NOT tell them there are ' +
+              'none — this is a failed lookup, not an empty diary.',
+          },
+          (rows) =>
+            rows.length
+              ? [
+                  `- their next session(s), soonest first (up to 4 shown) — use these times verbatim:`,
+                  ...rows.map((r) => `    · ${sessionLine(r)}`),
+                ]
+              : // Only when the query actually RAN and returned nothing. This sentence is
+                // the most consequential one in the census — a parent who reads it stays
+                // home — and until `many` separated failure from emptiness, a refused or
+                // timed-out lookup produced it word for word.
+                [
+                  `- **nothing is scheduled ahead for them at all.** Not "nothing this week" — nothing. ` +
+                    `Say so plainly and say what the class normally is; do not infer a next date from the ` +
+                    `weekly pattern.`,
+                ],
+        ),
+      )
       return bits.join('\n')
     }
 
@@ -869,8 +1060,17 @@ async function census(id: Identity): Promise<string | null> {
       `business itself holds. Classes, coaches and families may all exist without being visible from ` +
       `where they stand; never assert the business is new or empty from here.`
     )
-  } catch {
-    return null
+  } catch (e) {
+    // The census used to return null here and `variableTail` rendered nothing at
+    // all — so a throw anywhere above deleted the whole "what existed" section
+    // from the prompt, unmarked. An absent section is the one failure a reader
+    // cannot notice: the block is unconditional on every healthy turn, so its
+    // absence looks like nothing rather than like a hole.
+    return unread(
+      'what exists in this business',
+      'Nothing below this line was read. Do not say what this business does or does not have until you have looked.',
+      firstLine(errorMessage(e)),
+    )
   }
 }
 
@@ -917,12 +1117,39 @@ async function standing(id: Identity): Promise<string[]> {
     const [pending, mutes] = await Promise.all([
       modelQuery(
         ctx,
+        /**
+         * The `not exists` is a belt, and it is here because of what this block
+         * SAYS rather than what it selects.
+         *
+         * The sentence built below asserts three things as fact — they have NOT
+         * answered, nothing behind it has happened, never describe it as done —
+         * with instruction force, and all three rest on one column being empty.
+         * That column was unreliable: `consumeAction` recorded the tap under the
+         * tapper, and 0032 gives `cm_user` no write policy on `pending_request`,
+         * so the answer was never written and nothing counted the miss. A mother
+         * cancelled a class, tapped Yes, and was told the next day she had never
+         * answered — the model re-asked, she tapped again inside the notice
+         * window, and the second tap overwrote a free cancellation with a charge.
+         *
+         * `lib/actions.ts` now writes the answer as the runtime, which is the
+         * actual fix. This stays because a claim this strong should not rest on a
+         * single column: a tapped button on the message IS an answer, whatever the
+         * row says, and rows written before the fix are still wrong. Same gate as
+         * the sibling invalidation and `resolveQuestion` — `reply`, `view` and
+         * `menu` assert nothing, so a card carrying its own [Show me all 12] does
+         * not silence its own question.
+         */
         `select kind, subject, question,
                 to_char(created_at, 'YYYY-MM-DD') as asked_on,
                 (expires_at is not null and expires_at < app.now()) as past_expiry
-           from pending_request
-          where contact_id = '${id.contact.id}'::uuid and resolved_at is null
-          order by created_at desc limit 5`,
+           from pending_request pr
+          where pr.contact_id = '${id.contact.id}'::uuid and pr.resolved_at is null
+            and not exists (select 1 from action a
+                             where a.message_id = pr.message_id
+                               and a.consumed_at is not null
+                               and a.payload ->> 'kind' in ('operation', 'steps', 'noop', 'handoff'))
+          order by pr.created_at desc limit 5`,
+        'prefetch: standing — questions asked and unanswered',
       ),
       modelQuery(
         ctx,
@@ -931,6 +1158,7 @@ async function standing(id: Identity): Promise<string[]> {
           where contact_id = '${id.contact.id}'::uuid and released_at is null
             and (until is null or until >= (app.now() at time zone '${(id.academy.timezone || 'Asia/Kolkata').replace(/'/g, '')}')::date)
           order by scope`,
+        'prefetch: standing — mutes and opt-outs',
       ),
     ])
 
@@ -945,7 +1173,22 @@ async function standing(id: Identity): Promise<string[]> {
       )
     }
 
-    if (!pending.error) {
+    // `if (!pending.error)` with no else, until now — and this is the block built
+    // after a woman asked to be left alone, was shown a confirmation she never
+    // tapped, and got a full itemised balance the next turn as though she had never
+    // spoken. Everything that exists to stop that was bypassed by one refused read,
+    // silently: the model saw a person with nothing outstanding, which is exactly
+    // the state the block was written to deny.
+    if (pending.error) {
+      out.push(
+        unread(
+          'anything they have asked and not had answered',
+          'This is NOT "nothing outstanding" — it is unknown. Before you answer, read pending_request for this ' +
+            'contact yourself, and never tell them something is done or was never asked.',
+          firstLine(pending.error),
+        ).replace(/^- /, ''),
+      )
+    } else {
       for (const r of pending.rows as Record<string, unknown>[]) {
         const q = String(r.question ?? '').replace(/\s+/g, ' ').slice(0, 160)
         out.push(
@@ -999,7 +1242,19 @@ async function standing(id: Identity): Promise<string[]> {
       /* Never a precondition. A turn without this line is worse, not broken. */
     }
 
-    if (!mutes.error) {
+    // The other half, and the more dangerous one to lose: a mute that fails to load
+    // reads as a person who never asked for quiet, and the standing jobs are what
+    // act on it. A promise of quiet is the most valuable sentence in the product.
+    if (mutes.error) {
+      out.push(
+        unread(
+          'their mutes and opt-outs',
+          'This is NOT "they asked for nothing" — it is unknown. Read comm_preference for this contact before ' +
+            'you start anything unprompted, and treat quiet as possible until you have.',
+          firstLine(mutes.error),
+        ).replace(/^- /, ''),
+      )
+    } else {
       for (const r of mutes.rows as Record<string, unknown>[]) {
         const scope = String(r.scope)
         out.push(
@@ -1012,7 +1267,17 @@ async function standing(id: Identity): Promise<string[]> {
         )
       }
     }
-  } catch {
+  } catch (e) {
+    // Whatever was collected, plus the fact that the rest was not — the partial
+    // list is more dangerous than an empty one, because it reads as complete.
+    out.push(
+      unread(
+        'their standing states — open questions, mutes, opt-outs',
+        'The list above may be partial. Read pending_request and comm_preference for this contact before you ' +
+          'act on what is or is not in it.',
+        firstLine(errorMessage(e)),
+      ).replace(/^- /, ''),
+    )
     return out
   }
   return out
@@ -1182,20 +1447,23 @@ export async function variableTail(
   // trusts "right now" over its own committed write will contradict itself inside a
   // single turn. So the heading says when it was read, and the block says what
   // supersedes it.
-  if (whatExists) {
-    out.push(
-      `## What existed when this turn started (as this person can see it)\n\n${whatExists}\n\n` +
-        // The closing clause earns its place in an uncached block because it is the
-        // one thing the prefix structurally cannot say: the prefix does not know when
-        // this text was built. The provenance rule (doctrine's *do not assume*: every
-        // value stated comes off something in front of you this turn) is already
-        // cached — restating it here would be billed on every round and cached on none.
-        `Counts and rows already read out of the database, not a plan. They are here so you never have to guess ` +
-        `whether something is set up, and so an empty count is something you can act on rather than something you ` +
-        `discover mid-sentence. They were read before this turn's first round — a write you have committed since ` +
-        `supersedes them.`,
-    )
-  }
+  // UNCONDITIONAL. This used to be `if (whatExists)`, and `census()` returned null
+  // on every one of its failure paths — so the heading, the counts and the closing
+  // provenance clause all disappeared together, leaving a prompt that looked
+  // complete. `census()` now always returns prose, and on failure that prose says
+  // so, which is why there is nothing left to guard on.
+  out.push(
+    `## What existed when this turn started (as this person can see it)\n\n${whatExists}\n\n` +
+      // The closing clause earns its place in an uncached block because it is the
+      // one thing the prefix structurally cannot say: the prefix does not know when
+      // this text was built. The provenance rule (doctrine's *do not assume*: every
+      // value stated comes off something in front of you this turn) is already
+      // cached — restating it here would be billed on every round and cached on none.
+      `Counts and rows already read out of the database, not a plan. They are here so you never have to guess ` +
+      `whether something is set up, and so an empty count is something you can act on rather than something you ` +
+      `discover mid-sentence. They were read before this turn's first round — a write you have committed since ` +
+      `supersedes them.`,
+  )
 
   // --- memory hot sets (§5) --------------------------------------------------
   //
@@ -1212,11 +1480,12 @@ export async function variableTail(
   // never learned anything about a business it has served for months — the same
   // failed-read-as-confident-negative shape the census branches below already guard,
   // and worse here, because nothing about a blank memory looks like an error.
-  const memoryLine = (title: string, value: string | null): string =>
-    value === null
-      ? `## ${title}\n(could not be read this turn — this is a failed lookup, NOT an empty memory. Do not act as though you know nothing about them.)`
-      : value
-        ? `## ${title}\n${value}`
+  const memoryLine = (title: string, read: { value: string | null; why: string | null }): string =>
+    read.value === null
+      ? `## ${title}\n(could not be read this turn — this is a failed lookup, NOT an empty memory. ` +
+        `Do not act as though you know nothing about them.${because(read.why)})`
+      : read.value
+        ? `## ${title}\n${read.value}`
         : `## ${title}\n(nothing recorded yet)`
 
   const mem: string[] = [`# Memory`]

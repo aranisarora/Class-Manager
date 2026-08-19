@@ -19,6 +19,7 @@ import type { Tx } from '@/lib/db'
 import {
   FREE_FIRST_CLASS_REASON,
   billingKey,
+  coachLedgerKey,
   freeFirstClassDescription,
   packageDescription,
 } from '@/lib/billing-keys'
@@ -753,6 +754,136 @@ async function packRemaining(tx: Tx, academyId: string, accountId: string): Prom
  * is three, then the admin is told, because a bot that chases forever is the
  * fastest way to a block on a shared number (§16.1).
  */
+/**
+ * `coach_month_lines` — the month a coach worked, written down.
+ *
+ * The family side of this product freezes money the moment it is earned: a
+ * `tally_line` carries the amount and the period, so raising a class rate today
+ * cannot change what August's invoice says. The coach side froze nothing, so
+ * "what was Priya owed for August" was answered live from `coach.pay_amount` —
+ * and an owner who granted a raise "from September" repriced August by typing it.
+ *
+ * This is the missing artifact. It runs when a month has CLOSED, because that is
+ * when the answer stops moving.
+ *
+ * **The rate is copied into the row, not referenced.** That single column is the
+ * fix; everything else here is bookkeeping around it.
+ *
+ * The per-session and per-hour arms read `coach_pay` rather than rebuilding its
+ * predicate. `worked` is subtle — a session is worked if it is over, was not
+ * cancelled and was not declined, which is NOT the same as a marked register —
+ * and a hand-written second copy of that is exactly how the figure went wrong
+ * before (0037's note: the test reached for was `status = 'scheduled'`, true only
+ * of sessions that have not happened, so a month of work counted as none).
+ *
+ * A part-month is written whole, and deliberately: the same rule the tally states
+ * for families. Pro-rating is a decision a person makes, and an adjustment line
+ * is how they make it.
+ */
+export async function coachMonthLines(job: Job): Promise<void> {
+  const p = payloadOf(job)
+  const academyId = need(p, 'academy_id')
+  const coachId = need(p, 'coach_id')
+  const period = need(p, 'period')
+
+  await withAcademy(academyId, async (tx) => {
+    const academy = await loadAcademy(tx, academyId)
+    if (!academy) skip('academy gone')
+    const tz = academy.timezone
+
+    // §13 rule 2 — every handler re-checks its own precondition at run time.
+    const [coach] = await tx<
+      { id: string; full_name: string; pay_amount: string | null; pay_unit: string | null }[]
+    >`
+      select c.id, pe.full_name, c.pay_amount::text as pay_amount, c.pay_unit
+        from coach c join person pe on pe.id = c.person_id
+       where c.id = ${coachId} and c.academy_id = ${academyId}
+    `
+    if (!coach) skip('coach gone')
+    // Null pay is "not tracked", a first-class state (0002). No arithmetic turns it
+    // into a number, and writing a zero line would read as "worked for nothing".
+    if (coach.pay_amount === null) skip('pay is not tracked for this coach')
+
+    const rate = num(coach.pay_amount)
+    const unit = coach.pay_unit
+    const monthName = monthLabel(period, tz)
+
+    if (unit === 'per_month') {
+      // One line, and it may already be here: a rate agreed in advance writes
+      // September's row in August under this exact key. Finding it is the feature.
+      const written = await tx<{ id: string }[]>`
+        insert into coach_ledger
+          (academy_id, coach_id, period, kind, description, amount, rate_amount, rate_unit, dedupe_key)
+        values (${academyId}, ${coachId}, ${period}::date, 'monthly',
+                ${`${monthName} — monthly`}, ${rate}, ${rate}, 'per_month',
+                ${coachLedgerKey.monthly(coachId, period)})
+        on conflict (academy_id, dedupe_key) do nothing
+        returning id
+      `
+      note(
+        written.length
+          ? `${firstName(coach.full_name)}: ${monthName} ${formatINR(rate)}`
+          : `${firstName(coach.full_name)}: ${monthName} already written — left alone`,
+      )
+      return
+    }
+
+    if (unit !== 'per_session' && unit !== 'per_hour') skip(`pay unit ${String(unit)} has no monthly close`)
+
+    // The view owns `worked` and the per-unit arithmetic. Both are things a second
+    // copy gets subtly wrong, and both have.
+    const rows = await tx<
+      {
+        session_id: string
+        class_name: string
+        local_start: string
+        session_hours: string
+        amount_for_session: string | null
+      }[]
+    >`
+      select session_id, class_name, local_start,
+             session_hours::text as session_hours,
+             amount_for_session::text as amount_for_session
+        from coach_pay
+       where coach_id = ${coachId}
+         and academy_id = ${academyId}
+         and worked
+         and (starts_at at time zone ${tz})::date >= ${period}::date
+         and (starts_at at time zone ${tz})::date
+             < (${period}::date + interval '1 month')::date
+       order by starts_at
+    `
+    if (rows.length === 0) skip('nothing worked in this period')
+
+    let total = 0
+    for (const r of rows) {
+      const amount = num(r.amount_for_session)
+      if (amount <= 0) continue
+      total += amount
+      await tx`
+        insert into coach_ledger
+          (academy_id, coach_id, period, kind, description, amount, rate_amount, rate_unit,
+           session_id, dedupe_key)
+        values (${academyId}, ${coachId}, ${period}::date,
+                ${unit === 'per_hour' ? 'hourly' : 'session'},
+                ${
+                  unit === 'per_hour'
+                    ? `${r.class_name} — ${r.local_start} (${num(r.session_hours)}h)`
+                    : `${r.class_name} — ${r.local_start}`
+                },
+                ${amount}, ${rate}, ${unit}, ${r.session_id},
+                ${
+                  unit === 'per_hour'
+                    ? coachLedgerKey.hourly(coachId, r.session_id)
+                    : coachLedgerKey.session(coachId, r.session_id)
+                })
+        on conflict (academy_id, dedupe_key) do nothing
+      `
+    }
+    note(`${firstName(coach.full_name)}: ${monthName} ${rows.length} session(s), ${formatINR(total)}`)
+  })
+}
+
 export async function dunningRun(job: Job): Promise<void> {
   const p = payloadOf(job)
   const academyId = need(p, 'academy_id')

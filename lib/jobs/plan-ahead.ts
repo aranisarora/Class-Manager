@@ -160,13 +160,25 @@ export async function planAheadFor(academyId: string): Promise<number> {
     const expired = await tx<
       { id: string; contact_id: string; kind: string; subject: string; question: string }[]
     >`
-      update pending_request
+      update pending_request pr
          set resolved_at = app.now(), resolution = 'expired'
-       where academy_id = ${academyId}
-         and resolved_at is null
-         and expires_at is not null
-         and expires_at < app.now()
-      returning id::text, contact_id::text, kind, subject, question`
+       where pr.academy_id = ${academyId}
+         and pr.resolved_at is null
+         and pr.expires_at is not null
+         and pr.expires_at < app.now()
+         -- A question somebody actually TAPPED is not an expired one, and calling it
+         -- expired is worse than leaving it open: the block below opens a turn saying
+         -- "nothing has changed and nothing has been decided" about work that already
+         -- happened. Reachable because consumeAction could not write this table at all
+         -- until resolveQuestion (lib/actions.ts) moved the write to the service role,
+         -- so every row tapped before that is still open. It stays after the backfill as
+         -- the same belt the tail carries. Same gate as the sibling invalidation: reply,
+         -- view and menu decide nothing.
+         and not exists (select 1 from action a
+                          where a.message_id = pr.message_id
+                            and a.consumed_at is not null
+                            and a.payload ->> 'kind' in ('operation', 'steps', 'noop', 'handoff'))
+      returning pr.id::text, pr.contact_id::text, pr.kind, pr.subject, pr.question`
 
     /**
      * -- and somebody hears about it -------------------------------------------
@@ -558,6 +570,49 @@ async function planMonthBoundary(
       { account_id: p.account_id, period: p.period },
       // Without this the tally was dropped whenever planning happened after 09:00
       // on the 1st — a planner running at 09:01 lost the month it was there to bill.
+      true,
+    )
+  }
+
+  /**
+   * The coach side of the same boundary (0038).
+   *
+   * Deliberately the month AFTER the period, where `monthly_lines` is the 1st OF
+   * it. A family's monthly fee is knowable on the 1st; what a coach worked is not
+   * knowable until the month is over, and the whole value of the row is that it
+   * stops moving once written.
+   *
+   * Runs from each coach's first month, never earlier, on the same catch-up
+   * window as the tally — so a business switching this on does not invent a back
+   * catalogue, and one that was offline for a month still closes it.
+   */
+  const coachMonths = await tx<{ coach_id: string; period: string }[]>`
+    select c.id as coach_id, gs.period::date::text as period
+      from coach c
+      cross join lateral generate_series(
+        greatest(
+          date_trunc('month', c.created_at at time zone ${tz}),
+          date_trunc('month', (app.now() at time zone ${tz}))
+            - make_interval(months => ${BILLING_CATCHUP_MONTHS}::int)
+        ),
+        date_trunc('month', (app.now() at time zone ${tz})) - interval '1 month',
+        interval '1 month'
+      ) as gs(period)
+     where c.academy_id = ${academy.id}
+       and c.pay_amount is not null
+       -- A coach who has left still earned their last month. What excludes a
+       -- period is having ended BEFORE it, not having ended at all.
+       and (c.ended_on is null or c.ended_on >= gs.period::date)
+  `
+  for (const m of coachMonths) {
+    const closesOn = DateTime.fromISO(m.period, { zone: tz }).plus({ months: 1 }).toFormat('yyyy-MM-dd')
+    push(
+      'coach_month_lines',
+      atTimeOn(closesOn, '00:20:00', tz),
+      dedupe.coachMonthLines(m.coach_id, m.period),
+      { coach_id: m.coach_id, period: m.period },
+      // Same reason as the tally above: a planner that first runs mid-month must
+      // still close the months already behind it.
       true,
     )
   }

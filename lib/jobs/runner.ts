@@ -37,7 +37,7 @@ import {
 import {
   adminEscalateUncovered, adminEveningDigest, adminMorningBrief, coachNotOnboarded,
 } from './handlers/admin'
-import { dunningRun, monthEndTally, monthlyLines, reconcile } from './handlers/money'
+import { coachMonthLines, dunningRun, monthEndTally, monthlyLines, reconcile } from './handlers/money'
 import { agentTask, memoryCurate } from './handlers/agent-task'
 
 /** Every kind in the §13 table has a handler here, or it does not exist. */
@@ -56,6 +56,7 @@ export const HANDLERS: Record<JobKind, (job: Job) => Promise<void>> = {
   admin_evening_digest: adminEveningDigest,
   monthly_lines: monthlyLines,
   month_end_tally: monthEndTally,
+  coach_month_lines: coachMonthLines,
   dunning: dunningRun,
   first_contact_batch: firstContactBatch,
   memory_curate: memoryCurate,

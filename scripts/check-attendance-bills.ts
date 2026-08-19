@@ -114,7 +114,12 @@ try {
        values (${A}, '${cls.id}'::uuid, app.now() - interval '3 hours',
                app.now() - interval '2 hours', 'scheduled') returning id`,
     )
-    return { sessionId: session.id as string, playerId: player.id as string, coachId: coach.id as string }
+    return {
+      sessionId: session.id as string,
+      playerId: player.id as string,
+      coachId: coach.id as string,
+      accountId: account.id as string,
+    }
   })
 
   /* -- the world agrees there is money waiting ------------------------------ */
@@ -166,6 +171,67 @@ try {
     after.still_owing === 0,
     after,
   )
+
+  /* -- F-BQ · a family cancellation may not be downgraded into a charge ------
+   *
+   * The two guards `client_cancel` writes, run against the real `attendance` and
+   * `tally_line` — same statements, same constraints, same triggers.
+   *
+   * The incident: a mother cancelled two days early, which is free and was
+   * recorded as `cancelled_timely`. The product asked her the same question again
+   * a day later, she tapped Yes, and the unguarded upsert wrote `absent` over it
+   * and raised a charge. Both halves matter and the first alone is not enough —
+   * refusing the status change while still writing the money is the half that
+   * reached her account.
+   */
+  await withSession(ctx, async (tx) => {
+    await tx.unsafe(`delete from tally_line where academy_id = ${A}`)
+    await tx.unsafe(
+      `update attendance set status = 'cancelled_timely', marked_by_coach_id = null
+        where session_id = '${world.sessionId}'::uuid and player_id = '${world.playerId}'::uuid`,
+    )
+  })
+
+  const downgrade = await withSession(ctx, async (tx) => {
+    const rows = (await tx.unsafe(
+      `insert into attendance (academy_id, session_id, player_id, status, note, marked_at)
+       values (${A}, '${world.sessionId}'::uuid, '${world.playerId}'::uuid, 'absent', 'late cancel', app.now())
+       on conflict (session_id, player_id) do update set
+         status = excluded.status, note = excluded.note, marked_at = excluded.marked_at
+       where attendance.status is distinct from 'cancelled_timely'
+       returning id`,
+    )) as unknown as unknown[]
+    return rows.length
+  })
+  assert('F-BQ · a family cancellation cannot be downgraded into a no-show', downgrade === 0, downgrade)
+
+  const stillTimely = await withSession(ctx, async (tx) =>
+    ((await tx.unsafe(
+      `select status from attendance
+        where session_id = '${world.sessionId}'::uuid and player_id = '${world.playerId}'::uuid`,
+    )) as unknown as { status: string }[])[0]?.status,
+  )
+  assert('F-BQ · and the register still reads cancelled_timely', stillTimely === 'cancelled_timely', stillTimely)
+
+  const charged = await withSession(ctx, async (tx) => {
+    await tx.unsafe(
+      `insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount, session_id, dedupe_key)
+       select ${A}, '${world.accountId}'::uuid, '${world.playerId}'::uuid,
+              date_trunc('month', app.now())::date, 'session', 'late cancellation', 900,
+              '${world.sessionId}'::uuid, 's:${world.playerId}:${world.sessionId}'
+        where not exists (select 1 from tally_line t
+                           where t.session_id = '${world.sessionId}'::uuid
+                             and t.player_id = '${world.playerId}'::uuid)
+          and not exists (select 1 from attendance att
+                           where att.session_id = '${world.sessionId}'::uuid
+                             and att.player_id = '${world.playerId}'::uuid
+                             and att.status = 'cancelled_timely')`,
+    )
+    return ((await tx.unsafe(`select count(*)::int as n from tally_line where academy_id = ${A}`)) as unknown as {
+      n: number
+    }[])[0]?.n
+  })
+  assert('F-BQ · and no charge follows the refusal — the money guard reads the same row', charged === 0, charged)
 
   console.log(
     failures === 0

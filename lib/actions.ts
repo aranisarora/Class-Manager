@@ -185,6 +185,105 @@ export type ConsumeResult =
   | { ok: true; payload: ActionPayload }
   | { ok: false; reason: 'expired' | 'already_used' | 'wrong_contact' | 'missing' }
 
+type ClaimedRow = { payload: unknown; message_id: string | null }
+
+/**
+ * The tap is the answer — recorded as the runtime, because the tapper cannot.
+ *
+ * **This lived inside the claiming statement and could never once have worked.**
+ * `consumeAction` claims under the TAPPER (that is what stops one person answering
+ * another person's question), and 0032 gives `cm_user` no write policy on
+ * `pending_request`, deliberately: *"A person who could write it could forge an
+ * answer to a question about somebody else."* So the `answered` CTE updated zero
+ * rows, every time, for the life of the table — and because the statement asked for
+ * `returning pr.id` and never read it, nothing counted it, logged it or alarmed.
+ *
+ * What that cost: `context.ts` renders every open row as ASKED AND UNANSWERED —
+ * *"they have NOT answered … nothing behind it has happened … Never describe it as
+ * done"* — three assertions with instruction force, resting entirely on this column.
+ * A mother cancelled a class, tapped Yes, and the next day the model was still being
+ * told she had never answered. It re-asked; she tapped again; by then the session was
+ * inside the notice window and the second tap wrote `absent` over `cancelled_timely`
+ * and charged her (`.probe/runs/2026-08-17-18-07-live`, turns 14/15/28/30).
+ *
+ * Since 0035 it also produces a *wrong* resolution rather than merely a missing one:
+ * `expires_at` is now set from the button, so the sweep in `plan-ahead.ts` resolves an
+ * answered question as `expired` and opens a turn chasing somebody about it.
+ *
+ * **Why a second statement is acceptable here, when the sibling invalidation is not.**
+ * The two writes that must not come apart are the claim and the supersede — both are
+ * on `action`, both are about which buttons are still live, and a gap between them is
+ * a button that commits work twice. This one is a *record of what the tap meant*: a
+ * gap leaves a question open one moment longer, which is exactly the state it was in
+ * a moment ago. It cannot be atomic with the claim in any case, because the two need
+ * different roles.
+ *
+ * The row count is checked because that is the whole lesson. A write allowed to match
+ * nothing in silence is how this survived — same posture as `attachActionsToMessage`.
+ */
+async function resolveQuestion(
+  ctx: SessionCtx,
+  actionId: string,
+  messageId: string | null,
+  payload: unknown,
+): Promise<void> {
+  // A button that was never stamped onto a message (0016: a suppressed message keeps a
+  // null `message_id`) asked no question anybody can find. Nothing to resolve, and not
+  // a failure.
+  if (!messageId || !UUID_RE.test(messageId)) return
+
+  /**
+   * The same gate the sibling invalidation uses, and for the same reason.
+   *
+   * `operation` and `steps` did the work, `noop` declined it, `handoff` gave the
+   * conversation away — each of those is an answer. `reply`, `view` and `menu` assert
+   * nothing: a confirmation card carrying its own [Show me all 12] is explicitly
+   * required to leave [Do it] and [Cancel] where they were, so treating that tap as
+   * the answer would close a question nobody answered — the same class of false
+   * record this function exists to end, pointed the other way.
+   */
+  const kind = (payload as { kind?: unknown } | null)?.kind
+  if (kind !== 'operation' && kind !== 'steps' && kind !== 'noop' && kind !== 'handoff') return
+
+  try {
+    const stillOpen = await withSession(serviceFrom(ctx), async (tx) => {
+      const resolved = await tx<{ id: string }[]>`
+        update pending_request
+           set resolved_at = app.now(), resolution = 'tapped'
+         where message_id = ${messageId}
+           and academy_id = ${ctx.academyId}
+           and resolved_at is null
+        returning id`
+      if (resolved.length > 0) return 0
+      // Resolving nothing is the ordinary case — most cards ask no question, so there is
+      // no row. The defect looks different: a row for this message that is STILL open
+      // after the write. Only that is worth a word.
+      const open = await tx<{ id: string }[]>`
+        select id from pending_request
+         where message_id = ${messageId}
+           and academy_id = ${ctx.academyId}
+           and resolved_at is null`
+      return open.length
+    })
+
+    if (stillOpen > 0) {
+      console.error(
+        `[actions] action ${actionId} committed but ${stillOpen} question(s) on message ${messageId} ` +
+          `are still open — the tail will keep reporting them as unanswered, and the expiry sweep ` +
+          `will resolve them as 'expired' and chase somebody about work that already happened`,
+      )
+    }
+  } catch (e) {
+    // Loud, never thrown. By the time this runs the tap has committed real work; a throw
+    // here would turn a recorded action into a reported failure, which is a false
+    // statement about the world told to prevent a true one about bookkeeping.
+    console.error(
+      `[actions] action ${actionId} committed but its question on message ${messageId} ` +
+        `could not be resolved: ${(e as Error).message} — the tail will keep reporting it as unanswered`,
+    )
+  }
+}
+
 /**
  * Loads, validates expiry + consumption + `minted_for_contact_id`, stamps `consumed_at`.
  * NO MODEL CALL, no re-resolution, no string parsing (§6.5).
@@ -211,7 +310,7 @@ export async function consumeAction(
   const claimCtx: SessionCtx = ctx.role === 'user' ? ctx : serviceFrom(ctx)
 
   const claimed = await withSession(claimCtx, async (tx) => {
-    const rows = await tx<{ payload: unknown }[]>`
+    const rows = await tx<ClaimedRow[]>`
       with claimed as (
         update action
            set consumed_at = app.now(),
@@ -278,41 +377,31 @@ export async function consumeAction(
                 and w.payload ->> 'kind' in ('operation', 'steps')
            )
         returning a.id
-      ),
-      -- The question this card was asking is answered.
-      --
-      -- A pending_request exists from the moment the ask reaches a screen (0032,
-      -- the send path), and this is the other end of it: the tap is the answer,
-      -- whichever of the buttons was pressed, because a card asks ONE question
-      -- and declining is an answer to it. Keyed by message_id for exactly that
-      -- reason -- a card with three buttons is three action rows and one
-      -- question.
-      --
-      -- In the same statement as the claim, and not a follow-up write, for the
-      -- reason the sibling invalidation is: two writes that must not come apart
-      -- are one statement, or they will eventually come apart.
+      )
+      -- The question this card was asking used to be answered HERE, in this
+      -- statement, and it could never work. See resolveQuestion above: this
+      -- statement runs under the TAPPER, and 0032 gives cm_user no write policy
+      -- on pending_request on purpose. The update matched nothing, silently, for
+      -- the life of the table.
       --
       -- (No backticks and no apostrophes in here. See the NOTE above.)
-      answered as (
-        update pending_request pr
-           set resolved_at = app.now(), resolution = 'tapped'
-          from claimed c
-         where pr.message_id = c.message_id
-           and pr.academy_id = ${ctx.academyId}
-           and pr.resolved_at is null
-        returning pr.id
-      )
-      select payload from claimed`
-    return rows.length ? rows[0].payload : null
+      select payload, message_id from claimed`
+    return rows.length ? (rows[0] as ClaimedRow) : null
   })
 
   if (claimed !== null) {
-    const payload = parsePayload(claimed)
+    // The other half of the claim, and it has to be a second statement — see
+    // `resolveQuestion`. Awaited, not fire-and-forget: a tap whose question stays
+    // open is the defect this exists to close, and the caller may as well learn
+    // about it in the same breath as the tap.
+    await resolveQuestion(ctx, actionId, claimed.message_id, claimed.payload)
+
+    const payload = parsePayload(claimed.payload)
     if (payload) return { ok: true, payload }
     // Claimed but unreadable: the row is spent either way, which stops a tap loop. Loud,
     // because a stored payload that fails the schema it was minted under is corruption.
     console.error(
-      `[actions] action ${actionId} stored an unreadable payload: ${JSON.stringify(claimed)?.slice(0, 300)}`,
+      `[actions] action ${actionId} stored an unreadable payload: ${JSON.stringify(claimed.payload)?.slice(0, 300)}`,
     )
     return { ok: false, reason: 'missing' }
   }

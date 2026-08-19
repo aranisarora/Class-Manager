@@ -119,3 +119,32 @@ export const billingKey = {
   /** The credit that undoes a session line when a cancellation was in time. */
   cancelledInTime: (playerId: string, sessionId: string) => `ct:${playerId}:${sessionId}`,
 } as const
+
+/**
+ * The same idea on the other side of the business — what a COACH is owed.
+ *
+ * Keyed from ids for exactly the reason above: `coach_ledger.description` is prose
+ * a coach reads ("Evening Batch — 14 Aug"), and prose that also has to be matched
+ * on is prose nobody can safely edit. A class rename must never make a paid month
+ * look unpaid.
+ *
+ * The monthly key carries no session because a per-month coach earns the same
+ * whatever the register says — that is the whole reason `coach_pay.amount_for_session`
+ * is null for them. It is also the key that lets a future-dated rate be written
+ * early: "10,000 for September" written in August has the key September's close
+ * would have used, so the job finds it and leaves it alone.
+ */
+export const coachLedgerKey = {
+  /** A per-session coach, one line per session worked. */
+  session: (coachId: string, sessionId: string) => `cs:${coachId}:${sessionId}`,
+
+  /** A per-hour coach, one line per session worked — the hours are on the row. */
+  hourly: (coachId: string, sessionId: string) => `ch:${coachId}:${sessionId}`,
+
+  /** A per-month coach, one line per month, whether written on time or in advance. */
+  monthly: (coachId: string, period: string | Date) => `cm:${coachId}:${day(period)}`,
+
+  /** A correction. The caller supplies what makes it distinct. */
+  adjustment: (coachId: string, period: string | Date, slug: string) =>
+    `ca:${coachId}:${day(period)}:${slug}`,
+} as const

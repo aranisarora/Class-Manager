@@ -9,6 +9,7 @@
  */
 
 import { modelQuery, withSession, type SessionCtx } from '@/lib/db'
+import { errorMessage } from '@/lib/errors'
 import { now, inZone } from '@/lib/clock'
 import { newId } from '@/lib/ids'
 import { env } from '@/lib/env'
@@ -87,6 +88,19 @@ const MAX_TOOL_ROUNDS = 5
 const HISTORY = 16
 /** How many past turns to mine for reads. Small: the newest lookups are the live ones. */
 const LOOKUP_TURNS = 4
+
+/**
+ * The calls the reflection round honours.
+ *
+ * Named once because two things read the list — the sentence telling the model
+ * which of its tools this round can actually run, and the dispatcher that drops
+ * every other call before `runTool` sees it. There used to be a third reader, a
+ * filter on the declarations themselves, and that one cost real money: the
+ * `tools:` comment in §5 has the measurement.
+ */
+const REFLECT_TOOLS = ['remember', 'schedule'] as const
+const isReflectTool = (name: string): name is (typeof REFLECT_TOOLS)[number] =>
+  (REFLECT_TOOLS as readonly string[]).includes(name)
 
 function sessionOf(
   identity: Identity,
@@ -541,7 +555,7 @@ async function sendMenu(session: SessionCtx, identity: Identity, which: string):
 
   // An admin who asks about fees every Monday should not see Money fifth.
   try {
-    const memory = (await hotSet('person', identity.person.id, identity.academyId)) ?? ''
+    const memory = (await hotSet('person', identity.person.id, identity.academyId)).value ?? ''
     const first = /fee|collect|paid|money|unpaid/i.test(memory)
       ? 'Money'
       : /attendance|register/i.test(memory)
@@ -632,6 +646,15 @@ export type ToolTrace = {
  * separates them.
  */
 export const TRACE_MARKER = '(model)'
+
+/**
+ * The marker for the one entry that is an INPUT rather than an outcome.
+ *
+ * Shares the trace for the same reason `(model)` does — same evidence, same
+ * turn, one order — and is filtered out of tool counts by the same predicate.
+ * Written only while an instrument holds a capture open; see the push site.
+ */
+export const CONTEXT_MARKER = '(context)'
 
 /** A real tool call, as opposed to a per-round marker. Consumers that count
  *  tools, or group by tool name, must filter with this or the model's own
@@ -745,11 +768,12 @@ async function modelTurn(
   // every replayed lookup is stamped against it: an unstamped past is read as the
   // present, and the model will argue itself out of a correct doubt with it.
   const at = await now(identity.academyId)
-  const [clock, lookups, actions] = await Promise.all([
-    Promise.resolve(inZone(at, identity.academy.timezone)),
-    recentLookups(identity, at),
-    recentActions(identity),
-  ])
+  const clock = inZone(at, identity.academy.timezone)
+  // One read, two filters. `Promise.all` around two functions that each fetched
+  // the same rows is what made the identical statement go out twice a turn.
+  const turns = await recentToolTurns(identity)
+  const lookups = turns.value ? recentLookups(turns.value, at) : undefined
+  const actions = turns.value ? recentActions(turns.value) : undefined
   const tail = await variableTail(identity, {
     clockNote: `It is ${clock.label} (${clock.date} ${clock.time}) in ${identity.academy.timezone}.`,
     taskInstruction: input.task?.instruction,
@@ -768,12 +792,38 @@ async function modelTurn(
     )
   }
 
+  // The same treatment as the history note below, for the same reason: both
+  // callers used to answer a refused read with `undefined`, and `variableTail`
+  // renders an absent block as nothing at all.
+  if (turns.why) {
+    situation.push(
+      `# What you looked up and did earlier could not be read\n\n` +
+        `The lookup failed (${turns.why}). This is NOT a conversation in which you have done nothing — you may ` +
+        `have read rows and made changes whose ids and outcomes you can no longer see. Re-read anything you ` +
+        `need before you use it, never write an id from memory, and do not describe as undone anything you ` +
+        `cannot see the result of.`,
+    )
+  }
   const history = await recentHistory(session, identity)
+  // The reason belongs in the tail rather than in the message list: a runtime
+  // sentence dropped into the conversation would arrive as something a person
+  // said. Pushed after `situation` is built and before it is joined below.
+  if (history.why) {
+    situation.push(
+      `# The earlier messages in this conversation could not be read\n\n` +
+        `This is NOT a first contact and the thread above is NOT empty — the lookup failed (${history.why}). ` +
+        `Do not greet them as a stranger, do not re-ask what they may already have answered, and do not ` +
+        `re-offer what they may already have declined. If what you need turns on something said earlier, say ` +
+        `you have lost the thread and ask, rather than starting over.`,
+    )
+  }
+  // Beside the messages, never among them — see `historyGaps`.
+  if (history.gaps) situation.push(history.gaps)
   // Text only, and the attachment has already been answered by the runtime
   // (`mediaRefusal`) before this call is made. There is no media part on this
   // wire to carry it with: the request schema rejects one outright.
   const messages: Msg[] = [
-    ...history,
+    ...history.messages,
     { role: 'user', content: `${situation.join('\n\n')}\n\n---\n\n${input.text ?? ''}`.trim() },
   ]
 
@@ -815,6 +865,52 @@ async function modelTurn(
         (!('toContactId' in o) || !o.toContactId || o.toContactId === identity.contact.id),
     )
   const trace: ToolTrace[] = []
+
+  /**
+   * WHAT THE MODEL WAS TOLD, recorded beside what it did — instrument only.
+   *
+   * The flight recorder held everything a turn DID and nothing it was GIVEN. So a
+   * turn could be read back completely — every round, its reasoning, its SQL, its
+   * replies — while the one input that decided all of it was unrecoverable.
+   *
+   * That gap has a price on the record. Three turns of the first live week were
+   * handed `their coach record could not be read this turn`, with the cause
+   * withheld, after the prefetch hit `EMAXCONNSESSION`. The model reached for the
+   * only cause its prompt offered and told a coach his own pay was not visible.
+   * Five judges read those turns with what they called complete visibility. None
+   * could see the sentence, because the sentence was never written down — it took
+   * a seventh day and a hand audit of the SQL trace to find it.
+   *
+   * Worse, the failures this exists to expose are mostly ABSENCES: a prefetch that
+   * dies takes its whole paragraph out of the tail, and no amount of reading the
+   * rounds shows a paragraph that was never there. Only the tail itself does.
+   *
+   * The TAIL in full and the prefix by fingerprint. Not a compromise on "record
+   * everything, untruncated": the stable prefix is byte-identical across every
+   * turn of a run by construction — that property IS the cache — so storing it
+   * per turn would store one document eighty times and bury the variable half.
+   * Its length and head are enough to prove which prefix was in play, and the
+   * prefix itself is in the tree at the commit the run names.
+   *
+   * Instrument only, gated on `fullTraceOn()`. In production this allocates
+   * nothing and stores nothing: the tail carries names, phone-shaped ids and a
+   * person's memory, and `turn.tool_calls` is kept forever.
+   */
+  if (fullTraceOn()) {
+    const tail = situation.join('\n\n')
+    trace.push({
+      round: 0,
+      name: CONTEXT_MARKER,
+      ms: 0,
+      args: {
+        prefix: { chars: system.length, head: system.slice(0, 120) },
+        tail,
+        said: input.text ?? null,
+        history: messages.length - 1,
+      },
+    })
+  }
+
   let rounds = 0
   let forcedError: string | undefined
   /** Calls that failed once already this turn, by name+args. */
@@ -1438,10 +1534,16 @@ async function modelTurn(
    *    to "no second watch here" and called nothing left the slot open and got
    *    offered the tool anyway. A round can see its own trace and its own
    *    reasoning, so there is nothing to bookkeep.
-   *  - **Everything before it is a cache hit.** Rounds append rather than
-   *    rebuild, so this shares a byte-identical opening with the round before
-   *    it. The old call's claim to be cheaper rested on skipping a prefix that
-   *    is the discounted part.
+   *  - **Everything before it is a cache hit — the tool block included.**
+   *    Rounds append rather than rebuild, so this shares a byte-identical
+   *    opening with the round before it. That was true of the messages and
+   *    false of the tools for as long as this round filtered its declarations
+   *    down to two, and the tools serialise *above* the messages: the match
+   *    stopped at the tool block, and the whole conversation billed fresh
+   *    behind it. The old call's claim to be cheaper rested on skipping a
+   *    prefix that is the discounted part — a claim this round earns only by
+   *    sending the block every other round sends. The `tools:` line below has
+   *    what the filter cost.
    *
    * **C30's counter-evidence, kept in view.** An extra round after the reply was
    * removed once for producing `STOP · 0 output tokens` at the cost of a full
@@ -1453,9 +1555,13 @@ async function modelTurn(
    * ----------------------------------------------------------------------- */
   if (!forcedError && (text.trim() || spoke())) {
     try {
-      // Belt and braces. The declarations below make `reply` unreachable, and
-      // this makes the one-message-per-person guard refuse it too if that ever
-      // stops being true — the same guard the main loop uses, not a second rule.
+      // Belt and braces, and now the outer belt: `reply` is declared in this
+      // round like every other tool, so what refuses a second message is the
+      // one-message-per-person guard — the same guard the main loop uses, not a
+      // second rule — behind the dispatcher below, which runs no name outside
+      // `REFLECT_TOOLS`. A short declaration list stopped being a constraint
+      // when it stopped being short, and nothing was leaning on it that these
+      // two were not already refusing.
       toolCtx.repliedTo?.add(identity.contact.id)
 
       messages.push({
@@ -1463,7 +1569,10 @@ async function modelTurn(
         content:
           '[The reply has gone and nobody is waiting. Two questions are left open; anything not listed ' +
           'here was handled during the turn and must not be repeated. "Neither" is the common and correct ' +
-          'answer, and calling nothing at all is the system working.\n\n' +
+          'answer, and calling nothing at all is the system working. Only ' +
+          REFLECT_TOOLS.map((t) => '`' + t + '`').join(' and ') +
+          ' run in this round: every other tool is declared, as it is on every round, and a call ' +
+          'to one is dropped unread.\n\n' +
           '1. Is there a fact worth carrying? Vocabulary they use, a habit, a preference, something about ' +
           'how this person works. Facts, not transcripts. Facts, not rows — a rate, a schedule, a balance, ' +
           'who pays for whom: the database holds those and a memory copy of a row is a future wrong answer. ' +
@@ -1481,9 +1590,31 @@ async function modelTurn(
       const ref = await generate({
         system,
         messages,
-        // The same declarations the loop uses, filtered — so they cannot drift
-        // from the ones the model has been reading all turn.
-        tools: toolDecls().filter((t) => t.name === 'remember' || t.name === 'schedule'),
+        /*
+         * The whole block, unfiltered — and sending more is what makes this
+         * round cheap. The declarations serialise ahead of the messages, so the
+         * tool list is part of the prefix the cache matches on: a round that
+         * sends a different list matches to the end of the system prompt,
+         * diverges at the tools, and re-bills everything behind them — the
+         * filtered declarations AND the entire conversation — at full price.
+         *
+         * The signature was unmistakable. Filtered, this round's `cached` was
+         * exactly 17,024 on 57 of 57 calls, invariant across five days, every
+         * persona and every conversation length, while the main loop never
+         * cached below 22,656; the 5,632-token gap is this block, and the 17 Aug
+         * run shows the same plateau against a constant of 14,592. It bought a
+         * 69.9% hit rate against the loop's 94.3% and 7,348 miss tokens a call
+         * against 1,625 — a quarter of the run's input volume, 64% of every
+         * cache miss in it, ₹6.48 of a ₹29.52 run off-peak and twice that at
+         * peak. Unfiltered, the round bills 57% less while being shown 22 more
+         * declarations, because the extra arrives at 3.2% of the price.
+         *
+         * The filter was not buying constraint either: `isReflectTool` below
+         * drops every other call before `runTool` sees it, and `repliedTo` above
+         * refuses a second reply. Constrain a round at its dispatcher; what it
+         * is shown is the cached part.
+         */
+        tools: toolDecls(),
         model: env.MODEL_MAIN,
         temperature: 0.2,
         thinking: 'low',
@@ -1503,7 +1634,21 @@ async function modelTurn(
       }
 
       for (const call of ref.functionCalls.slice(0, 4)) {
-        if (call.name !== 'remember' && call.name !== 'schedule') continue
+        // This line, not the declaration list, is what makes the round two tools
+        // wide. The model is shown everything the turn was shown, so a call
+        // outside the two is now *possible* where it used to be undeclarable —
+        // and a drop nobody records is how a new habit stays invisible for a
+        // month. Recorded as a marker rather than a call: `isToolCall` reads the
+        // leading bracket, so nothing counts it as a tool the model reached for.
+        if (!isReflectTool(call.name)) {
+          trace.push({
+            round: rounds + 1,
+            name: `(reflection dropped a call outside ${REFLECT_TOOLS.join(' and ')})`,
+            ms: 0,
+            args: evidence({ name: call.name, args: call.args }, 1000),
+          })
+          continue
+        }
         // The name keeps its `reflect:` prefix: `recentActions` skips these when
         // it replays a turn's actions into the next one's tail, and a rename here
         // would quietly start feeding bookkeeping back as context.
@@ -1635,25 +1780,106 @@ function toolContent(result: unknown): string {
   }
 }
 
-async function recentHistory(session: SessionCtx, identity: Identity): Promise<Msg[]> {
+/**
+ * A WhatsApp thread is not one conversation, and the model could not tell.
+ *
+ * Everything else shown to the model is either byte-stable forever or stamped with
+ * when it was true — `recentLookups` renders `[read 2 hours ago]` for exactly this
+ * reason, and the comment above `ageOf` states the rule. The conversation itself was
+ * the one exception: `queued_at` was the sort key and was then thrown away, so
+ * sixteen messages spanning three weeks arrived looking like sixteen messages spanning
+ * three minutes.
+ *
+ * **The stamp cannot go on the messages.** A time written into a `content` string
+ * enters the conversation as something a person said, which is the one place a runtime
+ * sentence must never appear — the same reason the failure note below travels beside
+ * the messages rather than among them. So the breaks are described in the tail, where
+ * every other runtime statement lives.
+ *
+ * Gaps rather than per-message stamps, on purpose. Sixteen stamps is sixteen lines of
+ * tail rebuilt and re-billed on every round to say what four lines say: this much was
+ * just now, that much was Tuesday. And the gaps are the only part that ever changes a
+ * reading — "did that go through?" means one thing after three minutes and another
+ * after three days.
+ *
+ * Nothing is emitted for a continuous exchange, which is most of them.
+ */
+const HISTORY_GAP_MINUTES = 180
+
+function historyGaps(rows: { queued_at: Date | string }[], at: Date): string | null {
+  if (rows.length < 2) return null
+  const times = rows.map((r) => (r.queued_at instanceof Date ? r.queued_at : new Date(String(r.queued_at))))
+  if (times.some((t) => Number.isNaN(t.getTime()))) return null
+
+  // Oldest-first, same order as the messages. A group ends where the next message
+  // arrives more than the threshold after it.
+  const groups: { count: number; newest: Date }[] = []
+  let count = 1
+  for (let i = 1; i < times.length; i++) {
+    const gap = (times[i]!.getTime() - times[i - 1]!.getTime()) / 60_000
+    if (gap > HISTORY_GAP_MINUTES) {
+      groups.push({ count, newest: times[i - 1]! })
+      count = 1
+    } else {
+      count++
+    }
+  }
+  groups.push({ count, newest: times[times.length - 1]! })
+  if (groups.length < 2) return null
+
+  // Newest first, because that is the end of the thread they are answering.
+  const lines = [...groups].reverse().map((g, i) => {
+    const which = i === 0 ? `the last ${g.count} message${g.count === 1 ? '' : 's'}` : `the ${g.count} before ${i === 1 ? 'them' : 'those'}`
+    return `- ${which}: ${ageOf(g.newest, at)}`
+  })
+  return (
+    `# When the thread above happened\n\n` +
+    `It is not one continuous exchange, so do not read it as one. Newest first:\n\n` +
+    lines.join('\n')
+  )
+}
+
+async function recentHistory(
+  session: SessionCtx,
+  identity: Identity,
+): Promise<{ messages: Msg[]; why: string | null; gaps: string | null }> {
   try {
+    const at = await now(identity.academyId)
     const rows = await withSession({ role: 'service', academyId: identity.academyId }, async (tx) => {
       return (await tx.unsafe(
-        `select direction, body from message
+        `select direction, body, queued_at from message
           where contact_id = ${uid(identity.contact.id)} and academy_id = ${uid(identity.academyId)}
             and body is not null and coalesce(suppressed_reason, '') = ''
           order by queued_at desc limit ${HISTORY}`,
-      )) as unknown as { direction: string; body: string }[]
+      )) as unknown as { direction: string; body: string; queued_at: Date }[]
     })
-    return rows
-      .reverse()
-      .map((r): Msg =>
+    const oldestFirst = rows.reverse()
+    return {
+      messages: oldestFirst.map((r): Msg =>
         r.direction === 'inbound'
           ? { role: 'user', content: r.body }
           : { role: 'assistant', content: r.body },
-      )
-  } catch {
-    return []
+      ),
+      why: null,
+      gaps: historyGaps(oldestFirst, at),
+    }
+  } catch (e) {
+    /**
+     * **The most consequential silent failure in the prefetch, and it was `return []`.**
+     *
+     * Everything else that dies here costs the model a fact. This one costs it the
+     * conversation: an empty history is not a degraded turn, it is a DIFFERENT turn,
+     * in which a person the business has served for months has never written before.
+     * The model then greets them, re-asks what they answered yesterday, and re-offers
+     * what they already declined — all of it fluent, all of it derived correctly from
+     * what it was given.
+     *
+     * The reason cannot ride in the returned array: a marker message would enter the
+     * conversation as something somebody said, which is the one place a runtime
+     * sentence must never appear. So it comes back beside the messages and the caller
+     * puts it in the tail, where every other runtime statement lives.
+     */
+    return { messages: [], why: errorMessage(e).split(/\r?\n/)[0].trim().slice(0, 200), gaps: null }
   }
 }
 
@@ -1668,16 +1894,40 @@ async function recentHistory(session: SessionCtx, identity: Identity): Promise<M
  * Bounded on purpose: the newest reads, capped, in the uncached tail. Failed calls
  * are included — knowing a query errored is worth more than silence about it.
  */
-async function recentToolTurns(identity: Identity): Promise<{ created_at: Date; tool_calls: ToolTrace[] }[]> {
-  return withSession({ role: 'service', academyId: identity.academyId }, async (tx) => {
-    return (await tx.unsafe(
-      `select created_at, tool_calls from turn
-        where contact_id = ${uid(identity.contact.id)}
-          and academy_id = ${uid(identity.academyId)}
-          and jsonb_array_length(coalesce(tool_calls, '[]'::jsonb)) > 0
-        order by created_at desc limit ${LOOKUP_TURNS}`,
-    )) as unknown as { created_at: Date; tool_calls: ToolTrace[] }[]
-  })
+/**
+ * The last few turns that reached for a tool — **fetched ONCE**.
+ *
+ * Two blocks of the tail are built from this one list: `recentLookups` keeps the
+ * reads, `recentActions` keeps the writes. They are two filters over one query,
+ * and each used to run it for itself — from inside the same `Promise.all`, so the
+ * identical statement went out twice, concurrently, on two pooled connections,
+ * every single turn of the product's life. Neither author was careless: each
+ * function is correct alone, they were written weeks apart (the second exists
+ * because the first deliberately excludes writes and that exclusion removed
+ * something needed), and nothing anywhere said they shared a read.
+ *
+ * Fetching here also gives the failure ONE home. Both callers used to answer a
+ * refused read with `undefined`, which `variableTail` renders as no block at all —
+ * so a turn that could not see its own history looked exactly like a turn with no
+ * history to see.
+ */
+async function recentToolTurns(
+  identity: Identity,
+): Promise<{ value: { created_at: Date; tool_calls: ToolTrace[] }[] | null; why: string | null }> {
+  try {
+    const rows = await withSession({ role: 'service', academyId: identity.academyId }, async (tx) => {
+      return (await tx.unsafe(
+        `select created_at, tool_calls from turn
+          where contact_id = ${uid(identity.contact.id)}
+            and academy_id = ${uid(identity.academyId)}
+            and jsonb_array_length(coalesce(tool_calls, '[]'::jsonb)) > 0
+          order by created_at desc limit ${LOOKUP_TURNS}`,
+      )) as unknown as { created_at: Date; tool_calls: ToolTrace[] }[]
+    })
+    return { value: rows, why: null }
+  } catch (e) {
+    return { value: null, why: errorMessage(e).split(/\r?\n/)[0].trim().slice(0, 200) }
+  }
 }
 
 /**
@@ -1703,10 +1953,9 @@ function ageOf(readAt: Date | string, at: Date): string {
   return `${days} day${days === 1 ? '' : 's'} ago`
 }
 
-async function recentLookups(identity: Identity, at: Date): Promise<string | undefined> {
+function recentLookups(rows: { created_at: Date; tool_calls: ToolTrace[] }[], at: Date): string | undefined {
   const BUDGET = 6000
-  try {
-    const rows = await recentToolTurns(identity)
+  {
 
     const blocks: string[] = []
     let used = 0
@@ -1729,9 +1978,6 @@ async function recentLookups(identity: Identity, at: Date): Promise<string | und
       }
     }
     return blocks.length ? blocks.join('\n') : undefined
-  } catch {
-    // Continuity is an improvement on the turn, never a precondition for it.
-    return undefined
   }
 }
 
@@ -1748,7 +1994,7 @@ async function recentLookups(identity: Identity, at: Date): Promise<string | und
  * the turn that composed the false claim could not see that nothing had been
  * written, and the turn after it could not see the attempt at all.
  */
-async function recentActions(identity: Identity): Promise<string | undefined> {
+function recentActions(rows: { created_at: Date; tool_calls: ToolTrace[] }[]): string | undefined {
   const BUDGET = 2400
   const SKIP = new Set(['read', 'reply', 'view', 'remember', 'reflect:remember'])
   const outcome = (call: ToolTrace): string => {
@@ -1776,8 +2022,7 @@ async function recentActions(identity: Identity): Promise<string | undefined> {
     }
     return 'ran'
   }
-  try {
-    const rows = await recentToolTurns(identity)
+  {
     const lines: string[] = []
     let used = 0
     for (const row of rows) {
@@ -1792,9 +2037,6 @@ async function recentActions(identity: Identity): Promise<string | undefined> {
       }
     }
     return lines.length ? lines.join('\n') : undefined
-  } catch {
-    // Same contract as recentLookups: an improvement, never a precondition.
-    return undefined
   }
 }
 

@@ -364,7 +364,36 @@ function notAnOperation(name: string): string {
  * the model did not witness**? If yes it belongs here; if it relays the speaker's
  * own words, it does not.
  */
-export const HUMAN_ASSERTION_PARAMS = ['confirmed', 'mark_sent'] as const
+/**
+ * `decided_timely` and `decided_window_hours` are here for a slightly different
+ * reason than the other two, and it is worth saying which.
+ *
+ * `confirmed` and `mark_sent` are claims about what a HUMAN did. These are claims
+ * about what the RUNTIME decided when it minted a button — whether a cancellation
+ * was inside the notice period, and what that period was at the time. Both belong
+ * to the same class in the only way that matters here: the model must not be able
+ * to assert either, because between them they decide whether a family is charged.
+ * Minted by `client_cancel`, replayed on the tap path (where nothing is stripped,
+ * by design), and removed from anything the model writes.
+ */
+export const HUMAN_ASSERTION_PARAMS = [
+  'confirmed',
+  'mark_sent',
+  'decided_timely',
+  'decided_window_hours',
+] as const
+
+/**
+ * The params where FALSE is a claim too, so presence is what gets stripped.
+ *
+ * For `confirmed` and `mark_sent` the falsy value is the honest default — nobody
+ * tapped, nothing was sent — so removing it would be noise. `decided_timely` is the
+ * other way round and the asymmetry bites: absent means "work it out from the
+ * clock", `true` means free, and **`false` means charge them**. Stripping only
+ * truthy values would leave the model unable to make a cancellation free and
+ * perfectly able to make it chargeable, which is the wrong half to leave open.
+ */
+const FALSE_IS_ALSO_A_CLAIM = new Set<string>(['decided_timely', 'decided_window_hours'])
 
 function stripArgs(args: unknown, op: string, stripped: string[]): unknown {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return args
@@ -372,8 +401,10 @@ function stripArgs(args: unknown, op: string, stripped: string[]): unknown {
   let out: Record<string, unknown> | null = null
   for (const key of HUMAN_ASSERTION_PARAMS) {
     // Only a truthy value is a claim. `confirmed: false` is the honest default and
-    // removing it would be noise in the note the model reads back.
-    if (rec[key]) {
+    // removing it would be noise in the note the model reads back — except where
+    // false is its own assertion; see above.
+    const claimed = FALSE_IS_ALSO_A_CLAIM.has(key) ? rec[key] !== undefined && rec[key] !== null : Boolean(rec[key])
+    if (claimed) {
       out ??= { ...rec }
       delete out[key]
       stripped.push(`${op}.${key}`)

@@ -36,6 +36,7 @@ exists" into "the behaviour happened". Read the next drive against this list.
 | **F-BB** | The plan result names anyone put in two places at once, and nothing makes the model pass it on | `lib/agent/plan.ts` / the declaration. Part 6 | 17 Aug |
 | **F-BC** | 6 of 20 replies carry anything to tap, and **every one came from machinery forcing a confirmation** — `{kind:'reply',text}` minted 0 times in 20 turns. Told three times now, so not a prompt fix, and a prose guard is banned | declaration order + `tappable` in the result, **as an experiment** — reverts unless a two-arm drive moves the count. Part 7 | 17 Aug |
 | **F-BH** | `business_rule` had no reader anywhere, so `enforced_by` was enforced by nothing and every stated rule behaved as `null`. *(First reader built for partly-covered periods; the general case is still one reader, not a mechanism.)* | wherever a job composes from a query. Part 7 | 17 Aug |
+| **F-BL** | `session_coach` cannot record a removal, so the nightly materialiser restores coaches the owner deliberately took off a session. **Handed off, not attempted — the obvious fix has a ~30-reader blast radius and six of them are RLS.** Read Part 9 before touching it | `session_coach` and its readers — design not settled. Part 9 | 20 Aug |
 
 ### Closed 17 Aug 2026, by the architecture pass
 
@@ -62,6 +63,11 @@ exactly what the next drive is for.
 | **F-AX** | `PRECONDITION_FAILED` stops asserting a race and re-runs as the service role to say which it was. |
 | **F-AY** | A trigger: a coach who is already an admin is active on insert, whichever route wrote the row. Proved in `check-world` from raw SQL. |
 | **F-AZ** | `GENERIC_EVENT` is gone; `{event}` is filled from what the runtime knows — who it is about and when — and `coach_schedule` finally has a subject parameter. |
+| **F-BH** | `coach_directory` and `class_coach_public` (0037) carry `full_name`. A definer view with a foreign key and no label is a trap: the join that fetches the label puts back the restriction the view exists to lift, and the shortfall does not error. |
+| **F-BI** | The clock is out of the rows. `class_roster` keeps the enrolment SPAN and gains `standing`; `uncovered_session` — `session_coverage` with `app.now()` compiled in — is dropped. |
+| **F-BJ** | `session_detail.coverage`: one column whose value is the sentence, replacing five representations of one fact. The block had already warned against reading the names instead, and that did not hold. |
+| **F-BK** | `class_roster.rate_source`. A view that resolves a fallback says which branch it took, because the branch is usually the thing being changed. |
+| **the coach-time deferral** | Closed. Part 5 dropped `app.coach_hours` pending a drive that composed the join badly; the 18 Aug week is that drive, and `coach_pay` (0037) is what replaced it. |
 | **the two manufactured findings** | The prompt-leak check no longer fires on the string inside a correct refusal, and the cross-family check asks the world for a balance instead of a regex for a name. |
 | **the circular invention checks** | Bounded to `memory_fact` rows that predate the turn. Support means evidence, not agreement with oneself. |
 
@@ -1262,3 +1268,468 @@ describing the bug; `probe-sql`'s harness had it too (recorded at the end of Par
 6). It was never ported. Both queries are ported now, and the speaker-scoped set
 is kept beside the full one — the narrow question and the wide one are different
 questions and both are cheap.
+
+---
+
+## Part 8 — the views, read against the schema rather than against a failure list. 19 Aug 2026
+
+Migration `0037`. The starting question was not "which view broke" but **which
+grains does a coaching business get asked at, and does each one have a relation
+that answers it.** There are four — the OFFER it sells, the COMMITMENT somebody
+made to it, the dated OCCURRENCE, the money CONSEQUENCE — and `0036` had built
+for three. What that framing found, a failure list had not: grain 1 had no view
+at all, and it is the **only grain a stranger can ask at**, because a prospect
+has no enrolment, no session and no account. The whole acquisition path was
+rebuilt by hand every time it came up.
+
+Two rules came out of it that are about views in general, not about any one view.
+
+### F-BH · A definer view must carry every column its purpose requires
+
+`coach_public` is `security_invoker = false` precisely so it can show every coach
+past `coach`'s own-row-only policy. It carries no name. So every caller joins
+`person` for one — and `person` is the most restricted table in the schema. The
+join silently re-imposes the policy the view exists to bypass. Measured on the
+live tenant from a coach's own seat:
+
+    select ... from coach_public                        -> 3 coaches
+    select ... from coach_public join person for a name -> 1 coach
+
+All four uses in the 18 Aug week went through `person`, and three returned a
+collapsed result that reads as an answer. What reached a coach: *"There's no
+coach named Priya in the business — from where I sit you're the only coach on the
+books"*, and *"Saturday's only session is Weekend Squad ... no coach is on it at
+all."* Weekend Squad has two coaches on it, one of them Priya. A prospect asking
+who she would meet on Saturday got the same empty set and was told nothing.
+
+The same shape one level up: `class_coach` is `admin or own`, so the
+class-to-coach map is one row from a coach's seat and reads as *nobody is on any
+other class*.
+
+**Fixed:** `coach_directory` and `class_coach_public`, both definer, both
+carrying `full_name`, neither carrying pay — which is the whole and only privacy
+boundary spec 8.1 draws between coaches, and 8.2 requires coaches to be offered
+each other's sessions anyway. `coach_public` stays untouched because
+`person_cm_user_select` depends on it; it is plumbing now, not surface. Verified
+from the coach seat afterwards: 3 coaches by name, the full 5-row class map.
+
+The general rule, and it is the one worth carrying: **a definer view with a
+foreign key and no label is a trap.** Any column it omits will be fetched through
+an invoker join that puts back exactly the restriction the view was built to
+lift, and the shortfall does not error.
+
+### F-BI · A view must not bake the clock into its rows
+
+`enrollment` models membership as a SPAN so the business can speak in three
+tenses. `class_roster` filtered to `started_on <= today` and collapsed it to a
+point. *"new boy for morning juniors from nxt week kabir"* is followed one
+message later by *"is kabir in the class or not"* — his enrolment starts 31 Aug,
+the turn is 25 Aug, and the one view built for that question would have answered
+no. It was passed over 10 times in that week, and the hand-rolled replacement
+threw two FK errors.
+
+`uncovered_session` is the same defect with nothing left over: `session_coverage`
+with `app.now()` compiled into it, and a strict subset of `session_detail`. Zero
+reads across all 738 authored reads on disk since `session_detail` shipped.
+
+**Fixed:** `class_roster` keeps the span and gains `standing`
+(upcoming|current|ended), so `where standing = 'current'` is the old behaviour in
+one predicate that cannot be got wrong. `uncovered_session` is dropped;
+`where coverage not in ('confirmed','cancelled')` replaces it against a relation
+that can answer the next question too.
+
+### F-BJ · Five representations of coverage, and the model read the wrong one
+
+`session_detail` offered `covered`, three counts, and a state on every entry of
+`coaches`. Asked *"rest of the week anything not coverd"*, holding seven rows of
+which **every one** said `covered = false` and `assigned_no_answer`, the reply
+was *"Nothing uncovered. Every session this week has a coach assigned."* The
+block already warned against this misreading in this view's own paragraph, in as
+many words. It happened anyway — so the fix is one fewer representation, not one
+more warning. This is the census-label rule applied inside a view: read the
+column and its value with no access to the SQL above it, and say the sentence
+they license. `covered = false` beside `coaches = [Arjun]` licenses two opposite
+sentences.
+
+**Fixed:** one `coverage` column whose value *is* the sentence — cancelled |
+confirmed | nobody has answered | all declined | nobody assigned. The four older
+columns stay in SQL for `session_coverage`'s sake and stop being documented.
+
+### F-BK · When a view resolves a fallback it must say which branch it took
+
+`class_roster` coalesced enrolment rate over class rate and then said nothing
+about which one answered. That distinction is not a detail here, it is a
+transaction: *"everyone already in it stays on 2400"* when a class rate rises is
+exactly the act of writing explicit rates onto enrolments, and you cannot tell
+whether it worked from a resolved number. The model read the rate through the
+view and then went back to raw `enrollment` to find out where it had come from.
+
+**Fixed:** `rate_source`, 'enrolment' or 'class'.
+
+### `app.coach_hours` — the deferral is closed, and the trigger it named was met
+
+Part 5 dropped a coach-time view with: *"A view for a failure nobody has seen is
+the speculative generality this repo keeps paying for. **Revisit if a drive shows
+it composing the coach-time join badly.**"* The 18 Aug week is that drive. Three
+turns composed it; one errored on `s.class_name`; one counted
+`status = 'scheduled'`, which is true only of sessions that have **not** happened
+yet, so a month of work counted as none; and the owner was given *"roughly
+Rs4,800/month ... full month that's about Rs13,800"*, extrapolated from a weekly
+pattern rather than read off rows, for a business ten days old. He challenged it.
+Four turns earlier the same product had told the same coach he had earned
+**Rs1,200**.
+
+**Fixed:** `coach_pay`, one row per coach per session, `security_invoker = true`
+so the coach reads their own pay and the admin reads all of it — which is what
+makes those two answers one number instead of two guesses.
+`amount_for_session` is NULL on a `per_month` coach, because a session count is
+irrelevant to what they earn, and NULL when pay is not tracked. Verified: Arjun
+Rs1,200 for August from both seats; Priya, on `per_month`, returns null rather
+than a fabricated sessions-times-rate.
+
+### What this cost, honestly
+
+`SCHEMA_DOC` grew about 5,400 characters — three new relations documented and two
+rewritten, roughly 1,800 characters per grain served. It sits above the cache
+boundary, so a hit costs 3.2% of a miss; the real price is attention, not money.
+The 19 Aug view-usage reading also established that views are the *slowest*
+statements in a run and that view-backed turns cost more, not less. **None of
+this is a speed change.** It is a correctness change, and what it buys is: a
+stranger answerable from one read instead of two plus a rendering bug, a coach no
+longer told his colleagues do not exist, and the two sides of a pay question
+reading the same relation.
+
+### Still open
+
+- **`unmarked_billable_session` is still unmeasured.** Zero reads across all 738
+  on disk. It is asserted structurally by `scripts/check-attendance-bills.ts`, so
+  it is known-correct; what is missing is a *drive* that puts the question to the
+  model. That is an instrument gap, not a view defect.
+- **The definer-view rule belongs in `PREFIX-RULES.md`**, as the mirror of rung
+  2 beside *a derivation in the prefix beats the database every time*. It is not
+  written there yet: that file was being edited by another session while this
+  landed, and this repo does not put two authors in one file.
+- **Nothing has re-driven the week yet.** Every claim above is measured against
+  the recorded runs and against the live tenant, not against a fresh drive. The
+  reading that would settle whether the model actually reaches for these is
+  `npm run drive:week` compared with `2026-08-18-14-38-live`.
+
+---
+
+## Part 9 — the cancellation that charged her, and the month nobody wrote down. 20 Aug 2026
+
+Traced from `.probe/reports/2026-08-19-five-defects-and-fixes.html` against the code at HEAD and
+the record of `.probe/runs/2026-08-17-18-07-live`. The report's §2 is **wrong about its own first
+link** — it says the pending question "is marked resolved and vanishes from the model's context",
+and the record shows the exact opposite: still open 19 seconds after the tap, and still open two
+days later. Everything below starts from what the rows actually say.
+
+Eight findings. Seven have mechanisms built (F-BM…F-BT); one is deliberately not attempted and
+is the section after this table.
+
+| # | What was wrong | Mechanism built | State |
+| --- | --- | --- | --- |
+| **F-BM** | A tap could not close the question it answered — the write ran under the tapper, who has no policy | `lib/actions.ts` `resolveQuestion`, as the runtime, with the row count read | fixed, undriven |
+| **F-BN** | The tail asserted "they have NOT answered" as fact, on one unreliable column, with instruction force | `context.ts` + `plan-ahead.ts` cross-check a consumed action; 0038 backfills | fixed, undriven |
+| **F-BO** | `SCHEMA_DOC` documented `pending_request.kind` values nothing ever wrote | every protocol names its own `confirmation.kind` and `subject` | fixed, undriven |
+| **F-BP** | Timeliness and the notice window were read at TAP time, so the product's own delay changed the answer | stamped into the button, stripped from model-authored calls | fixed, undriven |
+| **F-BQ** | `client_cancel` never read the row it was about to overwrite | reads `app.session_roster`; answers instead of re-asking; no-downgrade guard on the write | fixed, undriven |
+| **F-BR** | Coach pay was one mutable number, so a raise repriced every month already worked | `coach_ledger` (0038) + `coach_month_lines`, rate frozen into the row | fixed, undriven |
+| **F-BS** | The conversation was the only thing shown to the model neither byte-stable nor stamped | `historyGaps` in `loop.ts`, in the tail, gaps only | fixed, undriven |
+| **F-BT** | Every client message went to the account holder; there was no way to reach anyone else | `link_contact` + `enrolledPlayers` prefers the player's own number | fixed, undriven |
+| **F-BL** | `session_coach` cannot record a removal | **none — handed off** | open |
+
+**"Undriven" is the honest word.** Every one has unit-level proof — `check-world` is 16/16
+including two new assertions that fail without F-BM's fix, and `check-schema-doc` and
+`check-rls-doc` both agree with the live database. None of it has been through
+`npm run drive:week` yet, and this repo's own rule is that the drive is what turns "the
+mechanism exists" into "the behaviour happened".
+
+### The chain, because no single finding explains the incident
+
+A mother cancelled Thursday's class on the Monday — 57.5h out, comfortably free, and she was
+told so. She tapped Yes. Two days later she was charged for it. Five links, and fixing any one
+alone leaves the failure:
+
+1. Her tap wrote `cancelled_timely` correctly — **and silently failed to close the question**
+   (F-BM). Verified at the database: `pending_request` has exactly two policies, `ALL` to
+   `cm_service` and `SELECT` to `cm_user`. There is no UPDATE policy for a person. The write
+   could never have matched a row.
+2. So every later turn was told, with instruction force, that she had never answered (F-BN).
+3. On the Tuesday she wrote *"cancel tomorrow too"* — and tomorrow **was** that Thursday.
+4. The model went looking, correctly, with the stated purpose *"Check whether the Thursday
+   cancellation confirmation is still open or already resolved"*. It read `pending_request`
+   using the value `SCHEMA_DOC` gave it — `kind = 'client_cancel'` — and got **zero rows**,
+   because the code writes the catalog id `CL-CANCEL-CONFIRM` (F-BO). It then read
+   `session.status`, got `scheduled`, and concluded the cancellation had never landed. That
+   answer was true and irrelevant: `session.status` is whether the whole class is called off,
+   and one child's cancellation lives in `attendance`. It never read `attendance` — nor
+   `app.session_roster`, which has existed since 0022, carries `attendance_status`, is
+   documented to the model, and was in the prompt on the day of this run.
+5. It re-asked. She tapped again — now 21.7h out — and the unguarded upsert wrote `absent` over
+   `cancelled_timely` and the money followed (F-BP, F-BQ).
+
+**What this says about instruments.** Case 5 of `check-world` already asserted that the question
+is written, that a second ask supersedes, and that the constraint stops a third. All three passed
+throughout. Nothing asked whether a person *answering* it changed anything — so the table's whole
+purpose was the one property untested. That is the shape worth remembering, not the bug.
+
+### F-BM · A tap could not close the question it answered
+
+`consumeAction` claimed the button and marked `pending_request` resolved in one statement, under
+the tapper's own session. `pending_request` has two policies and neither is an UPDATE for
+`cm_user` — verified against `pg_policies`, not inferred — so the write matched zero rows for the
+life of the table, and the statement asked for `returning pr.id` and never read it.
+
+**Mechanism:** `lib/actions.ts` `resolveQuestion` — a second statement, as the service role, with
+the row count checked and a loud line when a question survives its own answer. Split deliberately
+from the claim, which must stay under the tapper. **Staged by** `scripts/check-world.ts` case 5b,
+which fails without it.
+
+### F-BN · The tail asserted an unearned claim with instruction force
+
+`ASKED AND UNANSWERED … they have NOT answered … nothing behind it has happened … Never describe
+it as done` — three assertions and an order, resting entirely on one column being empty, and that
+column was unreliable. It was also self-contradicting: the premise pushes toward re-asking and the
+last clause forbids it.
+
+**Mechanism:** the claim now cross-checks a consumed deciding action on the same message
+(`context.ts`, and the expiry sweep in `plan-ahead.ts` so an answered question is never resolved
+as `expired` and chased). 0038 backfills the rows written before F-BM's fix. The sentence stays
+strong, because weakening it would undo the reason `pending_request` exists — **a strong sentence
+needs a trustworthy column, and the column is the thing to fix.**
+
+### F-BO · `SCHEMA_DOC` documented `kind` values that nothing ever wrote
+
+Documented as `opt_out, decline_coach, client_cancel, confirm_plan`; `send.ts` wrote
+`msg.confirmation?.kind ?? msg.catalogId`, and only `opt_out` ever set the former. So the stored
+value was a catalog id, and a model querying the documented value got zero rows and read it as
+"never asked".
+
+**Mechanism:** every protocol names its own `confirmation.kind` — the field's docstring already
+asked for this — and its own `subject`, which also closes a latent collision where one family's
+second cancellation superseded the open question about the first.
+
+### F-BP · The cancellation decision was read at tap time, not ask time
+
+`hoursOut` was measured against `nowD` at the tap, and the notice window re-read live. So the
+product's own delay in re-asking turned a 57.5h cancellation into a 21.7h one, and a change to the
+academy's window would silently rewrite every button already on a phone.
+
+**Mechanism:** `decided_timely` and `decided_window_hours` stamped into the button at mint,
+replayed on the tap. Added to `HUMAN_ASSERTION_PARAMS` so a model-authored call cannot assert
+them — and the strip predicate now treats **false as a claim too** for these, because absent means
+"work it out", `true` means free and `false` means charge them.
+
+### F-BQ · `client_cancel` never read the row it was about to overwrite
+
+`rosterOf` returns the player, the account, the rate and the holder, and nothing about attendance,
+so the operation was structurally blind to its own earlier effect.
+
+**Mechanism:** `attendanceOf` reads `app.session_roster`, which has owned that join since 0022 and
+carries `attendance_status`. An already-cancelled session is answered rather than re-asked; the
+write carries `where attendance.status is distinct from 'cancelled_timely'`; the money line carries
+the matching predicate so a refused status change cannot leave a charge behind. The coach path is
+surfaced rather than blocked — `mark_attendance` now tells a coach when their marking put a charge
+back on, which is exactly the case its "unexplained absence" filter used to remove.
+
+### F-BR · Coach pay was one mutable number with no date
+
+`coach.pay_amount` decided what a coach earned in every month it was never in force for. Families
+are safe from the same shape not because rates are versioned — they are not — but because
+`monthly_lines` freezes the amount into a `tally_line`. There was no coach equivalent, so there was
+no August artifact to be wrong: there was no August artifact.
+
+**Mechanism:** `coach_ledger` (0038) with `rate_amount` copied into the row, and `coach_month_lines`
+writing a month when it closes. A future-dated rate is a row written early and the close leaves it
+alone, so **no rate-history table and no scheduled job** for the monthly case. `end_coach` sums the
+ledger instead of multiplying a career by today's rate; `SCHEMA_DOC`'s competing derivation is
+deleted in the same change, per 0036's rule.
+
+### F-BS · The conversation was the only thing shown to the model with no stamp
+
+`loop.ts` sorted history by `queued_at` and discarded it, so sixteen messages spanning three weeks
+arrived looking like sixteen spanning three minutes — against the file's own rule that everything
+shown is byte-stable or stamped.
+
+**Mechanism:** `historyGaps` describes the breaks in the tail, never in the message bodies (a
+timestamp inside `content` enters the conversation as something a person said). Gaps only, because
+per-message stamps are sixteen lines of re-billed tail to say what four say. **It fixes reading,
+not state** — it would not have prevented F-BP.
+
+### F-BT · Every client message went to the account holder, with no override
+
+`enrolledPlayers` resolved the recipient from `account.holder_person_id`, always. So "send
+reminders to my son" was impossible, and a money mute on the holder turned a bill into silence with
+nowhere to redirect it.
+
+**Mechanism:** `link_contact` — a link and never a create, approved by the owner, because a
+`contact` row IS the credential in a product with no passwords. Scoped by `app.my_player_ids()`
+rather than by the `player` read policy: that policy deliberately lets a coach read every player
+on a session they teach, so RLS alone would have let a coach request a number for any student —
+the owner would still have approved it, but the operation's own description would have been false.
+`enrolledPlayers` prefers the player's own number and carries `holder_contact_id` separately.
+
+**The recipient split, which is a product decision and not a mechanical one.** Reminders and
+session trouble follow the *attendee* — they are about turning up, and the linked person is the
+one who would otherwise travel. The recap follows the *holder*: it is a report about a child to
+whoever is following them, and it is grouped one-message-per-family by that column, so routing it
+to a linked teenager would split him from his own siblings and rebuild the duplicate-recap defect
+rule 7 exists to prevent. Money never moved. For every family with nobody linked — which is all of
+them today — the two columns hold the same number and nothing changes at all.
+
+**Not new machinery.** `player` has been a first-class role since 0005: `app.identity()` returns
+it, `Role` carries it, `my_player_ids()` includes `person_id = p.id`, and `sees_money()` is false
+for anyone holding no account. What was missing was only a way to give such a person a number.
+`person_directory` needs no change either — it laterals to each person's own contact, so a linked
+player simply stops reading as unreachable.
+
+### F-BL · the coach removal that will not stay removed — handed off
+
+**Read this before you write a line of it.** This finding is deliberately not fixed. The fix
+that looks obvious — and that
+`.probe/reports/2026-08-19-five-defects-and-fixes.html` §3 recommends — is wrong about its own
+cost by roughly 6×, and the places it misses are permission policies. What follows is
+everything learned tracing it, so the next session starts from the real shape rather than the
+apparent one.
+
+### F-BL · `session_coach` cannot record a removal
+
+**What happens.** The owner took two coaches off a Saturday session and put a third on. The
+product previewed it, he confirmed, it wrote a correct audit record and told him
+*"Removed 2 coach assignments and added 1 coach assignment."* All true. A few days later all
+three coaches were back on that session. Nobody was told.
+
+**Evidence.** `.probe/runs/2026-08-17-18-07-live` — turn 24 executed
+`delete from session_coach where session_id='d727685e…'`, each returning 1 row; by turn 47
+(day 5) the same session read back three coaches again. Three of five independent judges found
+it without being told to look. Downstream: duplicate day-6 messages, and the owner's
+unmarked-register alert was suppressed because the job had made him a coach on that session
+again and the product will not scold you about yourself.
+
+**Why it happens.** `lib/jobs/handlers/sessions.ts:140-153` — `materialize_sessions` re-inserts
+`class_coach` into `session_coach` for **every** future scheduled session of the class, every
+run, `on conflict (session_id, coach_id) do nothing`. `on conflict do nothing` skips a row that
+is *there*. A row deliberately deleted is not there, so it is re-created.
+
+The root of it is in the schema. `session_coach` (`0002_schema.sql:225-236`) has nine columns
+and none of them records a removal. **Assignment is row existence**, so a delete leaves no
+trace at all — checked across all 37 migrations, there has never been a `removed_at`,
+`deleted_at` or `status` column.
+
+### What the report got right
+
+- The diagnosis. It is genuinely the schema, not the job, and not a prompt problem.
+- The irony it points at: the orphan sweep thirteen lines above (`sessions.ts:120-135`) is
+  *carefully* protective — *"a cancelled session stays cancelled, a marked one stays marked, and
+  a session someone has already been billed for is never removed"* — and the very next statement
+  restores deliberately deleted rows.
+- That `end_coach` already hand-writes a workaround for the business-level case
+  (`operations.ts:546-551`): it deletes the `class_coach` row too, *"or every newly materialised
+  session would re-assign a coach who has left."* That workaround cannot be reused for a
+  per-session removal — deleting the class row takes the coach off **every** session, which is
+  not what "take him off this Saturday" means.
+
+### What the report got wrong, and why it matters
+
+It says the removal mark needs *"and not removed"* adding in *"about five places… the coverage
+check, the session detail view, the pay view, the class roster, and the job that chases
+coaches."*
+
+**It is about thirty, and six of them are RLS.** Counted 20 Aug against HEAD:
+
+| Where | Sites |
+| --- | --- |
+| **RLS / security helpers** | `0028_rls_once_per_statement.sql:55` (`app.my_session_ids`), `:123`; `0003_rls.sql:619` (select policy), `:317` (person policy, co-coach); `0008_family_privacy.sql:76`; `0001_roles.sql:166` (superseded but present) |
+| **Views** | `session_coverage` (`0004_functions.sql:191,195,200,204` — four subqueries), `0004:39`, `coach_pay` (0037), `session_detail` (0037, via coverage + the `coaches` array) |
+| **Runtime** | `context.ts` ×6, `operations.ts` ×12, `clash.ts` ×4, `coach.ts` ×3, `sessions.ts` ×3, `admin.ts` ×2, `untold.ts` ×2, `jobs/util.ts` ×2 |
+
+**The one that must not be missed is `app.my_session_ids()`** (`0028:53-56`). It decides every
+session a coach may see, and its coach arm is:
+
+```sql
+select sc.session_id as sid
+  from session_coach sc, me
+ where sc.academy_id = me.aid and sc.coach_id = me.cid
+```
+
+No filter but the id. Add `removed_at` to the table, miss this one line, and **a coach you took
+off a session still sees that session, its roster, its attendance and those families.** That is
+a privacy failure, not a cosmetic one — and it fails *open*, silently, which is the worst
+combination this repo keeps rediscovering.
+
+This is also precisely the shape `lib/messaging/send.ts:600` warns about:
+*"a rule enforced per composer is enforced in the composers somebody remembered."*
+
+### The other thing found while tracing, which changes the options
+
+**`class_coach` already has a materialise trigger.** `0033_the_world_materializes_itself.sql:76-79`:
+
+```sql
+drop trigger if exists class_coach_materialize on class_coach;
+create trigger class_coach_materialize
+  after insert on class_coach
+  for each row execute function app.materialize_on_slot_change();
+```
+
+Its comment: *"A coach joining a class has to reach the sessions that already exist: the handler
+backfills `session_coach` from `class_coach`, and without this that backfill waited for the next
+tick."*
+
+So the legitimate "a coach joined this class, put them on the existing sessions" case is
+**already** event-driven. The nightly sweep's coach backfill is largely redundant to it — which
+opens a cheaper option than a schema change, though not a complete one.
+
+### Three candidate designs
+
+Not settled. Each is coherent; they trade differently.
+
+**A · `removed_at` on `session_coach`.** The idiomatic soft-delete, matching `coach.ended_on`,
+`memory_fact.retired_at`, `pending_request.resolved_at`, `comm_preference.released_at`. Every
+reader adds `and removed_at is null`.
+*For:* one obvious place to look; the audit trigger already snapshots the table
+(`0005_audit.sql:169-170`); reads exactly like the rest of the schema.
+*Against:* ~30 sites, six security-critical, and a partial application fails open. `materialize_sessions`
+itself then needs **no** change — its `on conflict do nothing` does the right thing once the row
+survives.
+
+**B · A removal record beside it.** A small table (`session_coach_removed` or similar) written by
+the same operation that does the delete; the job's insert gains one `not exists`.
+*For:* `session_coach` keeps the meaning its own comment gives it — *"the ACTUAL coach set. a SET,
+never a scalar"* — so **no reader and no policy changes at all**. Records who removed them and
+why, which a bare `removed_at` cannot. Genre-consistent with `comm_preference` (a "do not do
+this" table).
+*Against:* two relations to consult for "was this coach ever on this session"; re-adding a coach
+must clear the removal row or the job will refuse them for ever.
+
+**C · Narrow the beat.** Scope the nightly coach insert to sessions the job just created
+(`created` in `sessions.ts:99-105`), leaning on the 0033 trigger for the join-a-class case.
+*For:* one statement, no schema change, no RLS change.
+*Against:* **incomplete.** The trigger fires on *any* `class_coach` insert and backfills the whole
+default set, so adding one new class coach still resurrects a previously removed one. It shrinks
+the window; it does not close it. Also the job cannot currently tell why it was enqueued —
+`materialize_sessions`'s payload is `{academy_id, class_id, date}` with no reason — so
+distinguishing "nightly" from "triggered" needs a payload flag first.
+
+**Leaning, not a decision: B.** It is the only one of the three that cannot fail open, and the
+security readers are the reason. A is more idiomatic and would be right in a codebase where
+`session_coach` had five readers; it has thirty.
+
+### Two things to fix whichever design wins
+
+- **A declined coach's "no" is erased.** If a coach declines a session and the owner then clears
+  the row off, the next materialise re-adds them with `declined_at` gone — they are on the
+  session again and their refusal has vanished.
+- **The job's log line never mentions coaches.** `sessions.ts:155-157` notes
+  `+N session(s), N retimed, N removed` and says nothing about the coach set it just rewrote, so
+  this defect leaves no trace in the tick log. Whatever else changes, this line should count the
+  coach rows it touched.
+
+### How to know it is fixed
+
+`scripts/check-world.ts` is the natural home — it already asserts that a hand-written class and
+slot enqueue the materialiser by themselves (`check-world.ts:131-134`). The assertion this needs:
+remove a coach from one future session, run the materialiser, and read the row back. It must
+still be absent. Then the same for a *declined* coach, whose `declined_at` must survive.
+
+Do not settle for a green tool result — `node scripts/q.mjs` and read the rows, per DRIVING.md.

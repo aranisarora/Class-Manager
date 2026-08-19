@@ -35,8 +35,15 @@
  *   model is told it happens (`PLATFORM`), so its next sentence about its own
  *   message is not a guess. An adapter is allowed; a second author is not.
  *
+ *   That sentence was false in two places until it was measured, and both are
+ *   below: a horizontal rule was DELETED (moved to the refusals, where a thing
+ *   with no WhatsApp form belongs), and a blank table cell was dropped and every
+ *   value after it re-labelled with the previous column's name — the adapter
+ *   ADDING a fact, which is the worse half of the same trap.
+ *
  *   **`proseViolations` REFUSES.** A uuid, a table name, an ISO timestamp, a
- *   section reference, a raw URL, a bracketed pseudo-button, a wire-shape blob —
+ *   section reference, a raw URL, a horizontal rule, a bracketed pseudo-button,
+ *   a wire-shape blob —
  *   every one of these is machinery on a customer's screen, every one is
  *   answerable from the string alone, and every one used to be quietly rewritten.
  *   Now it comes back as a refusal naming what is wrong, with one round of grace,
@@ -88,7 +95,7 @@ export type LintScope = {
  * verbatim, in the message summarising their whole business.
  *
  * Converted rather than refused, because this is representation and not meaning:
- * every cell survives, in the same order, under the same headings. Requires two
+ * every value survives, in the same order, under its own heading. Requires two
  * or more consecutive pipe rows AND either a `|:---|` separator or a consistent
  * column count, so a sentence that merely contains a pipe is left alone.
  */
@@ -121,17 +128,37 @@ function pipeTablesToLines(text: string): string {
     const rows = run.filter((l) => !isSeparator(l)).map(cellsOf)
     const header = run.some(isSeparator) && rows.length > 1 ? rows.shift()! : null
     for (const cells of rows) {
-      const kept = cells.filter((c) => c.length > 0)
-      if (!kept.length) continue
-      // Already emphasised cells are left as they are — a second pair of asterisks
-      // round `*Beginners*` renders as a literal asterisk, which is the bug one
-      // layer down from the one being fixed.
-      const lead = /[*_~]/.test(kept[0]) ? kept[0] : `*${kept[0]}*`
-      const rest = kept.slice(1).map((c, k) => {
-        const label = header && header[k + 1] ? `${header[k + 1]}: ` : ''
-        return `${label}${c}`
-      })
-      out.push(rest.length ? `• ${lead} — ${rest.join(' · ')}` : `• ${lead}`)
+      // Every value carries its OWN column's name, decided before any cell is
+      // dropped. This used to filter the blanks out first and then hand out header
+      // names by counting positions in what was left, so one blank moved every
+      // value after it under the previous column's name: `| Vivaan | | 7pm |`
+      // under Name/Class/Time reached a parent as *"Vivaan — Class: 7pm"*. That is
+      // not a lost cell, it is a manufactured one — the runtime stating a fact the
+      // model never wrote, on the one artifact the person actually reads, while
+      // the model's only picture of what it sent was its draft.
+      const labelled = cells
+        .map((value, k) => ({ value, label: header?.[k] ?? '' }))
+        .filter((p) => p.value.length > 0)
+      if (!labelled.length) continue
+
+      // The first COLUMN is the row's subject and is emphasised — but only when
+      // the row filled it. Promoting a later value into that slot is the same
+      // relabelling arriving by another door: a blank name made `*Advanced*` the
+      // person. Already emphasised cells are left as they are — a second pair of
+      // asterisks round `*Beginners*` renders as a literal asterisk, which is the
+      // bug one layer down from the one being fixed.
+      const first = cells[0] ?? ''
+      const lead = first.length ? (/[*_~]/.test(first) ? first : `*${first}*`) : null
+      const rest = (lead ? labelled.slice(1) : labelled).map((p) =>
+        p.label ? `${p.label}: ${p.value}` : p.value,
+      )
+      out.push(
+        lead
+          ? rest.length
+            ? `• ${lead} — ${rest.join(' · ')}`
+            : `• ${lead}`
+          : `• ${rest.join(' · ')}`,
+      )
     }
     i = j - 1
   }
@@ -163,8 +190,6 @@ export function toWhatsAppMarkup(text: string): string {
       // `* item` / `- item` at the start of a line → a real bullet. An asterisk
       // there is indistinguishable from an unclosed bold marker.
       .replace(/^[ \t]*[*+-][ \t]+/gm, '• ')
-      // A horizontal rule is a Markdown idea.
-      .replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm, '')
   )
 }
 
@@ -201,6 +226,7 @@ const TABLES = [
   'enrollment', 'session', 'session_coach', 'attendance', 'tally_line',
   'payment', 'sender', 'message', 'action', 'job', 'audit_entry',
   'turn', 'pending_request', 'comm_preference', 'business_rule',
+  'coach_ledger',
 ]
 
 const TABLE_COLUMN = new RegExp(`\\b(?:${TABLES.join('|')})\\.[a-z_]+\\b`)
@@ -230,6 +256,30 @@ const RAW_URL = /https?:\/\/(?!wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com)\S+
  * pass them as buttons — which is the only form that is actually tappable.
  */
 const BRACKET_LINE = /^\s*(\[[^\]\n]{1,40}\]\s*(?:\(\s*(?:action|payload|kind|on-click)\s*:[^)\n]*\)\s*)?)+\s*$/im
+
+/**
+ * A Markdown horizontal rule — `---`, `***`, `___`.
+ *
+ * The adapter used to delete this line and say nothing, which is the one place it
+ * removed rather than converted, and it broke the promise the `reply` declaration
+ * makes at the decode point: *"what you write here is what they read, byte for
+ * byte."* WhatsApp cannot draw a rule, so there is nothing to convert it INTO —
+ * which is exactly the case that belongs here rather than in the adapter.
+ *
+ * The cost of deleting it was measured. On a turn whose message tools were all
+ * failing, the model composed a note to itself, a `---`, and then the real
+ * message. The rule was silently removed on the way to the wire, the boundary it
+ * drew went with it, and a worried parent read *"I'll close the turn with the
+ * honest update to Divya directly, since the message tools are failing this
+ * turn"* as the opening line of her answer. The model reported it itself the
+ * following turn: *"a stray internal note of mine went out… it was my notebook,
+ * not a proper message."* Refused, the same turn gets a round of grace and the
+ * one party who knows which half was the message decides what to do with it.
+ *
+ * `PLATFORM` already states there are no horizontal rules. That turn is what
+ * being told is worth on its own.
+ */
+const HORIZONTAL_RULE = /^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/m
 
 /**
  * A key that only ever appears in this product's own wire shape, in ANY notation.
@@ -317,6 +367,15 @@ export function proseViolations(text: string, scope?: LintScope): ProseViolation
       what: 'it has a line of bracketed labels in the body',
       fix: 'A label typed into a body looks tappable and is not. Pass them as buttons — {kind:\'reply\', text:"…"} is always legal and needs no arguments you do not have.',
       sample: brackets[0].trim().slice(0, 80),
+    })
+  }
+
+  const rule = HORIZONTAL_RULE.exec(text)
+  if (rule) {
+    out.push({
+      what: 'it contains a horizontal rule',
+      fix: 'WhatsApp cannot draw one, so that line would simply vanish and whatever it was separating would run together. A blank line separates two thoughts. If it is separating a note to yourself from the message, the note is not part of the message.',
+      sample: rule[0].trim(),
     })
   }
 
