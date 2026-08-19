@@ -19,7 +19,7 @@
 import type { SubjectKind } from '@/lib/types'
 import { withSession, type SessionCtx } from '@/lib/db'
 import { env } from '@/lib/env'
-import { AppError } from '@/lib/errors'
+import { AppError, errorMessage } from '@/lib/errors'
 import { generateJson } from '@/lib/agent/deepseek'
 
 /** §5/§13 — curation runs when a subject's store crosses this, never per turn. */
@@ -305,7 +305,7 @@ export async function hotSet(
   subjectKind: SubjectKind,
   subjectId: string,
   academyId: string,
-): Promise<string | null> {
+): Promise<{ value: string | null; why: string | null }> {
   const tenant = tenantOf(subjectKind, subjectId, academyId)
   // Unreachable through the type, reachable through an empty string. Loud, because
   // returning '' here is indistinguishable from an empty memory and always was.
@@ -318,8 +318,8 @@ export async function hotSet(
           : await tx`select memory from person where id = ${subjectId}`
       return r as unknown as { memory: string | null }[]
     })
-    return (rows[0]?.memory ?? '').trim()
-  } catch {
+    return { value: (rows[0]?.memory ?? '').trim(), why: null }
+  } catch (e) {
     /**
      * **null is a failed read; '' is a subject with nothing recorded.** These were
      * one value, and they are opposite sentences by the time they reach a person:
@@ -334,8 +334,13 @@ export async function hotSet(
      * if it believes the answer is "nothing recorded".
      *
      * Still not a dead turn — the caller decides. It just has to be able to.
+     *
+     * The REASON rides along now, for the same argument one layer down: "could not
+     * be read" states a gap and withholds the one fact the runtime holds about it,
+     * while doctrine forbids the model from supplying the rest. See `Read` in
+     * `context.ts` for what that cost on the record.
      */
-    return null
+    return { value: null, why: errorMessage(e).split(/\r?\n/)[0].trim().slice(0, 200) }
   }
 }
 

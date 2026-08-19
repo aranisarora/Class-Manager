@@ -384,8 +384,36 @@ for (const t of turns) {
     body += `<h4>What they typed</h4><blockquote><p>${esc(t.say)}</p></blockquote>`
   }
 
-  /* the thinking */
   const rounds = t.rounds ?? []
+
+  /* what it was told */
+  //
+  // Ahead of the thinking, because it is what the thinking is a response to.
+  // Absent unless the run was driven with the full trace on — and absent is the
+  // honest rendering, since a run recorded without it genuinely does not know.
+  //
+  // This section exists because five judges read a live week with what was called
+  // complete visibility and none could see the one sentence that caused its worst
+  // turns: a prefetch had died, the tail said so without saying why, and the tail
+  // was written down nowhere. The failures it exposes are usually ABSENCES — a
+  // dead prefetch removes its paragraph and leaves nothing behind — so the only
+  // artifact that can show one is the tail itself, whole.
+  const told = rounds.find((r) => r.name === '(context)')
+  if (told) {
+    const a = told.args ?? {}
+    const tail = typeof a.tail === 'string' ? a.tail : ''
+    const missed = (tail.match(/could not be read this turn/g) ?? []).length
+    body += `<h4>What it was told <span class="dim">— the turn's own context, ${
+      tail.length.toLocaleString()
+    } chars of tail over a ${
+      Number(a.prefix?.chars ?? 0).toLocaleString()
+    }-char cached prefix${
+      missed ? `, <span class="bad">${missed} failed lookup${missed === 1 ? '' : 's'} named</span>` : ''
+    }</span></h4>`
+    body += `<div class="think"><pre>${capped(tail)}</pre></div>`
+  }
+
+  /* the thinking */
   const thinking = rounds.filter((r) => r.reasoning)
   if (thinking.length) {
     body += `<h4>What it was thinking <span class="dim">— ${thinking.length} round${thinking.length === 1 ? '' : 's'}</span></h4>`
