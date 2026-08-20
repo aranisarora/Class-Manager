@@ -11,7 +11,7 @@
  * WHY THIS EXISTS
  * -----------------------------------------------------------------------------
  * `_capture.ts` says it plainly: six record shapes meant six readers, and the
- * readers disagreed about what a turn even contained. `drive-week`, `probe-ask`
+ * readers disagreed about what a turn even contained. `sim`, `probe-ask`
  * and `probe-sql` write `record.json` and `scripts/report.mjs` renders it.
  * `probe-model` — the instrument that drives the hardest suites in this repo —
  * wrote only its own `<arm>.json` and its own `score.md`, so for a long while the

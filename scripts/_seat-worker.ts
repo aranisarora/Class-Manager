@@ -1,7 +1,7 @@
 /**
  * _seat-worker — one persona, one OS process, for the length of the week.
  *
- *   spawned by `scripts/drive-week.ts`. There is nothing here to type at a shell.
+ *   spawned by `scripts/sim.ts`. There is nothing here to type at a shell.
  *   node --import tsx scripts/_seat-worker.ts --dir <run> --persona divya --model <m> --seed <s>
  *
  * The leading underscore means the same thing it means everywhere else in this
@@ -91,7 +91,7 @@ process.env.TRANSPORT = 'emulator'
  * printing nothing. Somebody would read that as a hung week.
  */
 if (!process.send) {
-  console.error('  _seat-worker is spawned by scripts/drive-week.ts and has no meaning on its own.')
+  console.error('  _seat-worker is spawned by scripts/sim.ts and has no meaning on its own.')
   process.exit(2)
 }
 
@@ -169,7 +169,7 @@ const SEED = arg('seed')
  * `PERSONAS` holds the canonical four and can never hold anybody else: a spec
  * world's seats are composed at run time by `briefsFromWorld`, and their keys
  * (`admin-nisha-balakrishnan`) are derived from a JSON file that did not exist
- * when this module was written. `drive-week.ts` writes every seat of the run —
+ * when this module was written. `sim.ts` writes every seat of the run —
  * both worlds, one shape, keyed the same way `session.json.contacts` is — to
  * `briefs.json` BEFORE it spawns the first worker, precisely so this lookup has
  * somewhere to go. Without the fallback a `--world` run dies here, every seat at

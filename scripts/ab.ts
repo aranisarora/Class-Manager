@@ -11,7 +11,7 @@
  * -----------------------------------------------------------------------------
  * A change to this product lands in one of three places: the PREFIX (doctrine),
  * a MECHANISM (code), or the SCHEMA. Nothing here could tell you whether one of
- * them helped. `drive-week` produces a run; two runs of it produce two records;
+ * them helped. `sim` produces a run; two runs of it produce two records;
  * and the comparison between them rests entirely on the claim that everything
  * except the thing under test was held still. That claim was never written down
  * anywhere, and the parts of it that drift are the quiet ones: `MODEL_MAIN`
@@ -24,8 +24,8 @@
  * So this is a THIN WRAPPER and deliberately not a second mechanism. It resolves
  * ONE config (`_drive-config.ts`, the same parser and the same refusals), pins
  * the model and the seed into it so that neither is resolved twice, hands the
- * same file to both arms, and runs each arm as a whole `drive-week` child
- * process. Everything it knows how to do, `drive-week` was already doing.
+ * same file to both arms, and runs each arm as a whole `sim` child
+ * process. Everything it knows how to do, `sim` was already doing.
  *
  * PROCESS ISOLATION IS FORCED, NOT PREFERRED
  * -----------------------------------------------------------------------------
@@ -128,7 +128,7 @@ loadEnvFiles()
 /**
  * `.env.local` ships `TRANSPORT=cloud`, and a drive that takes the cloud path
  * hard-fails at the credential gate — every turn an error, zero tools, an empty
- * reply, which reads exactly like a broken model. `drive-week` forces the
+ * reply, which reads exactly like a broken model. `sim` forces the
  * emulator in its own body; this forces it one level earlier, so both arms are
  * already on the emulator before either of them reads anything.
  */
@@ -270,8 +270,8 @@ function readVariant(raw: string): Variant {
       'What to do instead, strongest answer first:',
       '  1. Two databases. Point DATABASE_URL at a second project — a Supabase branch is one',
       '     command — apply the migration there, and drive each arm on its own with the SAME seed:',
-      '       npm run drive:week -- --arm A --seed <s> --config <cfg>',
-      '       DATABASE_URL=<branch> npm run drive:week -- --arm B --seed <s> --config <cfg>',
+      '       npm run sim -- --arm A --seed <s> --config <cfg>',
+      '       DATABASE_URL=<branch> npm run sim -- --arm B --seed <s> --config <cfg>',
       '     They are then sequential, so the provider’s hour is inside the difference you read.',
       '  2. One database, migrated between the arms, same seed. Cheapest and weakest: everything',
       '     else that changed in those hours is inside that difference too.',
@@ -304,7 +304,7 @@ type Arm = {
   cwd: string
   /** Where the code it runs lives. Different from `cwd` only for a prefix arm. */
   tree: string
-  /** The `drive-week.ts` this arm is driven by — its own, for a ref arm. */
+  /** The `sim.ts` this arm is driven by — its own, for a ref arm. */
   script: string
   /** The file this arm's `stablePrefix()` will actually read. */
   doctrine: string
@@ -390,7 +390,7 @@ async function buildArms(variant: Variant, parent: string): Promise<Arm[]> {
   const repoDoctrine = join(REPO, 'lib', 'doctrine.md')
   if (!existsSync(repoDoctrine)) fail(`there is no ${repoDoctrine} to be the control`)
   const repoGit = await gitFacts(REPO)
-  const driver = join(REPO, 'scripts', 'drive-week.ts')
+  const driver = join(REPO, 'scripts', 'sim.ts')
 
   if (variant.kind === 'doctrine') {
     const file = resolve(REPO, variant.value)
@@ -488,7 +488,7 @@ async function buildArms(variant: Variant, parent: string): Promise<Arm[]> {
       what: `${variant.value} — ${tree.replace(REPO, '.')}`,
       cwd: tree,
       tree,
-      script: join(tree, 'scripts', 'drive-week.ts'),
+      script: join(tree, 'scripts', 'sim.ts'),
       doctrine: treeDoctrine,
       doctrineSha: sha256(readFileSync(treeDoctrine)),
       git: await gitFacts(tree),
@@ -616,7 +616,7 @@ function manifest(arm: Arm, cfg: DriveConfig, variant: Variant, seed: string, pa
 
 /** The instrument modules both arms are measured with, when the arms are two trees. */
 const INSTRUMENT = [
-  'drive-week.ts',
+  'sim.ts',
   '_drive-config.ts',
   '_capture.ts',
   '_derive.ts',
@@ -723,7 +723,7 @@ type ArmRun = {
 }
 
 /**
- * One arm, one repeat: a whole `drive-week`, driven the way a person drives it.
+ * One arm, one repeat: a whole `sim`, driven the way a person drives it.
  *
  * The child is given `--config <the one resolved config>` and `--seed`, so the
  * two arms cannot resolve a preset, a model or a seed separately — `_drive-config`
@@ -776,7 +776,7 @@ function drive(arm: Arm, repeat: number, seed: string, cfgPath: string, dir: str
 /**
  * Where the child put its run.
  *
- * Asked of the filesystem first and of the terminal second. `drive-week` writes a
+ * Asked of the filesystem first and of the terminal second. `sim` writes a
  * `config.json` sidecar holding the config it actually used, and `(arm, seed)` is
  * unique across everything this comparison starts — so the sidecar identifies the
  * directory structurally, without depending on a printed line staying printed. The

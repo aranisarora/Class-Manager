@@ -13,12 +13,23 @@
  * WHY THIS EXISTS
  * -----------------------------------------------------------------------------
  * There was exactly one settled academy in this repo, and it was welded into
- * `drive-week.ts`: four families, five children, two employed coaches, four
+ * `sim.ts`: four families, five children, two employed coaches, four
  * classes, in two hundred lines of SQL that also happened to be the only way to
  * get a business past onboarding without driving the onboarding conversation by
  * hand for an hour. Wanting six clients instead of four, or an owner who does not
  * coach, or three classes on a Tuesday, meant editing that function — and every
  * `life` string in `_personas.ts` that was written against what it built.
+ *
+ * WHO THE PEOPLE ARE LIVES HERE TOO
+ * -----------------------------------------------------------------------------
+ * Any person may carry a `seat` block — what they want, how they type, what is
+ * happening to them this week — so one file holds both the rows and the people
+ * who live in them. `_personas.ts` `briefFromWorld` puts the derived facts first
+ * and the written words after, so nothing anybody writes in a world file can make
+ * a person describe a business that was not built. That failure is the reason the
+ * derivation exists: a coach told his batch ran Monday and Thursday in a world
+ * that ran Monday and Wednesday produced a turn that read as a product defect and
+ * was a harness defect.
  *
  * The obvious answer is five or six pre-made archetypes, and it is the wrong one.
  * That is the same welding done six times: six worlds to keep true as the schema
@@ -55,11 +66,31 @@
  *
  * A COUNT IS AS GOOD AS A LIST
  * -----------------------------------------------------------------------------
- * `"coaches": 4` and `"coaches": [{"name": "Arjun Shetty"}]` are both valid and
- * mean the same kind of thing. A count draws from a fixed pool of plausible names
- * and stops — loudly — when the pool runs out, rather than generating `Coach 13`.
- * The same for clients, prospects, and for a class's `enrolled`, where a number
- * means "this many of the children, dealt in order".
+ * `"coaches": 4`, `"coaches": ["Arjun Shetty"]` and
+ * `"coaches": [{"name": "Arjun Shetty", "pay": 600, "unit": "per_session"}]` are all
+ * valid and mean the same kind of thing. A count draws from a fixed pool of
+ * plausible names and stops — loudly — when the pool runs out, rather than
+ * generating `Coach 13`. A count invents PEOPLE and never RELATIONSHIPS:
+ * `"clients": 6` is six people on the books and enrolled in nothing.
+ *
+ * ENROLMENT IS STATED ON THE PERSON
+ * -----------------------------------------------------------------------------
+ * A class does not carry a register; a child carries their class.
+ *
+ *     "clients": [
+ *       { "name": "Divya Rao", "children": [{ "name": "Anika Rao", "class": "Evening Batch" }] },
+ *       { "name": "Fatima Ansari", "class": "Evening Adults" }
+ *     ]
+ *
+ * The second is an adult learner — no children, so the client is the player.
+ * A class took `"enrolled": 3` once, and three was ambiguous: it dealt children
+ * from a cursor shared across the class list, so WHICH three depended on the
+ * order the classes happened to be written in, and the wrap could seat one child
+ * in two classes without saying so. You could not read the file and know who was
+ * in what, which is the only thing a fixture is for. `enrolled` is refused by
+ * name now rather than ignored, because a spec still carrying it means somebody's
+ * registers, and dropping them quietly would build a business whose classes are
+ * empty and whose file says they are not.
  *
  * DAYS ARE NAMES
  * -----------------------------------------------------------------------------
@@ -78,18 +109,18 @@
  * (from, sender): a number held by two academies matches two contacts and
  * resolves to NEITHER — the message is never delivered and nothing anywhere
  * raises an error. So every number here is derived from the academy id, exactly
- * as `drive-week.ts` does it, the admin's included: `createAcademy` picks its
+ * as `sim.ts` does it, the admin's included: `createAcademy` picks its
  * admin number by scanning for a free one, and two builds scanning in the same
  * millisecond pick the same one.
  *
  * The shape is `+9194` + six digits of the id + a two-digit seat index. India's
  * E.164 is `+91` and ten national digits and there is no room to be generous with
- * them: `drive-week` spends seven on the id and one on the index, which tops out
+ * them: `sim` spends seven on the id and one on the index, which tops out
  * at ten people — and the world this format was asked for has eleven before it
  * has a prospect. Six and two buys a hundred seats for a thousandth of the id
  * space. `94` rather than `99` because `+9199…` is the block `createTestContact`
  * and `createAcademy` allocate out of, and rather than `93` because that is what
- * `drive-week` derives, so a spec world and a `drive-week` world cannot land on
+ * `sim` derives, so a spec world and a `sim` world cannot land on
  * the same number even if their ids share a prefix.
  *
  * WHAT IT REFUSES, AND WHY REFUSING IS THE POINT
@@ -103,10 +134,11 @@
  * not the world somebody asked for, and a week driven inside it measures a
  * business that does not exist.
  *
- * So: an unknown key at any level, an unknown day, a coach who is not there, an
- * `enrolled` name nobody has, a negative count, a time that runs backwards, two
- * people with one name — each stops the build before it costs anything, naming
- * the path and what was wrong. It refuses; it never repairs. A repaired spec is a
+ * So: an unknown key at any level, an unknown day, a coach who is not there, a
+ * child put in a class this world does not run, a client who is both a parent and
+ * a learner, a negative count, a time that runs backwards, two people with one
+ * name — each stops the build before it costs anything, naming the path and what
+ * was wrong. It refuses; it never repairs. A repaired spec is a
  * spec that quietly stopped being what was written down.
  */
 import { existsSync } from 'node:fs'
@@ -114,12 +146,25 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 /**
- * The seat, for its service-role query and the timezone every instrument here
- * runs in. Importing it is also what loads `.env` and forces
- * `TRANSPORT=emulator` — `.env.local` ships `TRANSPORT=cloud`, and a build that
- * takes the cloud path hard-fails at the credential gate.
+ * `.env` and the transport, taken from the leaf rather than from `_seat`.
+ *
+ * `.env.local` ships `TRANSPORT=cloud` and a build that takes the cloud path
+ * hard-fails at the credential gate, so it is pinned here — before the
+ * `@/lib/seed` import below, whose module body reads the environment.
+ *
+ * This used to import `TZ` and `q` from `./_seat`, one use each, and that single
+ * edge closed a cycle: `_personas` needs `rollOf` from this file, `_seat` awaits
+ * `_personas` in its own module body, and a module cannot finish initialising
+ * while it waits for itself. The symptom is not an error but a hang — "unsettled
+ * top-level await" — so it is worth the two lines to not have the edge.
  */
-import { TZ, q } from './_seat'
+import { loadEnvFiles } from './_env'
+
+loadEnvFiles()
+process.env.TRANSPORT = 'emulator'
+
+/** The zone every instrument in this repo runs its worlds in. */
+export const TZ = 'Asia/Kolkata'
 
 const { createAcademy, createTestContact, worldAcademyIds } = await import('@/lib/seed')
 const clock = await import('@/lib/clock')
@@ -149,22 +194,69 @@ export type CoachSpec = {
   pay?: number
   /** Required when `pay` is set. A unit with no amount bills nothing. */
   unit?: PayUnit
+  /** Who they are and what they want. Omitted, the role and the world compose it. */
+  seat?: SeatSpec
+}
+
+/**
+ * The person, as opposed to their rows — what they want and how they talk.
+ *
+ * Any of these may be left out, and left out is the common case: `briefFromWorld`
+ * composes a workable seat from the role and the world alone. What this block
+ * buys is the thing a generated brief cannot have, which is a REASON to message
+ * today — a fever, a raise, a bill that looks wrong.
+ *
+ * `about`, `goals`, `redLines` and `life` are ADDED to the derived brief rather
+ * than replacing it, and that is deliberate. The facts a person knows about their
+ * own business — their classes, their children, their pay unit — stay derived
+ * from the spec, so nothing written here can make somebody describe a business
+ * that was not built. That failure has been paid for once already: a coach told
+ * his batch ran Monday and Thursday in a world that ran Monday and Wednesday
+ * produced a turn that read as a product defect and was a harness defect.
+ * `voice` is the exception and replaces the role's default, because how somebody
+ * types contradicts nothing.
+ */
+export type SeatSpec = {
+  /** Extra context in their own frame — added after the derived facts. */
+  about?: string
+  /** How they type. Replaces the role's default voice. */
+  voice?: string
+  /** What they want to be true by the end. Added to the derived goals. */
+  goals?: string[]
+  /** What would make them complain, escalate or leave. */
+  redLines?: string[]
+  /** What happens TO them, keyed by day number. Not what they say. */
+  life?: Record<string, string>
+}
+
+/** One child on a parent's account, and the class they are already sitting in. */
+export type ChildSpec = {
+  name?: string
+  /**
+   * The class this child is in, by the name it is given in `classes`. Omitted,
+   * the child is on the books and enrolled in nothing — a real state, and one
+   * that has to be sayable without inventing an enrolment to fill it.
+   */
+  class?: string
 }
 
 export type ClientSpec = {
   name?: string
   /**
-   * The children on the books under this parent. Omitted, they get one, named
-   * for them. **`[]` means the client is the learner** — an adult beginner — and
-   * is the only way to say so: with children, the parent's own auto-created
-   * player row is retired; without, it is what everything enrols.
+   * The children on this parent's account, each carrying the class they are in.
+   * Omitted, the client is the learner themselves — an adult beginner — and
+   * `class` is where their own enrolment goes.
    */
-  children?: string[]
+  children?: ChildSpec[]
+  /** For an adult learner: the class the CLIENT sits in. Never with `children`. */
+  class?: string
   /** Rupees carried into this world from before it. See `openingBalance`. */
   owes?: number
+  /** Who they are and what they want. Omitted, the role and the world compose it. */
+  seat?: SeatSpec
 }
 
-export type ProspectSpec = { name?: string }
+export type ProspectSpec = { name?: string; seat?: SeatSpec }
 
 export type ClassSpec = {
   name: string
@@ -179,8 +271,6 @@ export type ClassSpec = {
   unit?: RateUnit
   /** By name. Omitted, coaches are dealt round-robin. `[]` leaves it uncovered. */
   coaches?: string[]
-  /** Child names, or how many of the children — dealt in order across classes. */
-  enrolled?: string[] | number
 }
 
 export type WorldSpec = {
@@ -190,7 +280,7 @@ export type WorldSpec = {
   category?: string
   timezone?: string
   /** The owner. `coaches: true` gives them a `coach` row as well as an admin one. */
-  admin?: { name?: string; coaches?: boolean }
+  admin?: { name?: string; coaches?: boolean; seat?: SeatSpec }
   coaches?: number | CoachSpec[]
   clients?: number | ClientSpec[]
   prospects?: number | ProspectSpec[]
@@ -210,10 +300,16 @@ export type NormalSpec = {
   name: string
   category: string
   timezone: string
-  admin: { name: string; coaches: boolean }
-  coaches: { name: string; pay?: number; unit?: PayUnit }[]
-  clients: { name: string; children: string[]; owes?: number }[]
-  prospects: { name: string }[]
+  admin: { name: string; coaches: boolean; seat?: SeatSpec }
+  coaches: { name: string; pay?: number; unit?: PayUnit; seat?: SeatSpec }[]
+  clients: {
+    name: string
+    children: { name: string; class?: string }[]
+    class?: string
+    owes?: number
+    seat?: SeatSpec
+  }[]
+  prospects: { name: string; seat?: SeatSpec }[]
   classes: {
     name: string
     days: Day[]
@@ -222,7 +318,6 @@ export type NormalSpec = {
     rate?: number
     unit?: RateUnit
     coaches: string[]
-    enrolled: string[]
   }[]
 }
 
@@ -294,11 +389,13 @@ const MAX_SEATS = 100
  * ========================================================================== */
 
 const TOP_KEYS = ['name', 'category', 'timezone', 'admin', 'coaches', 'clients', 'prospects', 'classes']
-const ADMIN_KEYS = ['name', 'coaches']
-const COACH_KEYS = ['name', 'pay', 'unit']
-const CLIENT_KEYS = ['name', 'children', 'owes']
-const PROSPECT_KEYS = ['name']
-const CLASS_KEYS = ['name', 'days', 'from', 'to', 'rate', 'unit', 'coaches', 'enrolled']
+const ADMIN_KEYS = ['name', 'coaches', 'seat']
+const COACH_KEYS = ['name', 'pay', 'unit', 'seat']
+const CLIENT_KEYS = ['name', 'children', 'class', 'owes', 'seat']
+const CHILD_KEYS = ['name', 'class']
+const SEAT_KEYS = ['about', 'voice', 'goals', 'redLines', 'life']
+const PROSPECT_KEYS = ['name', 'seat']
+const CLASS_KEYS = ['name', 'days', 'from', 'to', 'rate', 'unit', 'coaches']
 
 /**
  * What a name may contain.
@@ -307,7 +404,7 @@ const CLASS_KEYS = ['name', 'days', 'from', 'to', 'rate', 'unit', 'coaches', 'en
  * `q` runs `tx.unsafe`, which is what the whole repo does for fixtures — so a
  * name carrying a quote, a semicolon or a newline is an injection in a file
  * somebody hand-writes. And `person.full_name` is the join key every fixture in
- * this repo matches on (`drive-week.ts` joins `class_coach` and `enrollment` on
+ * this repo matches on (`sim.ts` joins `class_coach` and `enrollment` on
  * it), so a name with a stray newline in it is a person nothing can find.
  *
  * Letters — including accented ones — spaces, apostrophes, hyphens and full
@@ -368,6 +465,63 @@ function nameOf(v: unknown, path: string, pool: string[], at: number, p: Problem
   return v.trim()
 }
 
+/**
+ * The optional `seat` block on any person: who they are beyond their rows.
+ *
+ * Everything in it is prose the writer supplies, so there is nothing to check
+ * except the shape — an unknown key here is a typo that would otherwise be
+ * silently dropped, and a dropped `goals` is a person with nothing to want.
+ */
+function seatOf(v: unknown, path: string, p: Problems): SeatSpec | undefined {
+  if (v === undefined) return undefined
+  if (!isObj(v)) {
+    p.add(path, `is not an object: ${JSON.stringify(v)}. It takes ${SEAT_KEYS.join(', ')}`)
+    return undefined
+  }
+  unknownKeys(v, SEAT_KEYS, path, p)
+  const out: SeatSpec = {}
+  for (const k of ['about', 'voice'] as const) {
+    const raw = v[k]
+    if (raw === undefined) continue
+    if (typeof raw !== 'string' || !raw.trim()) p.add(`${path}.${k}`, `is not text: ${JSON.stringify(raw)}`)
+    else out[k] = raw.trim()
+  }
+  for (const k of ['goals', 'redLines'] as const) {
+    const raw = v[k]
+    if (raw === undefined) continue
+    if (!Array.isArray(raw)) {
+      p.add(`${path}.${k}`, `is not a list of sentences: ${JSON.stringify(raw)}`)
+      continue
+    }
+    const lines = raw.filter((x, i) => {
+      const ok = typeof x === 'string' && x.trim() !== ''
+      if (!ok) p.add(`${path}.${k}[${i}]`, `is not a sentence: ${JSON.stringify(x)}`)
+      return ok
+    }) as string[]
+    if (lines.length) out[k] = lines.map((x) => x.trim())
+  }
+  if (v.life !== undefined) {
+    if (!isObj(v.life)) {
+      p.add(`${path}.life`, `is not an object keyed by day number: ${JSON.stringify(v.life)}`)
+    } else {
+      const life: Record<string, string> = {}
+      for (const [day, what] of Object.entries(v.life)) {
+        if (!/^[1-9]\d*$/.test(day)) {
+          p.add(`${path}.life.${day}`, `is not a day number. Days count from 1, and day 1 is a Monday`)
+          continue
+        }
+        if (typeof what !== 'string' || !what.trim()) {
+          p.add(`${path}.life.${day}`, `is not text: ${JSON.stringify(what)}`)
+          continue
+        }
+        life[day] = what.trim()
+      }
+      if (Object.keys(life).length) out.life = life
+    }
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
 /** A count, or a list. Both mean "this many of these people". */
 function roster<T>(
   v: unknown, path: string, pool: string[], p: Problems,
@@ -391,8 +545,14 @@ function roster<T>(
     return []
   }
   return v.map((raw, i) => {
+    /**
+     * A bare name is the obvious thing to write for somebody who carries nothing
+     * else — no pay, no children, no arrears — and refusing it taught the writer
+     * nothing except to add two characters.
+     */
+    if (typeof raw === 'string') return make(nameOf(raw, `${path}[${i}]`, pool, i, p), i)
     if (!isObj(raw)) {
-      p.add(`${path}[${i}]`, `is not an object: ${JSON.stringify(raw)}`)
+      p.add(`${path}[${i}]`, `is neither a name nor an object: ${JSON.stringify(raw)}`)
       return make(pool[i] ?? `unnamed-${i}`, i)
     }
     return read(raw, i, nameOf(raw.name, `${path}[${i}].name`, pool, i, p))
@@ -449,16 +609,18 @@ export function validateSpec(s: unknown, where = 'this spec'): NormalSpec {
   }
 
   const adminRaw = s.admin === undefined ? {} : s.admin
-  let admin = { name: DEFAULT_ADMIN, coaches: false }
+  let admin: NormalSpec['admin'] = { name: DEFAULT_ADMIN, coaches: false }
   if (!isObj(adminRaw)) p.add('admin', `is not an object: ${JSON.stringify(adminRaw)}`)
   else {
     unknownKeys(adminRaw, ADMIN_KEYS, 'admin', p)
     if (adminRaw.coaches !== undefined && typeof adminRaw.coaches !== 'boolean') {
       p.add('admin.coaches', `is not true or false: ${JSON.stringify(adminRaw.coaches)}. It asks whether the owner also coaches`)
     }
+    const adminSeat = seatOf(adminRaw.seat, 'admin.seat', p)
     admin = {
       name: adminRaw.name === undefined ? DEFAULT_ADMIN : nameOf(adminRaw.name, 'admin.name', [], 0, p),
       coaches: adminRaw.coaches === true,
+      ...(adminSeat === undefined ? {} : { seat: adminSeat }),
     }
   }
 
@@ -478,7 +640,13 @@ export function validateSpec(s: unknown, where = 'this spec'): NormalSpec {
       if (unit !== undefined && pay === undefined) {
         p.add(`coaches[${i}].unit`, `is set and coaches[${i}].pay is not. A unit with no amount pays nothing`)
       }
-      return { name: nm, ...(pay === undefined ? {} : { pay }), ...(pay === undefined ? {} : { unit: unit ?? 'per_month' }) }
+      const seat = seatOf(raw.seat, `coaches[${i}].seat`, p)
+      return {
+        name: nm,
+        ...(pay === undefined ? {} : { pay }),
+        ...(pay === undefined ? {} : { unit: unit ?? 'per_month' }),
+        ...(seat === undefined ? {} : { seat }),
+      }
     },
     (nm) => ({ name: nm }),
   )
@@ -486,28 +654,89 @@ export function validateSpec(s: unknown, where = 'this spec'): NormalSpec {
   const clients = roster<NormalSpec['clients'][number]>(
     s.clients, 'clients', CLIENT_POOL, p,
     (raw, i, nm) => {
-      unknownKeys(raw, CLIENT_KEYS, `clients[${i}]`, p)
+      const at = `clients[${i}]`
+      unknownKeys(raw, CLIENT_KEYS, at, p)
       // Negative allowed: `tally_line.amount` is "negative for credits", and a
       // family in credit is an ordinary state a settled world may open in.
-      const owes = money(raw.owes, `clients[${i}].owes`, p, true)
-      let children: string[]
-      if (raw.children === undefined) children = [defaultChild(nm, i)]
-      else if (!Array.isArray(raw.children)) {
-        p.add(`clients[${i}].children`, `is not a list: ${JSON.stringify(raw.children)}. \`[]\` means this client is the learner`)
-        children = []
-      } else {
-        children = raw.children.map((cn, j) => nameOf(cn, `clients[${i}].children[${j}]`, [], j, p))
+      const owes = money(raw.owes, `${at}.owes`, p, true)
+      const seat = seatOf(raw.seat, `${at}.seat`, p)
+
+      /**
+       * A client is a parent OR the learner, and never both.
+       *
+       * `children` decides which, and `class` means a different person in the two
+       * cases — a child's enrolment or an adult's own. Taking both would leave
+       * "who is in this class" answerable two ways from one entry, which is the
+       * ambiguity this whole shape exists to remove.
+       */
+      const namedChildren = Array.isArray(raw.children) && raw.children.length > 0
+      // An EMPTY `children` is not a conflict: that is what a normalised adult
+      // learner carries, and validating a normalised spec has to be a fixed
+      // point or `describeWorld` refuses the world it was just handed.
+      if (namedChildren && raw.class !== undefined) {
+        p.add(at, `has both "children" and "class". A parent's enrolments go on each child; "class" is for a client who is the learner themselves`)
       }
-      return { name: nm, children, ...(owes === undefined ? {} : { owes }) }
+
+      const children: { name: string; class?: string }[] = []
+      if (raw.children !== undefined) {
+        if (!Array.isArray(raw.children)) {
+          p.add(`${at}.children`, `is not a list: ${JSON.stringify(raw.children)}. Each entry is a name, or {"name": …, "class": …}`)
+        } else {
+          for (let j = 0; j < raw.children.length; j++) {
+            const cat = `${at}.children[${j}]`
+            const cr = raw.children[j]
+            if (typeof cr === 'string') {
+              children.push({ name: nameOf(cr, cat, [defaultChild(nm, j)], 0, p) })
+              continue
+            }
+            if (!isObj(cr)) {
+              p.add(cat, `is neither a name nor an object: ${JSON.stringify(cr)}`)
+              continue
+            }
+            unknownKeys(cr, CHILD_KEYS, cat, p)
+            const cn = nameOf(cr.name, `${cat}.name`, [defaultChild(nm, j)], 0, p)
+            if (cr.class === undefined) {
+              children.push({ name: cn })
+            } else if (typeof cr.class !== 'string' || !cr.class.trim()) {
+              p.add(`${cat}.class`, `is ${JSON.stringify(cr.class)}. Name a class from "classes", or leave it out and the child is on the books in nothing`)
+              children.push({ name: cn })
+            } else {
+              children.push({ name: cn, class: cr.class.trim() })
+            }
+          }
+        }
+      }
+
+      let own: string | undefined
+      if (raw.class !== undefined) {
+        if (typeof raw.class !== 'string' || !raw.class.trim()) {
+          p.add(`${at}.class`, `is ${JSON.stringify(raw.class)}. Name a class from "classes", or leave it out`)
+        } else own = raw.class.trim()
+      }
+
+      return {
+        name: nm,
+        children,
+        ...(own === undefined ? {} : { class: own }),
+        ...(owes === undefined ? {} : { owes }),
+        ...(seat === undefined ? {} : { seat }),
+      }
     },
-    (nm, i) => ({ name: nm, children: [defaultChild(nm, i)] }),
+    /**
+     * A COUNT INVENTS NOBODY. `"clients": 4` is four people on the books and
+     * enrolled in nothing — it used to hand each of them a child nobody asked
+     * for, which is the same defect as dealing enrolments: a world quietly
+     * larger than the file that described it.
+     */
+    (nm) => ({ name: nm, children: [] }),
   )
 
   const prospects = roster<NormalSpec['prospects'][number]>(
     s.prospects, 'prospects', PROSPECT_POOL, p,
     (raw, i, nm) => {
       unknownKeys(raw, PROSPECT_KEYS, `prospects[${i}]`, p)
-      return { name: nm }
+      const seat = seatOf(raw.seat, `prospects[${i}].seat`, p)
+      return { name: nm, ...(seat === undefined ? {} : { seat }) }
     },
     (nm) => ({ name: nm }),
   )
@@ -523,7 +752,7 @@ export function validateSpec(s: unknown, where = 'this spec'): NormalSpec {
     [admin.name, 'admin.name'],
     ...coaches.map((cch, i) => [cch.name, `coaches[${i}].name`] as const),
     ...clients.map((cl, i) => [cl.name, `clients[${i}].name`] as const),
-    ...clients.flatMap((cl, i) => cl.children.map((ch, j) => [ch, `clients[${i}].children[${j}]`] as const)),
+    ...clients.flatMap((cl, i) => cl.children.map((ch, j) => [ch.name, `clients[${i}].children[${j}].name`] as const)),
     ...prospects.map((pr, i) => [pr.name, `prospects[${i}].name`] as const),
   ] as [string, string][]
   const seenName = new Map<string, string>()
@@ -546,14 +775,6 @@ export function validateSpec(s: unknown, where = 'this spec'): NormalSpec {
   if (admin.coaches) coachable.add(admin.name.toLowerCase())
   const rotation = [...(admin.coaches ? [admin.name] : []), ...coaches.map((cch) => cch.name)]
 
-  /**
-   * Who can be enrolled: each client's children, or the client themselves when
-   * they said they have none. An adult beginner is a player like any other.
-   */
-  const learners = clients.flatMap((cl) => (cl.children.length ? cl.children : [cl.name]))
-  const learnerAt = new Map<string, string>(learners.map((l) => [l.toLowerCase(), l]))
-
-  let deal = 0
   let assign = 0
   const classes: NormalSpec['classes'] = []
   const classesRaw = s.classes === undefined ? [] : s.classes
@@ -644,41 +865,29 @@ export function validateSpec(s: unknown, where = 'this spec'): NormalSpec {
         }
       }
 
-      let enrolled: string[] = []
-      if (raw.enrolled === undefined) enrolled = []
-      else if (typeof raw.enrolled === 'number') {
-        const n = raw.enrolled
-        if (!Number.isInteger(n) || n < 0) {
-          p.add(`${at}.enrolled`, `is ${JSON.stringify(n)}. A count is a whole number, zero or more`)
-        } else if (n > learners.length) {
-          p.add(`${at}.enrolled`, `asks for ${n} and this world has ${learners.length} ${learners.length === 1 ? 'child' : 'children'} in total`)
-        } else {
-          for (let k = 0; k < n; k++) enrolled.push(learners[(deal + k) % learners.length] as string)
-          deal += n
-        }
-      } else if (!Array.isArray(raw.enrolled)) {
-        p.add(`${at}.enrolled`, `is neither a count nor a list of names: ${JSON.stringify(raw.enrolled)}`)
-      } else {
-        for (let j = 0; j < raw.enrolled.length; j++) {
-          const who = raw.enrolled[j]
-          const canonical = typeof who === 'string' ? learnerAt.get(who.trim().toLowerCase()) : undefined
-          if (canonical === undefined) {
-            p.add(`${at}.enrolled[${j}]`, `names ${JSON.stringify(who)}, who is nobody's child in this world. Children come from clients[].children; a client with \`"children": []\` is themselves the learner`)
-            continue
-          }
-          if (enrolled.includes(canonical)) {
-            p.add(`${at}.enrolled[${j}]`, `names "${canonical}" twice in one class`)
-            continue
-          }
-          enrolled.push(canonical)
-        }
+      /**
+       * `enrolled` used to live here, as a list of names or a COUNT, and the
+       * count is why it is gone. It dealt from a shared cursor across the class
+       * list — `learners[(deal + k) % learners.length]` — so which children a
+       * class got depended on the order the classes happened to be written in,
+       * and the wrap could put one child in two classes without saying so. You
+       * could not read the file and know who was in what.
+       *
+       * A roll is now stated where the person is, on the child or on an adult
+       * learner's own entry, which is also the shape `_personas.ts` `FAMILIES`
+       * already used. Refused by name rather than ignored, because a spec that
+       * still carries it means somebody's enrolments, and dropping them silently
+       * would build a business with empty registers and no complaint.
+       */
+      if ((raw as Record<string, unknown>).enrolled !== undefined) {
+        p.add(`${at}.enrolled`, `is no longer a field. Put the class on the person instead — "children": [{"name": "Anika Rao", "class": "${cname}"}] on a parent, or "class": "${cname}" on a client who is the learner`)
       }
 
       classes.push({
         name: cname, days, from: from ?? '00:00', to: to ?? '00:00',
         ...(rate === undefined ? {} : { rate }),
         ...(rate === undefined ? {} : { unit: unit ?? 'per_month' }),
-        coaches: taught, enrolled,
+        coaches: taught,
       })
     }
   }
@@ -699,8 +908,81 @@ export function validateSpec(s: unknown, where = 'this spec'): NormalSpec {
     } else seenClass.set(key, i)
   })
 
+  /* ------------------------------------------------- who is in which class */
+
+  /**
+   * The registers, read off the people rather than dealt to the classes.
+   *
+   * Every enrolment in this format is stated on the person who holds it — on a
+   * child, or on a client who is the learner themselves — so this pass only has
+   * to collect them. That is the whole difference from the version this replaced:
+   * there is exactly one place a roll can come from, and it is the place a reader
+   * of the file would look.
+   *
+   * A class named here that is not in `classes` is refused rather than created,
+   * because a class conjured out of an enrolment has no day, no time and no rate,
+   * and would sit in the world running nothing.
+   */
+  const classAt = new Map<string, number>()
+  const rolls: string[][] = classes.map(() => [])
+  classes.forEach((cls, i) => classAt.set(cls.name.trim().toLowerCase(), i))
+  const known = (): string =>
+    classes.length ? classes.map((c) => `"${c.name}"`).join(', ') : 'this world has no classes at all'
+
+  const enrol = (who: string, wanted: string, at: string): void => {
+    const idx = classAt.get(wanted.toLowerCase())
+    if (idx === undefined) {
+      p.add(at, `puts ${who} in "${wanted}", which is not a class in this world. There is ${known()}`)
+      return
+    }
+    const roll = rolls[idx] as string[]
+    if (roll.some((n) => n.toLowerCase() === who.toLowerCase())) {
+      p.add(at, `puts ${who} in "${wanted}" twice`)
+      return
+    }
+    roll.push(who)
+  }
+
+  clients.forEach((cl, i) => {
+    cl.children.forEach((ch, j) => {
+      if (ch.class !== undefined) enrol(ch.name, ch.class, `clients[${i}].children[${j}].class`)
+    })
+    if (cl.class !== undefined) enrol(cl.name, cl.class, `clients[${i}].class`)
+  })
+
   p.throwIfAny(where)
   return { name, category, timezone, admin, coaches, clients, prospects, classes }
+}
+
+/**
+ * Who is on each class's register, read off the people.
+ *
+ * There is no `enrolled` field to read instead, and that is the point: a roll is
+ * stated once, on the child who sits in the class or on the client who is the
+ * learner themselves, so there is exactly one place it can come from and exactly
+ * one answer to "who is in this". The version this replaced took a count on the
+ * class and dealt children to it from a shared cursor, which made the answer
+ * depend on the order the classes happened to be written in.
+ *
+ * Indexed to match `spec.classes`. `validateSpec` has already refused any name
+ * that is not a class here, so nothing is dropped silently.
+ */
+export function rollOf(s: NormalSpec): string[][] {
+  const at = new Map<string, number>()
+  s.classes.forEach((c, i) => at.set(c.name.trim().toLowerCase(), i))
+  const rolls: string[][] = s.classes.map(() => [])
+  const put = (who: string, wanted: string | undefined): void => {
+    if (wanted === undefined) return
+    const i = at.get(wanted.trim().toLowerCase())
+    if (i === undefined) return
+    const roll = rolls[i] as string[]
+    if (!roll.some((n) => n.toLowerCase() === who.toLowerCase())) roll.push(who)
+  }
+  for (const cl of s.clients) {
+    for (const kid of cl.children) put(kid.name, kid.class)
+    put(cl.name, cl.class)
+  }
+  return rolls
 }
 
 /** One child, named for its parent, when a client did not say. */
@@ -791,7 +1073,7 @@ export function describeWorld(spec: WorldSpec): string {
   const kids = s.clients.reduce((a, cl) => a + cl.children.length, 0)
   const adults = s.clients.filter((cl) => !cl.children.length).length
   const slots = s.classes.reduce((a, cls) => a + cls.days.length, 0)
-  const enrolled = s.classes.reduce((a, cls) => a + cls.enrolled.length, 0)
+  const enrolled = rollOf(s).reduce((a, r) => a + r.length, 0)
   const owed = s.clients.reduce((a, cl) => a + (cl.owes ?? 0), 0)
 
   const bits = [
@@ -863,6 +1145,10 @@ export async function buildWorld(spec: WorldSpec, o: BuildOpts): Promise<BuiltSp
     category: s.category,
   })
   const academyId = made.academyId
+  // Imported here rather than at the top: see the header — a static edge to
+  // `_seat` closes a cycle through `_personas`. By the time a world is built,
+  // every module in it has finished initialising.
+  const { q } = await import('./_seat')
   const sql = <T = unknown>(text: string): Promise<T[]> => q<T>(academyId, text)
   /**
    * `inboundFromContact` walks a cached academy list, and a business created a
@@ -979,12 +1265,12 @@ export async function buildWorld(spec: WorldSpec, o: BuildOpts): Promise<BuiltSp
 
   for (const cl of s.clients) {
     for (const kid of cl.children) {
-      await sql(`insert into person (academy_id, full_name) values ('${academyId}'::uuid, ${lit(kid)})`)
+      await sql(`insert into person (academy_id, full_name) values ('${academyId}'::uuid, ${lit(kid.name)})`)
       await sql(`
         insert into player (academy_id, account_id, person_id, active)
         select '${academyId}'::uuid, a.id, k.id, true
           from account a join person h on h.id = a.holder_person_id, person k
-         where h.full_name = ${lit(cl.name)} and k.full_name = ${lit(kid)}`)
+         where h.full_name = ${lit(cl.name)} and k.full_name = ${lit(kid.name)}`)
     }
     if (!cl.children.length) continue
     /**
@@ -1010,8 +1296,10 @@ export async function buildWorld(spec: WorldSpec, o: BuildOpts): Promise<BuiltSp
          and pl.person_id = (select id from person where full_name = ${lit(cl.name)} limit 1)`)
   }
 
-  for (const cls of s.classes) {
-    for (const who of cls.enrolled) {
+  const rolls = rollOf(s)
+  for (let ci = 0; ci < s.classes.length; ci++) {
+    const cls = s.classes[ci] as NormalSpec['classes'][number]
+    for (const who of rolls[ci] as string[]) {
       await sql(`
         insert into enrollment (academy_id, class_id, player_id, started_on)
         select '${academyId}'::uuid, c.id, pl.id, (app.now() - interval '35 days')::date
@@ -1078,7 +1366,7 @@ export async function buildWorld(spec: WorldSpec, o: BuildOpts): Promise<BuiltSp
         `class_academy_name_active_key is unique on the active class name — one of them was swallowed.`,
     )
   }
-  const wantEnrolled = s.classes.reduce((a, cls) => a + cls.enrolled.length, 0)
+  const wantEnrolled = rollOf(s).reduce((a, r) => a + r.length, 0)
   if (Number(counts?.enrolments ?? 0) !== wantEnrolled) {
     throw new Error(`the spec enrols ${wantEnrolled} and the academy has ${counts?.enrolments} open enrolments.`)
   }

@@ -58,7 +58,7 @@ let depth = 0
  *   module load rather than per call: a value that could change mid-run would make two
  *   turns of one drive incomparable.
  *
- * `probe-model` and `drive-week` run the loop themselves and can hold a capture
+ * `probe-model` and `sim` run the loop themselves and can hold a capture
  * open around it. `drive` cannot: it posts to the emulator API exactly as a human
  * does, deliberately, so there is no second code path to keep honest — and the
  * turn it is measuring runs inside the dev server, in another process, where no

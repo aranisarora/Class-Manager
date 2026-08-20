@@ -1,10 +1,32 @@
 {
   "name": "Smash Badminton Academy",
   "category": "badminton",
-  "admin": { "name": "Nisha Balakrishnan", "coaches": true },
-  "coaches": 4,
-  "clients": 6,
-  "prospects": 2,
+  "admin": {
+    "name": "Nisha Balakrishnan",
+    "coaches": true,
+    "seat": {
+      "about": "You took over the academy eight months ago and it has grown faster than your paperwork. Four coaches now, and you still could not say what you pay them without looking.",
+      "goals": [
+        "Find out what you are paying all four coaches a month, as one number.",
+        "Get Saturday covered without ringing round every coach yourself."
+      ],
+      "life": {
+        "2": "Vikram has messaged to say he has been given no classes and wants to know what he is being paid."
+      }
+    }
+  },
+  "coaches": [
+    { "name": "Arjun Shetty", "pay": 600, "unit": "per_session" },
+    { "name": "Priya Nair", "pay": 9000, "unit": "per_month" },
+    {
+      "name": "Vikram Deshpande",
+      "seat": {
+        "about": "You were taken on three weeks ago and nobody has put a class on you or named a figure. You have asked once already, politely.",
+        "goals": ["Find out what you are meant to teach, and what you are paid for it."]
+      }
+    },
+    { "name": "Sneha Kulkarni", "pay": 500, "unit": "per_session" }
+  ],
   "classes": [
     {
       "name": "Under-10 Beginners",
@@ -12,7 +34,7 @@
       "from": "16:30",
       "to": "17:30",
       "rate": 1500,
-      "enrolled": 3
+      "coaches": ["Sneha Kulkarni"]
     },
     {
       "name": "Under-14 Intermediate",
@@ -20,7 +42,7 @@
       "from": "17:30",
       "to": "18:45",
       "rate": 2200,
-      "enrolled": 2
+      "coaches": ["Arjun Shetty"]
     },
     {
       "name": "Evening Adults",
@@ -36,7 +58,53 @@
       "from": "08:00",
       "to": "10:00",
       "rate": 1200,
-      "enrolled": 1
+      "coaches": ["Priya Nair"]
+    }
+  ],
+  "clients": [
+    {
+      "name": "Divya Rao",
+      "children": [{ "name": "Anika Rao", "class": "Under-10 Beginners" }]
+    },
+    {
+      "name": "Meera Iyer",
+      "children": [{ "name": "Vivaan Iyer", "class": "Under-10 Beginners" }]
+    },
+    {
+      "name": "Sanjay Gupta",
+      "children": [
+        { "name": "Ishaan Gupta", "class": "Under-10 Beginners" },
+        { "name": "Riya Gupta", "class": "Under-14 Intermediate" }
+      ],
+      "seat": {
+        "goals": ["Get one monthly figure for both children rather than two."]
+      }
+    },
+    {
+      "name": "Latha Krishnan",
+      "children": [{ "name": "Tara Krishnan", "class": "Under-14 Intermediate" }],
+      "owes": 2200
+    },
+    {
+      "name": "Naveen Reddy",
+      "children": [{ "name": "Aarav Reddy", "class": "Saturday Squad" }]
+    },
+    {
+      "name": "Fatima Ansari",
+      "class": "Evening Adults",
+      "seat": {
+        "about": "You are the one on court, not a parent. You started in your forties and you are slightly self-conscious about it.",
+        "goals": ["Find out whether you can move to a quieter session."]
+      }
+    }
+  ],
+  "prospects": [
+    { "name": "Kavita Shah" },
+    {
+      "name": "Farah Sheikh",
+      "seat": {
+        "goals": ["Get a price for two children, and find out if there is a sibling discount."]
+      }
     }
   ]
 }

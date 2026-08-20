@@ -17,7 +17,7 @@
  * -----------------------------------------------------------------------------
  * Every drive in this repo already takes parameters, and every one of them takes
  * them differently. `live.ts` reads `--days` and asserts a balanced week from it.
- * `drive-week.ts` reads its own `--days` and its own `--keep`. The five-tier ramp
+ * `sim.ts` reads its own `--days` and its own `--keep`. The five-tier ramp
  * arrives as `SIM_RAMP=1` in the environment, which no record prints. The model
  * is whatever string `MODEL_MAIN` held when the process happened to start, which
  * is not the same fact as "which model this run was about". Three of those four
@@ -50,7 +50,7 @@
  * WHICH WORLD, AND WHY THE DEFAULT IS A WORD RATHER THAN AN ABSENCE
  * -----------------------------------------------------------------------------
  * `--world` names the academy the week happens in. `canonical` is the four-family
- * tennis club `_personas.ts` states once and `drive-week.ts` builds from it;
+ * tennis club `_personas.ts` states once and `sim.ts` builds from it;
  * `blank` is the owner alone, the morning after onboarding finished; anything else
  * is a reference `scripts/_world-spec.ts` resolves — a bare name, a path, or
  * inline JSON. Unset resolves to the *word* `canonical` rather than to nothing,
@@ -60,7 +60,7 @@
  * The REFERENCE is carried here and never the spec. Reading one is asynchronous
  * and this function is not — but the real reason is that a spec which resolves is
  * a world that gets BUILT, and the driver is the only thing entitled to decide
- * when rows start existing. So `world` is a string here, and `drive-week.ts` turns
+ * when rows start existing. So `world` is a string here, and `sim.ts` turns
  * it into an academy before it has opened a run directory, so an unreadable file
  * or a misspelled key costs nothing at all.
  *
@@ -70,7 +70,7 @@
  * which names are legal therefore depends on the world. Against `canonical` the
  * four are known here, so a fifth is refused here, free, with the legal ones
  * printed. Against a spec world the seats are that spec's own people and nothing
- * has read the file yet, so the names are carried as written and `drive-week.ts`
+ * has read the file yet, so the names are carried as written and `sim.ts`
  * refuses them against the roster it composed — the same refusal one stage later,
  * and still before anything is created. `[]` means every seat the world has, and
  * only a spec world can produce it.
@@ -125,6 +125,18 @@ export type DriveConfig = {
    * `[]` means all of them and is reachable only for a spec world.
    */
   personas: string[]
+
+  /**
+   * A cap on how many of the world's seats take part, when you have not named
+   * them. `0` is "all of them".
+   *
+   * It exists so a cheap run can be asked for as a SHAPE. `--personas` needs the
+   * keys a world derives (`client-divya-rao`), which the run prints and nobody
+   * wants to type; `--seats 2` is the same request without needing to know who
+   * lives there. Named seats win: `--personas` and `--seats` together is the list,
+   * because a list is the more specific thing to have asked for.
+   */
+  seats: number
   /**
    * The academy this week happens in: `canonical`, `blank`, or a reference
    * `loadWorldSpec` resolves — a bare name, a path, or inline JSON.
@@ -174,7 +186,7 @@ const RAMP_TIERS = Math.max(...Object.keys(TIERS).map(Number))
 /**
  * The two worlds that are words rather than files.
  *
- * `canonical` is not a spec and deliberately has none: `drive-week.ts` builds it
+ * `canonical` is not a spec and deliberately has none: `sim.ts` builds it
  * out of `TIMETABLE` and `FAMILIES` in `_personas.ts`, which is the ONE statement
  * of that timetable and the thing every `life` string was written against.
  * `worlds/settled-tennis.json` transcribes it and is explicitly the stale copy
@@ -185,7 +197,6 @@ const RAMP_TIERS = Math.max(...Object.keys(TIERS).map(Number))
  * `onboarding_state = 'live'`. It is a word rather than `worlds/blank.json` for
  * the same reason a missing file should not be able to break the default.
  */
-export const CANONICAL_WORLD = 'canonical'
 export const BLANK_WORLD = 'blank'
 
 /**
@@ -229,7 +240,16 @@ const frozen = (p: Preset): Preset => {
  * preset that quietly narrows every world it did not know about.
  */
 export const PRESETS: Readonly<Record<string, Preset>> = Object.freeze({
-  smoke: frozen({ days: 1, windows: ['evening'], personas: ['arjun', 'farah'] }),
+  /**
+   * The cheap check, as a SHAPE rather than as two names.
+   *
+   * It used to name `arjun` and `farah`, who were two of four people welded into
+   * one hardcoded academy. There is no such academy now — every world comes from
+   * a spec — so naming anybody would make the cheapest run the one thing you
+   * could not point at your own world. One day, one window, the first two seats
+   * that world has.
+   */
+  smoke: frozen({ days: 1, windows: ['evening'], seats: 2 }),
   day: frozen({ days: 1, windows: [...ALL_WINDOWS] }),
   week: frozen({ days: 7, windows: [...ALL_WINDOWS] }),
 })
@@ -280,6 +300,7 @@ const FLAGS = {
   days: 'value',
   windows: 'value',
   personas: 'value',
+  seats: 'value',
   world: 'value',
   concurrency: 'value',
   'budget-min': 'value',
@@ -385,6 +406,9 @@ function toLayer(raw: Record<string, unknown>, where: (key: string) => string): 
     switch (camel(key)) {
       case 'preset':
         L.preset = str(value, at)
+        break
+      case 'seats':
+        L.seats = num(value, at, { int: true, min: 1 })
         break
       case 'days':
         L.days = num(value, at, { int: true, min: 1 })
@@ -587,11 +611,12 @@ export function resolveConfig(argv: string[]): DriveConfig {
 
   const m = { ...preset, ...file, ...cli }
 
-  const world = m.world ?? CANONICAL_WORLD
+  const world = m.world ?? BLANK_WORLD
   const windows = m.windows ?? [...ALL_WINDOWS]
   const personas = resolveSeats(m.personas, world)
   const cfg: DriveConfig = {
     days: m.days ?? 7,
+    seats: m.seats ?? 0,
     windows,
     personas,
     world,
@@ -627,7 +652,7 @@ export function resolveConfig(argv: string[]): DriveConfig {
  *
  * Against the canonical world an unknown name is refused here, free, with the
  * four legal ones printed. Against a spec world nothing has read the file, so the
- * names go through as written and `drive-week.ts` refuses them against the roster
+ * names go through as written and `sim.ts` refuses them against the roster
  * it composed.
  *
  * The one case worth catching early is a PRESET's seats against a spec world.
@@ -638,15 +663,14 @@ export function resolveConfig(argv: string[]): DriveConfig {
  * fix is to drop the preset rather than to rename anybody.
  */
 function resolveSeats(given: Layer['personas'], world: string): string[] {
-  if (!given) return world === CANONICAL_WORLD ? [...ALL_PERSONAS] : []
-  if (world === CANONICAL_WORLD) return pick(given.names, ALL_PERSONAS, given.at, 'seat')
-  if (given.at.startsWith('--preset ')) {
-    fail(
-      `${given.at} names the canonical seats and --world ${world} has its own people`,
-      `It puts ${given.names.join(' and ')} at a phone, and those two are who SCHEDULE has in`,
-      'day 1’s evening at Ace Tennis Academy. Ask for the shape instead: --days 1 --windows evening.',
-    )
-  }
+  if (!given) return []
+
+  /**
+   * No preset names seats any more — `smoke` asks for `seats: 2`, a shape rather
+   * than two people — so a name here always came from a flag or a config file,
+   * and the driver is the only thing that can check it: it is the only thing that
+   * has read the world and knows who lives there.
+   */
   return [...given.names]
 }
 
@@ -672,7 +696,7 @@ function mainModel(): string {
  */
 function check(cfg: DriveConfig): void {
   if (!cfg.windows.length) fail(`no windows: give at least one of ${ALL_WINDOWS.join(', ')}`)
-  const canonical = cfg.world === CANONICAL_WORLD
+  const canonical = false
 
   if (cfg.days > SCHEDULED_DAYS) {
     fail(
@@ -716,7 +740,7 @@ function check(cfg: DriveConfig): void {
   /**
    * Everything below reads `SCHEDULE`, and `SCHEDULE` is written for the four.
    *
-   * A spec world's week is derived from its own seats by `drive-week.ts` and
+   * A spec world's week is derived from its own seats by `sim.ts` and
    * asserted balanced there, where the roster exists. Checking a spec world's seat
    * names against this table would refuse every one of them.
    */
@@ -775,7 +799,7 @@ export function describeConfig(cfg: DriveConfig): string {
   ]
   // Named only when it is not the default, because a line that says `canonical`
   // on every run is a line nobody reads on the one run it matters.
-  if (cfg.world !== CANONICAL_WORLD) parts.push(`world ${cfg.world}`)
+  parts.push(`world ${cfg.world}`)
   if (cfg.arm) parts.push(`arm ${cfg.arm}`)
   const limits: string[] = []
   if (cfg.budgetMin !== undefined) limits.push(`${cfg.budgetMin}min`)

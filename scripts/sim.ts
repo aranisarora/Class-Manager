@@ -1,13 +1,13 @@
 /**
- * drive-week — one week in a settled academy, driven by the people who live in it.
+ * sim — one week in a settled academy, driven by the people who live in it.
  *
- *   npx tsx scripts/drive-week.ts                      # the whole week, four seats
- *   npx tsx scripts/drive-week.ts --preset smoke       # one window, two seats
- *   npx tsx scripts/drive-week.ts --days 3 --windows morning
- *   npx tsx scripts/drive-week.ts --world blank        # the owner, alone, day one
- *   npx tsx scripts/drive-week.ts --world worlds/multi-coach.json
- *   npx tsx scripts/drive-week.ts --arm B --config arms/b.json --budget-inr 250
- *   npx tsx scripts/drive-week.ts gc --hours 6         # reap this driver's stale worlds
+ *   npx tsx scripts/sim.ts                      # the whole week, four seats
+ *   npx tsx scripts/sim.ts --preset smoke       # one window, two seats
+ *   npx tsx scripts/sim.ts --days 3 --windows morning
+ *   npx tsx scripts/sim.ts --world blank        # the owner, alone, day one
+ *   npx tsx scripts/sim.ts --world worlds/multi-coach.json
+ *   npx tsx scripts/sim.ts --arm B --config arms/b.json --budget-inr 250
+ *   npx tsx scripts/sim.ts gc --hours 6         # reap this driver's stale worlds
  *
  * WHAT CHANGED, AND WHY THE SCRIPT IS GONE
  * -----------------------------------------------------------------------------
@@ -176,7 +176,7 @@ const clock = await import('@/lib/clock')
 const { briefsFromWorld, FAMILIES, INPUT_REALISM, PERSONAS, SCHEDULE, TIMETABLE, WINDOW_AT, windowCounts } =
   await import('./_personas')
 const { RAMP_LIFE, TIERS } = await import('./_ramp')
-const { CANONICAL_WORLD, BLANK_WORLD, describeConfig, makeBudget, recordedConfig, resolveConfig } =
+const { BLANK_WORLD, describeConfig, makeBudget, recordedConfig, resolveConfig } =
   await import('./_drive-config')
 const { costInr } = await import('@/lib/pricing')
 
@@ -261,245 +261,6 @@ type WorldPlan = {
   build(token: string, log: (s: string) => void): Promise<BuiltWorld>
 }
 
-/**
- * The settled academy this week happens in, named for this run.
- *
- * Nothing is dropped here. A start-up path that deletes by NAME cannot tell a
- * world it made from a world another process is in the middle of driving, and the
- * failure is silent from both ends: the second drive reports a clean build, the
- * first reports every remaining turn as an error about an academy that no longer
- * exists, and neither says the word "deleted". The token in the name is what makes
- * `gc` able to reap safely later, with an age it can check.
- */
-async function buildCanonicalWorld(name: string, log: (s: string) => void): Promise<BuiltWorld> {
-  const made = await createAcademy({ name, adminName: 'Rahul Menon', timezone: TZ, category: 'tennis' })
-  const academyId = made.academyId
-  const qq = (sql: string) => q(academyId, sql)
-  // `inboundFromContact` walks a cached academy list; a business created a
-  // millisecond ago is not in it until the cache is refreshed, and the symptom
-  // would be "no such contact" rather than anything pointing here.
-  await worldAcademyIds({ refresh: true })
-
-  /**
-   * Day 1 is a Monday at 06:00, on THIS academy's own clock.
-   *
-   * Both halves are load-bearing. The classes run on weekdays and every persona's
-   * week assumes a Monday — the coach's register is a Monday register, the
-   * stranger wants to watch on Saturday, the owner asks on Sunday how the week
-   * went — so a run that opened on a Thursday would put the Saturday visit on a
-   * Tuesday. It is also what makes the drive's DAY number the ISO WEEKDAY number,
-   * which is the invariant `TIMETABLE` and every `life` key are read across:
-   * `life[4]` is a Thursday and weekday 4 is the Evening Batch, in both files, or
-   * one of them is lying to a persona.
-   *
-   * And 06:00 rather than whenever the build finished, because `walkTo`
-   * cannot walk backwards: a world built at 23:32 has its "morning" window at half
-   * past eleven at night, after every standing job for the day has already fired.
-   *
-   * Its OWN clock, because two drives sharing the world clock each walk the
-   * other's day. 0024 gave every tenant a `sim_clock` row and `setTo` seeds it.
-   * Set before any history is written, so every `app.now() - N days` below is
-   * relative to the week that is about to happen rather than to real time.
-   */
-  const { DateTime } = await import('luxon')
-  let monday = DateTime.now().setZone(TZ).startOf('week').set({ hour: 6, minute: 0, second: 0, millisecond: 0 })
-  if (monday <= DateTime.now().setZone(TZ)) monday = monday.plus({ weeks: 1 })
-  await clock.setTo(monday.toJSDate(), academyId)
-  log(`clock set to ${monday.toFormat('EEE d LLL yyyy, HH:mm')} ${TZ}`)
-
-  /**
-   * Every number in this world is derived from its academy id.
-   *
-   * Every tenant shares one sender by design, and §10.1 resolves an inbound by the
-   * pair (from, sender): a number held by two academies matches two contacts and
-   * resolves to neither, so the message is never delivered and no error is raised
-   * anywhere. The admin is included — `createAcademy` picks a free number by
-   * scanning, and two drives scanning at the same moment pick the same one.
-   *
-   * `n` is ONE digit, and it has to stay one: `+91` then ten national digits is
-   * the only shape India's E.164 has, and `+9193` plus seven of the id's digits
-   * has spent exactly one. So this block holds TEN people and no more — an
-   * eleventh would be a fourteen-character number that looks fine in a log and is
-   * not a phone number.
-   */
-  const digits = academyId.replace(/\D/g, '').padEnd(9, '0')
-  const phone = (n: number) => `+9193${digits.slice(0, 7)}${n}`
-  await qq(`update contact set phone_e164 = '${phone(0)}', wa_id = '${phone(0).replace(/\D/g, '')}'
-             where id = '${made.adminContactId}'::uuid`)
-
-  const arjun = await createTestContact({ academyId, name: 'Arjun Shetty', role: 'coach', phone: phone(1) })
-  const priya = await createTestContact({ academyId, name: 'Priya Nair', role: 'coach', phone: phone(2) })
-  const divya = await createTestContact({ academyId, name: 'Divya Rao', role: 'client', phone: phone(3) })
-  /**
-   * Three names in the book and nothing against any of them.
-   *
-   * Farah's brief says she left hers on the pad under the board weeks ago and
-   * nobody rang back, which is what makes her a NAMED prospect contact rather
-   * than a stranger. It has to be written that way round: `person.full_name` is
-   * `not null` and `createTestContact` refuses an unnamed contact, so the seat
-   * cannot exist without a name the product can already read — and the brief that
-   * used to say "they do not know your name" was contradicted by the database
-   * before she had typed a word.
-   *
-   * A list rather than three statements, so `canonicalLine()` can count them.
-   * Numbers 4, 5 and 6 are the same three numbers the three statements allocated,
-   * and they have to stay contiguous and in this order: a phone here is derived
-   * from the academy id and its index, and moving an index moves a person's
-   * number.
-   */
-  const prospects = new Map<string, string>()
-  for (const [i, who] of PROSPECTS.entries()) {
-    const made = await createTestContact({ academyId, name: who.name, role: 'prospect', phone: phone(4 + i) })
-    prospects.set(who.key, made.contactId)
-  }
-  const meera = await createTestContact({ academyId, name: 'Meera Iyer', role: 'client', phone: phone(7) })
-  const sanjay = await createTestContact({ academyId, name: 'Sanjay Gupta', role: 'client', phone: phone(8) })
-  const latha = await createTestContact({ academyId, name: 'Latha Krishnan', role: 'client', phone: phone(9) })
-  await worldAcademyIds({ refresh: true })
-
-  /**
-   * **The owner is also a coach**, which is the whole point of this world and the
-   * one row a lifecycle arc never creates. `academy_admin` and `coach` over one
-   * `person`: two hats, one head, and every "can he see this" question in the
-   * product is decided by which of the two is being asked.
-   */
-  await qq(`
-    insert into coach (academy_id, person_id, pay_amount, pay_unit, status, onboarded_at)
-    values ('${academyId}'::uuid, '${made.adminPersonId}'::uuid, 0, 'per_month', 'active', app.now())
-    on conflict do nothing`)
-
-  /**
-   * What the two employed coaches are paid, in two different units.
-   *
-   * `createTestContact` writes a coach row with no pay on it, and Rahul's week has
-   * "decide whether to give Priya a raise, from what you actually pay people now"
-   * in it — a question with no answer in the database is a question this week
-   * cannot measure. Per session against per month, deliberately, so "what am I
-   * paying everyone" cannot be answered by summing one column.
-   */
-  await qq(`
-    update coach co set pay_amount = 600, pay_unit = 'per_session'
-      from person p where p.id = co.person_id and p.full_name = 'Arjun Shetty'`)
-  await qq(`
-    update coach co set pay_amount = 9000, pay_unit = 'per_month'
-      from person p where p.id = co.person_id and p.full_name = 'Priya Nair'`)
-
-  await qq(`insert into venue (academy_id, name) values ('${academyId}'::uuid, 'Ace Courts')`)
-
-  /**
-   * The timetable, out of `_personas.ts` rather than out of a literal here.
-   *
-   * One `class` row per entry and one `class_slot` per slot, which is the shape
-   * the database actually allows: `class_academy_name_active_key` is unique on
-   * `(academy_id, lower(btrim(name)))` where `active`, so the previous literal —
-   * one row per SLOT, with a `not exists` guard in front of it — silently made
-   * three classes out of four entries and left the second Evening Batch as a slot
-   * hanging off the first. Nothing failed, and the comment beside it went on
-   * claiming four.
-   */
-  for (const cls of TIMETABLE) {
-    await qq(`
-      insert into class (academy_id, name, venue_id, rate_amount, rate_unit, starts_on, active)
-      select '${academyId}'::uuid, '${cls.name}', v.id, ${cls.rate}, '${cls.unit}',
-             (app.now() - interval '40 days')::date, true
-        from venue v
-       where v.name = 'Ace Courts'
-         and not exists (select 1 from class where name = '${cls.name}' and active and ends_on is null)`)
-    for (const s of cls.slots) {
-      await qq(`
-        insert into class_slot (academy_id, class_id, weekday, start_time, end_time)
-        select '${academyId}'::uuid, c.id, ${s.weekday}, time '${s.from}', time '${s.to}'
-          from class c where c.name = '${cls.name}' and c.active and c.ends_on is null`)
-    }
-    // Priya has the Weekend Squad AND the adult class, and Rahul is the second
-    // name on the weekend — which is what makes her dropping Saturday land on
-    // HIM unless somebody volunteers, and makes Arjun volunteering an offer about
-    // real money rather than a favour.
-    for (const who of cls.coaches) {
-      await qq(`
-        insert into class_coach (academy_id, class_id, coach_id)
-        select '${academyId}'::uuid, c.id, co.id
-          from class c, coach co join person p on p.id = co.person_id
-         where c.name = '${cls.name}' and c.active and c.ends_on is null and p.full_name = '${who}'
-        on conflict do nothing`)
-    }
-  }
-
-  /**
-   * The families, five weeks settled, so the week opens with a business behind it
-   * rather than one whose first question has no rows.
-   *
-   * No money is written here, on purpose. `_world.ts` learned this the expensive
-   * way: a fixture that billed the OPEN period had the product's own monthly job
-   * bill it again on the first drain, every family's month doubled, and a parent
-   * was told she owed ₹4,800. A fixture writes enrollments; anything the product
-   * bills for itself, it bills.
-   */
-  for (const fam of FAMILIES) {
-    for (const kid of fam.children) {
-      await qq(`insert into person (academy_id, full_name) values ('${academyId}'::uuid, '${kid.name}')`)
-      await qq(`
-        insert into player (academy_id, account_id, person_id, active)
-        select '${academyId}'::uuid, a.id, k.id, true
-          from account a join person h on h.id = a.holder_person_id, person k
-         where h.full_name = '${fam.parent}' and k.full_name = '${kid.name}'`)
-      await qq(`
-        insert into enrollment (academy_id, class_id, player_id, started_on)
-        select '${academyId}'::uuid, c.id, pl.id, (app.now() - interval '35 days')::date
-          from class c, player pl join person p on p.id = pl.person_id
-         where c.name = '${kid.class}' and c.active and c.ends_on is null and p.full_name = '${kid.name}'
-         limit 1`)
-    }
-  }
-  /**
-   * The parent is not a player.
-   *
-   * `createTestContact` gives every `client` an account AND a player over the
-   * same person, which is right for an adult learner and wrong for all four of
-   * these. Left in, `select count(*) from player where active` — which is the
-   * `players` figure this run closes with, below — answers NINE for a business
-   * with five children in it, and Rahul asking how many kids he has gets his own
-   * parents counted back at him. They are not on any register (they are created
-   * before the classes exist, so `createTestContact` finds nothing to enrol them
-   * into), which is what makes it quiet enough to survive a smoke run.
-   *
-   * Retired rather than deleted, so nothing already pointing at the row breaks
-   * and the state stays visible if it ever matters. The enrolment sweep beneath
-   * is a no-op today and is kept for the day the ordering changes.
-   */
-  await qq(`
-    update player pl set active = false
-      from person p, account a
-     where p.id = pl.person_id and a.id = pl.account_id and a.holder_person_id = p.id`)
-  await qq(`
-    delete from enrollment e using player pl, account a
-     where e.player_id = pl.id and a.id = pl.account_id and a.holder_person_id = pl.person_id`)
-  await qq(`update academy set onboarding_state = 'live' where id = '${academyId}'::uuid`)
-
-  const roster = await q<{ name: string; role: string; contactId: string; phone: string }>(
-    academyId,
-    `select p.full_name as name, coalesce(c.role_hint, c.state) as role,
-            c.id::text as "contactId", c.phone_e164 as phone
-       from contact c join person p on p.id = c.person_id
-      order by p.full_name`,
-  )
-
-  return {
-    academyId,
-    academyName: name,
-    contacts: {
-      rahul: made.adminContactId,
-      arjun: arjun.contactId,
-      priya: priya.contactId,
-      divya: divya.contactId,
-      ...Object.fromEntries(prospects),
-      meera: meera.contactId,
-      sanjay: sanjay.contactId,
-      latha: latha.contactId,
-    },
-    roster,
-  }
-}
 
 /* ========================================================================== *
  * WHICH WORLD
@@ -522,27 +283,6 @@ const DENSITY =
   Object.values(windowCounts(SCHEDULED_DAYS)).reduce((a, b) => a + b, 0) /
   (SCHEDULED_DAYS * ALL_WINDOWS.length)
 
-/**
- * The canonical world in one line, in the shape `describeWorld` writes for a spec
- * world, so two runs' configs can be read beside each other.
- *
- * Counted from `TIMETABLE`, `FAMILIES` and `PROSPECTS` — the statements this file
- * builds its rows out of — rather than typed. A description that disagrees with
- * the world it describes is the whole failure this change exists to stop, and a
- * hand-written "four families" was how the last one started.
- */
-function canonicalLine(): string {
-  const kids = FAMILIES.reduce((a, f) => a + f.children.length, 0)
-  const slots = TIMETABLE.reduce((a, cls) => a + cls.slots.length, 0)
-  // Everybody `class_coach` names, less the owner, who is counted as the owner.
-  const employed = new Set(TIMETABLE.flatMap((cls) => cls.coaches))
-  employed.delete('Rahul Menon')
-  return (
-    `${NAME} (tennis, ${TZ}) — Rahul Menon owns it and coaches, ${employed.size} coaches, ` +
-    `${FAMILIES.length} clients with ${kids} children, ${PROSPECTS.length} prospects, ` +
-    `${TIMETABLE.length} classes over ${slots} sessions a week, ${kids} enrolments.`
-  )
-}
 
 /**
  * Deal a world's own seats across its windows, evenly, and prove it before the
@@ -630,16 +370,6 @@ function deriveSchedule(
  * is dead.
  */
 async function planWorld(cfg: DriveConfig): Promise<WorldPlan> {
-  if (cfg.world === CANONICAL_WORLD) {
-    return {
-      ref: CANONICAL_WORLD,
-      is: canonicalLine(),
-      briefs: PERSONAS,
-      schedule: SCHEDULE,
-      build: (token, log) => buildCanonicalWorld(`${NAME} ${token}`, log),
-    }
-  }
-
   /**
    * Imported here rather than at the top, because a canonical run should not have
    * to load the spec reader to not use it — and because the failure this branch is
@@ -679,7 +409,18 @@ async function planWorld(cfg: DriveConfig): Promise<WorldPlan> {
    */
   const all = briefsFromWorld({ spec, days: cfg.days })
   const known = new Map(all.map((b) => [b.key, b]))
-  const chosen = cfg.personas.length ? cfg.personas.map((k) => seatIn(known, k, cfg.world)) : all
+  /**
+   * Named seats win over a count, because a list is the more specific thing to
+   * have asked for. `--seats N` takes the first N this world has, in the order
+   * `buildWorld` creates them — the admin, then coaches, then clients, then
+   * prospects — so a cheap run is a shape anybody can ask for without knowing
+   * who lives in the world yet.
+   */
+  const chosen = cfg.personas.length
+    ? cfg.personas.map((k) => seatIn(known, k, cfg.world))
+    : cfg.seats > 0
+      ? all.slice(0, cfg.seats)
+      : all
 
   return {
     ref: cfg.world,
@@ -918,7 +659,7 @@ async function main(): Promise<void> {
    * sender that nothing afterwards can prove is dead.
    */
   const plan = await planWorld(cfg)
-  const canonical = plan.ref === CANONICAL_WORLD
+  const canonical = false
 
   /**
    * Balanced by construction, and asserted rather than intended.
@@ -962,11 +703,11 @@ async function main(): Promise<void> {
    */
   const width = cfg.concurrency || driven.size
 
-  console.log(c.bold(`\n  drive-week — ${describeConfig(cfg)}`))
+  console.log(c.bold(`\n  sim — ${describeConfig(cfg)}`))
   console.log(c.dim(`  world:    ${plan.is}`))
   console.log(c.dim(`  schedule: ${balance}${whole || !canonical ? '' : ' (before this run’s filters)'}\n`))
 
-  const dir = await runDir('week')
+  const dir = await runDir('sim')
   /**
    * The four characters `_capture.ts` puts at the end of the directory name, which
    * no other run started this minute has. Carried into the academy's name so a
@@ -996,7 +737,7 @@ async function main(): Promise<void> {
   await writeSession(session)
 
   await saveRun(dir, {
-    suite: 'week',
+    suite: 'sim',
     model: cfg.model,
     startedAt: new Date().toISOString(),
     academyId,
@@ -1436,7 +1177,7 @@ async function collectGarbage(rest: string[]): Promise<void> {
 
   console.log(
     c.bold(
-      `\n  drive-week gc — "${NAME} <token>" and spec worlds on +9194 numbers, older than ${hours}h\n`,
+      `\n  sim gc — "${NAME} <token>" and spec worlds on +9194 numbers, older than ${hours}h\n`,
     ),
   )
   let dropped = 0
@@ -1526,7 +1267,7 @@ async function manifest(
   }
 
   return {
-    suite: 'week',
+    suite: 'sim',
     dir,
     at: new Date().toISOString(),
     git: {

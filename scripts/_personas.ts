@@ -3,7 +3,7 @@
  *
  * WHY THIS FILE HOLDS GOALS AND NOT SENTENCES
  * -----------------------------------------------------------------------------
- * `drive-week` scripts a week as twenty-eight literal utterances. That measures
+ * `sim` scripts a week as twenty-eight literal utterances. That measures
  * the product against twenty-eight questions somebody thought of in advance, and
  * it has the same defect as a deterministic check one level up: whatever the
  * product does with the second sentence, the third sentence is the same. Nobody
@@ -62,7 +62,8 @@
  * bottom of this file therefore takes a spec that has ALREADY been through
  * `validateSpec`. Its header says what that buys and what it refuses.
  */
-import type { Day, NormalSpec, WorldSpec } from './_world-spec'
+import type { Day, NormalSpec, SeatSpec, WorldSpec } from './_world-spec'
+import { rollOf } from './_world-spec'
 
 /**
  * HOW REAL PEOPLE ACTUALLY TYPE, AND WHY IT IS PART OF THE INSTRUMENT
@@ -131,9 +132,9 @@ you meant.`
  * WHY THIS IS IN THE PERSONA FILE AND NOT IN A WORLD BUILDER
  * -----------------------------------------------------------------------------
  * Because it was in two world builders and nowhere else, and they disagreed.
- * `_world.ts` ran the Evening Batch on Monday and Thursday; `drive-week.ts` ran
+ * `_world.ts` ran the Evening Batch on Monday and Thursday; `sim.ts` ran
  * it on Monday and Wednesday. Every sentence below was written against the first
- * one — so on a `drive-week` run, Arjun's Wednesday brief opened "No session for
+ * one — so on a `sim` run, Arjun's Wednesday brief opened "No session for
  * you today, your batch is Monday and Thursday" on a day his batch was on, and
  * Divya's Thursday brief had her daughter missing a session that did not exist.
  *
@@ -144,7 +145,7 @@ you meant.`
  * `lib/agent` hunting something that never happened.
  *
  * So the fixtures are a value rather than prose, they sit next to the sentences
- * that assume them, and `drive-week.ts` builds its classes out of this array
+ * that assume them, and `sim.ts` builds its classes out of this array
  * instead of holding a second copy. `_world.ts` still holds its own literal copy
  * for the human seat — it matches this one line for line today, and it is the
  * one remaining place this can drift.
@@ -890,12 +891,6 @@ function normalised(spec: WorldSpec): NormalSpec {
           `round-robin, and guessing it here would tell a coach he teaches nothing`,
       )
     }
-    if (!Array.isArray(cls.enrolled)) {
-      refuse(
-        `whose \`classes[${i}].enrolled\` is still a count — the validator deals the children ` +
-          `in order, and guessing it here would put the wrong child on a register`,
-      )
-    }
   }
   return s
 }
@@ -957,8 +952,15 @@ export function briefFromWorld(o: { spec: WorldSpec; person: BriefPerson; days: 
 
   const teaches = (who: string): SpecClass[] =>
     s.classes.filter((cls) => cls.coaches.some((c) => same(c, who)))
+  /**
+   * Read off the people, exactly as `buildWorld` reads it, so a brief and the
+   * registers it describes cannot disagree. There is no `enrolled` on a class to
+   * consult instead — a roll is stated on the child, or on a client who is the
+   * learner themselves.
+   */
+  const rolls = rollOf(s)
   const inClass = (learner: string): SpecClass[] =>
-    s.classes.filter((cls) => cls.enrolled.some((e) => same(e, learner)))
+    s.classes.filter((_cls, i) => (rolls[i] ?? []).some((e) => same(e, learner)))
 
   const who: string[] = []
   const goals: string[] = []
@@ -1077,8 +1079,12 @@ export function briefFromWorld(o: { spec: WorldSpec; person: BriefPerson; days: 
   /* ----------------------------------------------------------------- client */
 
   if (role === 'client') {
-    const children = client?.children ?? []
-    /** A client with no children IS the learner — that is what `"children": []` says. */
+    const kids = client?.children ?? []
+    const children = kids.map((k) => k.name)
+    /**
+     * A client with no children IS the learner — an adult beginner. Their own
+     * enrolment is `client.class`; a parent's are on each child.
+     */
     const self = children.length === 0
     const learners = self ? [name] : children
     const enrolments = learners.flatMap((l) => inClass(l))
@@ -1154,22 +1160,56 @@ export function briefFromWorld(o: { spec: WorldSpec; person: BriefPerson; days: 
     goals.push(`Make a decision ${horizon(days)} and say so, either way.`)
   }
 
+  /**
+   * What the spec's own `seat` block adds, on top of what the world derived.
+   *
+   * The order is the point. Derived facts go FIRST and the writer's `about`
+   * comes after them, so a hand-written sentence sits beside the timetable it is
+   * about rather than in place of it — nothing written in a world file can make
+   * somebody describe a business that was not built, which is the failure this
+   * whole arrangement exists to prevent. `goals` are appended for the same
+   * reason: the derived ones are what the role wants in any world, the written
+   * ones are what THIS person wants this week.
+   *
+   * `voice` is the exception and replaces the role's default outright, because
+   * how somebody types cannot contradict a row. `life` has no derived half at
+   * all — a generated life event would be invention dressed as circumstance —
+   * so a world file is the only place one can come from.
+   */
+  const seat = personSeat(s, role, name)
+  if (seat?.about) {
+    who.push('')
+    who.push(seat.about.trim())
+  }
+  for (const g of seat?.goals ?? []) goals.push(g)
+
   return {
     key: o.person.key?.trim() || `${role}-${slug(name)}`,
     name,
     seat: role,
     oneLine,
     who: who.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
-    voice: ROLE_VOICE[role],
+    voice: seat?.voice?.trim() || ROLE_VOICE[role],
     typing: ROLE_TYPING[role],
     goals,
-    redLines: ROLE_RED_LINES[role],
-    // Empty on purpose — see this section's header. A generated life event is
-    // invention dressed as circumstance. A driver with a calendar of its own
-    // passes the day's pressure through `SeatContext.today` instead.
-    life: {},
+    redLines: [...ROLE_RED_LINES[role], ...(seat?.redLines ?? [])],
+    life: seat?.life ?? {},
   }
 }
+
+/** The `seat` block this person carries in the spec, if they wrote one. */
+function personSeat(
+  s: ReturnType<typeof normalised>,
+  role: SeatRole,
+  name: string,
+): SeatSpec | undefined {
+  const same = (a: string): boolean => a.toLowerCase() === name.toLowerCase()
+  if (role === 'admin') return same(s.admin.name) ? s.admin.seat : undefined
+  if (role === 'coach') return s.coaches.find((c) => same(c.name))?.seat
+  if (role === 'client') return s.clients.find((c) => same(c.name))?.seat
+  return s.prospects.find((c) => same(c.name))?.seat
+}
+
 
 /**
  * Everybody in a world, in the order `buildWorld` creates them.

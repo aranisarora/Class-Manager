@@ -7,17 +7,6 @@
     { "name": "Arjun Shetty", "pay": 600, "unit": "per_session" },
     { "name": "Priya Nair", "pay": 9000, "unit": "per_month" }
   ],
-  "clients": [
-    { "name": "Divya Rao", "children": ["Anika Rao"] },
-    { "name": "Meera Iyer", "children": ["Vivaan Iyer"] },
-    { "name": "Sanjay Gupta", "children": ["Ishaan Gupta", "Riya Gupta"] },
-    { "name": "Latha Krishnan", "children": ["Tara Krishnan"] }
-  ],
-  "prospects": [
-    { "name": "Kavita Shah" },
-    { "name": "Nikhil Bose" },
-    { "name": "Farah Sheikh" }
-  ],
   "classes": [
     {
       "name": "Morning Juniors",
@@ -26,8 +15,7 @@
       "to": "08:00",
       "rate": 900,
       "unit": "per_month",
-      "coaches": ["Rahul Menon"],
-      "enrolled": ["Vivaan Iyer", "Riya Gupta"]
+      "coaches": ["Rahul Menon"]
     },
     {
       "name": "Evening Batch",
@@ -36,8 +24,7 @@
       "to": "19:00",
       "rate": 2400,
       "unit": "per_month",
-      "coaches": ["Arjun Shetty"],
-      "enrolled": ["Anika Rao", "Ishaan Gupta"]
+      "coaches": ["Arjun Shetty"]
     },
     {
       "name": "Adult Beginners",
@@ -46,8 +33,7 @@
       "to": "20:30",
       "rate": 1800,
       "unit": "per_month",
-      "coaches": ["Priya Nair"],
-      "enrolled": []
+      "coaches": ["Priya Nair"]
     },
     {
       "name": "Weekend Squad",
@@ -56,8 +42,57 @@
       "to": "10:30",
       "rate": 1200,
       "unit": "per_month",
-      "coaches": ["Priya Nair", "Rahul Menon"],
-      "enrolled": ["Tara Krishnan"]
+      "coaches": ["Priya Nair", "Rahul Menon"]
+    }
+  ],
+  "clients": [
+    {
+      "name": "Divya Rao",
+      "children": [{ "name": "Anika Rao", "class": "Evening Batch" }],
+      "seat": {
+        "about": "Anika has been coming for about a year and you have never had a problem worth ringing about, which is exactly why one this week would rattle you.",
+        "goals": [
+          "Find out whether Anika is charged for the session she missed while she was ill."
+        ],
+        "life": {
+          "3": "Anika has a fever. She is not going tomorrow evening and you have not told anybody yet.",
+          "5": "Anika is still off. You have started wondering what you are paying for."
+        }
+      }
+    },
+    {
+      "name": "Meera Iyer",
+      "children": [{ "name": "Vivaan Iyer", "class": "Morning Juniors" }]
+    },
+    {
+      "name": "Sanjay Gupta",
+      "children": [
+        { "name": "Ishaan Gupta", "class": "Evening Batch" },
+        { "name": "Riya Gupta", "class": "Morning Juniors" }
+      ],
+      "seat": {
+        "about": "Two children in two different classes, and you have never once been told what the pair of them costs you as one number.",
+        "goals": ["Get one figure for both children, for the month, that you can plan around."]
+      }
+    },
+    {
+      "name": "Latha Krishnan",
+      "children": [{ "name": "Tara Krishnan", "class": "Weekend Squad" }],
+      "owes": 1200
+    }
+  ],
+  "prospects": [
+    { "name": "Kavita Shah" },
+    { "name": "Nikhil Bose" },
+    {
+      "name": "Farah Sheikh",
+      "seat": {
+        "about": "You left your name on the enquiry pad weeks ago and nobody rang back. You have two children and you are pricing three places at once.",
+        "goals": [
+          "Get a straight price for two children before you commit to anything.",
+          "Find out whether there is a sibling discount, and get a real answer either way."
+        ]
+      }
     }
   ]
 }

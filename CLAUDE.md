@@ -101,10 +101,10 @@ npm run drive               # be a person talking to the bot, one command at a t
 npm run probe               # the scripted lifecycle arc, one academy per model — ten suites
 npm run ask                 # interrogate the prefix, toolless — the derivable ceiling
 npm run probe:sql           # the SQL ladder
-npm run drive:week          # the agent week — four personas who can see only their phone
-npm run drive:week -- --preset smoke        # one day, one window: ~₹1.30 and 4-7 min
-npm run drive:week -- --days 7 --budget-min 40   # simulated length, then the real stop
-npm run drive:week -- gc --hours 6           # reap this driver's stale worlds
+npm run sim          # the agent week — four personas who can see only their phone
+npm run sim -- --preset smoke        # one day, one window: ~₹1.30 and 4-7 min
+npm run sim -- --days 7 --budget-min 40   # simulated length, then the real stop
+npm run sim -- gc --hours 6           # reap this driver's stale worlds
 npm run ab -- --variant doctrine=<file>      # the same week twice, one thing changed
 npm run ab -- --variant ref=<sha> --dry-run  # prepare and hash both arms, spend nothing
 npx tsx scripts/live.ts open --days 7        # the human seat, blindfolded

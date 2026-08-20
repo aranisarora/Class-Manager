@@ -69,7 +69,7 @@ export const INSTRUMENTS = [
   { file: 'scripts/probe-ask.ts', label: 'ask' },
   { file: 'scripts/probe-sql.ts', label: 'sql' },
   { file: 'scripts/probe-model.ts', label: 'model' },
-  { file: 'scripts/drive-week.ts', label: 'week' },
+  { file: 'scripts/sim.ts', label: 'week' },
 ] as const
 
 export type Finding = {

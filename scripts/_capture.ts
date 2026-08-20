@@ -4,7 +4,7 @@
  *
  * WHY THERE IS ONLY ONE OF THESE NOW
  * -----------------------------------------------------------------------------
- * `probe-ask`, `probe-model`, `probe-sql`, `drive` and `drive-week` each grew
+ * `probe-ask`, `probe-model`, `probe-sql`, `drive` and `sim` each grew
  * their own record shape, their own `--full` flag, their own idea of what was
  * worth keeping, and their own report script to read it back. Six shapes meant
  * six readers, and the readers disagreed: one showed reasoning, one showed SQL,

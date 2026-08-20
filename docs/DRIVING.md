@@ -20,7 +20,7 @@ There is one spine now, and the instruments differ only in **who is at the phone
 
 **The seat is one implementation.** `scripts/_seat.ts` holds the blindfold, the phone, the clock
 walk and the turn. A person sits in it through `scripts/live.ts`; a model sits in it through
-`_persona-agent.ts` and `drive-week.ts`. The blindfold is not a convention — it is five
+`_persona-agent.ts` and `sim.ts`. The blindfold is not a convention — it is five
 predicates on one query (outbound, this contact, past this person's own cursor,
 `suppressed_reason is null`, `status <> 'failed'`), and a second copy that dropped the
 suppression clause would show a reader a message the real recipient never received. The reading
@@ -42,7 +42,7 @@ checks were negative and a model that does nothing satisfies them.
 
 | What you want to know | Instrument |
 | --- | --- |
-| what a week with four people in it does to this product | `npm run drive:week` |
+| what a week with four people in it does to this product | `npm run sim` |
 | what this one sentence does, right now | `npm run drive -- say <contact> "…"` |
 | what a *person* makes of the reply, with no rows to check against | `npx tsx scripts/live.ts` |
 | whether the model handles a case that has broken before | `npm run probe -- --suite …` |
@@ -61,7 +61,7 @@ This is the part that costs money, and all of it but the first costs nothing to 
 ### Start small. `--preset smoke` is the plumbing test.
 
 ```bash
-TRANSPORT=emulator npx tsx scripts/drive-week.ts --preset smoke
+TRANSPORT=emulator npx tsx scripts/sim.ts --preset smoke
 ```
 
 One day, one window, two seats — read off `SCHEDULE` rather than chosen, so it drives the same
@@ -110,7 +110,7 @@ Neither budget aborts anything, and both stay readable afterwards. `extra.run.st
 
 ```bash
 # seven simulated days, but I am leaving in forty minutes
-npx tsx scripts/drive-week.ts --days 7 --budget-min 40
+npx tsx scripts/sim.ts --days 7 --budget-min 40
 ```
 
 ### Run drives in parallel. They no longer collide.
@@ -129,7 +129,7 @@ So run two. Reaping the leftovers is a command with an age threshold, not a star
 a start-up reap cannot tell a dead world from one another process is driving right now:
 
 ```bash
-npx tsx scripts/drive-week.ts gc --hours 6
+npx tsx scripts/sim.ts gc --hours 6
 ```
 
 It only matches `Ace Tennis Academy <token>`. A hand-made academy, `_world.ts`'s, or a business
@@ -171,7 +171,7 @@ an unknown window, an unknown seat, an unknown preset and a `days` past the end 
 all stop the process at second zero:
 
 ```
-$ npx tsx scripts/drive-week.ts --daays 3
+$ npx tsx scripts/sim.ts --daays 3
 
 x  unknown flag --daays
    known flags: --preset --days --windows --personas --concurrency --budget-min --budget-inr --seed --model --arm --config --ramp --keep
@@ -182,9 +182,9 @@ x  unknown flag --daays
 
 ---
 
-## The agent week — `npm run drive:week`
+## The agent week — `npm run sim`
 
-The four personas are **agents** now. `drive-week.ts` used to hold twenty-eight literal
+The four personas are **agents** now. `sim.ts` used to hold twenty-eight literal
 utterances and post them in order; whatever the product replied, the twelfth sentence was the
 twelfth sentence. That harness could not represent the three commonest things a person does:
 
@@ -199,12 +199,34 @@ seat with nothing but what the phone shows. Its three moves are `say`, `quiet` a
 `giveup` may carry a last message, because walking out loudly and walking out in silence are
 different findings. Departures land in `extra.departures`.
 
-The world is a settled academy where **the owner also coaches** — an `academy_admin` row and a
-`coach` row over one `person`, which is the business this product is sold into and the one shape
-a role column cannot express. Four classes so no day is empty and Saturday is a real fixture;
-one family with history behind it. Two coaches paid in two different units (₹600 per session,
-₹9,000 per month) deliberately, so *"what am I paying everyone"* cannot be answered by summing
-one column.
+**The world is a file, and the default is blank.** `npm run sim` with no `--world` builds an
+owner, a phone and nothing else — the moment before the setup conversation. Everything else
+comes from `worlds/`:
+
+```bash
+npm run sim -- --world settled-tennis            # Ace Tennis: 4 classes, 4 families, 5 children
+npm run sim -- --world worlds/multi-coach.json   # 4 coaches, 6 clients, the owner coaching
+npm run sim -- --world '{"coaches":3,"clients":5}'   # inline, for a one-off
+```
+
+A world file is **what the database looks like the moment the admin finished onboarding** —
+`worlds/README.md` is the format, and it is short. Two things about it are worth knowing before
+you write one. Enrolment is stated on the person, never as a count on a class: a child carries
+their class, and a client with no children carries their own. And any person may carry a `seat`
+block — goals, voice, what happens to them on day three — so one file holds both the rows and
+the people who live in them.
+
+The facts in a persona's brief are **derived from the spec**, and only their words are written
+by hand. That is not tidiness: a coach told his batch ran Monday and Thursday, in a world that
+ran Monday and Wednesday, produced a turn that read as a product defect and was a harness one.
+A generated brief cannot contradict the world because it is read out of it.
+
+`settled-tennis.json` is the academy this repo has always driven — **the owner also coaches**,
+an `academy_admin` row and a `coach` row over one `person`, which is the business this product
+is sold into and the one shape a role column cannot express. Four classes so no day is empty and
+Saturday is a real fixture. Two coaches paid in two different units (₹600 per session, ₹9,000
+per month) deliberately, so *"what am I paying everyone"* cannot be answered by summing one
+column.
 
 Windows drive the week and the order is load-bearing: the clock is walked **once**, then every
 active seat speaks concurrently, then the queue is drained. A clock that moves while a turn is
@@ -219,12 +241,14 @@ measuring the conversational third and extrapolating the whole. In the smoke run
 the six turns are the queue, and they are ₹0.68 of the ₹1.11.
 
 ```bash
-npx tsx scripts/drive-week.ts                         # seven days, four seats
-npx tsx scripts/drive-week.ts --preset smoke          # one window, two seats
-npx tsx scripts/drive-week.ts --days 3 --windows morning
-npx tsx scripts/drive-week.ts --ramp --days 5         # the five-tier difficulty ramp
-npx tsx scripts/drive-week.ts --keep                  # leave the academy in the database
-npx tsx scripts/drive-week.ts gc --hours 6            # reap this driver's stale worlds
+npm run sim                                    # seven days, blank world
+npm run sim -- --preset smoke                  # one day, one window, two seats
+npm run sim -- --world settled-tennis --days 7 # a settled business, a full week
+npm run sim -- --days 3 --windows morning      # SIMULATED length
+npm run sim -- --days 7 --budget-min 20        # REAL stop, at a window boundary
+npm run sim -- --seats 2                       # only the first two people take part
+npm run sim -- --keep                          # leave the academy in the database
+npx tsx scripts/sim.ts gc --hours 6            # reap this driver's stale worlds
 ```
 
 `--seed` is the identity of a repeat. The default is stamped rather than constant — a fixed
@@ -242,9 +266,9 @@ diffed against the first — which is why `--config`, `--seed` and `--arm` exist
 Prove the pair on `smoke` first — an A/B is two runs and a botched one costs both:
 
 ```bash
-npx tsx scripts/drive-week.ts --preset smoke --seed ab-2026-08-20 --arm A --budget-min 20
+npx tsx scripts/sim.ts --preset smoke --seed ab-2026-08-20 --arm A --budget-min 20
 # … make the change …
-npx tsx scripts/drive-week.ts --preset smoke --seed ab-2026-08-20 --arm B --budget-min 20
+npx tsx scripts/sim.ts --preset smoke --seed ab-2026-08-20 --arm B --budget-min 20
 ```
 
 Every drive opens by printing what it resolved, so the thing you are holding still is legible
@@ -277,7 +301,7 @@ npm run ab -- --variant doctrine=… --dry-run    # prepare, hash, print, spend 
 
 `--variant doctrine=<file>` swaps the prefix; `--variant ref=<sha|branch|checkout>` swaps the
 mechanisms. Every other flag is `_drive-config.ts`'s and is given to BOTH arms, resolved once, so
-the arms differ by one file and nothing else. It runs each arm as a whole `drive-week` child in a
+the arms differ by one file and nothing else. It runs each arm as a whole `sim` child in a
 root of its own — `stablePrefix()` memoises, so two prefixes cannot coexist in one node process,
 and an arm sharing a process would silently drive the other arm's doctrine. Start with
 `--dry-run`: it prepares both arms and hashes both prefixes without driving either.
@@ -717,7 +741,7 @@ already broken does no instrument even ask about?**
 cloud path hard-fails at the credential gate — every turn then reports an error, zero tools and
 an empty reply, which reads exactly like a broken model. The run measures nothing.
 
-`drive-week.ts`, `live.ts`, `_seat.ts`, `probe-model.ts` and `probe-sql.ts` each pin
+`sim.ts`, `live.ts`, `_seat.ts`, `probe-model.ts` and `probe-sql.ts` each pin
 `TRANSPORT=emulator` in their own module body — a module body runs before the body of whatever
 imported it, so none of them can rely on another having done it. **`npm run drive` is the
 exposure**: it runs the turn inside the dev server, so it is the *server's* environment that
@@ -738,7 +762,7 @@ baseline every "did the edit help?" reading is measured against.
 what a killed turn does to the attribution of everything around it.
 
 **A crashed drive leaves its world behind, and so does `--keep`.** Nothing reaps it at start-up,
-on purpose. `npm run drive:week -- gc --hours 6` is the reaper, and it will not touch a world it
+on purpose. `npm run sim -- gc --hours 6` is the reaper, and it will not touch a world it
 cannot prove this driver made.
 
 **Before you finish:**

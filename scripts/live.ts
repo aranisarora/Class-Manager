@@ -11,9 +11,9 @@
  *   npx tsx scripts/live.ts endday                              ← orchestrator
  *   npx tsx scripts/live.ts close
  *
- * WHY THIS EXISTS BESIDE `drive-week`
+ * WHY THIS EXISTS BESIDE `sim`
  * -----------------------------------------------------------------------------
- * `drive-week` scripts twenty-eight sentences and posts them in order. Whatever
+ * `sim` scripts twenty-eight sentences and posts them in order. Whatever
  * the product replies, the next sentence is the same one. That harness cannot
  * represent the three commonest things a real person does:
  *
