@@ -16,7 +16,7 @@ belongs.
 | decide where a fix belongs | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the layers, and the trap list |
 | change what the product does | [`docs/product-spec.md`](./docs/product-spec.md) |
 | test, drive, or judge a run | [`docs/DRIVING.md`](./docs/DRIVING.md), then [`docs/JUDGING.md`](./docs/JUDGING.md) |
-| touch anything in `scripts/` | [`scripts/README.md`](./scripts/README.md) — 49 files, four jobs |
+| touch anything in `scripts/` | [`scripts/README.md`](./scripts/README.md) — 58 files, four jobs |
 | record something that broke | [`findings/`](./findings/README.md) — [`OPEN.md`](./findings/OPEN.md) is the status board (generated), [`DECIDED.md`](./findings/DECIDED.md) is what was deliberately not fixed |
 | deploy | [`docs/DEPLOY.md`](./docs/DEPLOY.md) |
 
@@ -38,9 +38,10 @@ one. If you are tempted to add a `check` closure that decides whether a turn was
 **Record everything, untruncated.** There is no flag to record less. A report that elides the
 model's reasoning, its SQL, or the rows it touched cannot answer the question the run was for.
 
-**One run, one directory, one record shape.** Every instrument writes
-`.probe/runs/<UTC-minute>-<suite>/record.json` (`scripts/_capture.ts`), and one reader —
-`scripts/report.mjs` — opens it. Per-suite extras (`ladder.md`, `week.md`, `score.md`) go
+**One run, one directory, one record shape.** Every instrument appends one line per turn to
+`.probe/runs/<UTC-minute>-<suite>-<tok>/turns.jsonl` (`scripts/_capture.ts`); `record.json` and
+every other view in that directory is derived from that log (`scripts/_derive.ts`), and one
+reader — `scripts/report.mjs` — opens it. Per-suite extras (`ladder.md`, `week.md`, `score.md`) go
 *inside* that directory. Do not give an instrument its own corner and its own renderer; that
 is how six report generators grew, and they are gone.
 
@@ -84,9 +85,9 @@ drifting apart is what cost the twenty-nine.
 **Money is in rupees.** This is an INR-billing product. `lib/pricing.ts` is the one place that
 converts.
 
-**The leading underscore in `scripts/` means "not a command."** `_capture.ts`, `_env.ts`,
-`_world.ts`, `_personas.ts`, `_ramp.ts`, `_danger.ts`, `_record-from-probe.ts` are shared
-modules. `_findings.ts` is the one exception and it runs.
+**The leading underscore in `scripts/` means "not a command."** `_capture.ts`, `_derive.ts`,
+`_drive-config.ts`, `_env.ts`, `_world.ts`, `_personas.ts`, `_ramp.ts`, `_danger.ts`,
+`_record-from-probe.ts` are shared modules. `_findings.ts` is the one exception and it runs.
 
 ## Commands
 

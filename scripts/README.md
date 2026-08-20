@@ -1,6 +1,6 @@
 # scripts/
 
-Forty-nine files, four jobs. This index exists because the folder had grown thirteen files
+Fifty-eight files, four jobs. This index exists because the folder had grown thirteen files
 that nothing referenced and six report generators that rendered the same evidence six ways.
 
 `npm run check:layout` asserts that every file here is named below and that every file named
@@ -9,8 +9,9 @@ below exists, so this index cannot drift again the way it had: it said "Forty fi
 
 ## 1 · The instruments — drive the product, record everything, judge nothing
 
-Every one of these records to `.probe/runs/<UTC-minute>-<suite>/record.json` in one shape
-(`_capture.ts`), flushed after every turn, with **no flag to record less**. None of them
+Every one of these records to `.probe/runs/<UTC-minute>-<suite>-<tok>/` in one shape
+(`_capture.ts`) — a line appended to `turns.jsonl` per turn, and `record.json` derived from
+that log after every one of them (`_derive.ts`) — with **no flag to record less**. None of them
 scores anything. The verdict is written by a reader into `judgement.json` beside the
 record — [`../JUDGING.md`](../docs/JUDGING.md) is how.
 
@@ -93,7 +94,7 @@ prose.
 | `probe-prefix.ts`, `probe-prefix-tokens.ts`, `probe-ceiling.ts` | What the prefix costs, in characters, in real tokens, and in tool declarations. |
 | `guard-value.ts` | What each runtime guard has actually caught. |
 | `ops-cookie.mjs` | How a script gets through the ops gate. |
-| `_env.ts`, `_danger.ts`, `_capture.ts`, `_world.ts`, `_personas.ts`, `_ramp.ts`, `_record-from-probe.ts`, `_findings.ts` | Shared. Leading underscore means "not a command" — `_findings.ts` is the exception, and runs. `_capture.ts` owns the one record shape; `_record-from-probe.ts` converts `probe-model`'s per-arm files into it. `_ramp.ts` overlays `_personas.ts`'s `life` with the five-tier ramp, under `SIM_RAMP=1`. |
+| `_env.ts`, `_danger.ts`, `_capture.ts`, `_derive.ts`, `_drive-config.ts`, `_world.ts`, `_personas.ts`, `_ramp.ts`, `_record-from-probe.ts`, `_findings.ts` | Shared. Leading underscore means "not a command" — `_findings.ts` is the exception, and runs. `_capture.ts` owns the one record shape and appends one line per turn to `turns.jsonl`; `_derive.ts` rebuilds everything else in the run directory from that log, so two seats can write at once and nothing has to read 800KB back to add a turn. `_drive-config.ts` resolves how long, how many, who and how much — preset, then `--config` file, then flags — and refuses an unknown flag rather than running the default under its name. `_record-from-probe.ts` converts `probe-model`'s per-arm files into the record shape. `_ramp.ts` overlays `_personas.ts`'s `life` with the five-tier ramp, under `SIM_RAMP=1`. |
 
 ---
 
