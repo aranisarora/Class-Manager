@@ -1,5 +1,12 @@
 # The ideal conversation — rules, and where the product falls short
 
+> **START HERE INSTEAD:** [`OPEN.md`](./OPEN.md) is what is open right now — 11 items, one
+> line each, generated from this file. [`DECIDED.md`](./DECIDED.md) is what was deliberately
+> not fixed and why. Before proposing a fix for anything below, read
+> [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md) — what the brain already does. This file is
+> ~1,800 lines ordered by drive date and most of it is closed; it is the **detail and the
+> write surface**, not the status board. `npm run check:findings` keeps the three in step.
+
 Two halves. The **rules** (Part 1) are durable: they are what `ideal-conversations.md`
 demonstrates, stated as testable propositions, so a driven transcript can be scored against
 them without re-reading the whole timeline. The **findings** are dated snapshots and they go
@@ -35,7 +42,7 @@ exists" into "the behaviour happened". Read the next drive against this list.
 | **F-BA** | A hand-written `insert into attendance` messages the family and bills nobody — the per-session line is written by the operation, not by the world | a trigger, the way 0033 did sessions. Part 6 | 17 Aug |
 | **F-BB** | The plan result names anyone put in two places at once, and nothing makes the model pass it on | `lib/agent/plan.ts` / the declaration. Part 6 | 17 Aug |
 | **F-BC** | 6 of 20 replies carry anything to tap, and **every one came from machinery forcing a confirmation** — `{kind:'reply',text}` minted 0 times in 20 turns. Told three times now, so not a prompt fix, and a prose guard is banned | declaration order + `tappable` in the result, **as an experiment** — reverts unless a two-arm drive moves the count. Part 7 | 17 Aug |
-| **F-BH** | `business_rule` had no reader anywhere, so `enforced_by` was enforced by nothing and every stated rule behaved as `null`. *(First reader built for partly-covered periods; the general case is still one reader, not a mechanism.)* | wherever a job composes from a query. Part 7 | 17 Aug |
+| **F-BW** | `business_rule` had no reader anywhere, so `enforced_by` was enforced by nothing and every stated rule behaved as `null`. *(First reader built for partly-covered periods; the general case is still one reader, not a mechanism.)* | wherever a job composes from a query. Part 7 | 17 Aug |
 | **F-BL** | `session_coach` cannot record a removal, so the nightly materialiser restores coaches the owner deliberately took off a session. **Handed off, not attempted — the obvious fix has a ~30-reader blast radius and six of them are RLS.** Read Part 9 before touching it | `session_coach` and its readers — design not settled. Part 9 | 20 Aug |
 
 ### Closed 17 Aug 2026, by the architecture pass
@@ -149,7 +156,7 @@ lives. Confidence is **certain** unless marked. The closed findings from these s
 (F-A, F-B, F-F, F-H, F-J, F-K, F-L, F-M, F-N, F-O, F-P, F-Q, F-S) are in
 `findings-archive.md` with their evidence intact.
 
-### F-C · Watches multiply without a subject key, and the spam crowds out real messages
+### F-C · Watches multiply without a subject key, and the spam crowds out real messages — **closed 17 Aug 2026, by the architecture pass**
 
 **Root:** R5 (comparison on unnormalised values — dedupe is by slug, and the model mints a
 fresh slug every time) + R8 overshoot.
@@ -207,7 +214,7 @@ parent-child pair the tables hold is refused with a message saying the schema ho
 sprawl is bounded even when the write lets one through. A doctrine rule is the fix the
 repo's own evidence says will not hold.
 
-### F-E · A fabricated roster count reached a coach (R10, live)
+### F-E · A fabricated roster count reached a coach (R10, live) — **closed 17 Aug 2026, by the architecture pass**
 
 **Root:** R10 — claims of fact have no structural check.
 **Saw:** Deepak's onboarding acknowledgement: *"12 players are down to attend"* Saturday
@@ -218,7 +225,7 @@ after that is gone.
 **Where it lives:** R10's shadow-mode gate (DRIVING.md already specifies how to build it,
 including why not to ship it live). This pass adds the second motivating instance.
 
-### F-G · Template prose is glued to composed prose, and newlines are eaten
+### F-G · Template prose is glued to composed prose, and newlines are eaten — **closed 17 Aug 2026, by the architecture pass**
 
 **Root:** R1 — composition happens in two places and the seam ships.
 **Saw:** *"Ace TT Academy: your day. Your Wednesday 19 August:…"* · *"Kiran has a class
@@ -438,7 +445,7 @@ Five of this drive's seven findings (F-AA, F-AB, F-AC, F-AD, F-AE) were closed b
 brain edits Part 4 motivated, and are archived with the transcripts that proved it. These two
 were not.
 
-### F-AF · "Stop messaging me" needs a second tap, and the untapped half evaporates
+### F-AF · "Stop messaging me" needs a second tap, and the untapped half evaporates — **closed 17 Aug 2026, by the architecture pass**
 
 **Root:** by design, and the design is wrong for this sentence. `opt_out`
 (`lib/agent/operations.ts:2725`) puts a confirmation on screen and writes nothing until it is
@@ -454,7 +461,7 @@ what is missing is that an unanswered stop must not decay into silence.
 the tap decide *scope*, or carry the pending stop into the next turn's context so it cannot be
 forgotten.
 
-### F-AG · Rounds and seconds are spent rediscovering the tool contract
+### F-AG · Rounds and seconds are spent rediscovering the tool contract — **closed 17 Aug 2026, by the architecture pass**
 
 **Root:** R4 — the schema the model is shown and the schema the write must satisfy are not the
 same document.
@@ -551,7 +558,7 @@ well as it did.
 Every row in the bottom block is a place where the message the person read is not the message the
 model wrote, and nothing anywhere closes that gap.
 
-### F-AJ · The trailing honesty guard is gated on a pending plan, so the turn that failed to make one is the turn with no guard
+### F-AJ · The trailing honesty guard is gated on a pending plan, so the turn that failed to make one is the turn with no guard — **closed 17 Aug 2026, by the architecture pass**
 
 **Root:** R4 — a guard whose precondition excludes its worst case. `loop.ts:1564` reads
 `if (pending && checkClaims(text).unbacked)` before substituting the runtime's own read-back. The
@@ -605,7 +612,7 @@ reasoning consumed it — *"I can't see Kiran Shah's account from this coach's v
 feedback appeared on four results; the claims guard was watched converting "I've flagged it" into
 an actual admin message mid-turn (`real-new-number-claim` r2→r3).
 
-### F-AM · The trailing path shipped an unchecked claim about an injury — F-AJ's first casualty
+### F-AM · The trailing path shipped an unchecked claim about an injury — F-AJ's first casualty — **closed 17 Aug 2026, by the architecture pass**
 
 **Root:** F-AJ, unchanged: `loop.ts` trailing send checks claims only `if (pending && …)`.
 **Saw:** `real-injury-relay` — a child hurt at practice, one round, zero tool calls, pure prose
@@ -619,7 +626,7 @@ any tense. Also `PAST_TENSE_RE` in `scripts/probe-model.ts` lacks the routing ve
 drive's measured overclaim count read 0 while containing exactly one — add
 flagged/escalated/raised/notified/informed/passed.
 
-### F-AN · Standing jobs repeat byte-identical messages into stuck states, daily
+### F-AN · Standing jobs repeat byte-identical messages into stuck states, daily — **closed 17 Aug 2026, by the architecture pass**
 
 **Root:** the `send.ts` repeat gate windows at 6h; out-of-window template rendering collapses
 distinct days into identical strings; the trouble/chase ladders re-fire per day on the same
@@ -632,7 +639,7 @@ state (a coach who never onboards) is the common case, and the ladder narrates i
 `admin_escalate_uncovered`) — dedupe per state, not per byte-window: fire on a CHANGE in the
 state, or escalate the channel, never restate.
 
-### F-AO · A promise of quiet has no machinery, and negative promises are invisible to every guard
+### F-AO · A promise of quiet has no machinery, and negative promises are invisible to every guard — **closed 17 Aug 2026, by the architecture pass**
 
 **Saw:** `real-promise-to-pay` — *"I'll leave it till Friday and won't ask before then"* — no
 watch, no dunning override, nothing recorded (deterministic check caught it). It held by ladder
@@ -642,7 +649,7 @@ same drive. Verbs of inaction can't be caught by claims regexes.
 **Where it lives:** the dunning/chase surface — a pause/override the model can reach (there is
 none today), plus the reflection nudge for commitments carrying a date.
 
-### F-AP · `schedule` accepts context_query written from imagination
+### F-AP · `schedule` accepts context_query written from imagination — **closed 17 Aug 2026, by the architecture pass**
 
 **Saw:** both watches minted this drive carry SQL against non-existent tables (`FROM register
 WHERE family_id = 'meera'`, `FROM devs d LEFT JOIN owner_decisions`). Each will error on fire day
@@ -651,7 +658,7 @@ and the task will run blind on its instruction alone.
 `expires_at`; validate `context_query` the same way (parse/dry-run against the schema at mint
 time, while the model can still fix it).
 
-### F-AQ · An untapped operation confirmation still evaporates — yesterday opt-out, today the decline
+### F-AQ · An untapped operation confirmation still evaporates — yesterday opt-out, today the decline — **closed 17 Aug 2026, by the architecture pass**
 
 **Saw:** `real-coach-wedding` — "can i skip my next class?" an hour before it starts;
 `decline_coach` staged its own confirmation; nobody tapped (the harness behaves like a person);
@@ -698,7 +705,7 @@ dunning run into each other rather than each firing once. Records in
 confirmed on the payer's word, nobody signed up who had not asked, and the stranger who went quiet
 got exactly one message in a month. The four blocking findings are all below the model.
 
-### F-AS · The register nudge is withheld from the one operator whose money depends on it
+### F-AS · The register nudge is withheld from the one operator whose money depends on it — **closed 17 Aug 2026, by the architecture pass**
 
 **Saw:** ~21 sessions in a month, **one** register marked — and that one only because the drive made
 the admin type a no-show. ₹900 ever billed, netted to −₹900 by two adjustments, against ₹2,700
@@ -711,7 +718,7 @@ invoice**, and there is no second coach to route the nudge to.
 reframes rather than suppresses ("two hours since Kabir's session, nothing billed yet" is news, not
 a scolding), or the subject set should exclude a coach who is also the recipient-as-admin.
 
-### F-AT · A deliberate non-send and a delivery failure are the same value in the same column
+### F-AT · A deliberate non-send and a delivery failure are the same value in the same column — **closed 17 Aug 2026, by the architecture pass**
 
 **Saw:** the bot told the admin his messaging was broken. Twice, a fortnight apart. *"21 failed
 outright — never reached anyone… This is worth treating as a real problem."* All 21 were §18 gates
@@ -810,7 +817,7 @@ five-class sentence is a thinner guarantee than a join. Note what it can and can
 prevents. Closing that is the deferred-constraint
 question, still open.
 
-### F-AV · A partial stop request writes nothing, and the invariant then passes for the wrong reason
+### F-AV · A partial stop request writes nothing, and the invariant then passes for the wrong reason — **closed 17 Aug 2026, by the architecture pass**
 
 **Saw:** *"please stop messaging me about money. i will pay when i pay."* The reply was close to
 ideal and did what doctrine 13 asks — it said what would stop, and scoped it. Behind it: one
@@ -822,7 +829,7 @@ set**.
 half, which is the commoner request. Either a scoped opt-out (money / sessions / all) as a column or
 a `contact.settings` key the dunning job reads, or `opt_out` gains a scope argument.
 
-### F-AW · Mint-time validation let through a plan that could not run
+### F-AW · Mint-time validation let through a plan that could not run — **closed 17 Aug 2026, by the architecture pass**
 
 **Saw:** `tn-price-raise` — a correct, forward-dated answer minted `[Yes, set it]` carrying a
 `steps` action whose one step was `schedule` of kind `"private-rate-1000"`, a job kind that does not
@@ -832,7 +839,7 @@ line up on my side."* The admin has been told his prices rise on 1 October. They
 stored". A `schedule` step's `kind` is not checked against `HANDLERS` at mint. Rejection at compose
 time costs one round; rejection at tap time is a promise already made.
 
-### F-AX · A permission refusal is reported to the model as a concurrency conflict
+### F-AX · A permission refusal is reported to the model as a concurrency conflict — **closed 17 Aug 2026, by the architecture pass**
 
 **Saw:** `tn-makeup-book` — a parent naming her own makeup slot. RLS gives an account holder no
 update on `session`, and `reschedule_session` returned `PRECONDITION_FAILED: … the world moved under
@@ -844,7 +851,7 @@ change them. The database refused silently rather than raising. This is not some
 distinguish *no such row* from *row present, write refused*, as the diff engine on the raw path
 already does. Two wasted rounds per occurrence, in front of a waiting parent.
 
-### F-AY · Solo detection depends on which tool the model happens to reach for
+### F-AY · Solo detection depends on which tool the model happens to reach for — **closed 17 Aug 2026, by the architecture pass**
 
 **Saw:** the same sentence — *"put me down as the coach as well, this number, i take every session
 myself"* — driven twice. The full run wrote the coach row through a raw `plan` that set the status
@@ -857,7 +864,7 @@ directly and `app.is_solo()` came on. The onboarding smoke reached for `add_coac
 `academy_admin` on this academy (there is nothing to confirm to yourself), or `is_solo()` stops
 keying on `'active'`. Silently, this decides whether eight §18 behaviours exist.
 
-### F-AZ · Out-of-window notifications are all the same sentence
+### F-AZ · Out-of-window notifications are all the same sentence — **closed 17 Aug 2026, by the architecture pass**
 
 **Saw:** one contact holding **four** rows of *"Message from Baseline Tennis about a change to a
 session."* and another three of *"…about an upcoming session."* Meta rejects mostly-variable bodies,
@@ -959,8 +966,9 @@ or in the wrong place**. Each was closed and re-driven.
 
 ### Still open
 
-**F-BA · A hand-written attendance INSERT bills nobody.** The per-session tally
-line is written by the `mark_attendance` operation, not by the world. So an
+### F-BA · A hand-written attendance INSERT bills nobody
+
+The per-session tally line is written by the `mark_attendance` operation, not by the world. So an
 `insert into attendance …` composed as a plan step raises the family's outcome
 message and charges them nothing, and nothing detects it. The declaration now
 steers toward the operation, and a declaration is not a guarantee. The structural
@@ -968,8 +976,9 @@ home is the one 0033 used for sessions: **the line belongs on a trigger**, so
 attendance implies its billing on every route including raw SQL. Not shipped
 here — it changes money behaviour and deserves a drive of its own behind it.
 
-**F-BB · The plan reports "two places" and nothing makes the model say it.** The
-plan result names anyone put in two places at once. Whether that reaches the
+### F-BB · The plan reports "two places" and nothing makes the model say it
+
+The plan result names anyone put in two places at once. Whether that reaches the
 person is the model's choice, and on the first drive of that case it did not.
 
 **F-BC · Nothing to tap. Measured on two instruments at once, and it is the
@@ -1193,7 +1202,7 @@ them shut.
 - **F-C** is held by the subject key *plus* F-BG's tail block. The key alone was a
   fix with its own evidence hidden from both parties.
 
-### F-I · the mid-month half — **closed, as a decision the owner makes**
+### F-I, the mid-month half — **closed, as a decision the owner makes**
 
 `monthly_lines` wrote the full monthly amount with no reference to `started_on`,
 while `per_term` eight lines below already anchored on it. The prefix endorsed the
@@ -1218,6 +1227,16 @@ doctrine 4 forbids: one button credits this one, the other credits it and writes
 setting, which the writer then reads. **This is `business_rule`'s first reader.**
 Until now nothing read the table at all, so every rule in it behaved as
 `enforced_by = null` whatever it said.
+
+### F-BW · `business_rule` had no reader, so every stated rule behaved as null
+
+Recorded 17 Aug 2026; carried the code `F-BH` until 20 Aug, when that code was
+found to name this and the Part 8 definer-view finding at once — one of the two
+was invisible to every reader that parses by code.
+
+`enforced_by` was enforced by nothing. The partly-covered-period writer above is
+`business_rule`'s first reader, so the general case is still one reader and not a
+mechanism: the structural home is wherever a job composes from a query.
 
 ### F-BC · the affordance — an experiment, not a fix
 
@@ -1284,7 +1303,7 @@ rebuilt by hand every time it came up.
 
 Two rules came out of it that are about views in general, not about any one view.
 
-### F-BH · A definer view must carry every column its purpose requires
+### F-BH · A definer view must carry every column its purpose requires — **closed 17 Aug 2026, by the architecture pass**
 
 `coach_public` is `security_invoker = false` precisely so it can show every coach
 past `coach`'s own-row-only policy. It carries no name. So every caller joins
@@ -1318,7 +1337,7 @@ foreign key and no label is a trap.** Any column it omits will be fetched throug
 an invoker join that puts back exactly the restriction the view was built to
 lift, and the shortfall does not error.
 
-### F-BI · A view must not bake the clock into its rows
+### F-BI · A view must not bake the clock into its rows — **closed 17 Aug 2026, by the architecture pass**
 
 `enrollment` models membership as a SPAN so the business can speak in three
 tenses. `class_roster` filtered to `started_on <= today` and collapsed it to a
@@ -1338,7 +1357,7 @@ one predicate that cannot be got wrong. `uncovered_session` is dropped;
 `where coverage not in ('confirmed','cancelled')` replaces it against a relation
 that can answer the next question too.
 
-### F-BJ · Five representations of coverage, and the model read the wrong one
+### F-BJ · Five representations of coverage, and the model read the wrong one — **closed 17 Aug 2026, by the architecture pass**
 
 `session_detail` offered `covered`, three counts, and a state on every entry of
 `coaches`. Asked *"rest of the week anything not coverd"*, holding seven rows of
@@ -1355,7 +1374,7 @@ sentences.
 confirmed | nobody has answered | all declined | nobody assigned. The four older
 columns stay in SQL for `session_coverage`'s sake and stop being documented.
 
-### F-BK · When a view resolves a fallback it must say which branch it took
+### F-BK · When a view resolves a fallback it must say which branch it took — **closed 17 Aug 2026, by the architecture pass**
 
 `class_roster` coalesced enrolment rate over class rate and then said nothing
 about which one answered. That distinction is not a detail here, it is a
@@ -1474,7 +1493,7 @@ is written, that a second ask supersedes, and that the constraint stops a third.
 throughout. Nothing asked whether a person *answering* it changed anything — so the table's whole
 purpose was the one property untested. That is the shape worth remembering, not the bug.
 
-### F-BM · A tap could not close the question it answered
+### F-BM · A tap could not close the question it answered — **closed 20 Aug 2026, mechanism verified in code**
 
 `consumeAction` claimed the button and marked `pending_request` resolved in one statement, under
 the tapper's own session. `pending_request` has two policies and neither is an UPDATE for
@@ -1486,7 +1505,7 @@ the row count checked and a loud line when a question survives its own answer. S
 from the claim, which must stay under the tapper. **Staged by** `scripts/check-world.ts` case 5b,
 which fails without it.
 
-### F-BN · The tail asserted an unearned claim with instruction force
+### F-BN · The tail asserted an unearned claim with instruction force — **closed 20 Aug 2026, mechanism verified in code**
 
 `ASKED AND UNANSWERED … they have NOT answered … nothing behind it has happened … Never describe
 it as done` — three assertions and an order, resting entirely on one column being empty, and that
@@ -1499,7 +1518,7 @@ as `expired` and chased). 0038 backfills the rows written before F-BM's fix. The
 strong, because weakening it would undo the reason `pending_request` exists — **a strong sentence
 needs a trustworthy column, and the column is the thing to fix.**
 
-### F-BO · `SCHEMA_DOC` documented `kind` values that nothing ever wrote
+### F-BO · `SCHEMA_DOC` documented `kind` values that nothing ever wrote — **closed 20 Aug 2026, mechanism verified in code**
 
 Documented as `opt_out, decline_coach, client_cancel, confirm_plan`; `send.ts` wrote
 `msg.confirmation?.kind ?? msg.catalogId`, and only `opt_out` ever set the former. So the stored
@@ -1510,7 +1529,7 @@ value was a catalog id, and a model querying the documented value got zero rows 
 asked for this — and its own `subject`, which also closes a latent collision where one family's
 second cancellation superseded the open question about the first.
 
-### F-BP · The cancellation decision was read at tap time, not ask time
+### F-BP · The cancellation decision was read at tap time, not ask time — **closed 20 Aug 2026, mechanism verified in code**
 
 `hoursOut` was measured against `nowD` at the tap, and the notice window re-read live. So the
 product's own delay in re-asking turned a 57.5h cancellation into a 21.7h one, and a change to the
@@ -1521,7 +1540,7 @@ replayed on the tap. Added to `HUMAN_ASSERTION_PARAMS` so a model-authored call 
 them — and the strip predicate now treats **false as a claim too** for these, because absent means
 "work it out", `true` means free and `false` means charge them.
 
-### F-BQ · `client_cancel` never read the row it was about to overwrite
+### F-BQ · `client_cancel` never read the row it was about to overwrite — **closed 20 Aug 2026, mechanism verified in code**
 
 `rosterOf` returns the player, the account, the rate and the holder, and nothing about attendance,
 so the operation was structurally blind to its own earlier effect.
@@ -1533,7 +1552,7 @@ the matching predicate so a refused status change cannot leave a charge behind. 
 surfaced rather than blocked — `mark_attendance` now tells a coach when their marking put a charge
 back on, which is exactly the case its "unexplained absence" filter used to remove.
 
-### F-BR · Coach pay was one mutable number with no date
+### F-BR · Coach pay was one mutable number with no date — **closed 20 Aug 2026, mechanism verified in code**
 
 `coach.pay_amount` decided what a coach earned in every month it was never in force for. Families
 are safe from the same shape not because rates are versioned — they are not — but because
@@ -1546,7 +1565,7 @@ alone, so **no rate-history table and no scheduled job** for the monthly case. `
 ledger instead of multiplying a career by today's rate; `SCHEMA_DOC`'s competing derivation is
 deleted in the same change, per 0036's rule.
 
-### F-BS · The conversation was the only thing shown to the model with no stamp
+### F-BS · The conversation was the only thing shown to the model with no stamp — **closed 20 Aug 2026, mechanism verified in code**
 
 `loop.ts` sorted history by `queued_at` and discarded it, so sixteen messages spanning three weeks
 arrived looking like sixteen spanning three minutes — against the file's own rule that everything
@@ -1557,7 +1576,7 @@ timestamp inside `content` enters the conversation as something a person said). 
 per-message stamps are sixteen lines of re-billed tail to say what four say. **It fixes reading,
 not state** — it would not have prevented F-BP.
 
-### F-BT · Every client message went to the account holder, with no override
+### F-BT · Every client message went to the account holder, with no override — **closed 20 Aug 2026, mechanism verified in code**
 
 `enrolledPlayers` resolved the recipient from `account.holder_person_id`, always. So "send
 reminders to my son" was impossible, and a money mute on the holder turned a bill into silence with
@@ -1584,7 +1603,7 @@ for anyone holding no account. What was missing was only a way to give such a pe
 `person_directory` needs no change either — it laterals to each person's own contact, so a linked
 player simply stops reading as unreachable.
 
-### F-BL · the coach removal that will not stay removed — handed off
+### F-BL, the coach removal that will not stay removed — handed off
 
 **Read this before you write a line of it.** This finding is deliberately not fixed. The fix
 that looks obvious — and that

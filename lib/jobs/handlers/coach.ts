@@ -52,6 +52,12 @@ async function loadCoach(tx: Tx, academyId: string, coachId: string): Promise<Co
 }
 
 /**
+ * @mechanism confirmationAudience — a confirmation is addressed to the people it is
+ *   FOR, so the recipient set is the admin list and the send path drops any message
+ *   whose subject is its own recipient. That is the whole of §18's coach column: a solo
+ *   operator, or a head coach who administers, is never asked to confirm something to
+ *   themselves, and there is no `if solo` at any rung to be right at some of them.
+ *
  * §18 rule 1 wants the people a confirmation is *for*. For "Coming?" that is
  * whoever would otherwise have to chase — the admins. When the coach is also
  * an admin (solo operator, head coach who administers, an admin covering a
@@ -66,6 +72,14 @@ async function confirmationAudience(tx: Tx, academyId: string): Promise<string[]
 
 /**
  * **Half a gate is worse than no gate.**
+ *
+ * @mechanism confirmIfSelfDirected — a suppressed question also has to be ANSWERED. A
+ *   coach who is an admin of this academy is definitionally present, so the rung writes
+ *   `session_coach.confirmed_at` through `executePlan` — diffed, audited, attributed —
+ *   instead of asking. Suppression alone left `confirmed_at` null for ever for every
+ *   solo operator, `isCovered` keys on exactly that, and the client trouble ladder then
+ *   told paying families "we're still sorting out a coach" 38 times in one month about
+ *   sessions that all ran, coached by the person being asked.
  *
  * The suppression above is right and it was the whole of the design: ask nobody
  * to confirm something to themselves. What it never did was ANSWER the question

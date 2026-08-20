@@ -1,6 +1,21 @@
 /**
  * lib/agent/schema-doc.ts — the schema layer of the stable prefix (§4.4).
  *
+ * @mechanism SCHEMA_DOC — the data model as one plain string constant, byte-identical
+ *   for every academy on every turn forever, which is the whole reason the automatic
+ *   KV cache matches this prefix at 3.2% of the miss price. Anything computed, dated or
+ *   per-tenant in here breaks that for every tenant at once. `npm run check:schema-doc`
+ *   reads it against the real database, so the prompt cannot go on describing columns
+ *   the migrations no longer have.
+ *
+ * @mechanism permission matrix — who may select, insert, update and delete each table,
+ *   carried in the prefix because it is the one class of fact the model cannot derive
+ *   from inside a session: policies are invisible there, so the boundary could only be
+ *   found by crossing it, and crossing it costs a write refused mid-plan or an UPDATE
+ *   that matches nothing and says nothing, then a whole round to re-plan. `npm run
+ *   check:rls-doc` reads the grid against pg_policies in both directions, because two
+ *   authors of one truth always drift and this one is made to read the other.
+ *
  * A compact rendering of the §6 data model for the model to author SQL against.
  * It is a plain string constant on purpose: it must be BYTE-IDENTICAL across
  * every turn, for every academy, forever, or the prompt cache prefix breaks.
@@ -532,8 +547,11 @@ than a near-miss.
   -- per_month, per_term or per_package class bills on the 1st (or on the pack)
   -- whatever the register says, so an unmarked register on one of those owes
   -- NOTHING and saying otherwise sends an owner hunting for money that was never
-  -- missing. Those rows are excluded here by construction. An empty result is a
-  -- real answer: nothing is waiting on a register.
+  -- missing. Those rows are excluded here by construction. An empty result
+  -- answers about MONEY only: no bill is waiting on a register. It is not "every
+  -- register is marked" — an unmarked per_month, per_term or per_package register
+  -- never appears here at all. Whether a register was actually taken is
+  -- session_detail, marked_players against due_players on a finished session.
 
 **The books.**
 

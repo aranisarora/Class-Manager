@@ -77,6 +77,13 @@ export const jwtSecret = (): string | undefined => process.env.APP_JWT_SECRET
  * Neither the login route nor the gate does anything at all without this: it is
  * the single predicate every other function in this file consults first, so
  * "unconfigured" cannot mean one thing at the door and another at the gate.
+ *
+ * @mechanism opsGateConfigured — one predicate for "is this gate real", consulted by the
+ *   login door, the signer and the verifier alike, so a deployment missing either secret
+ *   refuses everybody rather than accidentally accepting a bearer of the empty string. A
+ *   short `OPS_SECRET` counts as unconfigured too: a gate that quietly guards a real
+ *   business's parent conversations behind a four-character password is worse than one that
+ *   refuses to open, because the second kind gets fixed.
  */
 export function opsGateConfigured(): boolean {
   const ops = opsSecret()
@@ -86,6 +93,15 @@ export function opsGateConfigured(): boolean {
 /**
  * The signing key is SHA-256 over BOTH secrets, not `APP_JWT_SECRET` alone, and
  * that is load-bearing twice over.
+ *
+ * @mechanism signingKey — the HS256 key is SHA-256 over BOTH secrets, which is what gives a
+ *   sessionless gate a kill switch: rotating `OPS_SECRET` invalidates every outstanding
+ *   thirty-day cookie in the same breath, and the digest fixes the key width that
+ *   `APP_JWT_SECRET`'s sixteen-character floor does not. The cache is keyed on the material it
+ *   was derived from rather than on having run once, because a cache that never looks at its
+ *   input turns that revocation into a lie — a warm instance would keep signing with, and
+ *   honouring, the old key, and whether a session worked would become a function of instance
+ *   warmth.
  *
  * It gives revocation. There is no session table here and no reason to build
  * one, so a cookie already issued is otherwise valid for its full thirty days no
@@ -254,6 +270,15 @@ export async function authorizeOps(req: Request): Promise<boolean> {
  * The guard an ops route opens with, shaped exactly like `requireSandbox()` in
  * `lib/ops-guard.ts`: `null` means carry on, a `Response` means stop and return it
  * unchanged.
+ *
+ * @mechanism requireOps — every ops route checks the gate itself instead of trusting
+ *   `middleware.ts`, so one matcher edit, one framework regression or one platform routing
+ *   quirk is not the whole difference between a locked console and a public one holding every
+ *   parent conversation, phone number, payment row and memory line in the database.
+ *   Middleware stays the fast path and the thing that redirects a browser to the login; this
+ *   is the boundary. Cookie first, then the `Authorization: Bearer <OPS_SECRET>` hatch the
+ *   headless drivers need, and every failure — including a throw — comes back as an ordinary
+ *   401 rather than a 500 the client reads as "the server is unwell" and retries.
  *
  * WHY THE ROUTES CHECK AT ALL WHEN `middleware.ts` ALREADY DID. Because middleware
  * being the only layer makes one matcher edit, one framework regression or one

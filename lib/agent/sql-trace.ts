@@ -1,6 +1,14 @@
 /**
  * lib/agent/sql-trace.ts — every statement the MODEL wrote, exactly as it wrote it.
  *
+ * @mechanism captureSql — records every statement the model authored at both places one
+ *   reaches Postgres — `modelQuery` for a read, `runSteps` for each write inside a plan
+ *   — untruncated, with the role it ran as, the row count and the whole error text.
+ *   Captures nest rather than replace, and `recordSql` takes a thunk, so a closed
+ *   capture costs one null check and allocates nothing. Without it a plan carrying six
+ *   writes left ONE clipped trace row, and which of the six Postgres refused, and what
+ *   it said, was written down nowhere.
+ *
  * WHY THIS EXISTS
  * -----------------------------------------------------------------------------
  * The flight recorder (`turn.tool_calls`) is a record of TOOL CALLS, and it caps
@@ -144,6 +152,13 @@ let live: SqlRecord[] | null = null
 
 /**
  * Take everything the open capture has collected since the last drain.
+ *
+ * @mechanism drainSql — attributes statements to the turn that produced them with no
+ *   clock and no second capture: the list is append-only and in order, so everything
+ *   since the last drain belongs to the turn that just finished. It is what lets one
+ *   capture wrap a whole arc while the record stays per-turn, including where a turn is
+ *   driven in two pieces — the message, then the thumb on the button — which a per-turn
+ *   capture could only reach by restructuring the loop to suit the instrument.
  *
  * A driver that walks many turns under ONE capture needs to attribute statements
  * to the turn that produced them, and there is deliberately no timestamp on a

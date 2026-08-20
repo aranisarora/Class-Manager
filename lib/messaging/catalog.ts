@@ -1,6 +1,13 @@
 /**
  * lib/messaging/catalog.ts — §12, all 32 rows.
  *
+ * @mechanism CATALOG — one row per moment code raises, with the policy riding on it as DATA
+ *   rather than as prose at each call site: `fixed` marks the rows the bot may reword or
+ *   merge but never suppress, `actionTtlMinutes` turns §12's "Expires 1h" into the TTL
+ *   `compose` actually mints with, and `template`/`templateEvent` decide what carries the
+ *   moment out of window and what it says happened. A new moment cannot be added without
+ *   answering all four.
+ *
  * **These are intents, not messages.** Each row names a moment code knows about and carries
  * defaults: default timing, default buttons, default to sending. Code guarantees the moment
  * is put in front of the bot. The bot decides what actually happens — it may suppress,
@@ -95,6 +102,12 @@ export type CatalogEntry = {
  * absence sends somebody to a locked hall — a cancelled or moved session is not a
  * reminder, and muting reminders must not silently opt you out of being told your
  * class is not happening.
+ *
+ * @mechanism MUTE_SCOPE — maps every CatalogId to the mute that silences it, so "stop
+ *   messaging me about money" is a scope the jobs honour instead of a memory fact they
+ *   compose straight past. Being total over `CatalogId` is the point: a new moment cannot
+ *   be added without classifying it, and an unclassified moment would be silently
+ *   unmutable. Closes F-AV.
  */
 export type MuteScope = 'money' | 'reminders' | 'outcomes' | 'announcements'
 
@@ -588,6 +601,13 @@ const AUDIENCE_ORDER: CatalogEntry['audience'][] = ['client', 'prospect', 'coach
  * is in trouble and never when it is fine, that first tap wins on cover, that an uncovered
  * escalation is never sent to the coach it is about. Cutting it to a keyword would not be
  * compression; it would delete the only statement of those rules that exists.
+ *
+ * @mechanism catalogDigest — renders the whole table into the stable prefix byte-identically
+ *   across turns, and is the ONLY place the model is told when each moment fires, what code
+ *   already does about silence on it, and which rows it may not suppress — nothing in the
+ *   product ever puts a catalog row in front of it. Default button titles are quoted and
+ *   never bracketed, because bracket-formatted rows in prefix prose were imitated into live
+ *   message bodies as pseudo-buttons that could not be tapped.
  */
 export function catalogDigest(): string {
   const out: string[] = [

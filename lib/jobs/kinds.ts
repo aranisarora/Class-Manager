@@ -98,6 +98,13 @@ function preSessionPrefixes(sessionId: string): string[] {
  *     family has ever been told how their child's session went. The outcome is
  *     the one job whose moment is *after* the session, so it is the one job a
  *     completion must not cancel.
+ *
+ * @mechanism sessionJobPrefixes — one list of every dedupe-key family that hangs off a
+ *   session, so a reschedule sweeps the whole ladder before re-enqueueing (§13 rule 4)
+ *   and no job fires about a session that moved. `scope` keeps the two reasons to sweep
+ *   apart: `'all'` for a session that is not happening as planned, `'pre-session'` for one
+ *   that just happened and had its register marked — conflating them meant
+ *   `mark_attendance` cancelled the outcome jobs it had scheduled in the same transaction.
  */
 export function sessionJobPrefixes(
   sessionId: string,

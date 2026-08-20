@@ -1,6 +1,14 @@
 /**
  * lib/clock.ts — domain time (CONTRACTS §3, spec §17).
  *
+ * @mechanism now — domain time is read from `sim_clock.offset_ms` and never from `Date.now()`,
+ *   with `app.now()` as the SQL-side equivalent, so the whole product can be moved to next
+ *   Tuesday and asked what it would have done. A scheduler you cannot turn is a scheduler you
+ *   cannot test, and ~70% of this product is proactive. The offset is memoised for 250 ms —
+ *   long enough that a turn does not pay a round trip per timestamp, short enough that a clock
+ *   advanced in one pane is visible in the next — and a failed read keeps the last known
+ *   offset rather than throwing, so a database blip surfaces where the real work fails.
+ *
  * One shared clock across every pane, advanced on demand, backed by
  * `sim_clock.offset_ms`. Nothing in this product reads `Date.now()` for domain
  * time and nothing in SQL compares against `now()` — the SQL-side equivalent is
@@ -61,6 +69,13 @@ function apply(key: string, rows: ClockRow[]): void {
  * Read the offset that applies to `academyId`: its own row if it has one, else
  * the world's. The fallback is done here rather than with `coalesce` in SQL so
  * that `frozen_at` travels with whichever row actually won.
+ *
+ * @mechanism readClock — a clock per tenant over one world clock (0024's nullable
+ *   `sim_clock.academy_id`), resolved here and memoised per key, so holding one academy four
+ *   hours ahead does not move every other academy sharing the process — a single process-wide
+ *   offset cannot represent that at all. `ensureRow` seeds a tenant's own row from the world
+ *   offset before any write targets it: without it the first advance matches no row, updates
+ *   nothing and returns silently, and the driver prints a time it never set.
  */
 async function readClock(tx: Tx, academyId: string): Promise<ClockRow[]> {
   if (academyId) {
@@ -260,6 +275,14 @@ export async function nextEventAt(academyId = ''): Promise<Date | null> {
  */
 /**
  * Is this instant inside the academy's night?
+ *
+ * @mechanism isQuietHour — the one quiet-hours predicate, kept here rather than in the jobs
+ *   layer because the SEND path is what enforces it and cannot reach that far. While
+ *   `lib/jobs/util.ts` held the only copy and `runner.ts` said outright that there are no
+ *   quiet hours, the product both had them and did not: going live at 2am fired three reminder
+ *   templates at 02:02 from three different handlers, none of which was wrong about anything
+ *   except the hour. The window is read from `academy.settings` with a 21:00–07:00 default
+ *   rather than written into every row, and the expression wraps midnight.
  *
  * **The one predicate, here rather than in the jobs layer, because the send path
  * needs it and cannot reach that far.** `lib/jobs/util.ts` had the only copy, and

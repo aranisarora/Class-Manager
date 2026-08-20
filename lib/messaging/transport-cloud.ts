@@ -1,6 +1,12 @@
 /**
  * lib/messaging/transport-cloud.ts — the production wire.
  *
+ * @mechanism cacheSenderCredentials — credentials are held per SENDER number, parsed from
+ *   the `sender.credentials` jsonb that `send.ts` reads under its own role and hands in
+ *   (§16.3 — `academy.sender_id → sender`, never a constant and never an env var), so one
+ *   academy's traffic cannot leave over another's number. It is also why this module keeps
+ *   no database connection: a transport that queries is not a transport.
+ *
  * **The only file in the codebase that may talk to Meta** (§17). Nothing here runs in this
  * build; it exists because a transport abstraction whose second implementation was never
  * written is not an abstraction, it is a wrapper — and the shapes below are what force the
@@ -88,6 +94,13 @@ export function messagesUrl(phoneNumberId: string): string {
  * back as `interactive.button_reply.id`, and `consumeAction` replays the stored payload with
  * no model call. Template quick-replies work the same way — the title was fixed at approval,
  * only the payload varies per send.
+ *
+ * @mechanism buildPayload — the single translation from this product's message shape into
+ *   Graph JSON. Every affordance carries its minted action id as the wire payload — reply
+ *   button, list row and template quick-reply alike — so a tap comes back as an id
+ *   `consumeAction` replays rather than as text something has to interpret, and the shapes
+ *   the wire cannot mix (`cta_url` against reply buttons against a list) stay exclusive
+ *   here exactly as they are in `OutboundMessage`.
  */
 export function buildPayload(
   req: TransportRequest,
@@ -229,6 +242,13 @@ type GraphError = {
  * Retry only what retrying can fix. A 470/131047 (outside the window), a 132000-series
  * template error or a 131026 (undeliverable number) will fail identically forever; retrying
  * them burns tier capacity on the shared number for nothing (§16.1).
+ *
+ * @mechanism isPermanentGraphError — splits Graph failures into "a retry could fix this" and
+ *   "this will fail identically forever" from Graph's own codes: throttles, timeouts and 5xx
+ *   come back retryable, while an outside-the-window, template or undeliverable-number error
+ *   is marked permanent. Retrying one of those burns tier capacity on the shared number for
+ *   nothing (§16.1). The answer rides out on `TransportResult.permanent`, which is the input
+ *   a retry policy needs — today `send.ts` fails the message on either kind.
  */
 export function isPermanentGraphError(status: number, err: GraphError | null): boolean {
   if (status === 429 || status === 408 || status >= 500) return false
@@ -386,6 +406,12 @@ async function graph<T>(
  * A placeholder naming something not in `params` throws rather than shipping
  * `{whoops}` into an approval submission — the frozen text is the one thing that
  * cannot be fixed after the fact without a re-approval.
+ *
+ * @mechanism templateSubmission — derives the positional body Meta approves ({{1}}, {{2}})
+ *   and the example it demands from the SAME `def.params` ordering `templateWireParams`
+ *   sends arguments in, so the approved text and the arguments it receives cannot drift. A
+ *   placeholder outside `params`, or a missing `exampleParams` entry, throws here rather
+ *   than being discovered in text that can only be changed by deleting the template.
  */
 export function templateSubmission(def: TemplateDef): Record<string, unknown> {
   const index = new Map(def.params.map((p, i) => [p, i + 1]))

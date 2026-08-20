@@ -2,6 +2,15 @@
  * lib/agent/plan.ts — `transaction(steps[])`, the runtime that makes
  * model-composed atomicity safe (§14.2, §14.2.1, §2.3, §2.5).
  *
+ * @mechanism executePlan — every plan runs as one transaction: the steps execute, the diff
+ *   is read back before commit, and messages are STAGED in an outbox that only flushes to
+ *   the wire once the commit lands. A rolled-back plan has therefore messaged nobody and
+ *   changed nothing, which is the property hand-written operations get wrong most often —
+ *   a half-done change followed by a confident WhatsApp message is not a shape this runtime
+ *   can produce. Whatever composed the steps, a named operation or the model's own SQL, gets
+ *   the same atomicity, the same RLS and one audit entry carrying the intent; `previewPlan`
+ *   is the identical run with the rollback guaranteed.
+ *
  * The whole point: the model composes the steps, the RUNTIME guarantees the
  * properties. For every plan, whatever its steps:
  *
@@ -337,6 +346,15 @@ export async function identityFor(ctx: SessionCtx): Promise<Identity> {
 /**
  * An id argument names a row that exists, or the operation does not run.
  *
+ * @mechanism assertIdsExist — every id-shaped argument to an operation is read back before
+ *   the transaction opens, against the table its NAME implies (`coach_id` is a coach), under
+ *   the caller's own session. A well-formed uuid that matches no row is indistinguishable
+ *   everywhere downstream from one that does, so without this the operation looks it up,
+ *   finds nothing, falls back to its placeholder and returns `ok: true` — an invite addressed
+ *   to "Hi them" and a coach whose status never moved. One chokepoint rather than a check per
+ *   operation, and running under the caller's session makes "no such row" and "not yours to
+ *   see" the same answer, which is the answer RLS is entitled to give.
+ *
  * The invented uuid is the oldest failure in this product and the one that reads most
  * like success. Watched live, minutes after it was supposedly fixed: the admin tapped
  * `[Send the invite]`, the model re-derived the coach id rather than being handed it,
@@ -498,6 +516,15 @@ function tableOf(sql: string): { table: string; op: 'insert' | 'update' | 'delet
 
 /**
  * Which contact a message step is addressed to.
+ *
+ * @mechanism resolveContact — a message step's recipient is resolved as the service role when
+ *   an OPERATION authored the step (`fromOperation`, stamped by `expand` and stripped from
+ *   anything the model writes) and inside the caller's own visibility when the model authored
+ *   it. Resolving everything through the caller silently un-sent every admin notification
+ *   raised from a client's turn: `contact_cm_user_select` returned NULL, the step was dropped
+ *   with no message row and no `suppressed_reason`, and AD-NEW-TRIAL was written 0 times
+ *   across seven academies. Resolving everything as service would be the opposite defect — a
+ *   model-authored plan in a parent's turn could address any person in the academy.
  *
  * **Addressing an outbound is not the same question as reading a contact, and
  * conflating them silently un-sent every admin notification the product raises
@@ -1054,6 +1081,15 @@ function emptyState(): RunState {
 /**
  * A plan whose whole purpose was to change something, and changed nothing, failed.
  *
+ * @mechanism assertSomethingChanged — a plan that carries writes and whose diff is empty
+ *   aborts instead of committing. Zero rows is not a Postgres error, so an RLS-refused update
+ *   — or a WHERE that an earlier step in the same plan made false — used to commit quietly
+ *   with an empty audit diff and a "Nothing changed" summary the model read straight past: a
+ *   coach was told "You're all set up", stayed `invited` forever, and nothing anywhere said
+ *   so. Plan-level rather than step-level on purpose: individual writes legitimately match
+ *   nothing, a whole plan of writes never does, and a plan of only messages, notes or
+ *   scheduled work never claimed to change a row.
+ *
  * **The most dangerous shape in the product, because it reads as success at every
  * layer.** Watched, on a coach's first ever message: `[Looks right]` ran
  * `onboard_coach`, whose one write is `update coach set status = 'active' where id = …`.
@@ -1544,6 +1580,18 @@ const UNIQUE_DETAIL_RE = /Key \(([^)]+)\)=\(([^)]*)\) already exists/i
  */
 /**
  * Which kind of nothing happened.
+ *
+ * @mechanism refusalHint — both silent failures (`CHANGED_NOTHING`, and a `requireRows`
+ *   guard's `PRECONDITION_FAILED`) re-run their own writes as the service role inside a
+ *   transaction that always rolls back, which tells an RLS refusal apart from a WHERE that
+ *   matched nothing instead of asserting a race nobody checked. Where the rows do exist,
+ *   `escalateRefusal` performs the handoff rather than advising one in prose: the admins get
+ *   an AD-NEEDS-YOU message carrying the plan's own note, and the same `memory_fact` the
+ *   `handoff` tool writes is recorded — so a parent asking to stop lessons cannot end in a
+ *   model-composed "I've noted that" with zero audit rows behind it. Deliberately narrow, or
+ *   the refusal path becomes a side channel reporting what somebody tried: a person rather
+ *   than the service role, a write attempted, the plan aborted, and the rows provably real.
+ *   Closes F-AX.
  *
  * `assertSomethingChanged` can see that a plan of writes changed no rows. It
  * cannot see WHY, so it says "either the WHERE matched nothing, or this person
@@ -2112,6 +2160,15 @@ const BULK_ROWS = 40
 
 /**
  * Preview when the change reaches past the person making it.
+ *
+ * @mechanism needsPreview — whether a change costs a confirmation is decided from the plan's
+ *   own result rather than from who composed the SQL: a preview is required when it messages
+ *   somebody other than the person acting, deletes rows, changes more than one row that
+ *   already existed, touches money or the business's own controls, collides with itself
+ *   (`clashes`), or runs past ~40 rows — and never for creating rows nobody has been told
+ *   about yet. Gating on authorship instead taxed exactly the direction the product is going
+ *   and made onboarding a confirmation per venue; gating on nothing lets a bulk change or a
+ *   coach booked into two places commit unattended and be described in the past tense.
  *
  * | Reaches past them                                       | Preview          |
  * |----------------------------------------------------------|------------------|

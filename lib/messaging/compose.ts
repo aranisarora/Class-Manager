@@ -1,6 +1,13 @@
 /**
  * lib/messaging/compose.ts — buttons become actions, then the message goes out.
  *
+ * @mechanism composeAndSend — validates the message it would actually have produced,
+ *   placeholder ids standing in for the buttons, BEFORE minting a single action: an
+ *   unrenderable message is refused and recorded as a `limit_violation` rather than
+ *   leaving a trail of live action rows behind it. Nothing is repaired here either — the
+ *   gap between the message the model wrote and the message the person read is closed by
+ *   refusing upstream, in the `reply` tool, where the author still has a round of grace.
+ *
  * This is where §4.3 is paid for. "After every action the bot takes, it offers the natural
  * next step as a button" — and every one of those buttons is an `action` row minted here,
  * fully resolved, before the message exists (§2.2). The tap replays it; nothing is inferred
@@ -106,6 +113,14 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
   // the contact who messaged, while jobs, digests and escalations run as `role:'service'`
   // with no contact at all. So proactive traffic cannot acquire this flag by accident, and a
   // message the model sends to a *third* party during someone's turn does not get it either.
+  /**
+   * @mechanism solicited — derived from the acting session, never passed by hand: a turn
+   *   runs as `role:'user'` for the contact who messaged, while jobs, digests and
+   *   escalations run as `role:'service'` with no contact, so proactive traffic cannot
+   *   acquire the flag and a message to a third party mid-turn does not either. §16.3's
+   *   per-recipient frequency cap therefore cannot silence a reply mid-conversation or
+   *   swallow a confirmation prompt whose buttons have already been minted.
+   */
   const solicited = ctx.role !== 'service' && ctx.contactId === spec.toContactId
 
   const base: Omit<OutboundMessage, 'buttons' | 'list'> = {
@@ -209,6 +224,13 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
   // on the same card committed a plan and then said "Left as it was — nothing changed."
   // A suppressed or failed send that never got a row leaves them unstamped, which is exactly
   // right: nothing was printed, so there is no family and nothing to invalidate.
+  /**
+   * @mechanism attachActionsToMessage — stamps the sent message onto every action it
+   *   printed, so the buttons on one card become a family that dies together. Until this
+   *   lands each button is an independent row live for its own TTL, which is how tapping
+   *   "Do it" and then "Cancel" on the same card committed a plan and then reported
+   *   "Left as it was — nothing changed."
+   */
   await attachActionsToMessage(ctx, outcome.messageId, minted)
   return outcome
 }

@@ -24,6 +24,14 @@ export const NIL_ACADEMY = '00000000-0000-0000-0000-000000000000'
 // Skipping — §13 rule 2, "every job re-checks its precondition at run time"
 // -----------------------------------------------------------------------------
 
+/**
+ * @mechanism JobSkip — a handler whose precondition no longer holds throws this, and the
+ *   runner records the row as `skipped` with the reason rather than `failed` (§13 rule 2).
+ *   A cancelled session's `coach_coming` standing down and a handler that actually broke
+ *   are then different rows saying different things — without the distinction every
+ *   deliberate non-run reads as an outage in the run log, and a real outage reads as
+ *   routine, which is the same column answering two questions.
+ */
 export class JobSkip extends Error {
   readonly reason: string
   constructor(reason: string) {
@@ -81,6 +89,13 @@ export function setJobOrigin(kind: string | undefined): void {
  * could not be measured on exactly the surface where the product acts
  * unsupervised. This is the one place the jobs layer opens a session, so it is
  * the one place that has to know, and no handler has to remember.
+ *
+ * @mechanism serviceCtx — every session the jobs layer opens is stamped `origin: 'job'`
+ *   with the running job's kind as `originRef` (set by `setJobOrigin` around each
+ *   handler), so nothing sent from a handler reaches the wire unattributed. Attribution
+ *   used to ride on `turnId` and a job has no turn: 27 of 81 outbound messages in one
+ *   drive — the whole standing surface — could not be traced to what sent them, on
+ *   exactly the surface where the product acts with nobody watching.
  */
 export function serviceCtx(academyId: string): SessionCtx {
   return {
@@ -317,6 +332,13 @@ export type EnrolledPlayer = {
  * The permission side needs no work either: a player who holds no account gets
  * `app.sees_money() = false`, so a linked teenager sees his sessions and never a
  * rupee of the family's.
+ *
+ * @mechanism enrolledPlayers — the number a class message goes to is the player's own
+ *   contact where an admin approved one, else the holder's, while `holder_contact_id` is
+ *   carried beside it and the money handlers resolve the payer themselves. "Send the
+ *   reminders to my son instead" had nowhere to live before: the recipient was derived
+ *   from `account.holder_person_id` with no override anywhere, so a teenager with his own
+ *   phone still had his classes announced to his mother.
  */
 export async function enrolledPlayers(
   tx: Tx, academyId: string, classId: string, onDate: string,
@@ -370,6 +392,13 @@ export function settingNumber(settings: unknown, key: string): number | null {
  * column (where one exists), then the product default. A coach who has confirmed
  * at the door forty times running stops being asked at T-60 because someone
  * wrote `coach_coming_lead_minutes` onto their person row — no code changes.
+ *
+ * @mechanism leadFor — one resolution order for every timing the scheduler uses: the
+ *   person's own `settings`, then the academy's, then the academy column where one
+ *   exists, then TIMING_DEFAULTS. §8.2's "the timings are defaults, not constants" is only
+ *   true because nothing inlines a lead time — a lead written into a handler is a constant
+ *   with no override, and one lead time for every family is a schedule rather than a
+ *   manager.
  */
 export function leadFor(
   name: TimingName,
@@ -481,6 +510,16 @@ export function atTimeOn(date: string, time: string, tz: string): Date {
  * The pair lives in `academy.settings` (`quiet_start` / `quiet_end`, 'HH:MM'),
  * defaulted here rather than written into every row: 21:00–07:00 is a sane
  * household window, and an academy that wants dawn sends can say so.
+ *
+ * @mechanism pullOutOfQuietHours — a computed send time that lands inside the academy's
+ *   quiet window is MOVED at plan time rather than dropped, in the direction its message
+ *   type can survive: a reminder is pulled back to the last waking minute before the
+ *   window (never later — a reminder after its class is worthless), and its sibling
+ *   `deferPastQuietHours` pushes an alert forward to morning instead, because pulling the
+ *   register escalation back would fire it before the grace period it grants. The send
+ *   path is the floor and it suppresses; it has no queue, so without this the night's
+ *   messages are not delayed, they are lost. F-H: a 6:30pm class on the default 14-hour
+ *   lead put reminders on parents' phones at 4:30am.
  */
 export function pullOutOfQuietHours(
   at: Date,

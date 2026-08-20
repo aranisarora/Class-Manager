@@ -38,6 +38,14 @@ function weekdayOf(dt: DateTime): number {
 /**
  * `materialize_sessions` — a rolling ~3-week horizon from `class_slot`.
  *
+ * @mechanism materializeSessions — rewrites the horizon from `class_slot` idempotently on
+ *   `unique (class_id, starts_at)`: a moved end time is fixed in place rather than
+ *   re-created, and the orphan sweep deletes only future, in-horizon, still-scheduled
+ *   sessions with no attendance and no `tally_line` pointing at them. So editing a slot
+ *   cannot destroy a cancellation, a marked register, or a session a family has already
+ *   been billed for — and each session it does remove has its ladder cancelled (§13 rule
+ *   4), so nothing that no longer exists keeps sending.
+ *
  * `unique (class_id, starts_at)` is what makes this idempotent: running it
  * twice writes nothing the second time. Editing a slot rematerialises the
  * future **without losing cancellations or marked attendance** (§19 phase 3),
@@ -165,6 +173,13 @@ export async function materializeSessions(job: Job): Promise<void> {
 /**
  * `post_class_register` at `ends_at` — CO-REGISTER (§8.2 step 5).
  *
+ * @mechanism postClassRegister — the register's universe is the UNRESOLVED roster, not
+ *   the whole one. "Already marked" used to mean any attendance row existed, so one
+ *   parent's advance cancellation suppressed the entire register and the coach was never
+ *   asked about anybody else; it now means every enrolled player is resolved, and the ask
+ *   — including what `[All present]` carries — covers the remainder only, so a tap cannot
+ *   clobber a cancellation already on record.
+ *
  * `[All present]` is a chat button carrying the fully resolved roster, so the
  * majority case is one tap and no model call (§2.2, §6.5). `[Take register]`
  * goes back through the agent, which mints the register page (§15).
@@ -264,6 +279,15 @@ export async function postClassRegister(job: Job): Promise<void> {
 
 /**
  * `register_expiry` at `ends_at` + 2h — AD-REGISTER-MISSING (§12.4).
+ *
+ * @mechanism registerExpiry — where §18 rule 2 rightly drops an escalation about the
+ *   recipient to the recipient, the same fact is REFRAMED and sent anyway: "two hours
+ *   since Kabir's session and nothing is billed for it yet" carries neither
+ *   `isEscalation` nor a subject, so nothing drops it, and it is news rather than a
+ *   scolding. For a solo per-session business the unmarked register IS the invoice, and
+ *   the drop cost one month ~21 sessions with a single register marked. Its `stateKey`
+ *   is the SET of registers still owed, so three unmarked ones are one message and a
+ *   fourth is a change worth saying. Closes F-AS, F-AN.
  *
  * The escalation is about the *session*, never about the coach (§6.3), but it
  * carries the coach as its subject so the send path can refuse to escalate about

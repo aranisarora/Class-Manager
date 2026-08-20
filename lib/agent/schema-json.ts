@@ -2,6 +2,16 @@
  * lib/agent/schema-json.ts — an operation's zod schema, as the JSON Schema the
  * tool declaration carries.
  *
+ * @mechanism toJsonSchema — renders an operation's zod schema into the narrow OpenAPI
+ *   subset a tool declaration may carry, so the property names, the types and the closed
+ *   sets travel WITH the call at the decode point rather than as prose signatures tens
+ *   of thousands of characters upstream in the prefix. It never throws — a declaration
+ *   that failed to build would take the whole tool surface down at boot — so depth is
+ *   capped and a union collapses to an `enum` or to its branches' common type. Without
+ *   it `act` declared `args: { type: 'object' }`, and a model wrote `full_name` where
+ *   the schema says `name`, twice, wrote nothing, and told the admin it was having
+ *   trouble with SQL syntax.
+ *
  * WHY THIS EXISTS
  * -----------------------------------------------------------------------------
  * The declared schema is not documentation. It travels WITH the call, at the
@@ -181,6 +191,13 @@ export function toJsonSchema(schema: unknown, depth = 0): Json {
 
 /**
  * The parameters block for one operation, always an object even when it takes nothing.
+ *
+ * @mechanism parametersFor — builds the declared parameter block, and `omit` takes
+ *   fields out of what the model decodes against while the zod schema keeps them, so a
+ *   human's tap still validates through the same shape it always did. A declared field
+ *   is an invited one: `opt_out` advertising `confirmed: boolean` is how a model that
+ *   had just heard "please stop messaging me now" came to assert the tap itself. The
+ *   caller passes `HUMAN_ASSERTION_PARAMS` — the fields only a person's thumb may set.
  *
  * `omit` removes parameters from what the model decodes against — the caller
  * passes `HUMAN_ASSERTION_PARAMS` (steps.ts), the fields only a human's tap may

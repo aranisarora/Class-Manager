@@ -33,6 +33,15 @@ import { OPERATIONS } from './operations'
  * Action payloads
  * ------------------------------------------------------------------------- */
 
+/**
+ * @mechanism ActionPayloadSchema — a button's action validated for MEANING at mint time, not
+ *   merely for shape: the operation name must exist in the registry and its arguments must
+ *   parse against that operation's own schema, and a nested plan is checked the same way. A
+ *   tap replays the stored payload with no model in the loop and nothing to fall back on, so
+ *   anything wrong at mint is a dead button in front of somebody who has just said yes — a
+ *   coach tapped `[Looks right]` on `confirm_coach` with no `session_id`, was told "that
+ *   didn't go through", and nothing would ever have made her active.
+ */
 export const ActionPayloadSchema: z.ZodTypeAny = z.lazy(() =>
   z.union([
     z
@@ -96,6 +105,14 @@ export const ActionPayloadSchema: z.ZodTypeAny = z.lazy(() =>
  * Steps
  * ------------------------------------------------------------------------- */
 
+/**
+ * @mechanism MessageStepSchema — a plan's message body is held to the same prose rules as a
+ *   `reply`, and it is held to them here, where the plan is validated. The outbox flushes
+ *   AFTER the transaction commits, so a refusal there would mean a committed change nobody was
+ *   told about — which is why the body used to be quietly repaired instead, the second author
+ *   one door over. Validating at mint puts the refusal where a round of grace still exists,
+ *   and a plan refused for its prose has written nothing.
+ */
 const MessageStepSchema = z.object({
   to_contact_id: z.string().optional(),
   to_person_id: z.string().optional(),
@@ -167,6 +184,15 @@ function normalizeStep(raw: unknown): unknown {
   return step
 }
 
+/**
+ * @mechanism PlanStepSchema — every step a plan can carry, checked at mint against the thing
+ *   that will actually run it: an operation name against the registry and its args against
+ *   that operation's own parameter schema, a `schedule` step's `kind` against the job handler
+ *   registry. Tap time has no model present and the payload executes exactly as stored, so a
+ *   step that cannot run is a promise already broken — `[Yes, set it]` carrying a job kind of
+ *   `"private-rate-1000"` was accepted, stored, shown, and dead on the tap, and the admin's
+ *   prices never rose on 1 October. Closes F-AW.
+ */
 export const PlanStepSchema: z.ZodTypeAny = z.lazy(() =>
   z.preprocess(normalizeStep, z.union([
     z.object({ write: z.string().min(1) }),
@@ -292,6 +318,13 @@ export function checkSteps(raw: unknown): { ok: true; steps: unknown[] } | { ok:
 
 /**
  * Why that name is not an operation, and what to write instead.
+ *
+ * @mechanism NOT_OPERATIONS — the refusal names the right form. Several of the names the model
+ *   reaches for inside a plan ARE real capabilities, reached a different way — a plan schedules
+ *   with a `schedule` step and sends with a `message` step — so each confused name maps to what
+ *   to write instead. "unknown operation" is true and unactionable, and a clean lifecycle drive
+ *   measured the cost: the model composed `{"operation":{"name":"schedule"}}`, was told that
+ *   twice, gave up, and the business never went live.
  *
  * "unknown operation" is true and unactionable, and a clean drive of the whole
  * lifecycle showed exactly what it costs. Asked to go live, the model composed
@@ -431,6 +464,15 @@ function stripPayload(payload: unknown, stripped: string[]): unknown {
  * Remove every human-assertion parameter from model-authored steps, at every depth
  * a step can carry one: the step's own operation, and the operation behind any
  * button on a message step — including a button carrying a whole nested plan.
+ *
+ * @mechanism stripHumanAssertions — the runtime keeps the fields the model must not set. Every
+ *   legitimate value of HUMAN_ASSERTION_PARAMS is minted by the runtime into a button somebody
+ *   taps, so a model that sets one is claiming a tap that never happened: `send_invite_draft`
+ *   with `mark_sent` drafted nothing, wrote the coach to `invited` — making every "chase the
+ *   uninvited" path skip her forever — and told the admin her invite was out, with `ok: true`
+ *   and nothing anywhere disagreeing. Stripped only where "the model wrote this" is known,
+ *   never on the tap path, and the names removed are returned so the model is told rather than
+ *   silently overruled.
  *
  * Returns the names it removed so the caller can TELL the model, rather than
  * silently changing what it asked for. A silent strip would produce the same

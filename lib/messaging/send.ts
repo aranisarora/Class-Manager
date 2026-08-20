@@ -5,6 +5,13 @@
  * send path, everything through it, no helper that skips the queue. This is what makes it
  * safe to give the model a message primitive."
  *
+ * @mechanism send — the one path to the wire. Every message the product emits — catalog
+ *   row, composed message, model-authored reply, job output — passes ten ordered gates:
+ *   opt-out, the scoped mute, quiet hours, §18's two subject rules, pre-launch silence,
+ *   state-key and byte-identical repeat, the wire's own limits, the per-recipient and
+ *   per-tenant 24h caps, window-and-template, and idempotency. No helper skips them, so a
+ *   rule holds here once instead of holding in the senders somebody remembered.
+ *
  * Ten gates, in order. Every one of them **records its decision on a `message` row** instead
  * of dropping the message on the floor: a suppression nobody can see is indistinguishable
  * from a bug, and the emulator's event log is where §18 and §2.8 are actually inspected
@@ -269,6 +276,13 @@ function buildTemplateParams(
  * A missing or unreadable row counts as committing. This decides whether a
  * button may ride an approved template with somebody else's label on it, and the
  * safe answer to "I don't know what this does" is "then it does not go out".
+ *
+ * @mechanism committingButton — reads the stored `action` payload at send time and refuses to
+ *   let an `operation` or `steps` button ride an approved template, because a template's
+ *   quick-reply title is fixed at approval and the tap would then carry somebody else's
+ *   label: an `Open` that confirms a payment, or marks a whole register present. A missing or
+ *   unreadable row counts as committing, so the action goes rather than the label, and the
+ *   body keeps the question answerable by reply.
  */
 async function committingButton(tx: Tx, actionId: string | undefined): Promise<boolean> {
   if (!actionId) return false
@@ -446,6 +460,16 @@ async function roleTemplate(tx: Tx, row: Row): Promise<TemplateName | null> {
   }
 }
 
+/**
+ * @mechanism suppress — every gate's refusal becomes a `message` row: status `suppressed`
+ *   rather than `failed`, the reason in `suppressed_reason`, and the body, window state and
+ *   cost that would have gone. A deliberate non-send is therefore distinguishable from a
+ *   broken number, and staying quiet is auditable rather than invisible: a suppression
+ *   nobody can see is indistinguishable from a bug. The three "not now" reasons — both caps
+ *   and quiet hours — release the idempotency key so the moment may be attempted again;
+ *   every other suppression keeps it, because it is a decision made once.
+ *   Closes F-AT.
+ */
 async function suppress(
   tx: Tx,
   row: Row,
@@ -647,6 +671,15 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
       return suppress(tx, row, msg, 'quiet_hours', inWindow)
     }
 
+    /**
+     * @mechanism subjectPersonIds — the message declares who it is ABOUT, and the two gates
+     *   below compare that list against who is reading it: a confirmation request about the
+     *   recipient and an escalation about the recipient are dropped here, once, rather than by
+     *   an `if solo` branch in every sender that could raise one. It catches what a
+     *   tenant-level solo flag misses — the two-coach academy where one is the admin, the head
+     *   coach who is also an admin — and the same list names the subject in an out-of-window
+     *   template, so the line is about the child rather than the parent reading it.
+     */
     // ── Gate 2 · §18 rule 1 ───────────────────────────────────────────────────
     // "Never ask someone to confirm something to themselves." The solo coach asked to
     // confirm they are coming to their own class is week-one churn, and this is the one
@@ -706,6 +739,13 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
      *
      * Suppressed rows do not count as having told them, so a message dropped by
      * the caps or by quiet hours is retried when the next attempt comes.
+     *
+     * @mechanism stateKey — a standing message reports a state once, however long the state
+     *   lasts: the key is matched against `payload->>'state_key'` on this contact's
+     *   unsuppressed outbound rows with no time window at all, so a job firing daily into an
+     *   unchanged state says it once, and a state that legitimately recurs carries what moved
+     *   inside its own key. Suppressed rows do not count as having told anybody.
+     *   Closes F-AN.
      */
     if (msg.stateKey) {
       const told = await tx<{ id: string }[]>`
@@ -957,6 +997,14 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
      * open question per person per subject, so re-asking replaces. `on conflict`
      * cannot express that (the index is partial on `resolved_at is null`), so the
      * older row is resolved first and the reason it ended is recorded.
+     *
+     * @mechanism pending_request — the outstanding question is written on the one path every
+     *   ask goes through, and only once a message has actually been queued, with the subject
+     *   derived from `subjectPersonIds` when the caller passes none and `expires_at` taken from
+     *   the button's own TTL. So "asked and unanswered" is a state nobody has to remember to
+     *   record, and one that can end; re-asking supersedes the open row rather than colliding
+     *   with 0032's partial unique index.
+     *   Closes F-AF, F-AQ.
      */
     if (msg.isConfirmationRequest) {
       const kind = msg.confirmation?.kind ?? msg.catalogId ?? 'confirmation'

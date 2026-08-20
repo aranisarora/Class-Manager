@@ -1,6 +1,14 @@
 /**
  * lib/agent/turn-trace.ts — the flight recorder, uncapped, while an instrument watches.
  *
+ * @mechanism captureFullTrace — lifts the 4,000-character clip on every value the
+ *   flight recorder stores, for as long as a harness holds a capture open, and puts it
+ *   back however the run ends. It moves the RECORDER and nothing else: the history
+ *   `loop.ts` hands back to the model still clips, because an instrument that alters
+ *   the thing it measures is worse than no instrument. Without it a record goes
+ *   blindest exactly where the turns are hardest — the long deliberations and the
+ *   six-write plans are the first things cut.
+ *
  * WHY THIS EXISTS
  * -----------------------------------------------------------------------------
  * `turn.tool_calls` is stored on every turn forever, so every value on its way in
@@ -42,6 +50,13 @@ let depth = 0
 
 /**
  * The out-of-process half.
+ *
+ * @mechanism PROBE_FULL_TRACE — the same cap lift for a whole process, so the one
+ *   instrument that goes through the real HTTP surface can still record everything.
+ *   `drive` posts to the emulator API exactly as a human does, so the turn it measures
+ *   runs inside the dev server where no capture of the driver's is open. Read once at
+ *   module load rather than per call: a value that could change mid-run would make two
+ *   turns of one drive incomparable.
  *
  * `probe-model` and `drive-week` run the loop themselves and can hold a capture
  * open around it. `drive` cannot: it posts to the emulator API exactly as a human

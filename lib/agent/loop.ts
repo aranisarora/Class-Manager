@@ -594,6 +594,15 @@ async function sendMenu(session: SessionCtx, identity: Identity, which: string):
  * One line of the turn's flight recorder. `args` carries the SQL verbatim
  * because "what did it actually read" is the question a wrong answer raises,
  * and reconstructing it from the reply is guesswork.
+ *
+ * @mechanism ToolTrace — the flight recorder carries the model's OWN rounds beside the tool
+ *   calls, under the `(model)` and `(context)` markers that `isToolCall` keeps out of tool
+ *   counts: what it wrote, what it deliberated (`reasoning`, a field of its own, capped at
+ *   24k rather than folded into `args` and cut at 2k), what it spent and why it stopped —
+ *   per round, in order. `evidence` caps these rows in production and clips nothing while an
+ *   instrument holds a capture open, so a run can also be asked what the model was GIVEN.
+ *   Without it a turn reads back as a list of tool calls with the reasoning removed, and a
+ *   turn that cost 128k tokens over six rounds cannot be asked which round was expensive.
  */
 export type ToolTrace = {
   round: number
@@ -773,7 +782,7 @@ async function modelTurn(
   // the same rows is what made the identical statement go out twice a turn.
   const turns = await recentToolTurns(identity)
   const lookups = turns.value ? recentLookups(turns.value, at) : undefined
-  const actions = turns.value ? recentActions(turns.value) : undefined
+  const actions = turns.value ? await recentActions(turns.value, identity) : undefined
   const tail = await variableTail(identity, {
     clockNote: `It is ${clock.label} (${clock.date} ${clock.time}) in ${identity.academy.timezone}.`,
     taskInstruction: input.task?.instruction,
@@ -839,6 +848,15 @@ async function modelTurn(
   let cachedTokens = 0
   /**
    * Whether anything actually reached THIS person's phone.
+   *
+   * @mechanism spoke — the turn's test for "was this person answered" is what arrived at the
+   *   ASKER's contact, not what left the building: a proposal routed to the owner is a turn
+   *   that sent something and told the person who asked nothing. When it is false and nothing
+   *   was drafted either, the turn spends one toolless recovery round putting what it already
+   *   learned into words, and apologises only if that fails too — one of three sentences, and
+   *   a census of this turn's `message` rows suppresses even that if the runtime already said
+   *   something true, because a second message reads as the first being withdrawn. Going
+   *   quiet is the one failure a person cannot tell apart from being ignored.
    *
    * This used to be "did the model call `reply`", set before the call was even
    * run — so a `reply` the runtime *refused* still counted as having spoken, and
@@ -922,6 +940,15 @@ async function modelTurn(
    * for the same reason every time. Three of those cost 81 seconds and 119k
    * tokens and ended in an apology that invented a cause. A refusal repeating is
    * the signal, not the arguments repeating.
+   *
+   * @mechanism failedReasons — refusals are counted by tool name plus the reason with ids,
+   *   quoted literals and numbers stripped out, so three attempts that differed only in
+   *   which irrelevant argument was edited read as one refusal repeating: the second says
+   *   so in the result the model reads, the third stalls the turn out of the loop and into
+   *   the recovery round. With `failedCalls` beside it, which blocks a byte-identical
+   *   repeat before `runTool` sees it, this is what stops a stuck turn spending every
+   *   remaining round — 93 seconds and 165k tokens, measured — on a call the world will
+   *   not let succeed, and ending in an apology that invents a cause.
    */
   const failedReasons = new Map<string, number>()
   let stalled = false
@@ -1502,6 +1529,12 @@ async function modelTurn(
     // and reflection should see that rather than a reply nobody received.
     if (trailing.status === 'sent' || trailing.status === 'queued') {
       toolCtx.saidToUser?.push(outgoing)
+      // On the same condition, and for the reason `ToolCtx.spokeAsTrailingProse`
+      // records: this is the send the model does not know it made. `saidToUser`
+      // keeps the words; this keeps the fact that the runtime, not a `reply`
+      // call, put them on the phone — which is what reflection was arguing with
+      // `turnState` about on three turns of the 19 Aug run.
+      toolCtx.spokeAsTrailingProse = true
     }
     text = outgoing
   }
@@ -1839,6 +1872,18 @@ function historyGaps(rows: { queued_at: Date | string }[], at: Date): string | n
   )
 }
 
+/**
+ * The thread this person is answering, and what to say when it could not be read.
+ *
+ * @mechanism recentHistory — a conversation prefetch that fails returns `why` beside the
+ *   messages instead of an empty array, and the caller states it in the tail: an empty
+ *   history is not a degraded turn but a DIFFERENT one, in which a family the business has
+ *   served for months has never written before — so the model greets them, re-asks what
+ *   they answered yesterday and re-offers what they already declined, all of it correctly
+ *   derived from what it was given. The reason travels BESIDE the messages and never among
+ *   them, because a runtime sentence in the message list arrives as something a person
+ *   said; `historyGaps` rides the same channel with the thread's real time breaks.
+ */
 async function recentHistory(
   session: SessionCtx,
   identity: Identity,
@@ -1896,6 +1941,16 @@ async function recentHistory(
  */
 /**
  * The last few turns that reached for a tool — **fetched ONCE**.
+ *
+ * @mechanism recentToolTurns — the last few turns' tool calls, read once and replayed into
+ *   the tail as two labelled blocks. `recentLookups` keeps the reads, stamped with `ageOf`,
+ *   because an unstamped two-day-old zero-row result reads as current data and is how an
+ *   owner was reassured that every register was marked; `recentActions` keeps the writes,
+ *   carrying their OUTCOME — `staged behind a confirmation button — NOT committed`,
+ *   `failed … nothing was written` — so "did I actually do that" is answerable without the
+ *   model thinking to query `audit_entry`, and a refusal cannot be replayed as a row to act
+ *   on. A read that fails comes back with `why` rather than nothing, so a turn that could
+ *   not see its own history stops looking exactly like a turn with no history to see.
  *
  * Two blocks of the tail are built from this one list: `recentLookups` keeps the
  * reads, `recentActions` keeps the writes. They are two filters over one query,
@@ -1994,9 +2049,14 @@ function recentLookups(rows: { created_at: Date; tool_calls: ToolTrace[] }[], at
  * the turn that composed the false claim could not see that nothing had been
  * written, and the turn after it could not see the attempt at all.
  */
-function recentActions(rows: { created_at: Date; tool_calls: ToolTrace[] }[]): string | undefined {
+async function recentActions(
+  rows: { created_at: Date; tool_calls: ToolTrace[] }[],
+  identity: Identity,
+): Promise<string | undefined> {
   const BUDGET = 2400
-  const SKIP = new Set(['read', 'reply', 'view', 'remember', 'reflect:remember'])
+  // `reply` is no longer here — see `replyLine` below for what it renders and why
+  // only the ones that left this conversation are kept.
+  const SKIP = new Set(['read', 'view', 'remember', 'reflect:remember'])
   const outcome = (call: ToolTrace): string => {
     if (call.error) return `failed: ${String(call.error).split('\n')[0].slice(0, 180)} — nothing was written`
     const r = call.result as Record<string, unknown> | string | undefined
@@ -2022,6 +2082,83 @@ function recentActions(rows: { created_at: Date; tool_calls: ToolTrace[] }[]): s
     }
     return 'ran'
   }
+  /**
+   * The one send the model cannot recover, and the only kind kept here.
+   *
+   * A `reply` to the person in front of you is already in the transcript, word
+   * for word, so replaying it in this block is noise — which is why `reply` sat
+   * in SKIP at all. A reply to ANYONE ELSE is in no transcript this turn can
+   * see: it went to a different thread. Excluding both left the escalation, the
+   * most consequential message this product sends, with no trace in either place.
+   *
+   * Driven (`2026-08-17-18-07-live` t20). The model had put a prospect’s two
+   * policy questions to the owner through `reply` two turns earlier. Asked
+   * again, it could not see that it had — *"I said ‘I’ve asked the owner about
+   * both…’ but there’s no record of that actually happening in the actions"* —
+   * put the question to itself six times in one round, called no tool at all,
+   * and hedged to a parent who was choosing between here and another club by
+   * Sunday. Across the three live runs 14 turns ask that question; exactly one
+   * answers it, by querying `message` itself.
+   *
+   * The NAME, not the id: the question is always "did I tell the OWNER", and a
+   * uuid answers it only if the model still holds the read that named them. The
+   * lookup runs on the turns that have such a reply to describe and no others,
+   * and a name that will not read falls back to the id rather than hiding a send.
+   */
+  const ADMIN_WORD = /^(the )?(admin|owner)$/i
+  const recipientOf = (call: ToolTrace): string | null => {
+    const raw = (call.args as Record<string, unknown> | undefined)?.to_contact_id
+    if (raw === undefined || raw === null) return null
+    const to = String(raw).trim()
+    // Absent or self: `reply` defaults `to_contact_id` to this contact, so both
+    // spellings of "I answered them" land here, and both are in the transcript.
+    return !to || to === identity.contact.id ? null : to
+  }
+
+  const ids = new Set<string>()
+  for (const row of rows) {
+    for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
+      if (String(call.name ?? '') !== 'reply') continue
+      const to = recipientOf(call)
+      if (to && !ADMIN_WORD.test(to)) ids.add(to)
+    }
+  }
+  const names = new Map<string, string>()
+  if (ids.size) {
+    try {
+      const found = await withSession({ role: 'service', academyId: identity.academyId }, async (tx) => {
+        return (await tx.unsafe(
+          `select c.id, coalesce(p.full_name, c.phone_e164, 'someone') as name
+             from contact c left join person p on p.id = c.person_id
+            where c.id in (${[...ids].map(uid).join(', ')})`,
+        )) as unknown as { id: string; name: string }[]
+      })
+      for (const r of found) names.set(String(r.id), String(r.name))
+    } catch {
+      // Falls through to the id. A name that cannot be read is not a reason to
+      // go back to saying nothing at all about the message.
+    }
+  }
+
+  const them = identity.person.full_name?.trim() || 'the person you are talking to'
+  const replyLine = (call: ToolTrace, to: string): string => {
+    const who = ADMIN_WORD.test(to) ? 'the owner' : names.get(to) ?? `contact ${to.slice(0, 8)}`
+    const r = call.result as Record<string, unknown> | undefined
+    let how = 'ran'
+    if (call.error) how = `NOT sent: ${String(call.error).split('\n')[0].slice(0, 120)}`
+    else if (r && typeof r === 'object') {
+      const status = String(r.status ?? '')
+      if (status === 'sent' || status === 'queued') how = 'sent'
+      else if (status === 'suppressed') how = `NOT delivered: ${String(r.reason ?? 'suppressed')}`
+      else if (r.sent === false || r.error)
+        how = `NOT sent: ${String(r.error ?? 'refused').split('\n')[0].slice(0, 120)}`
+    }
+    // The body is deliberately absent. What was unanswerable is WHETHER this
+    // person was written to, never what was said — and a body here is the one
+    // thing `recentLookups` above proves costly: text replayed as reference data.
+    return `- reply to ${who}, not to ${them} → ${how}`
+  }
+
   {
     const lines: string[] = []
     let used = 0
@@ -2029,8 +2166,15 @@ function recentActions(rows: { created_at: Date; tool_calls: ToolTrace[] }[]): s
       for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
         const name = String(call.name ?? '')
         if (!name || SKIP.has(name) || name.startsWith('(')) continue
-        const args = JSON.stringify(call.args ?? {}).slice(0, 140)
-        const line = `- ${name} ${args} → ${outcome(call)}`
+        let line: string
+        if (name === 'reply') {
+          const to = recipientOf(call)
+          if (!to) continue
+          line = replyLine(call, to)
+        } else {
+          const args = JSON.stringify(call.args ?? {}).slice(0, 140)
+          line = `- ${name} ${args} → ${outcome(call)}`
+        }
         if (used + line.length > BUDGET) return lines.length ? lines.join('\n') : undefined
         lines.push(line)
         used += line.length
@@ -2039,7 +2183,6 @@ function recentActions(rows: { created_at: Date; tool_calls: ToolTrace[] }[]): s
     return lines.length ? lines.join('\n') : undefined
   }
 }
-
 
 /* ------------------------------------------------------------------------- *
  * §14.8 — two failed turns is an automatic trigger, not a judgement call.

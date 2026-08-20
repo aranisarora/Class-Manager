@@ -1,6 +1,14 @@
 /**
  * lib/messaging/templates.ts — the eight §16.2 templates.
  *
+ * @mechanism TEMPLATES — eight frozen bodies, one per CATEGORY of unsolicited contact rather
+ *   than one per feature, so ~35 catalog rows ride on eight approvals and a new in-window
+ *   interaction costs none. Their shape is load-bearing, not style: a label frame (`For:`,
+ *   `Change:`) because no frozen word may conjugate with a parameter it cannot see, ~16 fixed
+ *   words around 4 parameters because Meta rejects a higher ratio outright, and a lead-in
+ *   naming only the SENDER so two notifications to one parent never open identically.
+ *   Closes F-G, F-AZ.
+ *
  * "Templates scale with categories of unsolicited contact, not with features." The ~35
  * catalog rows (§12) collapse to eight; adding an in-window interaction costs zero
  * templates.
@@ -314,6 +322,12 @@ export function templateParams(name: TemplateName): string[] {
  * spaces, and truncates nothing for you. Sanitising the value is not the same as truncating
  * a button title: the parameter is prose the model wrote, and collapsing its whitespace
  * changes no meaning.
+ *
+ * @mechanism sanitizeParam — the one place a composed body becomes a template parameter, so
+ *   the wire's whitespace rules are obeyed without a caller knowing them. A line break
+ *   becomes a ` · ` separator rather than a space, because flattening a list with spaces
+ *   runs its items into one sentence; only bullet characters are absorbed after the break,
+ *   since a hyphen there is as often a minus sign or a wrapped range.
  */
 export function sanitizeParam(value: string, max = 700): string {
   // The wire forbids newlines in a parameter, so a multi-line body has to
@@ -341,6 +355,12 @@ export function sanitizeParam(value: string, max = 700): string {
  * The body the emulator shows and the wire carries. Missing parameters throw rather than
  * rendering "{detail}" at a parent: a template that cannot render is a bug, and §17's rule
  * is that it does not ship.
+ *
+ * @mechanism renderTemplate — a missing or blank parameter throws by name here and in
+ *   `templateWireParams`, so an out-of-window send fails loudly at compose time instead of
+ *   putting a literal "{detail}" on a parent's phone. Both the emulator's rendering and the
+ *   wire's arguments come out of the same definition through the same check, which is what
+ *   makes §17's "works here, works there" true of templates.
  */
 export function renderTemplate(name: TemplateName, params: Record<string, string>): string {
   const def = TEMPLATES[name]

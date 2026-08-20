@@ -55,7 +55,17 @@ export type ToolCtx = {
    * model actually takes, not only on the tap path.
    */
   executed?: { op: string; args: Record<string, unknown>; wrote?: { table: string; op: string; after: any[] }[] }[]
-  /** Who this turn has already put a message in front of, and it landed. */
+  /**
+   * Who this turn has already put a message in front of, and it landed.
+   *
+   * @mechanism repliedTo — one message per person per turn, refused at `reply`: a
+   *   second send to somebody who has already heard from this turn is turned back
+   *   whatever it says, and `confirmationAskedTo` does the same for anybody an
+   *   operation has already put a confirmation question in front of. Both are written
+   *   only where a send is recorded as having LANDED, so a suppressed first attempt
+   *   does not spend the budget — and between them they catch the reworded second ask
+   *   that the `repeat` gate, which compares text, cannot see.
+   */
   repliedTo?: Set<string>
   /**
    * Who has a confirmation question from THIS turn sitting on their screen —
@@ -86,6 +96,31 @@ export type ToolCtx = {
    * send path can forget to.
    */
   saidToUser?: string[]
+  /**
+   * Whether the answer this person is holding was their turn's TRAILING PROSE.
+   *
+   * The one act in this loop the model performs without knowing it performed it.
+   * On an interactive turn, a round that calls no tool has its text taken by the
+   * runtime and sent as the reply (`loop.ts`, the trailing send); on a job turn
+   * the identical text is discarded. Writing prose does not feel like sending,
+   * and the model's picture of its own turn is built from the tool calls it made
+   * — so both halves come out wrong, in opposite directions:
+   *
+   *   Job turns: the model believed it had briefed the owner and the window
+   *   delivered nothing (three consecutive digests in the 19 Aug live run, one of
+   *   them carrying the week's only deadline).
+   *
+   *   Chat turns: the model believed it had said nothing and the message was on
+   *   the phone. Turns 13, 18 and 31 of that run each spent a whole reflection
+   *   round arguing with `turnState` about it — *"It says '1 message actually
+   *   reached somebody.' But I didn't send a message. This is confusing."* The
+   *   line was correct every time; what it could not say was HOW.
+   *
+   * Set at the trailing send and nowhere else, because it is a fact about which
+   * path spoke rather than about what was said. `saidToUser` records the words;
+   * this records that the runtime, not a `reply` call, put them there.
+   */
+  spokeAsTrailingProse?: boolean
   /**
    * Whether this turn has done anything at all beyond reading: an operation that ran,
    * a plan committed, a plan previewed and waiting on a tap, a watch scheduled.
@@ -186,8 +221,79 @@ export function recordExecuted(
   })
 }
 
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`
+}
+
+/**
+ * Who has actually heard from this turn — the half `landed` threw away.
+ *
+ * **"somebody" was the whole gap.** `toContactId` has ridden on every landed
+ * outcome since the silence ladder needed it, and `send.ts` records why in its
+ * own comment: *"a turn that routed a proposal to the admin and ran out of rounds
+ * counted as having 'spoken' while the asker heard nothing."* The ladder was
+ * given the recipient and this line was not, so the model was told a count and
+ * left to infer the direction.
+ *
+ * It infers correctly when it happens to ask. Live run, 19 Aug, turn 45 — mid-turn,
+ * unprompted: *"Wait — did my message to Arjun go out? No. The reply I made was
+ * only to_contact_id 'admin'."* It then sent the missing one. Two turns earlier,
+ * turn 42 composed an owner-facing message, left `to_contact_id` off so it
+ * defaulted to the coach it was ABOUT, did not ask the question, and put an
+ * "Approve admin role" button in the hands of the person requesting admin.
+ *
+ * Same model, same prefix, same morning. The difference was whether the question
+ * got asked. A count cannot be checked against an intention; a name can.
+ *
+ * The claim is only made when it can be proved: "they have heard nothing" needs
+ * every landed outcome to carry a recipient. An outcome without one is counted
+ * and not attributed, and the sentence stays silent about direction rather than
+ * guessing it — a wrong "they have heard nothing" would be worse than the vague
+ * line this replaces.
+ */
+function messagesThisTurn(ctx: ToolCtx): string {
+  const delivered = (ctx.outcomes ?? []).filter(
+    (o): o is Extract<SendOutcome, { status: 'queued' | 'sent' }> =>
+      o.status === 'sent' || o.status === 'queued',
+  )
+  const name = ctx.identity.person.full_name?.trim() || 'the person you are talking to'
+  const attributed = delivered.filter((o) => typeof o.toContactId === 'string')
+  const toThem = attributed.filter((o) => o.toContactId === ctx.identity.contact.id).length
+  const elsewhere = attributed.length - toThem
+  const unattributed = delivered.length - attributed.length
+
+  if (delivered.length === 0) return `sent nobody anything — ${name} has heard nothing from you this turn`
+
+  /*
+   * A send with no recipient on it could have been to anyone, including them, so
+   * every sentence below this line is barred from saying where a message did NOT
+   * go. Unreachable on the paths that exist today — `send.ts` puts `toContactId`
+   * on every landed outcome — and kept because the alternative to a branch here
+   * is a confident "they have heard nothing" about a message they are reading.
+   */
+  if (unattributed > 0) {
+    const total = plural(delivered.length, 'message', 'messages')
+    return toThem > 0 ? `sent ${total}, ${toThem} of them to ${name}` : `sent ${total}`
+  }
+
+  if (elsewhere === 0) return `sent ${plural(toThem, 'message', 'messages')} to ${name}`
+  if (toThem === 0) {
+    return `sent ${plural(elsewhere, 'message', 'messages')} to somebody else — ${name} has heard nothing from you this turn`
+  }
+  return `sent ${plural(delivered.length, 'message', 'messages')} — ${toThem} to ${name}, ${elsewhere} to somebody else`
+}
+
 /**
  * What this turn has actually done, in one line, told to the model every round.
+ *
+ * @mechanism turnState — states the turn's own facts to the model on every round:
+ *   which tables it has written to, how many messages landed and whether the person
+ *   in front of it heard any of them, whether the runtime spoke its trailing prose
+ *   for it, and how many plans are unrun and waiting on a tap. It replaces six
+ *   regexes that read the model's own sentence to decide whether it was a receipt —
+ *   state told before the sentence is written is what retires the completed-sounding
+ *   claim with no write behind it.
+ *   Closes F-AJ, F-AM.
  *
  * **This is the whole honesty mechanism now, and it is a statement rather than a
  * check.** The runtime is the only thing that knows whether anything happened,
@@ -200,11 +306,39 @@ export function recordExecuted(
  * Deliberately counts, never advice. What to do about a turn that has written
  * nothing is a judgement, and a runtime that appended "so do not say you did
  * anything" would be composing.
+ *
+ * ── What this line says, and the test for adding to it ──────────────────────
+ *
+ * One question decides membership: **can the model learn this any other way?**
+ * If a tool result already carries it, it belongs there and not here — a longer
+ * line is a skimmed line, and this one is read on every round of every turn.
+ *
+ * Four candidates were measured against that test on the 19 Aug live run and
+ * three of them failed it, which is recorded here so they are not re-proposed:
+ *
+ *   Suppression — already told, and told better. `reply` returns the reason,
+ *   `SUPPRESSION_HELP`'s sentence for it, `retry:false` and a note saying a
+ *   reworded resend is dropped the same way. Repeating a thinner version here
+ *   would add length and no information.
+ *
+ *   Refused calls — the refusal is in the tool result of the round that made it.
+ *   Visible, not hidden. Absence is what this line is for.
+ *
+ *   When a queued message actually goes out — `job.run_at` is readable, and in
+ *   production the queue drains on the minute, so `run_at` IS the answer. The
+ *   66-minute gap that made this look like hidden state is an artefact of a
+ *   drive walking its clock an hour at a time. What is genuinely wrong there is
+ *   an operation result reporting `executed:true` beside messages that have not
+ *   left — a result shape, fixed where the result is built, not here.
+ *
+ *   Who each message went to — PASSES. See `messagesThisTurn`.
+ *
+ * The fifth, `spokeAsTrailingProse`, passes for the strongest reason available:
+ * nothing anywhere tells the model that the runtime spoke for it.
  */
 export function turnState(ctx: ToolCtx): string {
   const wrote = new Set<string>()
   for (const e of ctx.executed ?? []) for (const w of e.wrote ?? []) wrote.add(w.table)
-  const landed = (ctx.outcomes ?? []).filter((o) => o.status === 'sent' || o.status === 'queued').length
   const waiting = [...(ctx.pendingMeta?.values() ?? [])].filter((m) => m.needsConfirm).length
 
   const bits: string[] = []
@@ -213,10 +347,17 @@ export function turnState(ctx: ToolCtx): string {
       ? `written to ${[...wrote].sort().join(', ')}`
       : 'written nothing — no row in this database has changed',
   )
-  bits.push(
-    landed ? `${landed} message${landed === 1 ? '' : 's'} actually reached somebody` : 'sent nobody anything',
-  )
-  if (waiting) bits.push(`${waiting} plan${waiting === 1 ? '' : 's'} waiting on a tap (nothing of it has run)`)
+  bits.push(messagesThisTurn(ctx))
+  // Named as its own clause rather than folded into the count above, because on a
+  // turn that sent to two people it is ambiguous which one it describes — and the
+  // whole point of it is that the model does not know this happened at all.
+  if (ctx.spokeAsTrailingProse) {
+    bits.push(
+      'answered them with the plain text you wrote at the end of a round — the runtime sent that as your reply, ' +
+        'so it is on their phone though you never called reply',
+    )
+  }
+  if (waiting) bits.push(`${plural(waiting, 'plan', 'plans')} waiting on a tap (nothing of it has run)`)
   return `So far this turn you have ${bits.join('; ')}.`
 }
 
@@ -448,6 +589,14 @@ const SUPPRESSION_HELP: Record<SuppressReason, string> = {
  * ------------------------------------------------------------------------- */
 
 /**
+ * @mechanism resolveAction — the one gate every button and every list row passes
+ *   before it is minted: a `commit` handle is resolved into the steps it refers to,
+ *   the shapes the model reaches for out of habit (`form`, `replyOption`, a bare `op`
+ *   with no `kind`) are meant rather than refused, and a payload carrying a parameter
+ *   only a person's own tap may set is rejected here. A tap replays with no model in
+ *   the loop, so an action that is wrong at mint time is wrong on somebody's phone
+ *   with nothing left in the turn to repair it.
+ *
  * The model's most frequent instinct after previewing a plan is to offer a
  * button that commits it — and it reaches for the handle, because the handle is
  * what `commit` takes. Every spelling of that instinct was illegal:
@@ -594,6 +743,14 @@ function defangedButton(stripped: string[]): string {
 /**
  * Every plan previewed this turn and still waiting on a yes, in the order they
  * were previewed, as one plan.
+ *
+ * @mechanism pendingConfirmation — the affirmative action on a read-back belongs to
+ *   the runtime, not to the model: `reply` puts every plan this turn left waiting
+ *   behind the first button, as one plan, and adds a decline when the model wrote
+ *   only the yes. Left to the model it commits the newest plan while the sentence
+ *   promised two, or replays "yes, do it" as text — which sends the next turn off to
+ *   re-derive a plan this one already validated, with no guarantee it lands in the
+ *   same place.
  *
  * It used to be `.at(-1)` — the newest one. Asked to create two classes the
  * model previewed both, read both back in one sentence, and the button carried
@@ -1204,6 +1361,14 @@ function diffRow(row: Record<string, unknown> | null | undefined): Record<string
 
 /**
  * What a write did, including **what it actually wrote**.
+ *
+ * @mechanism compactDiff — hands back the rows a write produced rather than counts of
+ *   them, beside the statements that matched NO rows (named), the clashes, the people
+ *   whose arrangements changed while the plan tells them nothing, and a `check` line
+ *   saying whether this is what is now true or what a tap WOULD write. Without the
+ *   rows a read-back is composed from the model's intention — "6:30 to 7:30pm" over a
+ *   `start_time` of 06:30 — and without the executed/staged split a preview of rows
+ *   still NULL reads as a receipt.
  *
  * This returned counts and nothing else: "inserted 1 class, 3 weekly slots". So the
  * model composed its read-back from its own intention rather than from the row, and the
@@ -2213,6 +2378,14 @@ export async function runTool(
 
       /**
        * A `context_query` written from imagination (F-AP).
+       *
+       * @mechanism context_query — the SELECT a watch carries is parsed and PLANNED at
+       *   mint time, against the real schema, and never executed: a table that does not
+       *   exist is a refusal while the model can still fix it, and a column read off the
+       *   wrong table comes back naming the table it is actually on. Without it the query
+       *   first fails on its fire day, weeks later, when the task runs blind on its
+       *   instruction alone and nobody is watching.
+       *   Closes F-AP.
        *
        * Both watches minted in one drive carried SQL against tables that do not
        * exist — `from register where family_id = 'meera'`, `from devs d left join

@@ -224,6 +224,15 @@ export async function adminEveningDigest(job: Job): Promise<void> {
 /**
  * **Anything new, pending or broken since the last one of these.**
  *
+ * @mechanism newsSince — a cheap deterministic census gates the most expensive model call
+ *   in the product: an empty census opens no turn and sends nothing, so cost scales with
+ *   events rather than with days. The calendar trigger it replaced composed 56 briefs for
+ *   a business that received 36 messages in a month, paying eleven queries and a
+ *   synthesis call each time for the model to conclude there was nothing to say. The
+ *   window runs from the last brief of THIS kind that actually went out
+ *   (`suppressed_reason is null`), not from midnight, so a day the brief stayed silent
+ *   does not drop its news on the floor.
+ *
  * The cheap deterministic half, and the whole reason the expensive half is not
  * paid for. The old shape composed **56 briefs for a business that received 36
  * messages in a month**: a pure calendar trigger, eleven queries and the most
@@ -316,6 +325,15 @@ async function runSynthesis(job: Job, kind: 'brief' | 'digest'): Promise<void> {
    * **An ordinary turn, opened by a job.** There is no separate synthesis path
    * any more — no bespoke model call, no dearer model, no toolless prompt fed
    * pre-queried rows.
+   *
+   * @mechanism runSynthesis — the morning brief and the evening digest are ORDINARY turns
+   *   opened by a job, so they share the cached prefix (a hit costs 3.2% of a miss), they
+   *   have tools, and they are recorded, guarded and result-honest for free. The bespoke
+   *   path could not share the prefix at all, which is how the two most expensive calls of
+   *   the day came to cost 3.5× the entire human conversation — and how the two calls with
+   *   the widest reach became the two with no record of why they said anything. Being fed
+   *   rows it could not verify or widen is how a digest once told the solo coach it thought
+   *   "coaches aren't marking after sessions", about himself.
    *
    * Every reason the old path existed inverted under the architecture. The cached
    * prefix is the CHEAP part — a hit costs 3.2% of a miss — so an ordinary turn on

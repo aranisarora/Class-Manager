@@ -405,6 +405,15 @@ const WALL_CLOCK_ALLOW = allow([
       'anchors a bare HH:MM to a day so the formatter has something to work with; only the ' +
       'clock part is ever read, and the file is pure — it has no database and no clock.',
   },
+  {
+    file: 'lib/ops-auth.ts',
+    match: /setExpirationTime/,
+    why:
+      'a JWT expiry is not domain time. `exp` is checked by the verifier against real seconds ' +
+      'since the epoch, and jose compares it that way whatever we wrote; an offset clock here ' +
+      'would hand an operator a cookie that outlives its own session, or kills it on open, ' +
+      'the moment the emulator moves a day. Nothing in the operator gate decides domain state.',
+  },
 ])
 
 /**

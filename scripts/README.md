@@ -68,6 +68,8 @@ prose.
 | `check-world.ts` | Is the driven world internally consistent? |
 | `check-clash.ts` | Double-booking detection, against the real tables. |
 | `check-layout.ts` | `npm run check:layout` — do this repo's own indexes still describe this repo? Reads no database, so it is safe anywhere. |
+| `check-findings.ts` | `npm run check:findings` — does the ledger agree with itself? Catches a code claimed both open and closed, a code in a table with no heading, one code naming two findings, and a heading whose state contradicts its table row. Reads one markdown file. |
+| `build-mechanisms.ts` | `npm run mechanisms` writes `docs/MECHANISMS.md` from the `@mechanism` tags in `lib/`; `npm run check:mechanisms` fails when the two diverge. The index an analysis agent reads *instead of* the brain — 2k tokens against 209k. A `Closes F-XX` clause is checked against the ledger. |
 | `check-attendance-bills.ts` | F-BA: does an attendance row imply the money it owes? |
 | `check-partial-period.ts` | F-I: does "Always pro-rate" pro-rate anything? |
 | `check-roster-scale.ts` | F-R: where does `app.session_roster` stop answering? |

@@ -1,6 +1,14 @@
 /**
  * lib/audit.ts — intent, blast radius, and the way back (CONTRACTS §11, §6).
  *
+ * @mechanism beginAudit — opening the audit entry sets `app.audit_id`, which arms the generic
+ *   snapshot trigger (0005) for the rest of that transaction, so every row the plan touches is
+ *   recorded with its before and after image whichever statement wrote it. The bot therefore
+ *   never ESTIMATES what a write will touch: the diff shown before commit is measured from
+ *   what actually happened, and undo has real before-images to restore rather than a
+ *   reconstruction. It runs inside the caller's transaction, so a rollback takes the audit
+ *   entry with it and there is no entry for work that did not land.
+ *
  * §2.3: the bot never estimates what a write will touch. `beginAudit` opens an
  * audit entry and sets `app.audit_id`, which switches on the generic snapshot
  * trigger for the rest of that transaction (migration 0005). Every affected row
@@ -199,6 +207,13 @@ function inverseStatement(row: SnapshotRow): string | null {
  * so undo runs through exactly the same machinery, transaction and diff as the
  * thing it is undoing. It does NOT execute them, and it says nothing about
  * messages: a sent message cannot be unsent (§7.2).
+ *
+ * @mechanism undo — the inverse is built from the stored before-images and RETURNED as
+ *   ordinary plan steps, newest write first, so undoing runs through the same transaction,
+ *   the same audit and the same diff as the thing it undoes rather than through a second
+ *   machinery that can disagree with the first. Executing nothing is the point: undo reverses
+ *   database writes only, so whoever calls it is the one who has to decide what to tell the
+ *   people who were already told, and say so before it runs.
  */
 export async function undo(ctx: SessionCtx, auditId: string): Promise<PlanStep[]> {
   const rows = await loadSnapshots(ctx, auditId, 'desc')

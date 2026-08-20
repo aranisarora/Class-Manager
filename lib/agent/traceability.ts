@@ -1,6 +1,12 @@
 /**
  * lib/agent/traceability.ts — R10, in shadow mode.
  *
+ * @mechanism traceabilityNote — compares every scalar a reply states (times, dates,
+ *   prices, headcounts) against what this turn's tools actually returned, and records
+ *   the unbacked ones on the flight recorder. Shadow mode by design: it records and
+ *   blocks nothing, because a false refusal costs more than a recorded miss.
+ *   Closes F-E.
+ *
  * **The one artifact the customer actually reads is the only one in the product
  * with no structural check on it.** The runtime refuses a reply that says it DID
  * something when nothing was written. Nothing anywhere asks whether a reply that

@@ -29,6 +29,14 @@ import {
 /**
  * `client_reminder` — CL-REMINDER (§9.2).
  *
+ * @mechanism clientReminder — the jobs stay one per (session, player) for idempotency and
+ *   MERGE at send time: the first sibling to fire carries the others in one body and
+ *   cancels their jobs in the same transaction, targeting 'running' as well as 'pending'
+ *   because the runner claims the whole due batch before any handler starts and
+ *   same-batch siblings — the common case, identical `run_at` — would otherwise never
+ *   merge at all. Without it the ideal's own "you'll get one message, not two" shipped as
+ *   two to the same mother, seconds apart, twice a week.
+ *
  * Fired at `client_reminder_lead_hours` before, with the same per-person
  * override as the coach ladder: a parent who needs a day's notice gets a day
  * (§8.2). The lead is applied by `planAhead`, which is what decided *when* this
@@ -150,6 +158,13 @@ export async function clientReminder(job: Job): Promise<void> {
 /**
  * `client_session_trouble` at `starts_at` — CL-SESSION-TROUBLE (§9.2, §12.1).
  *
+ * @mechanism clientSessionTrouble — the only client-facing job that speaks about a
+ *   session, and it speaks only when it carries something the parent does not already
+ *   have: a coach running late, or nobody coming as it starts. Its `stateKey` names the
+ *   CLASS and the state rather than the session, because the event is the class being
+ *   uncovered and not each session of it being uncovered in turn — Meera was told "we're
+ *   still sorting out a coach" twice about the same unresolved thing, and both were true.
+ *
  * Runs for every session and sends for almost none of them. It only speaks when
  * it carries something the parent does not already have: the coach is late, or
  * the session is uncovered as it starts. The claim ladder governs the wording —
@@ -230,6 +245,14 @@ export async function clientSessionTrouble(job: Job): Promise<void> {
 
 /**
  * `client_outcome` — CL-OUTCOME (§12.1), enqueued when attendance is marked.
+ *
+ * @mechanism clientOutcome — one recap per family per session: every marked child travels
+ *   in one body, grouped on `holder_contact_id` — explicitly, not the player's own number,
+ *   or a linked teenager splits from his siblings and the family gets two — and keyed
+ *   `outcome:<session>:<holder>` so the sibling's own job is a no-op. And
+ *   `marked_by_coach_id` is what separates an absence a coach recorded from the family's
+ *   own cancellation: reporting the second back tells a family what they told us, as a
+ *   verdict, with their own reason relabelled "Coach's note".
  *
  * An absence arrives as something to fix — `[Rebook]` — not a verdict (§9.2).
  * A timely cancellation is not an outcome worth a message: the parent told us.
@@ -384,6 +407,13 @@ async function firstContactSignals(tx: Tx, academyId: string): Promise<FirstCont
 
 /**
  * `first_contact_batch` — CL-FIRST-CONTACT, staged (§9.1 rule 6).
+ *
+ * @mechanism firstContactBatch — introductions go out ten at a time and the run HALTS on
+ *   the first bad signal — a failed delivery, an opt-out, or a second batch where nothing
+ *   at all has landed — telling the admin and sending nothing further until they say so.
+ *   The halt is the whole job, not a nicety: on a shared number, learning that a number
+ *   is failing or being blocked by sending forty more messages spends the reputation the
+ *   product runs on (§16.1).
  *
  * "10, check delivery, read and block signals, then the rest in batches,
  * halting on a bad signal. Not a campaign system: for a forty-family academy

@@ -55,6 +55,14 @@ export type Msg =
 /** The one shape `tools.ts` declares tools in. */
 export type ToolDecl = { name: string; description: string; parametersJsonSchema: object }
 
+/**
+ * @mechanism ModelCall.parseError — a tool call whose `arguments` did not parse is
+ *   carried rather than dropped: the id, the name, the raw string and the parse error
+ *   all survive, so the loop can answer that exact call id with what went wrong. This is
+ *   the whole of what used to arrive as `MALFORMED_FUNCTION_CALL` with nothing attached
+ *   — a call no history could answer, because a tool result matches by id and there was
+ *   no id to match.
+ */
 export type ModelCall = {
   /** The id the matching `{role:'tool'}` message must carry. */
   id: string
@@ -84,6 +92,13 @@ export type GenResult = {
   model: string
   ms: number
   /**
+   * @mechanism finishReason — why generation stopped, carried out of this module onto
+   *   the turn row, so that a turn cut short, a turn blocked and a turn simply done
+   *   stop arriving as one indistinguishable empty string. `insufficient_system_resource`
+   *   is the member that must never read as a clean stop — load shed MID-generation, so
+   *   the text reads as an answer and ends in the middle of one — and it is retried once
+   *   like the 503 it is, then reported rather than smoothed over.
+   *
    * Why generation stopped. Discarding this made every empty response look
    * alike: `length` (the turn was too big), `content_filter` (it was blocked)
    * and "simply done" all arrived as an empty string, and the turn row recorded
@@ -158,6 +173,14 @@ const BASE_URL = 'https://api.deepseek.com'
 
 /**
  * **One thinking level for the whole model path: `low`. Measured, not guessed.**
+ *
+ * @mechanism thinkingFor — resolves the thinking level for every model call and always
+ *   sends it, because this API enables thinking at `high` by default and a request that
+ *   omits the field silently buys the most expensive level on every turn. `low` wherever
+ *   the model acts or answers in a structure, `disabled` for plain prose: measured, not
+ *   guessed. Thinking off was fastest and composed perfectly, and it made fluent
+ *   present-tense false claims of state — a coach "hired" with zero tool calls — which
+ *   is the class this one setting keeps out.
  *
  * Phase 6 of the migration ran the same 18-case lifecycle arc at every level,
  * one variable at a time, against the live prompt and the live tool surface
@@ -461,6 +484,13 @@ function shape(res: ChatResponse, fallbackModel: string, ms: number): GenResult 
 
 /**
  * A JSON answer, validated, with exactly one retry.
+ *
+ * @mechanism generateJson — the guarantee for structured output on an API with no
+ *   constrained decoding: ask for `json_object`, validate what parsed against the shape
+ *   the caller asked for, retry exactly once, and return `null` rather than a half-shape
+ *   so the caller decides what a missing answer means. It unwraps a fenced block rather
+ *   than spending a whole retry on punctuation, and every structured call site goes
+ *   through it instead of reinventing the loop.
  *
  * There is no constrained decoding on this API outside beta — `json_object`
  * mode asks for JSON and DeepSeek's own docs admit it occasionally returns

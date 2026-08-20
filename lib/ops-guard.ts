@@ -112,6 +112,15 @@ export function sandboxEnabled(): boolean {
  * The guard every destructive handler opens with. `null` means carry on; a `Response`
  * means stop and return it unchanged.
  *
+ * @mechanism requireSandbox — the refusal for the emulator controls whose scope is the whole
+ *   world, so no row can vouch for them: `seed`, whose first statement enumerates every
+ *   academy `app.list_academies()` returns and deletes them before emptying `job`, `sim_fault`
+ *   and `sender`; `fault`, which writes a table with no academy column that the send path
+ *   reads with no tenant filter; and `drive`, which seeds. The test is `OPS_SANDBOX === '1'`
+ *   and nothing else, because the environment where these do the most damage is the one least
+ *   likely to have configured anything — an unset variable has to read as locked, not as
+ *   permission.
+ *
  * It returns rather than throws so the refusal is an ordinary 403 with the house body
  * shape, not an exception that some outer `catch` turns into a 500 and the operator reads
  * as a bug. `sandbox_only` is the stable machine-readable half — the UI keys off that, not
@@ -240,6 +249,17 @@ export async function isSandboxAcademy(academyId: string | null | undefined): Pr
 
 /**
  * The per-academy guard. `null` means carry on; a `Response` means stop and return it.
+ *
+ * @mechanism requireSandboxAcademy — the same refusal asked about one row rather than the
+ *   whole deployment, so the owner can run scenarios against the live console without
+ *   "unlock production" — one permission granted to every tenant at once — being the only
+ *   thing they can say. It reads `academy.is_sandbox` (0030) with the session PINNED TO THE
+ *   CANDIDATE, the only pin that satisfies the service policy `using (id = app.academy_id())`;
+ *   anything short of a proven `true` refuses, and a missing academyId refuses hardest,
+ *   because the clock handler turns absence into the WORLD row that every tenant without one
+ *   inherits. Honest only because per-tenant EFFECT already exists: 0024's nullable
+ *   `sim_clock.academy_id` and `app.now_for()` mean pushing a sandbox tenant to Tuesday
+ *   provably does not fire a real tenant's Tuesday.
  *
  * The order matters and is the contract:
  *

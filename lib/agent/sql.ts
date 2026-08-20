@@ -38,6 +38,15 @@ export function lit(v: string | number | boolean | null | undefined): string {
 /**
  * A row this plan created a step ago, named by the only thing that can name it.
  *
+ * @mechanism isIdSubquery — legalises a bounded parenthesised SELECT where an operation
+ *   wants an id, and parses it at mint time: one statement, no semicolon, no verb that
+ *   writes. It runs inside the plan's own transaction under the plan author's RLS, so it
+ *   reaches exactly what a `write` step beside it could reach and no further. Without it
+ *   a step needing the id the database assigned in the step before has no legal encoding,
+ *   and the model falls off `create_class` onto a raw INSERT — the one route that does
+ *   not enqueue `materialize_sessions`, which is how a business ends up with classes,
+ *   weekly slots and no sessions that will ever happen.
+ *
  * An id argument is normally a uuid the model has read. Inside a `transaction(steps[])`
  * there is a case where no such uuid can exist: step 1 inserts the venue, step 2 creates
  * the class in it, and the id is assigned by the database between them. `STEPS_PARAM`

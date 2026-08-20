@@ -73,6 +73,12 @@ export type LinkButton = { title: string; url: string }
  * button; a link the recipient forwards is text.** It lives here, next to the check that
  * enforces it, because the last time this predicate had two homes the two drifted apart
  * and took every invite in the product with them.
+ *
+ * @mechanism isForwardableLink — the single predicate for "a link the recipient taps is a
+ *   button; a link the recipient forwards is text", living next to the check that enforces
+ *   it. When the same question had two homes they disagreed, and every §8.1 coach invite
+ *   and §9.1 parent invite — the only mechanism by which anyone but the admin joins — was
+ *   suppressed as `limit_violation` while the admin was told the invite had been drafted.
  */
 const FORWARDABLE_LINK = /^https?:\/\/(?:wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com)/i
 
@@ -160,6 +166,12 @@ export type OutboundMessage = {
    * a second register goes unmarked, the ladder escalates a rung — the key moves
    * with it and the message is news again. Set by the composer, because only the
    * composer knows what its message is a statement ABOUT.
+   *
+   * @mechanism stateKey — keys a standing message on the STATE it reports
+   *   (`AD-COACH-NOT-ONBOARDED:<coach>:invited`) rather than on the moment that raised it,
+   *   so a state is told once and only a state that moves is news again. The body-comparing
+   *   repeat gate cannot cover this class: a stuck state produces a byte-identical body,
+   *   days apart, outside any window it watches. Closes F-AN.
    */
   stateKey?: string
   /**
@@ -181,6 +193,12 @@ export type OutboundMessage = {
    * subject people when a caller supplies none, so the row exists even for a
    * protocol nobody has taught about this field: a state that depends on somebody
    * remembering is not a state.
+   *
+   * @mechanism confirmation — records the question a message puts on somebody's screen as
+   *   state at send time, so an unanswered ask still exists after the message has scrolled
+   *   away and a second ask on the same normalised `subject` supersedes the first instead
+   *   of accumulating beside it. `send` derives one when the caller supplies none, so the
+   *   row exists even for callers that know nothing about the field. Closes F-AF, F-AQ.
    */
   confirmation?: { kind: string; subject: string; question?: string }
   /**
@@ -273,6 +291,11 @@ export type SuppressReason =
  * sharing `failed` with a real delivery failure is how the product told its own
  * owner his messaging was broken while it was working exactly as designed
  * (F-AT, closed by 0032). A gate is a decision; the wire saying no is a fault.
+ *
+ * @mechanism MessageStatus — keeps `suppressed` off the delivery ladder and distinct from
+ *   `failed`, so a deliberate non-send is never read back as the wire refusing the message.
+ *   Every gate's decision keeps its own `SuppressReason` beside it, which is what lets a
+ *   report say why nothing went out rather than that something broke. Closes F-AT.
  */
 export type MessageStatus = 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'suppressed'
 
@@ -311,6 +334,13 @@ const printable = (s: string): number => Array.from(s).length
 /**
  * Every way this message would fail to render on the real wire, as human sentences.
  * Empty array = renderable. Never mutates, never truncates.
+ *
+ * @mechanism validateOutbound — enumerates every way a message would fail on the real wire
+ *   (LIMITS are the Cloud API's own numbers) and returns reasons instead of repairing
+ *   anything: a 21-character button title is a compose bug, and cutting it to 20 produces a
+ *   message that renders, so nobody ever finds the bug. Refusing and recording it is what
+ *   makes §17's "if it cannot render in the emulator, it does not ship" enforceable rather
+ *   than aspirational.
  */
 export function validateOutbound(msg: OutboundMessage): string[] {
   const bad: string[] = []

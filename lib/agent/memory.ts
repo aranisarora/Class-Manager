@@ -1,6 +1,14 @@
 /**
  * lib/agent/memory.ts — §5. CONTRACTS §6.
  *
+ * @mechanism memory_fact — the append-only record, kept separate from the bounded hot set
+ *   (`academy.memory` / `person.memory`) the prompt actually carries. A fact is never edited
+ *   and never deleted; a correction writes a superseding row, and the live set everywhere is
+ *   "not retired and not superseded". Collapsing the two into one capped blob puts the pruning
+ *   decision inside a model under context pressure, where what it drops is invisible —
+ *   everything outside the hot set stays reachable with `read`, so forgetting is a context
+ *   decision and never a storage one.
+ *
  * Two different things, deliberately not collapsed into one:
  *
  *   `memory_fact` is append-only and IS the record. Nothing the bot learned is
@@ -135,6 +143,13 @@ const DAY_DATE_RE = /\b\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|de
 /**
  * A rule about how the business runs, which has a table of its own now.
  *
+ * @mechanism policyShapedFact — refuses a fact that reads as a rule about how the business
+ *   runs, and names `business_rule` as its home: the owner's own words, provenance (stated
+ *   versus merely observed), and whether anything enforces it. Without it a rule the model
+ *   invented and then remembered itself saying acquires the authority of a fact — from the
+ *   next turn on it is indistinguishable from something the owner decided. Narrow on purpose:
+ *   universals about the BUSINESS, not a habit of one person.
+ *
  * **"The existence of policy" is on the never-trust list, and memory is where it
  * used to get in.** The model invented a pro-rata refund policy for a prospect,
  * remembered itself saying it, and the invention acquired the authority of a
@@ -169,6 +184,15 @@ export function policyShapedFact(fact: string): string | null {
   )
 }
 
+/**
+ * @mechanism rowShapedFact — the placement gate, enforced at the record and not only at the
+ *   tool: a fact carrying a rupee figure, a phone number, a payment handle or a multi-day
+ *   timetable is refused, because every one of those lives in a row and a memory copy is a
+ *   future wrong answer waiting for the row to change. The generator is a model and the gate
+ *   cannot be, so it tests the one thing the string decides — shape — and the refusal says
+ *   what to keep instead. Deliberately partial: a time or a single day is how preferences
+ *   are said.
+ */
 export function rowShapedFact(fact: string): string | null {
   const f = String(fact ?? '')
   if (/₹\s*\d|\brs\.?\s*\d|\binr\s*\d/i.test(f)) {
@@ -289,6 +313,14 @@ export async function writeFact(
 /**
  * The academy is REQUIRED, and that is the whole fix.
  *
+ * @mechanism hotSet — the memory read the prompt carries, with the two states nothing else
+ *   here distinguished: `null` is a FAILED read and `''` is a subject with nothing recorded.
+ *   The tail renders an empty hot set as "(nothing recorded yet)", so a refused or timed-out
+ *   read told the model, in as many words, that it had never been told anything about a
+ *   business it has served for months. The reason for the failure rides back with the null,
+ *   and the required `academyId` closes the other door to the same wrong answer — the
+ *   process-local tenant map is empty on every cold start.
+ *
  * It used to be optional, falling back to `TENANT_OF` — a module-level Map populated by
  * whichever earlier call happened to know the tenant. In a warm process that works. In a
  * cold one the Map is empty, `tenantOf` returns null, and this returned `''`: **"this
@@ -395,6 +427,15 @@ Rules:
 
 Return JSON: {"lines": ["...", "..."]}`
 
+/**
+ * @mechanism curate — rebuilds the hot set from the live fact set on a schedule, never per
+ *   turn: `writeFact` enqueues a `memory_curate` job only when a subject crosses
+ *   CURATE_THRESHOLD live facts, under a dedupe key that makes a second crossing of the same
+ *   threshold a no-op. Curating per turn is a model call after every turn, roughly doubling
+ *   the model calls in the product; enqueuing in its own session after the fact has committed
+ *   makes a scheduling failure a stale cache and never a lost fact, and nothing usable back
+ *   twice running leaves the existing hot set alone.
+ */
 export async function curate(
   subjectKind: SubjectKind,
   subjectId: string,

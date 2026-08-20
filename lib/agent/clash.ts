@@ -1,6 +1,15 @@
 /**
  * lib/agent/clash.ts — the consequence a row count cannot see.
  *
+ * @mechanism coachClashes — asks the database, inside the plan's own transaction and
+ *   after the steps have run, which coach this plan just put in two places at once —
+ *   both arms, the weekly slot and the dated session, scoped to the rows this plan is
+ *   responsible for so somebody else's old overlap never surfaces inside this receipt.
+ *   It notes and never refuses: the sentence becomes a plan note, so `needsPreview`
+ *   gates on what a plan COLLIDES with rather than on how much it writes, and the
+ *   person's tap stays the override. Five routes put a coach somewhere, so the same
+ *   check written into `create_class` would have covered one of them.
+ *
  * **A coach is one person.** Nothing in this product knew that. Asked to add a
  * Monday 7–8am private at the Gymkhana while the same coach already had a
  * Monday 7–8am private at Lake Club, `create_class` ran with no lookup against

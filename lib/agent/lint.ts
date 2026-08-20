@@ -168,6 +168,14 @@ function pipeTablesToLines(text: string): string {
 /**
  * Markdown into WhatsApp's own markup. Representation, never meaning.
  *
+ * @mechanism toWhatsAppMarkup — the one pass allowed between what the model wrote and what the
+ *   person reads, and it is an ADAPTER: headings and `**bold**` become WhatsApp's one-asterisk
+ *   bold, `- item` becomes a bullet, a pipe table becomes one bulleted line per row with every
+ *   value under its OWN column's name. Nothing is deleted, nothing is added, and no word is
+ *   exchanged for another — the two places that were false (a deleted horizontal rule, a blank
+ *   cell that re-labelled every value after it) are a refusal and a fix respectively. The model
+ *   is told this happens, so its next sentence about its own message is not a guess.
+ *
  * The model writes Markdown because everything it has ever read was Markdown.
  * WhatsApp is not Markdown: bold is one asterisk, there are no headings, and
  * `[label](url)` renders as the literal characters. Left alone, the first thing a
@@ -294,6 +302,16 @@ const WIRE_SHAPE =
 
 /**
  * Everything a message can be wrong about that the string itself decides.
+ *
+ * @mechanism proseViolations — the validator that REFUSES rather than rewrites. A uuid, a
+ *   table.column, a bare snake_case token, an ISO timestamp, a § reference, a raw URL, a line
+ *   of bracketed pseudo-buttons, a horizontal rule, a wire-shape object, the word "academy":
+ *   each is machinery on a customer's screen, each is answerable from the characters alone,
+ *   and each used to be quietly edited on the way out — which is a second author, a gap
+ *   between the message the model wrote and the message the person read that becomes a false
+ *   belief on the very next turn. It comes back naming what is wrong and what to do instead,
+ *   with one round of grace left: the model repairs everything it is told about and
+ *   mis-narrates everything it is not.
  *
  * Nothing here judges MEANING. Every one of these is answerable by looking at the
  * characters — "does this contain a uuid" has one answer, the way "does this
@@ -423,6 +441,13 @@ const VOCAB_PATTERNS: RegExp[] = [
 
 /**
  * Vocabulary preferences read out of an academy's memory hot set, for the tail.
+ *
+ * @mechanism vocabularyPreferences — their own words are told to the model, never applied to
+ *   its message. This reads a stored FACT, which is a pattern over data; the same pattern over
+ *   a message about to be sent is an unsupervised judge standing between the author and the
+ *   reader, which is what `applyVocabulary` was before it was deleted. Telling the model that
+ *   they say "batch" and letting it choose is the half that ever worked, and a preference is
+ *   not a falsehood, so there is nothing here to refuse either.
  *
  * **This reads a FACT, never a message**, which is the whole reason it survived
  * the deletion above it. A pattern over something the model wrote about the

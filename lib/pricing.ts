@@ -1,6 +1,15 @@
 /**
  * What a turn cost, in one place.
  *
+ * @mechanism PRICES — one rate table the whole repo prices against, so a hand-driven turn and
+ *   a probed one can be compared in the same unit; the probe's duplicate copy is gone and
+ *   every figure downstream derives from here, which makes it one place to be wrong rather
+ *   than three. Cached input is its own rate per row and peak is a per-row multiplier, so a
+ *   price card that moves is an edit and not a drift — a hardcoded cache fraction was wrong
+ *   the day DeepSeek's cache hit landed at 3.2% of a miss. `costUsd` returns null for a model
+ *   the table does not know, because "we do not know" and "it was free" are different facts
+ *   and a total that silently swallows the first is a lie.
+ *
  * This table used to live inside `scripts/probe-model.ts` alone, so `drive cost`
  * printed tokens and seconds and no money at all, and the only figure in rupees
  * anybody could quote came out of the probe. Two readers of the same run could

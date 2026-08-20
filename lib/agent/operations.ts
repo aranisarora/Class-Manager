@@ -139,6 +139,14 @@ function dowOf(isoDay: string): number {
  * stays a new person, which is the common case and the one that must not break.
  *
  * Returns the existing `person.id` to reuse, or null to mint a new one.
+ *
+ * @mechanism resolvePlayerPerson — the single answer to "is this human already here?"
+ *   for every write path that mints a player, matched against the names this contact
+ *   already holds rather than by an exact `=`. Retires the class where one human becomes
+ *   two `person` rows behind one phone — one holding the money, one holding the
+ *   attendance — which is what an unconditional insert did to every self-paying adult.
+ *   Deliberately conservative: it reuses only on a whole-name match, so a child booked
+ *   from a parent's phone stays a new person.
  */
 function resolvePlayerPerson(
   playerName: string,
@@ -289,6 +297,14 @@ type RosterRow = {
  *
  * Fixed here rather than in `mark_attendance` because it is a chokepoint and that
  * is a call site: six callers had the bug, a seventh would have inherited it.
+ *
+ * @mechanism rosterOf — the one place any operation reads a class roster, taken as the
+ *   service role rather than as the caller, because `account_cm_user_select` has no
+ *   coach clause and every row therefore vanished for the person the register exists
+ *   for. Retires the class where an RLS-emptied read makes a write silently do nothing
+ *   and still report success: no roster, no attendance, no §6.4 billing line, and a
+ *   coach told it went fine. Reachability is established upstream by `sessionOf` or
+ *   `assertIdsExist`, so reading it as the runtime widens nothing.
  */
 async function rosterOf(ctx: SessionCtx, classId: string, onDate: string): Promise<RosterRow[]> {
   return q<RosterRow>(
@@ -947,6 +963,14 @@ const cancelSession: OperationDef = {
  * §13 rule 4 — rescheduling or cancelling sweeps that session's whole ladder.
  * In-transaction on purpose: `lib/jobs` would cancel in its own transaction,
  * and a plan that rolls back must not have cancelled anything.
+ *
+ * @mechanism cancelJobsForSession — sweeps a session's pending ladder by dedupe-key
+ *   prefix as plan steps in the caller's own transaction, scoped to `all` or
+ *   `pre-session`. Retires the class where the queue and the world disagree: reminders
+ *   and coach nudges still firing for a session that was moved or called off, a
+ *   rolled-back plan that has nonetheless cancelled jobs, and — through the scope — an
+ *   `all` sweep in `mark_attendance` cancelling the outcome jobs that same plan just
+ *   created.
  */
 function cancelJobsForSession(
   sessionId: string,
@@ -1489,6 +1513,15 @@ const convertTrial: OperationDef = {
 
 const ATT = z.enum(['present', 'late', 'absent', 'cancelled_timely'])
 
+/**
+ * @mechanism mark_attendance — refuses to open the register on a session that has not
+ *   started yet, compared against the domain clock. Marking is not a small write: it
+ *   completes the session, cancels that session's pre-session ladder and generates an
+ *   outcome message to every family, so one missing comparison recorded a class as
+ *   taken twelve hours before it ran, with the reminders swept and the parents already
+ *   told. Retires the whole downstream class rather than any one of its symptoms, and
+ *   the refusal names the moment it becomes markable because a bare "no" costs a round.
+ */
 const markAttendance: OperationDef = {
   name: 'mark_attendance',
   ownScope: true,
@@ -2149,6 +2182,15 @@ const clientCancel: OperationDef = {
      * only because the product was slow. §2.2 already says everything a tap can run is
      * validated when minted; a button whose meaning changes between minting and tapping
      * is precisely the failure that rule exists to prevent.
+     *
+     * @mechanism decided_timely — the timeliness verdict, and the window it was judged
+     *   against, are stamped into the button as the question is minted, and the tap
+     *   replays them rather than recomputing. Retires the class where a button's meaning
+     *   drifts between being read and being tapped: the same cancellation was free when
+     *   she was told so and late a day later, so `absent` was written over her
+     *   `cancelled_timely` with a charge behind it. `decided_window_hours` carries the
+     *   other half, so an owner widening or narrowing the window cannot rewrite
+     *   questions already sitting on people's phones.
      */
     decided_timely: z.boolean().nullish(),
     decided_window_hours: z.number().nullish(),
@@ -2399,6 +2441,15 @@ const clientCancel: OperationDef = {
  *
  * 0032 gives each scope a row the standing jobs read, so half a stop is a thing
  * that can actually be kept.
+ *
+ * @mechanism OPT_OUT_SCOPE — stopping is a scope rather than a switch: money,
+ *   reminders, outcomes, announcements or all, each written as a `comm_preference` row
+ *   the standing jobs read, with `opted_out_at` still meaning the whole channel.
+ *   Retires the class where the only answers to "stop messaging me about money" were
+ *   silence or nothing, so the middle got improvised as a memory fact that changed no
+ *   behaviour — the column stayed unset, every later always-rule passed, and a money
+ *   message went out nine days on.
+ *   Closes F-AV.
  */
 const OPT_OUT_SCOPE = z.enum(['all', 'money', 'reminders', 'outcomes', 'announcements'])
 

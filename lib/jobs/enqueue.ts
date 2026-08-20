@@ -8,6 +8,14 @@
  *
  * Cancelling is by prefix, because rescheduling a session has to sweep the
  * whole ladder that hangs off it before re-enqueueing (§13 rule 4).
+ *
+ * @mechanism dedupe_key — the column is unique and every insert here, single or bulk, is
+ *   `on conflict (dedupe_key) do nothing`, so enqueueing the same moment twice is a no-op
+ *   (§13 rule 1) and a duplicate returns the existing id rather than an error. That is
+ *   what lets `planAhead()` run on every tick and every clock advance without writing
+ *   anything, and what makes a retry safe. The key families are defined in one place
+ *   (`dedupe` in `kinds.ts`), so the planner and the handler that re-enqueues after it
+ *   agree on what "the same moment" is.
  */
 
 import {
@@ -72,6 +80,15 @@ export function watchSubjectKey(academyId: string, subject: string): string {
  * tasks. "A watch with no expiry is a leak; the runtime rejects a task without
  * one." This is the choke point where that is true, so the rejection lives here
  * rather than in the tool that mints them.
+ *
+ * @mechanism guardAgentTask — no watch the MODEL mints reaches the queue without a
+ *   parseable `expires_at`, an instruction and an academy, and no academy may hold more
+ *   than AGENT_TASK_CAP live ones. Every minting tool goes through `enqueue`, so the rule
+ *   lives at that choke point rather than in the tool: a watch with no expiry runs until
+ *   somebody notices, and an uncapped pile of them is the model committing the business to
+ *   unbounded future work nobody asked for. The planner's expired-question sweep is the one
+ *   path that does not pass here — it bulk-inserts through `enqueueMany` and sets its own
+ *   seven-day expiry.
  */
 async function guardAgentTask(payload: Record<string, unknown>, academyId: string | undefined): Promise<void> {
   const expires = payload.expires_at
@@ -125,6 +142,15 @@ export async function enqueue(
      * partial unique index on (subject_key) where status in ('pending','running')
      * is what makes the replacement true rather than intended — it refuses the
      * insert if this update somehow misses.
+     *
+     * @mechanism subject_key — a job records what it is WATCHING, and a newer watch on the
+     *   same subject flips the older one to `superseded` — a different fact from
+     *   `cancelled`, which is somebody dropping a watch. `dedupe_key` cannot do this,
+     *   because the model mints a fresh slug every time; the partial unique index is what
+     *   makes the replacement structural rather than intended. Without it, seven watches on
+     *   the same two unmarked registers sent one coach seven near-identical messages in
+     *   three minutes, and the frequency cap then dropped the one that mattered.
+     *   Closes F-C.
      */
     let superseded = 0
     if (row.subject_key) {
@@ -245,6 +271,13 @@ export async function cancelSessionJobs(sessionId: string): Promise<number> {
  * subject, and both callers — the turn and its reflection — had to phrase that
  * key identically while neither could see the keys it was matching against. A
  * supersession key nobody can read is a fix with its own evidence hidden.
+ *
+ * @mechanism liveAgentTasks — the model's own outstanding watches, read back out of `job`
+ *   — a global table it cannot query in either direction — with the declared `subject` and
+ *   who minted each one, for the cap check and for the tail that renders them. Without it
+ *   the model answered "what are you watching" from what it remembered doing, which is
+ *   carrying pending state across turns from memory; driven, it recalled a watch correctly
+ *   once, and the recall was luck rather than a property.
  */
 export async function liveAgentTasks(academyId: string): Promise<
   {

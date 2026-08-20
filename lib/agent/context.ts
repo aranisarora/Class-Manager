@@ -347,6 +347,15 @@ Escalation
  * Preamble → schema → operations framing → catalog → platform → business facts →
  * doctrine. MUST be byte-identical across turns (§4.4).
  *
+ * @mechanism stablePrefix — the whole cached half of the prompt, assembled once and memoised:
+ *   preamble, schema, operations framing, catalog digest, platform limits, business facts,
+ *   doctrine, then `CACHE_BOUNDARY`. It is byte-identical for every turn, every person and
+ *   every business served, and that identity is the entire cost mechanism — a hit costs 3.2%
+ *   of a miss and there is no handle to hold, so one date, one id or one per-academy fact
+ *   above the boundary makes every turn in the product pay full price. Ordering inside it is
+ *   free, which is why doctrine sits last, against the boundary, rather than 35k characters
+ *   upstream of the decision.
+ *
  * The order is deliberate and is documented in `PREFIX-RULES.md`: what the world contains
  * before how to judge it, and doctrine against the boundary rather than at the top.
  *
@@ -502,6 +511,14 @@ function formatQueryResults(v: unknown): string {
 /**
  * A prefetch result, carrying the one thing the runtime knew and used to throw away.
  *
+ * @mechanism Read — the type that keeps a prefetch that FAILED (`value` null, `why` set)
+ *   apart from one that ran and found nothing (`value` `[]`, `why` null), and carries
+ *   `modelQuery`'s own error text along with the gap. The two were one value here, and they
+ *   are opposite sentences downstream: a refused or timed-out lookup rendered as a confident
+ *   negative is what told a parent nothing was scheduled and told a coach his own pay was not
+ *   visible to the product, while the same figure was read out to the owner in another
+ *   thread.
+ *
  * `value` null with `why` set is a lookup that FAILED. `value` `[]` with `why`
  * null is a lookup that ran and found nothing. The two were the same value here,
  * and `res.error` — the whole reason, already in hand from `modelQuery` — was
@@ -566,6 +583,14 @@ function because(why: string | null): string {
  * The line a failed lookup MUST produce, and the only sanctioned way to turn a
  * `Read` into prose.
  *
+ * @mechanism fromRead — renders a `Read`'s value, or, where the read failed, an `unread`
+ *   line that states the gap and hands over `because(why)`. The failure text is a REQUIRED
+ *   argument, so a call site cannot exist without one and `render` is never handed a failure
+ *   to think about. That is what retires the silent hole: five of the nine ways a prefetch
+ *   could fail used to drop their block entirely, and string concatenation is silent by
+ *   construction — you append one line fewer and the result is a perfectly well-formed
+ *   paragraph asserting the opposite of what was read.
+ *
  * **A block that renders nothing on failure is the one shape never allowed here.**
  * The tail is the only push channel in the product that must DEGRADE rather than
  * fail — a job that dies is retried and a plan that dies rolls back, but a turn
@@ -604,6 +629,14 @@ function fromRead<T>(
 
 /**
  * A census of the business, from the point of view of whoever is talking.
+ *
+ * @mechanism census — what exists, read before the turn's first round and always under this
+ *   person's own RLS, so a coach's census is their classes and a parent's is their children
+ *   without anything having to remember to filter it. Counts and rows, never instructions: it
+ *   retires the round spent discovering whether anything is set up at all, and the bot that
+ *   narrated its own state machine because that was the only fact about the business it held.
+ *   Every label in it is prompt and is held to one rule — read the label and its value with
+ *   no access to the SQL above it, and the sentence they license must be true.
  *
  * The tail already carried who this is, what the business is called, what is
  * remembered about them and what time it is. It did not carry **what exists** —
@@ -1078,6 +1111,15 @@ async function census(id: Identity): Promise<string> {
  * The states this person is standing in, which the model must never have to
  * infer.
  *
+ * @mechanism standing — puts the states layer 0 already stores in front of the model instead
+ *   of leaving them to be reconstructed: questions asked and not answered, mutes and
+ *   opt-outs, and the watches this business has already promised — the `job` table is closed
+ *   to the model in both directions, so its own standing promises can reach it no other way.
+ *   Reconstruction is where the false unsubscribe confirmation came from, and each line says
+ *   what it LICENSES, because an unanswered stop request described as a completed one is the
+ *   worst sentence this product has ever sent.
+ *   Closes F-AF.
+ *
  * **Reconstruction is where the false unsubscribe confirmation came from.** A
  * woman asked to be left alone, the confirmation went on her screen, she did not
  * tap it, and the next turn — with nothing anywhere recording the ask — answered
@@ -1545,7 +1587,14 @@ export async function variableTail(
         `"refused" or "failed" means it did NOT happen — nothing was written, and describing it as done ` +
         `would be false. Do not blindly redo it either: whatever refused it is usually still true. ` +
         `"done" means it already happened — doing it again is how somebody is charged or messaged twice. ` +
-        `"staged" means it waits on their tap, not on you.\n\n` +
+        `"staged" means it waits on their tap, not on you. ` +
+        // Only cross-conversation replies reach this block (`recentActions`),
+        // and saying so is what stops their absence reading as "I sent nobody
+        // anything": what went to the person in front of you is in the
+        // transcript above, not here.
+        `A "reply to X" line is a message that left this conversation — what you sent to the person ` +
+        `you are talking to is already in the transcript above, so only the ones that went to somebody ` +
+        `else are listed here.\n\n` +
         extra.recentActions,
     )
   }

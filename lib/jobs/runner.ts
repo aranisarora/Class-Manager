@@ -86,6 +86,13 @@ const MAX_ROUNDS = 8
  * handler whose process died look identical from here, and reclaiming a live one
  * runs it twice. Every handler re-checks its own precondition (rule 2), so a
  * double-run is survivable; a permanently stranded job is not.
+ *
+ * @mechanism LOCK_STALE_MINUTES — a `running` row whose worker died is reclaimed to
+ *   `pending` once its lock is older than this, with the reclaim appended to
+ *   `last_error` so the row says what happened to it. Nothing releases a lock when a
+ *   process dies, and `claim()` only ever looked at `pending`, so such a row never ran
+ *   again and never appeared as a failure — §13 rule 3's exact failure mode, a job that
+ *   did not run, invisibly.
  */
 const LOCK_STALE_MINUTES = 15
 
@@ -123,6 +130,14 @@ async function claim(limit: number): Promise<Job[]> {
    * index seek on a table this size. If it ever stops being small, the fix is
    * a generated `academy_id` column on `job` with an index on
    * `(academy_id, status, run_at)` — not a return to one global clock.
+   *
+   * @mechanism app.now_for — a job is due against the clock of its OWN tenant, read from
+   *   `payload->>'academy_id'`, not against whatever clock the claiming session resolves.
+   *   The infra session is pinned to no tenant, so `app.now()` here was always the world
+   *   clock: with per-academy clocks (0024), holding academy A four hours ahead to reach a
+   *   session fired every pending job in academy B four hours early, where they declined as
+   *   stale and the transcript still read calm. Costs a per-row bound instead of an index
+   *   seek on `run_at`, accepted deliberately.
    */
   const rows = await withInfra((tx) => tx<Job[]>`
     with due as (
@@ -182,6 +197,13 @@ async function fail(job: Job, error: string): Promise<boolean> {
  * failure mode of a scheduler is silence. The two bookends are called out by
  * name: a missing digest is not a late job, it is an outage the admin should
  * hear about.
+ *
+ * @mechanism reportMissed — every run ends by reporting what did NOT run: anything past
+ *   its `run_at` by MISSED_AFTER_MINUTES and still `pending`, `failed` or `running`, with
+ *   the two bookends labelled MISSED rather than overdue. `running` belongs in that list
+ *   because a row whose worker died is the one status meaning nobody is coming back for
+ *   it. Without this a scheduler reports only what it managed to do, which is the half of
+ *   the truth that never contains the outage.
  */
 async function reportMissed(log: string[]): Promise<void> {
   const rows = await withInfra((tx) => tx<

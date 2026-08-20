@@ -1,6 +1,14 @@
 /**
  * lib/actions.ts — mint once, replay verbatim (§2.2, §6.5).
  *
+ * @mechanism consumeAction — a tap loads the minted row and claims it with ONE conditional
+ *   UPDATE whose WHERE clause carries all three checks (expiry, consumption,
+ *   `minted_for_contact_id`), so they are evaluated against the row as it is locked rather
+ *   than as it was read. No model call, no re-resolution, no string parsing: minting and
+ *   tapping are different moments, and the tap replays what was authored while the context
+ *   was there. Read-then-write would let two coaches both win `[Claim this session]` and put
+ *   two people at one court.
+ *
  * "A button's action is authored at compose time, validated, stored. The tap replays the
  * stored payload. **No model inference at tap time**, where a misread commits someone to
  * being somewhere."
@@ -15,6 +23,15 @@
  * `CO-COVER-OFFER` race correct: two coaches tap `[Claim this session]` in the same second,
  * both rows are `consumed_at is null` when they start, and exactly one UPDATE returns a row.
  * Read-then-write would let both win and put two coaches at one court.
+ *
+ * @mechanism superseded — the other buttons on the same message are retired INSIDE the
+ *   claiming statement, as a data-modifying CTE rather than a second write, because a claim
+ *   that succeeded while the invalidation did not is exactly the state that tells the lie:
+ *   `[Do it]` commits the plan and `[Cancel]`, still live a day later, answers that nothing
+ *   changed. Narrow on purpose, and the WHERE clause says how: only a tap that
+ *   DECIDED something retires anything, and only on a message where something could be
+ *   committed, so the reminder card pairing `[I'll be there]` with `[Can't make it]` still
+ *   lets a parent change their mind at four o'clock.
  *
  * That same statement now retires the siblings of a tap that decided something (0016). A
  * message's buttons were unrelated rows, so `[Do it]` and `[Cancel]` were each live for a
@@ -189,6 +206,16 @@ type ClaimedRow = { payload: unknown; message_id: string | null }
 
 /**
  * The tap is the answer — recorded as the runtime, because the tapper cannot.
+ *
+ * @mechanism resolveQuestion — a tap that decided something resolves the `pending_request`
+ *   its message was asking, as a SECOND statement under the SERVICE role, because `cm_user`
+ *   has no write policy on that table — which is why the same update, folded into the claim,
+ *   matched zero rows for the life of the table and nothing counted it. Without it the tail
+ *   keeps rendering an answered question as asked and unanswered, the model re-asks, a second
+ *   tap arrives inside the notice window and charges somebody for a class they cancelled, and
+ *   the expiry sweep resolves the question as `expired` and opens a turn chasing work that
+ *   already happened. The row count is checked, because a write allowed to match nothing in
+ *   silence is how this survived.
  *
  * **This lived inside the claiming statement and could never once have worked.**
  * `consumeAction` claims under the TAPPER (that is what stops one person answering

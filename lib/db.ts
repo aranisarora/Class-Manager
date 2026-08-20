@@ -1,6 +1,13 @@
 /**
  * lib/db.ts — the only connection, and the only way to use it (CONTRACTS §2).
  *
+ * @mechanism withSession — the only path to a row. The pool connects as `cm_runtime`, which
+ *   has no table privileges at all, so every query runs inside a transaction whose preamble
+ *   `SET LOCAL ROLE`s to one of three hardcoded literals and sets the GUCs the RLS policies
+ *   read. Tenancy is therefore a property of the connection rather than of every caller
+ *   remembering a `where academy_id`, and there is no path that skips it — a query that
+ *   declared nobody would have no privileges to run at all.
+ *
  * Invariant §2.1 made mechanical. The pool connects as `cm_runtime`, which has
  * no table privileges at all. Every query therefore runs inside a transaction
  * that first `SET LOCAL ROLE`s to one of exactly three roles and sets the GUCs
@@ -50,6 +57,13 @@ export type SessionCtx =
 
 /**
  * The service session that does a piece of work on behalf of an existing one.
+ *
+ * @mechanism serviceFrom — escalating to the service role carries the caller's attribution
+ *   with it (`turnId`, `origin`, `originRef`) instead of each caller remembering to. Fourteen
+ *   sites built `{ role: 'service', academyId }` by hand and every one dropped those GUCs, so
+ *   `message.turn_id` came back null on every row the product sent. Escalating is the
+ *   operation, so escalating is where the attribution is held, and a caller written tomorrow
+ *   gets it free.
  *
  * Fourteen places wrote `{ role: 'service', academyId: ctx.academyId }` inline,
  * and every one of them silently dropped `turnId` — so the GUC that 0015 chose
@@ -388,6 +402,16 @@ class RollbackSignal<T> extends Error {
 /* -----------------------------------------------------------------------------
  * A transaction may not outlive its callback
  *
+ * @mechanism runTransaction — the one function every transaction goes through, bounded three
+ *   ways: `idle_in_transaction_session_timeout` in the preamble (the server's own reaper, the
+ *   only bound that survives this process being frozen or killed), `TX_DEADLINE_MS`, which
+ *   turns "never settles" into a rejection so postgres.js reaches its ROLLBACK, and a
+ *   `revocable` handle that dies the instant its callback returns, so a late statement cannot
+ *   land on a connection now serving another tenant under another role. Without them a leaked
+ *   transaction is a pooler slot that never comes back and the failure only ever gets worse:
+ *   fifteen of fifteen held, two idle in transaction for sixteen minutes, every
+ *   database-backed route 500ing until the backends were terminated by hand.
+ *
  * THE OUTAGE, because the ledgers are gone and this comment is the only record.
  * `cm_runtime` held 15 of 15 pooler connections and every database-backed route
  * 500'd with `(EMAXCONNSESSION) max clients reached in session mode - max clients
@@ -691,6 +715,14 @@ const FORBIDDEN_FRAGMENTS = ['pg_sleep', 'dblink', 'copy ', 'pg_read']
 /**
  * The wall clock, refused where the sentence asking for it could not be enforced.
  *
+ * @mechanism WALL_CLOCK — model-authored SQL is refused before it runs if it reads the host
+ *   clock (`now()`, `current_date`, `clock_timestamp()`…), anchored to a word boundary so
+ *   `app.now()` and `app.now_for()` still pass, and the refusal names the replacement because
+ *   the sentence in it is the only feedback a pre-flight rejection gives. The rule was written
+ *   in SCHEMA_DOC and nothing checked it, which is the worst shape a rule can have here: the
+ *   clock is drivable, so `now()` raises nothing and silently answers with the host's time —
+ *   confident rows about a different day in every driven world, with no error to mark it.
+ *
  * SCHEMA_DOC has said **"Never call now(), current_date or current_timestamp.
  * Use app.now()"** for as long as it has existed, and nothing checked. That is
  * the worst shape a rule can have here: the clock is drivable, so `now()` is not
@@ -728,6 +760,16 @@ function structureOnly(lowered: string): string {
     .replace(/\/\*[\s\S]*?\*\//g, ' ')
 }
 
+/**
+ * @mechanism assertOneStatement — the pre-flight parse every model-authored statement passes,
+ *   exported as `assertSingleReadStatement` for a read and `assertSingleWriteStatement` for a
+ *   plan's write step. `structureOnly` blanks string literals and comments first, so a
+ *   parent's note containing a semicolon is data rather than a second statement; then the
+ *   fragments that leave the RLS boundary or hold a pooled connection (`dblink`, `copy `,
+ *   `pg_read`, `pg_sleep`) are refused, anything after a `;` is refused, and the leading
+ *   keyword must be one this caller allows. Every refusal is a sentence the model can act on,
+ *   which is what makes a bad statement a retry rather than a turn failure.
+ */
 function assertOneStatement(query: string, allowed: readonly string[], label: string): void {
   const trimmed = String(query ?? '').trim()
 

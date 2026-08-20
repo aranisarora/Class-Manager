@@ -220,6 +220,15 @@ export async function monthlyLines(job: Job): Promise<void> {
  * The owner is told a period was only partly covered — once, and then never
  * again if they say what they want done about it.
  *
+ * @mechanism raisePartialPeriod — a recurring line covering time the enrolment does not
+ *   is a property of the rows, found by `partOfPeriod` with nobody having complained.
+ *   The full charge stands and the owner is told once, with the pro-rata figure worked
+ *   out and a tap that writes it. Without it the job decides the maximum silently:
+ *   enrolments that started on the 17th were billed a whole August, and the first human
+ *   to notice was a parent threatening legal advice on day 7. `[Always pro-rate]` writes
+ *   both the rule in the owner's words and `academy.settings.partial_period`, which is
+ *   the typed row the 1st of next month can actually read.
+ *
  * **`enforced_by` gets its first meaning here.** `business_rule` has carried the
  * column since 0032 and nothing has ever read the table: a rule stated in the
  * owner's words steers a conversation the model is present for, and does exactly
@@ -329,6 +338,14 @@ async function raisePartialPeriod(academy: AcademyRow | null, found: PartialPeri
 
 /**
  * One line, once — and now the database is what says so.
+ *
+ * @mechanism writeLine — the one place a recurring line is written, guarded by a
+ *   `dedupe_key` built from ids (`billingKey.*`) with 0023's unique index behind it, so
+ *   `on conflict do nothing` is the constraint doing the work rather than a SELECT on
+ *   the composed sentence — which also closes the race two runners could drive through.
+ *   The free-first-class credit, the conversion out of `is_trial` and the partial-period
+ *   census hang here for the same reason: a rule repeated across the three rate branches
+ *   is a rule that will be right in two of them.
  *
  * This used to read: "There is no unique constraint for non-session lines, so the
  * guard is an explicit existence check on what the parent would actually see."
@@ -557,6 +574,14 @@ async function writeLine(
 /**
  * What one class is worth, out of a period's charge.
  *
+ * @mechanism oneClassOf — sizes §6.4's free first class as ONE CLASS out of the period's
+ *   charge, counted from the `session` rows the period actually holds rather than
+ *   assumed. Crediting the whole recurring amount instead gave a trial a free month, a
+ *   free ₹15,000 term, or an entire ten-class pack — the default for every prospect
+ *   arriving down the auto-confirmed §10.1 funnel, and invisible, because the credit
+ *   reads plausibly and only ever makes the total smaller. Returns null when the period
+ *   holds no sessions, so the credit is skipped rather than guessed at.
+ *
  * Counts the sessions the class actually holds in the period rather than
  * assuming a number, because "how many classes are in a month" is a property of
  * the timetable and differs per class and per month. Cancelled sessions do not
@@ -591,6 +616,15 @@ async function oneClassOf(
 
 /**
  * How many packs have been opened, and how many classes have eaten into them.
+ *
+ * @mechanism packageState — counts packs by `class_id` and consumption from `attendance`,
+ *   so the pack a family already holds is still found after the class is renamed, and
+ *   the caller keys the line on the ordinal `opened + 1` rather than on a period, because
+ *   a busy month can exhaust two. It also sets the roll-over where `mark_attendance` puts
+ *   it — the NEXT session opens the next pack, not the last one of the old — and the two
+ *   writers rolling over one class apart billed a family for a pack they never started,
+ *   on the 1st, days after they had finished their ten and left, then carried it as
+ *   outstanding into the dunning ladder.
  *
  * `opened` counted rows whose `description` matched the sentence this run would
  * compose. That is the same R5 defect as the write guard: rename the class and
@@ -756,6 +790,15 @@ async function packRemaining(tx: Tx, academyId: string, accountId: string): Prom
  */
 /**
  * `coach_month_lines` — the month a coach worked, written down.
+ *
+ * @mechanism coachMonthLines — freezes a closed month into `coach_ledger` with the rate
+ *   COPIED into `rate_amount` rather than referenced, so a raise granted "from September"
+ *   cannot reprice August by being typed. The family side froze money this way from the
+ *   start; the coach side answered "what was Priya owed for August" live from
+ *   `coach.pay_amount`. The per-session and per-hour arms read the `coach_pay` view
+ *   instead of rebuilding `worked` — a hand-written second copy of that predicate reached
+ *   for `status = 'scheduled'`, true only of sessions that have not happened, and counted
+ *   a month of work as none.
  *
  * The family side of this product freezes money the moment it is earned: a
  * `tally_line` carries the amount and the period, so raising a class rate today

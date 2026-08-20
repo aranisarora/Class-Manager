@@ -10,12 +10,13 @@ belongs.
 
 | If you are about to… | Read first |
 | --- | --- |
+| analyse a bad run, or propose *any* fix | [`docs/MECHANISMS.md`](./docs/MECHANISMS.md) — what the brain **already does**. Generated from `@mechanism` tags; read it before `lib/`, which is ~209k tokens and will not fit |
 | add a line to the model's prompt | [`docs/PREFIX-RULES.md`](./docs/PREFIX-RULES.md) — and its graveyard, before re-adding something removed twice |
 | decide where a fix belongs | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the layers, and the trap list |
 | change what the product does | [`docs/product-spec.md`](./docs/product-spec.md) |
 | test, drive, or judge a run | [`docs/DRIVING.md`](./docs/DRIVING.md), then [`docs/JUDGING.md`](./docs/JUDGING.md) |
 | touch anything in `scripts/` | [`scripts/README.md`](./scripts/README.md) — 47 files, four jobs |
-| record something that broke | [`findings/`](./findings/README.md) |
+| record something that broke | [`findings/`](./findings/README.md) — [`OPEN.md`](./findings/OPEN.md) is the status board (generated), [`DECIDED.md`](./findings/DECIDED.md) is what was deliberately not fixed |
 | deploy | [`docs/DEPLOY.md`](./docs/DEPLOY.md) |
 
 ## The house rules
@@ -42,6 +43,14 @@ model's reasoning, its SQL, or the rows it touched cannot answer the question th
 *inside* that directory. Do not give an instrument its own corner and its own renderer; that
 is how six report generators grew, and they are gone.
 
+**Check `MECHANISMS.md` before proposing anything.** On 20 Aug 2026 `npm run findings`
+reported 38 of 43 findings open; 21 of those had shipped mechanisms and the ledger said so
+in a table nobody parsed. Analysis kept re-proposing `context_query` validation (F-AP),
+message `stateKey` (F-AN) and event-text filling (F-AZ) — all built. The brain does not fit
+in a context window, so "read the brain and understand it is sophisticated" does not work;
+the index is what works. `npm run check:findings` and `npm run check:mechanisms` keep both
+honest, as build failures.
+
 **Money is in rupees.** This is an INR-billing product. `lib/pricing.ts` is the one place that
 converts.
 
@@ -66,9 +75,13 @@ npm run drive:week          # one settled week with standing jobs firing
 npm run runs                # every recorded run, newest first
 npm run report              # render the newest run as one standalone page
 npm run findings            # which open findings no instrument stages
+npm run findings -- --write # regenerate findings/OPEN.md, the status board
+npm run mechanisms          # regenerate docs/MECHANISMS.md from the @mechanism tags
 
 npm run verify:static       # five absolutes, as a build failure
 npm run check:layout        # this repo's own structure indexes still describe it
+npm run check:findings      # the ledger agrees with itself about what is open
+npm run check:mechanisms    # docs/MECHANISMS.md still matches the tags in lib/
 npm run check:schema-doc    # SCHEMA_DOC still describes the real database
 npm run check:rls-doc       # the permission grid still describes the real policies
 ```

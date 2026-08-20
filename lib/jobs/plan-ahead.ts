@@ -17,6 +17,18 @@
  *    together, which is two messages saying the same thing. Jobs whose moment is
  *    "at or after" — the register, the outcome — are exempt, because a session
  *    that ended while nobody was looking still needs its register.
+ *
+ * @mechanism allowPast — every `push` drops a moment already behind `nowAt` (past a small
+ *   grace) unless the caller says the job's moment is "at or after": the register, the
+ *   outcome, the month catch-ups. Without the gate a planner catching up enqueues a T-60
+ *   prompt for a class starting in twenty minutes and fires it with the T-30, two messages
+ *   saying the same thing; without the exemption, work whose moment has passed on purpose
+ *   is never planned at all.
+ *
+ * @mechanism onboarding_state — the planner returns before every message-shaped job when
+ *   an academy is not `live`, so the roster-building phase schedules `materialize_sessions`
+ *   and `memory_curate` and nothing that talks to a human (§2.6). One line in the planner
+ *   rather than a go-live check inside twenty handlers, each of which could forget it.
  */
 
 import { DateTime } from 'luxon'
@@ -156,6 +168,16 @@ export async function planAheadFor(academyId: string): Promise<number> {
      * tenant, it costs one statement, and it runs on the same beat that plans
      * everything else. Above the go-live return on purpose: a question raised
      * during setup expires the same way.
+     *
+     * @mechanism pending_request.resolution — a question nobody answered and nobody tapped
+     *   is swept to `expired` on the same beat that plans everything else; nothing else
+     *   visits the row, and left unswept the tail told the model for weeks that somebody
+     *   had been asked something about a session long since run. The sweep does not stop
+     *   there: an `agent_task` is opened for whoever is OWED the answer — read from the
+     *   `from:<contact>` the derived subject carries, because a request routed to the owner
+     *   sits on the OWNER's contact while the parent who raised it is the one in silence.
+     *   Expiry decides nothing about the question itself; an expired opt-out is not an
+     *   opt-out, so the model reads what happened and chooses, including choosing silence.
      */
     const expired = await tx<
       { id: string; contact_id: string; kind: string; subject: string; question: string }[]
@@ -497,6 +519,15 @@ const BILLING_CATCHUP_MONTHS = 3
  * months. `on conflict (dedupe_key) do nothing` makes re-planning free, and every
  * handler re-checks its own precondition (§13 rule 2), so enqueueing a period
  * that turns out not to need billing costs one skipped job and nothing else.
+ *
+ * @mechanism planMonthBoundary — the month boundary is a CATCH-UP, not a schedule: both
+ *   queries ask which (enrollment, period) has no line and which closed period has no
+ *   tally, bounded to BILLING_CATCHUP_MONTHS, and every job is pushed `allowPast`. A
+ *   forward look at "is it the 1st" depends on the planner running on those two days,
+ *   which a `clock --set` across the boundary, a worker down over a month end, or a plan
+ *   that ran after 09:00 all skip — and nothing back-filled any of it, which is why every
+ *   driven world reached its second month with no lines and no tally. The per-(enrollment,
+ *   period) key is also what makes a player in two recurring classes billed for both.
  */
 async function planMonthBoundary(
   tx: Tx, academy: AcademyRow, nowAt: Date, push: Push,

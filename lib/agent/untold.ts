@@ -2,6 +2,12 @@
  * lib/agent/untold.ts — who this plan just changed something for, and nothing
  * tells them.
  *
+ * @mechanism untoldAudience — an in-transaction census, after the steps and before commit,
+ *   of whose life this plan changed without their being told. Scoped to rows this plan
+ *   touched, and only to rows that already existed — creating a roster messages nobody.
+ *   It NOTES and never refuses; the note rides into the preview, the receipt and the
+ *   tool result, and the model composes the fan-out or says why silence is right.
+ *
  * **The census a row count cannot see, and the reason notification is a property
  * of the substrate rather than choreography.** The old shape carried ~41
  * hand-written message steps inside operations, one per situation somebody had

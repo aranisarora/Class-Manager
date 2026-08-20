@@ -73,6 +73,13 @@ function toIdentity(json: IdentityJson): Identity {
  * One query, several scalar subqueries, one round trip. `app.identity` is
  * SECURITY DEFINER because the academy this contact belongs to is on the row
  * the session cannot read until it knows the academy.
+ *
+ * @mechanism resolveIdentity — one contact resolves to a person and to ALL of their roles at
+ *   once, because roles COMPOSE: a senior player who coaches juniors is one person with a
+ *   player row and a coach row, and the bot serves both hats in the one thread they message
+ *   from. Anything that answers with a single role is wrong, and everything downstream —
+ *   `seesMoney`, `isSolo`, the accounts and players this speaker stands for — is derived from
+ *   the composed set rather than re-asked per caller.
  */
 export async function resolveIdentity(contactId: string): Promise<Identity | null> {
   if (!isUuid(contactId)) return null
@@ -93,6 +100,15 @@ export type AdminRecipient = { person_id: string; full_name: string; contact_id:
 
 /**
  * The people who run this academy, and the number each of them actually reads.
+ *
+ * @mechanism adminsIn — the one definition of "which admins do I tell", where the digest,
+ *   `handoff`, the refusal escalation and every proactive job had each written their own
+ *   join. They had already diverged in both ways this join can be wrong: an inner join to
+ *   `contact` made an admin with no contact row vanish from the result rather than show up
+ *   unreachable, and each sorted differently, so `[0]` meant a different person depending on
+ *   who asked. The lateral join leaves `contact_id` nullable because an admin who cannot be
+ *   reached is a fact the caller needs; opted-out contacts are the one exclusion; the order
+ *   is reachable-first, then by name, and is the same for every caller.
  *
  * **One definition, because there were four.** "Which admins do I tell" is asked
  * by the digest (`loop.ts`), by `handoff`, by the refusal escalation in
@@ -259,6 +275,14 @@ async function createProspect(
  *
  * `senderPhoneE164` is the number the message arrived ON — one number serves
  * many academies (§16), so it is what bounds the search.
+ *
+ * @mechanism resolveInbound — §10.1 routing on a shared number, and it asks rather than
+ *   guesses: a number known to exactly one academy resolves on sight, a number known to
+ *   several comes back as candidates for the caller to ask about, and an unknown number is
+ *   matched against the academy named in the prefilled text and becomes a prospect. Matching
+ *   skips `GENERIC_WORDS`, which is what stops "Hi, is this the academy?" routing to whichever
+ *   tenant sorted first, and a prospect insert that loses a race re-reads instead of failing.
+ *   Functional, not a security boundary — RLS is what keeps the tenants apart.
  */
 export async function resolveInbound(
   fromPhoneE164: string,
