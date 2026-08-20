@@ -12,6 +12,12 @@ reported 38 findings open and **29 of them were already built** — the ledger s
 nothing parsed. Analysis kept proposing `context_query` validation (F-AP), message `stateKey`
 (F-AN) and event-text filling (F-AZ), all shipped.
 
+**To read what is actually sent to the model:** `npm run surface` — the stable prefix and the
+tool declarations, assembled, in one greppable file. `npx tsx scripts/probe-prefix.ts --text` is
+the prefix alone. Both call the same `stablePrefix()` the runtime calls, so what prints is what
+is sent. Reading `context.ts` is not the same thing: the prefix is assembled from six pieces and
+a fact can be present in one and contradicted in another.
+
 ## Adding to this file
 
 Tag the mechanism where it lives, in a block comment beside the code:

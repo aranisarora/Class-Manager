@@ -24,6 +24,7 @@
     "check:clash": "tsx scripts/check-clash.ts",
     "check:layout": "tsx scripts/check-layout.ts",
     "check:findings": "tsx scripts/check-findings.ts",
+    "check:anatomy": "tsx scripts/check-anatomy.ts",
     "mechanisms": "tsx scripts/build-mechanisms.ts",
     "check:mechanisms": "tsx scripts/build-mechanisms.ts --check",
     "judge": "node scripts/judge.mjs",

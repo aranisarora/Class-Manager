@@ -1,6 +1,6 @@
 # scripts/
 
-Forty-eight files, four jobs. This index exists because the folder had grown thirteen files
+Forty-nine files, four jobs. This index exists because the folder had grown thirteen files
 that nothing referenced and six report generators that rendered the same evidence six ways.
 
 `npm run check:layout` asserts that every file here is named below and that every file named
@@ -69,6 +69,7 @@ prose.
 | `check-clash.ts` | Double-booking detection, against the real tables. |
 | `check-layout.ts` | `npm run check:layout` — do this repo's own indexes still describe this repo? Reads no database, so it is safe anywhere. |
 | `check-findings.ts` | `npm run check:findings` — does the ledger agree with itself? Catches a code claimed both open and closed, a code in a table with no heading, one code naming two findings, and a heading whose state contradicts its table row. Reads one markdown file. |
+| `check-anatomy.ts` | `npm run check:anatomy` — does [`ANATOMY.md`](../docs/ANATOMY.md) still describe the order the code runs in? Every symbol it names must be in the file it names beside it, and the send ladder must still be the ladder the send path actually runs. Reads no database. |
 | `build-mechanisms.ts` | `npm run mechanisms` writes `docs/MECHANISMS.md` from the `@mechanism` tags in `lib/`; `npm run check:mechanisms` fails when the two diverge. The index an analysis agent reads *instead of* the brain — 2k tokens against 209k. A `Closes F-XX` clause is checked against the ledger. |
 | `check-attendance-bills.ts` | F-BA: does an attendance row imply the money it owes? |
 | `check-partial-period.ts` | F-I: does "Always pro-rate" pro-rate anything? |

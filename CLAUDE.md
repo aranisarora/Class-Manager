@@ -12,10 +12,11 @@ belongs.
 | --- | --- |
 | analyse a bad run, or propose *any* fix | [`docs/MECHANISMS.md`](./docs/MECHANISMS.md) — what the brain **already does**. Generated from `@mechanism` tags; read it before `lib/`, which is ~209k tokens and will not fit |
 | add a line to the model's prompt | [`docs/PREFIX-RULES.md`](./docs/PREFIX-RULES.md) — and its graveyard, before re-adding something removed twice |
+| understand how a turn actually runs, or which **stage** a defect belongs to | [`docs/ANATOMY.md`](./docs/ANATOMY.md) — the order things run in, end to end. `MECHANISMS.md` is an inventory and has no time in it |
 | decide where a fix belongs | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the layers, and the trap list |
 | change what the product does | [`docs/product-spec.md`](./docs/product-spec.md) |
 | test, drive, or judge a run | [`docs/DRIVING.md`](./docs/DRIVING.md), then [`docs/JUDGING.md`](./docs/JUDGING.md) |
-| touch anything in `scripts/` | [`scripts/README.md`](./scripts/README.md) — 47 files, four jobs |
+| touch anything in `scripts/` | [`scripts/README.md`](./scripts/README.md) — 49 files, four jobs |
 | record something that broke | [`findings/`](./findings/README.md) — [`OPEN.md`](./findings/OPEN.md) is the status board (generated), [`DECIDED.md`](./findings/DECIDED.md) is what was deliberately not fixed |
 | deploy | [`docs/DEPLOY.md`](./docs/DEPLOY.md) |
 
@@ -51,6 +52,14 @@ in a context window — `lib/agent` alone is ~209k tokens — so "read the brain
 is sophisticated" is not an instruction anyone can follow. The index is what works: the scan
 tier of [`docs/MECHANISMS.md`](./docs/MECHANISMS.md) is ~4k tokens and answers *"does something
 already handle this?"* before a file is opened.
+
+**And `ANATOMY.md` for when it runs.** The index is a list of parts and has no time in it, so it
+cannot say that a mechanism fires two stages after the one your defect is in. That is its own
+failure mode: a fix that is right in the abstract, landed where it is already too late.
+[`docs/ANATOMY.md`](./docs/ANATOMY.md) is the sequence — arrival, context, rounds, a write, a
+send, the exits, reflection, the record — with the stage each class of defect belongs to. Order
+here is load-bearing, not presentation: the recovery ladder's worst bug was two correct
+mechanisms in the wrong sequence. `npm run check:anatomy` is what keeps it from drifting.
 
 **A finding is retired by a mechanism, not by a paragraph.** The four steps, in order:
 
@@ -102,6 +111,7 @@ npm run mechanisms          # regenerate docs/MECHANISMS.md from the @mechanism 
 npm run verify:static       # five absolutes, as a build failure
 npm run check:layout        # this repo's own structure indexes still describe it
 npm run check:findings      # the ledger agrees with itself about what is open
+npm run check:anatomy       # docs/ANATOMY.md still describes the order the code runs in
 npm run check:mechanisms    # docs/MECHANISMS.md still matches the tags in lib/
 npm run check:schema-doc    # SCHEMA_DOC still describes the real database
 npm run check:rls-doc       # the permission grid still describes the real policies

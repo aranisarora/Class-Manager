@@ -211,6 +211,14 @@ md.push(
   '(F-AN) and event-text filling (F-AZ), all shipped.',
 )
 md.push('')
+md.push(
+  '**To read what is actually sent to the model:** `npm run surface` — the stable prefix and the',
+  'tool declarations, assembled, in one greppable file. `npx tsx scripts/probe-prefix.ts --text` is',
+  'the prefix alone. Both call the same `stablePrefix()` the runtime calls, so what prints is what',
+  'is sent. Reading `context.ts` is not the same thing: the prefix is assembled from six pieces and',
+  'a fact can be present in one and contradicted in another.',
+)
+md.push('')
 md.push('## Adding to this file')
 md.push('')
 md.push(

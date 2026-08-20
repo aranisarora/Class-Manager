@@ -1,6 +1,6 @@
 # `docs/`
 
-Seven documents, three jobs. They used to sit at the repo root among the ledgers and the
+Eight documents, three jobs. They used to sit at the repo root among the ledgers and the
 config, where nothing said which were specification and which were log.
 
 ## What the product is
@@ -9,6 +9,7 @@ config, where nothing said which were specification and which were log.
 | --- | --- |
 | [`product-spec.md`](./product-spec.md) | The authority on behaviour. When the code and this disagree, this is right until somebody decides otherwise. |
 | [`ARCHITECTURE.md`](./ARCHITECTURE.md) | The layers, and where a fix belongs. Read before deciding *where* to put something — it also carries the trap list, which is the repo's record of the shapes that have gone wrong. |
+| [`ANATOMY.md`](./ANATOMY.md) | The order the brain runs in — what fires before what, and what has already happened by then. `ARCHITECTURE.md` says where a thing belongs and `MECHANISMS.md` says what exists; neither has time in it. Read before analysing a bad turn. |
 | [`PREFIX-RULES.md`](./PREFIX-RULES.md) | What the model may and may not be told. Read before adding a line to the prompt, and read its graveyard before re-adding one that has been removed twice. |
 | [`ideal-conversations.md`](./ideal-conversations.md) | The corpus. What a good conversation looks like, at length, so the rules in `findings/conversation-rules.md` have something to be abstracted from. |
 
