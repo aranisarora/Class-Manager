@@ -114,7 +114,7 @@
 import type { GenResult } from '@/lib/agent/deepseek'
 import { generateJson } from '@/lib/agent/deepseek'
 
-import { INPUT_REALISM, type Persona, type Window } from './_personas'
+import { INPUT_REALISM, MACHINE_POSTURE, type Persona, type Window } from './_personas'
 
 /* ------------------------------------------------------------------ shape */
 
@@ -304,6 +304,9 @@ function seatSystem(p: Persona): string {
     '',
     'THE MEDIUM',
     INPUT_REALISM.trim(),
+    '',
+    'WHO IS ON THE OTHER END',
+    MACHINE_POSTURE.trim(),
     '',
     'WHAT YOU WANT OUT OF THIS WEEK',
     ...p.goals.map((g) => `  - ${g}`),

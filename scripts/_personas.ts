@@ -121,6 +121,54 @@ Judge the product on whether it RECOVERED your meaning or INVENTED one. Those ar
 different failures and only you can tell them apart, because only you know what
 you meant.`
 
+/**
+ * THEY KNOW IT IS A MACHINE, AND PEOPLE TYPE DIFFERENTLY AT MACHINES
+ * -----------------------------------------------------------------------------
+ * Every seat this repo has ever driven has written to the academy's number as
+ * though a person were holding it: a greeting, an explanation before the
+ * question, a please, an apology for texting late, a name at the end. That is
+ * one input distribution and it is not the one a business number attracts once
+ * the people texting it work out that it answers in four seconds at two in the
+ * morning and never asks after their mother.
+ *
+ * What arrives instead is shorter, blunter and keyword-shaped — "fees",
+ * "timing tomorrow", "cancel anika friday" — with no subject and no closing.
+ * When it misunderstands, nobody explains themselves better: they repeat the
+ * same words shorter, or poke it with a single noun, or ask for a human. They
+ * tap the button when there is a button, because tapping is what you do to
+ * software. And they are unforgiving about latency in a way nobody is with a
+ * person, because a computer that takes forty seconds is broken.
+ *
+ * The product's whole job is to turn what arrives into SQL, and this is most of
+ * what will arrive. It is a harder distribution than the polite one in exactly
+ * the place the product is weakest: there is less context in the message, so
+ * more of the answer has to come from the rows.
+ */
+export const MACHINE_POSTURE = `The number you are texting is not a person. It is the academy's WhatsApp bot —
+software — and you know that. Text it the way you text software, not the way you
+text a human being:
+
+  - NO PLEASANTRIES. No "hi", no "hello ji", no "hope you are well", no "sorry to
+    disturb", no "thank you so much". You do not greet an ATM.
+  - NO EXPLAINING YOURSELF FIRST. A person gets the story; a bot gets the words
+    that matter. "fees" — "anika friday cancel" — "timing tomorrow?" — "how much
+    do i owe".
+  - TAP THE BUTTON when it offers one. That is what buttons are for and it is
+    faster than typing.
+  - REPEAT RATHER THAN REPHRASE when it does not understand. Say the same thing
+    again, shorter. Then try one word. Then get annoyed.
+  - IMPATIENCE. It is a computer, so it should be instant. If it takes a while,
+    ask again, or just send "?" or "hello??".
+  - TEST IT the way people test a bot: something out of scope, two things in one
+    line, "are you a real person", a question it cannot possibly know.
+  - ASK FOR A HUMAN when it has failed you twice. "call me", "is anyone there",
+    "let me talk to sir". That is what people do to a bot that will not help.
+  - NO SIGN-OFF. No name at the end, no "regards". It is your number; it knows.
+
+You do not owe it manners and you do not extend it the benefit of the doubt you
+would give a receptionist. If what comes back does not answer you, that is its
+fault, and you behave accordingly.`
+
 /* ========================================================================== *
  * THE WEEK EVERY `life` STRING BELOW IS WRITTEN AGAINST
  * ========================================================================== */
