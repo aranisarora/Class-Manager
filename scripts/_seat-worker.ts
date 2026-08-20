@@ -140,11 +140,12 @@ export type Told =
       /** How many messages this move put on this persona's phone. A count. */
       arrived: number
       usage: Usage
+      costUsd?: number
       attempts: number
       ms: number
       model: string
     }
-  | { id: string; kind: 'failed'; error: string; usage: Usage; attempts: number; ms: number; model: string }
+  | { id: string; kind: 'failed'; error: string; usage: Usage; attempts: number; ms: number; model: string; costUsd?: number }
 
 /* --------------------------------------------------------------- setup */
 
@@ -287,7 +288,7 @@ async function move(ask: Ask): Promise<Told> {
     ms: turn.ms,
   })
 
-  const spent = { usage: turn.usage, attempts: turn.attempts, ms: turn.ms, model: turn.model }
+  const spent = { usage: turn.usage, attempts: turn.attempts, ms: turn.ms, model: turn.model, ...(turn.costUsd === undefined ? {} : { costUsd: turn.costUsd }) }
   if (!turn.move) {
     return { id: ask.id, kind: 'failed', error: turn.error ?? 'the model returned no usable answer', ...spent }
   }

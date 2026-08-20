@@ -156,6 +156,25 @@ export type DriveConfig = {
   seed: string
   /** The model under test. Defaults to `MODEL_MAIN`, and is recorded either way. */
   model: string
+
+  /**
+   * Who plays the PEOPLE. Never the model that plays the product.
+   *
+   * `claude:sonnet` is the default and `claude:haiku` the cheaper one; both go
+   * through the `claude` CLI, which spends a Claude Code subscription rather than
+   * the DeepSeek balance. That split is deliberate twice over.
+   *
+   * The money half: DeepSeek credit is reserved for the brain, because the brain
+   * is the thing being tested and the seats are only there to press on it.
+   *
+   * The measurement half matters more. The seats used to be the same model as the
+   * brain, which is the one arrangement guaranteed to flatter the result: a model
+   * reading a reply its own kind wrote parses the dense part, tolerates the
+   * jargon, and finds the important number in sentence four. The person this
+   * product is for does none of that. Same-model seats therefore under-report
+   * confusion, and confusion is most of what a week is for.
+   */
+  seatModel: string
   /** Which side of an A/B this is. Set by the runner, carried into the record. */
   arm?: string
   /** The five-tier ramp overlay from `_ramp.ts` — `SIM_RAMP` made visible. */
@@ -198,6 +217,15 @@ const RAMP_TIERS = Math.max(...Object.keys(TIERS).map(Number))
  * the same reason a missing file should not be able to break the default.
  */
 export const BLANK_WORLD = 'blank'
+
+/**
+ * Who sits in a seat unless somebody says otherwise.
+ *
+ * Not `MODEL_MAIN`. A run where the product and its customers are the same model
+ * is a run that grades its own clarity, and it was the default here until the
+ * numbers were looked at.
+ */
+export const DEFAULT_SEAT_MODEL = 'claude:sonnet'
 
 /**
  * A preset is read-only, arrays included.
@@ -301,6 +329,7 @@ const FLAGS = {
   windows: 'value',
   personas: 'value',
   seats: 'value',
+  'seat-model': 'value',
   world: 'value',
   concurrency: 'value',
   'budget-min': 'value',
@@ -407,6 +436,26 @@ function toLayer(raw: Record<string, unknown>, where: (key: string) => string): 
       case 'preset':
         L.preset = str(value, at)
         break
+      case 'seatModel': {
+        const v = str(value, at)
+        /**
+         * DeepSeek credit is for the brain. A seat on the same model as the
+         * product is also the one arrangement that flatters the result, so this
+         * is refused rather than warned about — a warning scrolls past and the
+         * run still happens, and the run is the thing that would be wrong.
+         */
+        if (!v.startsWith('claude:')) {
+          fail(
+            `${at} is "${v}", and a seat is played by Claude`,
+            'DeepSeek credit is reserved for the brain. A seat played by the brain',
+            'grades its own clarity — it finds the reply clearer than the person on',
+            'the phone ever will.',
+            'Use claude:sonnet (the default) or claude:haiku.',
+          )
+        }
+        L.seatModel = v
+        break
+      }
       case 'seats':
         L.seats = num(value, at, { int: true, min: 1 })
         break
@@ -629,6 +678,7 @@ export function resolveConfig(argv: string[]): DriveConfig {
     concurrency: m.concurrency ?? personas.length,
     seed: m.seed ?? stampSeed(),
     model: m.model ?? mainModel(),
+    seatModel: m.seatModel ?? DEFAULT_SEAT_MODEL,
     /**
      * `SIM_RAMP=1` still works exactly as it does today; this only makes it
      * visible. Resolving does NOT write it back into `process.env` — a module

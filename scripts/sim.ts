@@ -178,7 +178,7 @@ const { briefsFromWorld, FAMILIES, INPUT_REALISM, PERSONAS, SCHEDULE, TIMETABLE,
 const { RAMP_LIFE, TIERS } = await import('./_ramp')
 const { BLANK_WORLD, describeConfig, makeBudget, recordedConfig, resolveConfig } =
   await import('./_drive-config')
-const { costInr } = await import('@/lib/pricing')
+const { costInr, USD_INR } = await import('@/lib/pricing')
 
 type PersonaKey = import('./_personas').PersonaKey
 type Brief = import('./_personas').Brief
@@ -533,7 +533,7 @@ function openSeat(key: string, dir: string, cfg: DriveConfig): Seat {
   const start = (): Promise<void> => {
     const ch = spawn(
       process.execPath,
-      ['--import', 'tsx', WORKER, '--dir', dir, '--persona', key, '--model', cfg.model, '--seed', cfg.seed],
+      ['--import', 'tsx', WORKER, '--dir', dir, '--persona', key, '--model', cfg.seatModel, '--seed', cfg.seed],
       {
         // stdout and stderr straight through, so a child that dies says so in the
         // terminal the week is being watched in. The fourth channel is node's IPC:
@@ -949,7 +949,14 @@ async function main(): Promise<void> {
         seatSpend.cached += told.usage.cachedTokens
         seatSpend.output += told.usage.outputTokens
         seatSpend.inr +=
-          costInr(told.model, told.usage.promptTokens, told.usage.cachedTokens, told.usage.outputTokens) ?? 0
+          /**
+           * A measured figure beats a rate table. The Claude CLI reports what the
+           * call actually cost; `costInr` knows only the DeepSeek rows and returns
+           * null for anything else, which `?? 0` would render as free.
+           */
+          (told.costUsd !== undefined
+            ? told.costUsd * USD_INR
+            : costInr(told.model, told.usage.promptTokens, told.usage.cachedTokens, told.usage.outputTokens)) ?? 0
 
         if (told.kind === 'failed') {
           seatSpend.failures += 1
@@ -1283,7 +1290,7 @@ async function manifest(
       // not say. An A/B on `--model` therefore changes both the brain and the
       // people talking to it, and this is the field that makes that readable.
       brain: cfg.model,
-      seat: cfg.model,
+      seat: cfg.seatModel,
       thinkingPin: process.env.PROBE_THINKING ?? null,
     },
     env: {

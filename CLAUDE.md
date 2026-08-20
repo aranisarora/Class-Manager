@@ -101,7 +101,9 @@ npm run drive               # be a person talking to the bot, one command at a t
 npm run probe               # the scripted lifecycle arc, one academy per model — ten suites
 npm run ask                 # interrogate the prefix, toolless — the derivable ceiling
 npm run probe:sql           # the SQL ladder
-npm run sim          # the agent week — four personas who can see only their phone
+npm run sim          # a simulated business; personas who see only their phone
+npm run sim -- --world settled-tennis      # blank is the default; worlds/ holds the rest
+npm run sim -- --seat-model claude:haiku   # seats are Claude; DeepSeek is the brain only
 npm run sim -- --preset smoke        # one day, one window: ~₹1.30 and 4-7 min
 npm run sim -- --days 7 --budget-min 40   # simulated length, then the real stop
 npm run sim -- gc --hours 6           # reap this driver's stale worlds

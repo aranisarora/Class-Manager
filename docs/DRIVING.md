@@ -199,6 +199,25 @@ seat with nothing but what the phone shows. Its three moves are `say`, `quiet` a
 `giveup` may carry a last message, because walking out loudly and walking out in silence are
 different findings. Departures land in `extra.departures`.
 
+**The people are not played by the product.** The brain is DeepSeek; every seat is Claude,
+through the `claude` CLI, so it spends a Claude Code subscription rather than DeepSeek credit.
+`--seat-model claude:haiku` is the cheaper one and `claude:sonnet` the default; a DeepSeek seat
+is refused by name.
+
+That split is a measurement decision before it is a billing one. The seats used to be the same
+model as the brain, and a model reading a reply its own kind wrote parses the dense part,
+tolerates the jargon, and finds the important number in sentence four. The person this product
+is for does none of that, so same-model seats under-report confusion — and confusion is most of
+what a week is for.
+
+Three flags in that call are load-bearing, each measured rather than assumed. `--system-prompt`
+**replaces** Claude Code's own, which opens by saying it is a CLI for software engineering:
+appended instead, a persona answered a question about a tennis class with *"This session is set
+up for software engineering work."* `--allowed-tools ''` keeps the blindfold, because a seat
+that can read a file is not blindfolded. And the call runs in a scratch directory, or this
+repo's own `CLAUDE.md` is loaded into the prompt of somebody pretending to be a parent asking
+about a fever.
+
 **The world is a file, and the default is blank.** `npm run sim` with no `--world` builds an
 owner, a phone and nothing else — the moment before the setup conversation. Everything else
 comes from `worlds/`:
@@ -247,6 +266,7 @@ npm run sim -- --world settled-tennis --days 7 # a settled business, a full week
 npm run sim -- --days 3 --windows morning      # SIMULATED length
 npm run sim -- --days 7 --budget-min 20        # REAL stop, at a window boundary
 npm run sim -- --seats 2                       # only the first two people take part
+npm run sim -- --seat-model claude:haiku       # cheaper people; sonnet is the default
 npm run sim -- --keep                          # leave the academy in the database
 npx tsx scripts/sim.ts gc --hours 6            # reap this driver's stale worlds
 ```

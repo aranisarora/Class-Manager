@@ -177,6 +177,15 @@ export type SeatTurn = {
   /** Model calls spent: 1, or 2 when the first answer did not parse or did not fit. */
   attempts: number
   model: string
+  /**
+   * What this call actually cost, in dollars, when the backend measured it.
+   *
+   * Only the Claude CLI reports one. DeepSeek turns leave it absent and are
+   * priced from `lib/pricing.ts` by token count, as everything here always has
+   * been. A measured figure beats a rate table, and `costInr` returns 0 for a
+   * model it does not know — which would make a Claude seat read as free.
+   */
+  costUsd?: number
   /** The model's own milliseconds, summed over the attempts. Not the harness's. */
   ms: number
 }
@@ -437,8 +446,127 @@ function validateMove(v: unknown): SeatMove | null {
  * prompt, asks once, and hands back what the person did — the caller posts the
  * message, or does not, and owns the record.
  */
+/**
+ * A seat played by Claude, through the `claude` CLI rather than an API key.
+ *
+ * WHY A SUBPROCESS AND NOT A CLIENT
+ * -----------------------------------------------------------------------------
+ * The point of this backend is WHOSE budget it spends. An Anthropic client needs
+ * an API key and bills per call; the CLI is already authenticated against a
+ * Claude Code subscription, so a week of personas comes out of a quota that is
+ * already paid for rather than out of the DeepSeek balance the product itself
+ * runs on.
+ *
+ * WHY IT MATTERS WHO PLAYS THE PERSON
+ * -----------------------------------------------------------------------------
+ * The seats used to be the same model as the brain, which is the one arrangement
+ * guaranteed to flatter the result: a model reading a reply its own kind wrote
+ * parses the dense part, tolerates the jargon, and finds the number in sentence
+ * four. The person this product is for does none of that. Same-model seats
+ * therefore under-report confusion, and confusion is most of what a week is for.
+ *
+ * THREE FLAGS THAT ARE NOT OPTIONAL
+ * -----------------------------------------------------------------------------
+ *   --system-prompt   REPLACES Claude Code's own, which opens by saying it is a
+ *                     CLI for software engineering. Appended instead, the seat
+ *                     answers a question about a tennis class with "this session
+ *                     is set up for software engineering work" — measured, not
+ *                     feared.
+ *   --allowed-tools   nothing. A seat that can read a file is not blindfolded.
+ *   --strict-mcp-config, --exclude-dynamic-system-prompt-sections
+ *                     every token of scaffolding is paid for on every message.
+ *
+ * It also runs in a scratch directory, because a `CLAUDE.md` in the working tree
+ * is loaded into the prompt — this repo's own instructions, handed to somebody
+ * pretending to be a parent asking about a fever.
+ */
+async function claudeSeat(
+  tier: string,
+  system: string,
+  situation: string,
+): Promise<{ move: SeatMove | null; error?: string; usage: SeatTurn['usage']; attempts: number; ms: number; model: string; costUsd: number }> {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const { mkdtemp } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const run = promisify(execFile)
+
+  const cwd = await mkdtemp(join(tmpdir(), 'seat-'))
+  let usage: SeatTurn['usage'] = { promptTokens: 0, outputTokens: 0, cachedTokens: 0 }
+  let costUsd = 0
+  let ms = 0
+  let error: string | undefined
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const started = Date.now()
+    try {
+      const { stdout } = await run(
+        'claude',
+        [
+          '-p', situation,
+          '--output-format', 'json',
+          '--model', tier,
+          '--system-prompt', system,
+          '--allowed-tools', '',
+          '--strict-mcp-config',
+          '--exclude-dynamic-system-prompt-sections',
+        ],
+        { cwd, maxBuffer: 32 * 1024 * 1024, timeout: SEAT_CLI_TIMEOUT_MS },
+      )
+      ms += Date.now() - started
+      const env = JSON.parse(stdout) as {
+        result?: string
+        is_error?: boolean
+        total_cost_usd?: number
+        usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
+      }
+      costUsd += env.total_cost_usd ?? 0
+      const u = env.usage ?? {}
+      usage = {
+        promptTokens: usage.promptTokens + (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
+        cachedTokens: usage.cachedTokens + (u.cache_read_input_tokens ?? 0),
+        outputTokens: usage.outputTokens + (u.output_tokens ?? 0),
+      }
+      if (env.is_error || typeof env.result !== 'string' || !env.result.trim()) {
+        error = `the CLI returned no answer${env.is_error ? ' and reported an error' : ''}`
+        continue
+      }
+      // The same unwrapping `generateJson` does: a fenced block is not JSON, but
+      // it is JSON with a wrapper the model added, and spending a whole retry on
+      // punctuation would be wasteful. Haiku fences by default.
+      const text = env.result.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+      try {
+        const move = validateMove(JSON.parse(text))
+        if (move !== null) return { move, usage, attempts: attempt, ms, model: `claude:${tier}`, costUsd }
+        error = 'the JSON parsed but did not match the shape asked for'
+      } catch (e) {
+        error = `did not parse as JSON: ${(e as Error).message}`
+      }
+    } catch (e) {
+      ms += Date.now() - started
+      error = `the claude CLI failed: ${(e as Error).message.slice(0, 300)}`
+    }
+  }
+  return { move: null, error, usage, attempts: 2, ms, model: `claude:${tier}`, costUsd }
+}
+
+/** How long one seat's message may take before the CLI is given up on. */
+const SEAT_CLI_TIMEOUT_MS = 180_000
+
+/** `claude:sonnet` and `claude:haiku` route to the CLI; anything else is DeepSeek. */
+export const CLAUDE_SEAT = 'claude:'
+
 export async function nextMove(o: SeatContext & { model: string }): Promise<SeatTurn> {
   const { system, situation } = seatPrompt(o)
+
+  if (o.model.startsWith(CLAUDE_SEAT)) {
+    const tier = o.model.slice(CLAUDE_SEAT.length) || 'sonnet'
+    const r = await claudeSeat(tier, system, situation)
+    const spent = { usage: r.usage, attempts: r.attempts, model: r.model, ms: r.ms, costUsd: r.costUsd }
+    if (!r.move) return { move: null, error: r.error ?? 'the seat returned no usable answer', ...spent }
+    return { move: r.move, ...spent }
+  }
 
   const res = await generateJson<SeatMove>({
     system,
