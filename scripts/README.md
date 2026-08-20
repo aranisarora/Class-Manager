@@ -1,6 +1,6 @@
 # scripts/
 
-Fifty-eight files, four jobs. This index exists because the folder had grown thirteen files
+Sixty-two files, four jobs. This index exists because the folder had grown thirteen files
 that nothing referenced and six report generators that rendered the same evidence six ways.
 
 `npm run check:layout` asserts that every file here is named below and that every file named
@@ -18,11 +18,16 @@ record — [`../JUDGING.md`](../docs/JUDGING.md) is how.
 | | |
 |---|---|
 | `probe-ask.ts` | `npm run ask` — interrogate the prefix, toolless. Measures the ceiling: what the context makes derivable. Takes a scenario id, or **any question you type**: `npm run ask -- "what if she pays twice?"`, `--who coach`, `--list`. |
-| `probe-model.ts` | `npm run probe` — the real loop through a scripted lifecycle arc, in a fresh academy per model. Suites: `arc`, `fo`, `fq`, `adv`, `real`, `tennis`, `stress`. |
-| `probe-sql.ts` | `npm run probe:sql` — the SQL ladder, six tiers. Can the model actually write the statements? |
-| `drive-week.ts` | `npm run drive:week` — one settled week, personas balanced by construction, standing jobs firing on their own schedule. |
-| `drive.ts` | `npm run drive` — be a person talking to the bot, one command at a time. Posts to the emulator API a human uses, so there is no second code path. |
-| `live.ts` | The seat instrument. A tester is handed one persona and sees only what that persona's phone shows — `brief`, `say`, `read`. [`SEAT.md`](./SEAT.md) is the brief they are given. |
+| `probe-model.ts` | `npm run probe` — the real loop through a scripted lifecycle arc, in a fresh academy per model, writing the standard record directly. Ten suites: `arc`, `f-o`, `f-q`, `adv`, `real`, `tennis`, `stress`, `stress-week`, `findings`, `holistic`. `--stage`, `--persona`, `--case` and `--limit` cut one; a drive flag it cannot honour is refused by name, with what to use instead. |
+| `probe-sql.ts` | `npm run probe:sql` — the SQL ladder, six tiers. Can the model actually write the statements? Since the thirteen wrapper operations went, nearly every write in the product is SQL the model wrote itself, and nothing else here measures whether it can. |
+| `drive-week.ts` | `npm run drive:week` — the agent week. Windows drive it; the seats in a window run CONCURRENTLY, one child process each (`_seat-worker.ts`), because `captureSql` keeps module-level state and two turns in one process blend their evidence. The clock walk and every drain are recorded as turns of their own. `--preset smoke` is one day and one window; `--budget-min` / `--budget-inr` stop it cleanly at a window boundary with a complete record. `gc --hours N` reaps the worlds this driver left behind, and only those. |
+| `ab.ts` | `npm run ab` — the same week twice, one thing changed. `--variant doctrine=<file>` swaps the prefix, `--variant ref=<sha|branch|checkout>` swaps the mechanisms; every other flag belongs to `_drive-config.ts` and is given to BOTH arms, so the arms differ by one file and nothing else. One config, one seed, one pinned model, resolved once and handed to both. Each arm is a whole `drive-week` child process in a root of its own, because `stablePrefix()` memoises and two prefixes cannot coexist in one node process. Writes a manifest per arm and prints the two side by side in counts. **No difference column — a difference carries a sign, and the sign is the verdict.** `--repeats N` buys a second sample; `--dry-run` prepares, hashes and prints, and spends nothing. |
+| `drive.ts` | `npm run drive` — be a person talking to the bot, one command at a time. Posts to the emulator API a human uses, so there is no second code path. `npm run drive -- help` prints the subcommands, generated from the implemented cases. |
+| `live.ts` | The seat instrument, for a person rather than an agent. A tester is handed one persona and sees only what that persona's phone shows — `brief`, `say`, `tap`, `inbox`, `note`, `diary`. The seat itself is `_seat.ts`, shared with the agent week so the blindfold cannot exist in two copies. [`SEAT.md`](./SEAT.md) is the brief they are given. |
+
+[`../docs/DRIVING.md`](../docs/DRIVING.md) is how to use these without wasting a week: what a run
+costs, which flag sets the simulated length and which sets the real stop, and how to read the
+record back.
 
 `drive` runs the turn inside the dev server, so its full-visibility switch lives there:
 
@@ -94,7 +99,7 @@ prose.
 | `probe-prefix.ts`, `probe-prefix-tokens.ts`, `probe-ceiling.ts` | What the prefix costs, in characters, in real tokens, and in tool declarations. |
 | `guard-value.ts` | What each runtime guard has actually caught. |
 | `ops-cookie.mjs` | How a script gets through the ops gate. |
-| `_env.ts`, `_danger.ts`, `_capture.ts`, `_derive.ts`, `_drive-config.ts`, `_world.ts`, `_personas.ts`, `_ramp.ts`, `_record-from-probe.ts`, `_findings.ts` | Shared. Leading underscore means "not a command" — `_findings.ts` is the exception, and runs. `_capture.ts` owns the one record shape and appends one line per turn to `turns.jsonl`; `_derive.ts` rebuilds everything else in the run directory from that log, so two seats can write at once and nothing has to read 800KB back to add a turn. `_drive-config.ts` resolves how long, how many, who and how much — preset, then `--config` file, then flags — and refuses an unknown flag rather than running the default under its name. `_record-from-probe.ts` converts `probe-model`'s per-arm files into the record shape. `_ramp.ts` overlays `_personas.ts`'s `life` with the five-tier ramp, under `SIM_RAMP=1`. |
+| `_env.ts`, `_danger.ts`, `_capture.ts`, `_derive.ts`, `_drive-config.ts`, `_world.ts`, `_personas.ts`, `_ramp.ts`, `_record-from-probe.ts`, `_seat.ts`, `_persona-agent.ts`, `_seat-worker.ts`, `_findings.ts` | Shared. Leading underscore means "not a command" — `_findings.ts` is the exception, and runs. `_capture.ts` owns the one record shape and appends one line per turn to `turns.jsonl`; `_derive.ts` rebuilds everything else in the run directory from that log, so two seats can write at once and nothing has to read 800KB back to add a turn. `_drive-config.ts` resolves how long, how many, who and how much — preset, then `--config` file, then flags — and refuses an unknown flag rather than running the default under its name. `_record-from-probe.ts` converts `probe-model`'s per-arm files into the record shape. `_ramp.ts` overlays `_personas.ts`'s `life` with the five-tier ramp, under `SIM_RAMP=1`. `_seat.ts` is the seat itself — blindfold, phone, clock walk and turn — extracted from `live.ts` so the human seat and the agent week cannot drift apart. `_persona-agent.ts` is the person in the seat when nobody is sitting in it: it turns a persona's goals into the next thing they type, given only what their phone shows. `_seat-worker.ts` is one persona in one OS process for the length of a week, spawned by `drive-week.ts` over node IPC — it refuses to run without an IPC channel. |
 
 ---
 

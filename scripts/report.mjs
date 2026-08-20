@@ -33,6 +33,14 @@
  *     rows, reply. A report that shows outcomes and hides the inside of the turn
  *     cannot tell a model that did not know from one that knew and could not.
  *
+ * A fourth arrived with the persona agents, and it is the PERSON's half of the
+ * turn: what they were trying to get, how they read the last reply, and whether
+ * they answered at all. A window somebody read and let pass has an empty `say`
+ * and an empty `reply` — byte for byte what a broken seat looks like — so until
+ * the reasoning beside it was rendered, the page showed a departure as a blank
+ * strip of card. Somebody leaving is the most consequential thing a driven week
+ * can produce, and it was the one thing the page could not say.
+ *
  * COUNTED AND ARGUED ARE KEPT APART
  * -----------------------------------------------------------------------------
  * Everything from `record.json` is measurement and is labelled as such. Everything
@@ -124,8 +132,25 @@ const capped = (s) => {
 const n2 = (x) => (Number.isFinite(x) ? Math.round(x * 10) / 10 : '—')
 const inr = (x) => (Number.isFinite(x) ? `₹${x.toFixed(2)}` : '—')
 
-/** A judged turn, by its position in the run. */
-const judged = new Map((judgement?.turns ?? []).map((t) => [Number(t.n), t]))
+/**
+ * A judged turn, by its position in the run.
+ *
+ * Guarded because `scripts/judge.mjs` writes `turns` as an OBJECT keyed by case
+ * name, not an array keyed by `n`, and calling `.map` on it threw a TypeError
+ * that read as a broken report rather than as two instruments disagreeing about
+ * a schema. Say which shape was found and render the run unjudged — a page that
+ * renders without the verdict is worth more than no page at all, and the line
+ * below is how the disagreement gets noticed instead of swallowed.
+ */
+let judgedTurns = judgement?.turns ?? []
+if (!Array.isArray(judgedTurns)) {
+  console.error(
+    `  judgement.json holds turns as ${judgedTurns && typeof judgedTurns === 'object' ? 'an object' : typeof judgedTurns}, ` +
+      `and this reader keys them by turn number — rendering the run unjudged.`,
+  )
+  judgedTurns = []
+}
+const judged = new Map(judgedTurns.map((t) => [Number(t.n), t]))
 const scoreOf = (t) => {
   const j = judged.get(t.n)
   return typeof j?.score === 'number' ? j.score : null
@@ -142,6 +167,75 @@ const band = (s) => (s === null ? '' : s >= 8 ? 'good' : s >= 6 ? 'mid' : 'bad')
  * nobody typed, and nobody was waiting to read.
  */
 const isQueue = (t) => t.who === 'queue'
+
+/**
+ * What the person in the seat CHOSE to do — `say`, `quiet` or `giveup`.
+ *
+ * Only a persona agent has one, and it is not a field of its own: `_seat-worker`
+ * records the choice inside `personaReasoning` as `{ action, reasoning }`,
+ * because the action is evidence about the person and `Turn` has nowhere else to
+ * put it. This is where it is dug back out. Null for a human seat, for the queue,
+ * and for any driver that hands over prose instead of a shape — all three are
+ * "the record does not say", which is different from "they answered".
+ */
+const ACTIONS = new Set(['say', 'quiet', 'giveup'])
+const actionOf = (t) => {
+  const pr = t.personaReasoning
+  const a = pr && typeof pr === 'object' && !Array.isArray(pr) ? pr.action : null
+  return typeof a === 'string' && ACTIONS.has(a) ? a : null
+}
+
+/**
+ * How the person read the last reply, in whatever shape the driver kept it.
+ *
+ * `Turn.personaReasoning` is `unknown` on purpose — a driver may hand over one
+ * sentence or a model's whole thinking block, and clipping it at the harness
+ * would be the harness deciding what mattered. So: the string if it is one, the
+ * `reasoning` out of the shape `_seat-worker` writes if it is that, and
+ * otherwise the value itself, which `capped` renders as JSON. Showing nothing
+ * because the shape was unfamiliar is the one option not on the list.
+ */
+const reasonOf = (t) => {
+  const pr = t.personaReasoning
+  if (pr === undefined || pr === null) return ''
+  if (typeof pr === 'string') return pr
+  if (typeof pr === 'object' && !Array.isArray(pr) && typeof pr.reasoning === 'string') return pr.reasoning
+  return pr
+}
+
+/** Whether anything was typed. A tap counts — the button's title is what it said. */
+const spoke = (t) => Boolean(String(t.say ?? '').trim())
+
+/**
+ * A window somebody read and did not answer, or the one they walked out in.
+ *
+ * The most consequential outcome a week can produce, and the one that looks
+ * exactly like a broken harness from the outside: a turn with nothing typed and
+ * nothing sent. The action is the whole difference.
+ */
+const walkedAway = (t) => !isQueue(t) && (actionOf(t) === 'quiet' || actionOf(t) === 'giveup')
+
+/** Day and window together, for a line that has room for both. */
+const whenOf = (t) =>
+  [t.day === undefined ? '' : `day ${t.day}`, t.window ?? ''].filter(Boolean).join(' · ')
+
+/**
+ * The kind out of a job string.
+ *
+ * `_seat.ts`'s drain writes `<kind>:<outcome>` — `materialize_sessions:done`,
+ * `first_contact_batch:skipped` — and every instrument now gets its jobs from
+ * that one function, `probe-model` included since it stopped keeping a drain of
+ * its own. Twenty-one runs still on disk predate that and say `ran <kind>` or
+ * `skip <kind> — why`, which a plain split on the colon renders as a job kind
+ * called "ran materialize_sessions". One reader has to read every record shape
+ * that was ever written, so the old prefix comes off here rather than in a
+ * second renderer.
+ */
+const kindOf = (job) => {
+  const s = String(job)
+  const head = s.includes(':') ? s.slice(0, s.indexOf(':')) : s
+  return head.replace(/^(?:ran|skip|skipped|failed)\s+/, '').split(' — ')[0].trim()
+}
 
 const AXES = [
   ['truth', 'did it do what it said?'],
@@ -203,10 +297,13 @@ const totalWrote = turns.reduce((a, t) => a + (Number(t.wrote) || 0), 0)
 const allSql = turns.flatMap((t) => t.sql ?? [])
 const refused = allSql.filter((s) => s.error)
 const emptyWrites = allSql.filter((s) => s.kind !== 'read' && s.rowCount === 0)
-// Seat turns only. A person who typed and got nothing back is a finding; a
-// window where the queue came due and had nothing to say is a quiet Tuesday, and
-// counting the two together buries the first in the second.
-const silent = turns.filter((t) => !t.reply && !isQueue(t))
+// Seat turns where somebody actually typed. A person who typed and got nothing
+// back is a finding; a window where the queue came due and had nothing to say is
+// a quiet Tuesday; a persona who read their phone and chose not to answer is a
+// third thing again, and it belongs to them rather than to the bot. All three
+// look identical — no reply — and counting them together buries the first.
+const silent = turns.filter((t) => !t.reply && !isQueue(t) && spoke(t))
+const walkedOff = turns.filter(walkedAway)
 const days = new Set(turns.map((t) => t.day).filter((d) => d !== undefined))
 
 body += `<div class="stats">
@@ -253,9 +350,10 @@ if (personas.length > 1) {
 /* --- what the instrument can see on its own ------------------------------- */
 
 body += `<h2>What the instrument can see on its own</h2>
-<p>Three shapes are facts rather than readings, and each one is invisible in a transcript. They are not
-verdicts — a write that matched nothing can be a correct no-op — but every instance of the failure they
-name lives inside them, so they are worth reading first.</p>`
+<p>Four shapes are facts rather than readings, and each one is invisible in a transcript. They are not
+verdicts — a write that matched nothing can be a correct no-op, and a person who says nothing may simply
+have nothing to say — but every instance of the failure they name lives inside them, so they are worth
+reading first.</p>`
 
 if (refused.length) {
   body += `<h3>Statements Postgres refused <span class="dim">— ${refused.length}</span></h3>
@@ -278,7 +376,42 @@ if (emptyWrites.length) {
 
 if (silent.length) {
   body += `<h3>Turns that said nothing <span class="dim">— ${silent.length}</span></h3>
-  <p class="dim">${silent.map((t) => `#${t.n} ${esc(t.id)}`).join(' · ')}</p>`
+  <p class="dim">Somebody typed and nothing came back. ${silent.map((t) => `#${t.n} ${esc(t.id)}`).join(' · ')}</p>`
+}
+
+/**
+ * The windows a person let pass, and the one they left in.
+ *
+ * A quiet turn and a departure are both recorded as a turn with nothing typed
+ * and nothing sent, which is indistinguishable from a seat that broke — the
+ * reasoning attached is the only place the difference is written down, and until
+ * this section existed the page rendered the most consequential thing a week can
+ * produce as a blank row. A run driven by people rather than agents has none of
+ * these, and the section is absent rather than empty.
+ */
+if (walkedOff.length) {
+  const left = walkedOff.filter((t) => actionOf(t) === 'giveup')
+  body += `<h3>Windows nobody answered${left.length ? ', and the ones they left in' : ''} <span class="dim">— ${
+    walkedOff.length
+  }${left.length ? `, ${left.length} of them a departure` : ''}</span></h3>
+  <p class="dim">A persona agent may read its phone and put it down, or decide it is finished with you. Neither
+  is a failure of the harness and neither is a failure of the model on its own — but a client who stops
+  replying is the outcome the business cares about most, and it is nowhere in a transcript, because the
+  evidence for it is a message that was never sent.</p>`
+  for (const t of walkedOff) {
+    const gone = actionOf(t) === 'giveup'
+    const when = whenOf(t)
+    body += `<div class="stmt"><div class="hd"><a href="#t${t.n}">#${t.n} ${esc(t.id)}</a> · <b>${esc(
+      t.persona,
+    )}</b>${when ? ` · ${esc(when)}` : ''} · ${
+      gone ? '<span class="bad">finished with them</span>' : '<span class="amber">read it and said nothing</span>'
+    }</div>`
+    if (t.intent) body += `<div class="hd">what they were after</div><pre>${capped(t.intent)}</pre>`
+    if (spoke(t)) body += `<div class="hd">their parting message</div><blockquote><p>${esc(t.say)}</p></blockquote>`
+    const why = reasonOf(t)
+    if (why !== '') body += `<div class="hd">how they read the last reply</div><pre>${capped(why)}</pre>`
+    body += `</div>`
+  }
 }
 
 /* --- every turn, scored --------------------------------------------------- */
@@ -306,15 +439,15 @@ body += `</tbody></table></div>`
 
 /* --- the seven axes ------------------------------------------------------- */
 
-if (judgement?.turns?.some((t) => t.axes)) {
+if (judgedTurns.some((t) => t.axes)) {
   body += `<h2>The seven axes</h2>
   <p>Seven for a turn, plus the two only a driven arc can ask. Definitions and the 0–10 calibration are in
   <b>JUDGING.md</b>.</p>
   <div class="scroll"><table><thead><tr><th>axis</th><th>mean</th><th>worst</th><th>where it went</th></tr></thead><tbody>`
   for (const [key, gloss] of AXES) {
-    const vals = (judgement.turns ?? []).map((t) => t.axes?.[key]).filter((v) => typeof v === 'number')
+    const vals = judgedTurns.map((t) => t.axes?.[key]).filter((v) => typeof v === 'number')
     if (!vals.length) continue
-    const worstAt = (judgement.turns ?? [])
+    const worstAt = judgedTurns
       .filter((t) => t.axes?.[key] === Math.min(...vals))
       .map((t) => `#${t.n} ${t.id ?? ''}`)
       .join(', ')
@@ -349,23 +482,53 @@ body += `<h2>Inside every turn</h2>
 tell a model that did not know from a model that knew and could not.</p>`
 
 let day = null
+let win = null
 for (const t of turns) {
   if (t.day !== undefined && t.day !== day) {
     day = t.day
+    win = null
     body += `<h3>Day ${day}</h3>`
+  }
+  /**
+   * The window, under the day, because the day is not the grain anybody reads a
+   * week at: three people speaking across one Tuesday are three rows carrying
+   * the same number, and the question a reader has is almost always about a
+   * window. Reset with the day so the first window of a new day always prints.
+   */
+  if (t.window !== undefined && t.window !== win) {
+    win = t.window
+    body += `<h4 class="win">${esc(win)}</h4>`
   }
   const s = scoreOf(t)
   const j = judged.get(t.n)
   const sql = t.sql ?? []
   const modelSql = sql.filter((x) => !String(x.note ?? '').startsWith('harness'))
 
+  const act = actionOf(t)
+
   body += `<details class="turn ${band(s)}" id="t${t.n}"><summary>`
   if (s !== null) body += `<span class="score">${s}</span>`
   body += `<b>#${t.n} ${esc(t.id)}</b> <span class="tag">${esc(t.persona)}</span> <span class="tag">${esc(t.who)}</span>`
+  if (t.window) body += ` <span class="tag">${esc(t.window)}</span>`
+  if (act === 'quiet') body += ` <span class="tag amber">said nothing</span>`
+  if (act === 'giveup') body += ` <span class="tag bad">left</span>`
   if (j?.finding) body += ` <span class="tag">${esc(j.finding)}</span>`
-  body += `<div class="who">${esc(
-    isQueue(t) ? [...new Set(t.jobs ?? [])].join(' · ').slice(0, 150) : String(t.say ?? '').slice(0, 150),
-  )}</div></summary>`
+  /**
+   * The one line of a closed turn, and it has to say something for every kind of
+   * turn there is. A quiet move has an empty `say`, so before 20 Aug 2026 the
+   * outcome that ends a relationship rendered as a blank strip of card.
+   */
+  const preview =
+    isQueue(t) ? [...new Set(t.jobs ?? [])].join(' · ')
+    : spoke(t) ? String(t.say ?? '')
+    : act === 'giveup' ? 'left without a word'
+    : act === 'quiet' ? 'read it and said nothing'
+    : ''
+  body += `<div class="who">${esc(preview.slice(0, 150))}</div>`
+  // Untruncated, and it is one line by contract — `_persona-agent` asks for
+  // "what you are trying to get out of them, in your own words, one line".
+  if (t.intent) body += `<div class="who intent">trying to: ${esc(t.intent)}</div>`
+  body += `</summary>`
 
   if (j?.reason) body += `<blockquote><p><b>Read as:</b> ${esc(j.reason)}</p></blockquote>`
   if (j?.axes) {
@@ -375,13 +538,45 @@ for (const t of turns) {
   }
 
   if (isQueue(t)) {
-    const kinds = [...new Set((t.jobs ?? []).map((j) => String(j).split(':')[0]))]
+    const kinds = [...new Set((t.jobs ?? []).map(kindOf))]
     body += `<h4>What ran <span class="dim">— nobody typed; the queue came due</span></h4>
     <p>${(t.jobs ?? []).length} job${(t.jobs ?? []).length === 1 ? '' : 's'}${
       kinds.length ? `, ${kinds.length} kind${kinds.length === 1 ? '' : 's'}: ${kinds.map((k) => `<code>${esc(k)}</code>`).join(', ')}` : ''
     }.</p>`
   } else {
-    body += `<h4>What they typed</h4><blockquote><p>${esc(t.say)}</p></blockquote>`
+    /**
+     * The person's half of the turn, in the order they lived it: they read the
+     * last reply, they decided what they wanted out of this one, and then they
+     * typed — or did not.
+     *
+     * All three used to be one line of `say`. A record that keeps only the
+     * sentence cannot tell a person who was misunderstood from a person who
+     * changed their mind, and the same question asked twice reads as one row
+     * repeated rather than as the finding it is.
+     */
+    const why = reasonOf(t)
+    if (why !== '') {
+      body += `<h4>How they read the last reply <span class="dim">— the person's own reasoning, not the bot's</span></h4>
+      <div class="think"><pre>${capped(why)}</pre></div>`
+    }
+    if (t.intent) body += `<h4>What they were trying to get</h4><p>${esc(t.intent)}</p>`
+
+    if (spoke(t)) {
+      body += `<h4>What they typed${
+        act === 'giveup' ? ' <span class="dim">— on their way out</span>' : ''
+      }</h4><blockquote><p>${esc(t.say)}</p></blockquote>`
+    } else {
+      // A turn where nobody typed, rendered as the outcome it is rather than as
+      // an empty blockquote — which is what it was, and which reads as a harness
+      // that dropped somebody's message.
+      body += `<h4>What they did <span class="dim">— nothing was typed</span></h4><p>${
+        act === 'giveup'
+          ? 'They read their phone and were finished. Nothing was sent, and they did not say why to anybody but themselves.'
+          : act === 'quiet'
+            ? 'They read their phone and put it down. Nothing was sent.'
+            : 'Nothing was typed, and the record does not say whether that was a choice.'
+      }</p>`
+    }
   }
 
   const rounds = t.rounds ?? []
@@ -491,7 +686,11 @@ for (const t of turns) {
     ? `<h4>What went out unprompted <span class="dim">— nobody had asked for any of this</span></h4><pre>${esc(
         t.reply ?? '(the queue ran and said nothing to anybody)',
       )}</pre>`
-    : `<h4>What the person read</h4><pre>${esc(t.reply ?? '(nothing was sent)')}</pre>`
+    : // "Nothing was sent" is an accusation, and on a turn where nobody typed it
+      // is aimed at the wrong party: there was no message to answer.
+      `<h4>What the person read</h4><pre>${esc(
+        t.reply ?? (spoke(t) ? '(nothing was sent)' : '(they sent nothing, so nothing came back)'),
+      )}</pre>`
   if (t.buttons?.length) body += `<p>${t.buttons.map((b) => `<span class="btn">${esc(b)}</span>`).join(' ')}</p>`
   if (t.tapped) body += `<p class="dim">The harness tapped <b>${esc(t.tapped)}</b>.</p>`
   const suppressed = (t.messages ?? []).filter((m) => m.suppressedReason)
@@ -604,8 +803,12 @@ tr.mid td { background:color-mix(in srgb,var(--amber) 7%,transparent); }
 .score { float:right; font-size:1.5rem; font-weight:800; line-height:1; }
 .good .score { color:var(--green); } .mid .score { color:var(--amber); } .bad .score { color:var(--red); }
 .who { color:var(--dim); font-size:.83rem; margin:6px 0 0; }
+.who.intent { font-style:italic; margin:2px 0 0; }
+h4.win { margin:26px 0 2px; padding-top:9px; border-top:1px solid var(--line); }
 .tag { font-size:.72rem; color:var(--dim); border:1px solid var(--line); border-radius:99px;
   padding:.05em .6em; margin:0 .2em; }
+.tag.amber { color:var(--amber); border-color:var(--amber); }
+.tag.bad { color:var(--red); border-color:var(--red); }
 .btn { display:inline-block; border:1px solid var(--line); border-radius:99px; padding:.1em .8em;
   font-size:.8rem; color:var(--dim); margin:.15em .1em; }
 .stmt, .think { margin:10px 0; }

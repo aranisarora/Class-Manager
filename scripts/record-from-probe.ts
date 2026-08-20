@@ -8,17 +8,20 @@
  *
  * WHY THIS STILL EXISTS
  * -----------------------------------------------------------------------------
- * `probe-model` now writes `record.json` at the end of a single-arm run, so a
- * fresh run never needs this. Two cases still do:
+ * It is a BACKFILL and nothing else now. `probe-model` stopped writing per-arm
+ * files on 20 Aug 2026 — every turn goes through `_capture.ts` as it happens, and
+ * a thinking sweep gets one run directory per arm rather than several files in
+ * one — so no run made after that date has anything for this to convert.
  *
- *   1. The runs already on disk. 22 of them were invisible to `npm run report`.
- *   2. A thinking sweep, which writes one file per arm. Those are different runs
- *      of the same suite and merging them would interleave two academies, so the
- *      instrument writes no record and you pick an arm here.
+ * What it still converts is the runs already on disk, and they are the reason it
+ * is not deleted: `.probe/` is gitignored and unrecoverable, and those runs are
+ * the baseline every "did the edit help?" reading is measured against. Some of
+ * them are thinking sweeps holding several arm files and no record at all;
+ * `--all` names each one and refuses to guess, because merging two academies into
+ * one record would make every count on the page the sum of two worlds. Those are
+ * converted one arm at a time, by hand, here.
  *
- * The conversion itself lives in `_record-from-probe.ts` — one implementation,
- * shared with the instrument, so a backfilled record and a fresh one are the same
- * bytes for the same input.
+ * The conversion itself lives in `_record-from-probe.ts`.
  */
 import { existsSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'

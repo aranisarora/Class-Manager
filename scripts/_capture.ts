@@ -33,7 +33,9 @@
  *   sql         every statement the model composed, byte for byte, with what
  *               Postgres answered — including the ones it refused
  *   messages    everything that actually reached a phone in this window, from
- *               this turn OR from a standing job, with buttons and suppressions
+ *               this turn OR from a standing job, with buttons and suppressions —
+ *               and, when the driver said whose seat this is, nothing another
+ *               concurrent turn produced
  *   jobs        what the queue ran, because half of what a promise is worth
  *               happens after the reply
  *   world       the state a judge needs to tell a kept promise from a stated one
@@ -333,6 +335,44 @@ export type TurnMeta = {
   intent?: string
   personaReasoning?: unknown
   tapped?: string | null
+  /**
+   * WHOSE turn this is, as a contact id — the thing that makes two seats speaking
+   * at once attributable.
+   *
+   * The window below is domain TIME, and time alone cannot tell two concurrent
+   * speakers apart. In the first agent week (`2026-08-20-13-17-week-aejx`) Farah
+   * and Arjun spoke in the same evening window in two processes; Farah's turn
+   * finished in one second and Arjun's in two, so Arjun's window swallowed
+   * Farah's reply and her `turn` row — her message, her rounds and her tokens
+   * were all recorded against him. Nothing about that is visible afterwards: the
+   * record simply says Arjun was sent a price list for two children.
+   *
+   * A driver that knows whose seat it is says so here and the evidence is scoped
+   * to that person. A driver that does not — a queue drain belongs to nobody, and
+   * `probe-model` runs one speaker at a time — leaves it absent and gets the
+   * time window unchanged.
+   */
+  contactId?: string | null
+  /**
+   * The business, counted either side of this turn — see `Turn.beforeTap`.
+   *
+   * `Turn` has declared both since the arc was written and `scripts/report.mjs`
+   * renders their difference as "what moved", but until 20 Aug 2026 there was no
+   * slot for them HERE, and this type is the whole of what a driver is allowed to
+   * hand over. So no driver could fill them and that section of the page was
+   * empty on every run ever recorded — including `probe-model`'s, which takes
+   * both photographs (`worldSnapshot`, either side of the tap), cannot pass them,
+   * and parks them in a `Panel` in `run.extra` instead. A field a driver cannot
+   * reach is a field the record does not have.
+   *
+   * Optional here, never optional on the turn. A driver that takes no snapshot
+   * says nothing and the turn records `null`, because "nobody looked" and "there
+   * is no world to count here" are the same fact and neither should read as a
+   * missing field. Nothing is invented on the way through: the only value this
+   * layer ever supplies is the null.
+   */
+  beforeTap?: Record<string, unknown> | null
+  afterTap?: Record<string, unknown> | null
 }
 
 /**
@@ -647,12 +687,33 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
      * limit 1` returns the TAP's trace and throws away the trace of the turn that
      * actually composed the work. Both belong to this beat and both are read.
      */
+    const mine = meta.contactId ? `and contact_id = '${meta.contactId}'::uuid` : ''
     const turnRows = await opts
       .q<any>(
         `select id::text, tool_calls, prompt_tokens, cached_tokens, output_tokens, error
-           from turn where created_at >= '${cursor}'::timestamptz order by created_at asc`,
+           from turn where created_at >= '${cursor}'::timestamptz ${mine}
+          order by created_at asc`,
       )
       .catch(() => [] as any[])
+
+    /**
+     * What this turn's own turn rows produced, for scoping the two tables that
+     * carry a `turn_id`.
+     *
+     * `message.turn_id` (0019) and `audit_entry.turn_id` (0015) are stamped by the
+     * DATABASE from the `app.turn_id` GUC, not by a caller, so no send path can
+     * forget them — which is what makes them safe to filter on. A null is the
+     * truth for a standing job, a seed or a repair script, and those rows stay in
+     * the window: they belong to nobody else's turn either, and dropping them
+     * would lose the unprompted half of what this product says.
+     */
+    const ids = turnRows.map((t: any) => `'${String(t.id)}'::uuid`)
+    const owned = (col: string): string =>
+      !meta.contactId
+        ? ''
+        : ids.length
+          ? `and (${col} is null or ${col} in (${ids.join(', ')}))`
+          : `and ${col} is null`
 
     const rounds: Round[] = turnRows.flatMap((t: any) =>
       Array.isArray(t?.tool_calls)
@@ -667,6 +728,7 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
         `select c.phone_e164 as to, m.body, m.payload, m.status, m.origin, m.suppressed_reason
            from message m left join contact c on c.id = m.contact_id
           where m.direction = 'outbound' and m.created_at >= '${cursor}'::timestamptz
+            ${owned('m.turn_id')}
           order by m.created_at asc`,
       )
       .catch(() => [] as any[])
@@ -684,7 +746,8 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
 
     const wrote = await opts
       .q<any>(
-        `select count(*)::int as n from audit_entry where created_at >= '${cursor}'::timestamptz`,
+        `select count(*)::int as n from audit_entry
+          where created_at >= '${cursor}'::timestamptz ${owned('turn_id')}`,
       )
       .catch(() => [{ n: 0 }])
 
@@ -717,6 +780,13 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
       turnIds: turnRows.map((t: any) => String(t.id)),
       wrote: Number(wrote[0]?.n ?? 0),
       sent: out.filter((m) => !m.suppressedReason).length,
+      // Written on every turn, null included — not spread in only when a driver
+      // has one. `Turn` is explicit that these are nullable rather than optional
+      // so that a driver with no world to count (`ask` has none at all) records
+      // the fact instead of leaving a hole, and a hole is what every turn had
+      // while the slot above did not exist.
+      beforeTap: meta.beforeTap ?? null,
+      afterTap: meta.afterTap ?? null,
       error: error ?? (turnRows.find((t: any) => t?.error)?.error ?? null),
     }
 

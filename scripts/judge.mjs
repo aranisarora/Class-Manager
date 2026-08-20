@@ -1,7 +1,7 @@
 /**
  * judge — a reader for the half no query can answer.
  *
- *   node scripts/judge.mjs --academy "Smash Badminton" --out .probe/runs/<run>/judgements.json
+ *   node scripts/judge.mjs --academy "Smash Badminton" --out .probe/runs/<run>/judgement.json
  *   node scripts/judge.mjs --academy "Smash Badminton" --last 5        # print, write nothing
  *
  * WHY THIS EXISTS
@@ -79,7 +79,7 @@ const CAP = Number(flag('cap', '9000'))
 const MODEL = flag('model', env.MODEL_MAIN || 'deepseek-chat')
 
 if (!ACADEMY) {
-  console.error('judge — pass --academy "<name>" [--last N] [--out judgements.json]')
+  console.error('judge — pass --academy "<name>" [--last N] [--out judgement.json]')
   process.exit(2)
 }
 

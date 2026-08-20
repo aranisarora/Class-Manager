@@ -2,7 +2,9 @@
  * probe-model — judge a model on what the person actually got.
  *
  *   npm run probe
- *   npm run probe -- --models a,b --stage money --persona coach --case setup-small --keep
+ *   npm run probe -- --suite stress --stage money --persona coach --keep
+ *   npm run probe -- --models deepseek-v4-flash,deepseek-v4-pro --thinking default,low
+ *   npm run probe -- --limit 5                 # the first five turns, a smoke run
  *
  * WHY THIS WAS REWRITTEN
  * -----------------------------------------------------------------------------
@@ -57,6 +59,45 @@
  * nothing, and what it has found is a defect in the stage before it rather than
  * a gap in the harness.
  *
+ * FOUR THINGS IT NO LONGER CARRIES ITSELF
+ * -----------------------------------------------------------------------------
+ * This file was 4,551 lines, and four things in it were copies of something the
+ * repo already shares. A copy is a place to drift, and these had: the job strings
+ * it wrote could not be read by the standard reader, the walk was still paying for
+ * hops the seat layer had stopped paying for, and the record needed a second
+ * script to become the one every other reader opens.
+ *
+ *   - **the flags.** Eight `const X = flag('x')` lines over a parser that returned
+ *     the default for anything it did not recognise, so `--stagee money` probed
+ *     the whole arc and said nothing about it. `resolveConfig`
+ *     (`_drive-config.ts`) reads `--model`, `--arm`, `--seed`, `--keep` and the
+ *     two budgets and REFUSES a flag nobody reads; this instrument's own settings
+ *     are declared in `PROBE_FLAGS` and taken out of the argv before it, so a
+ *     misspelling of either kind stops the run at second zero.
+ *   - **the clock walk.** `CLOCK_STEP_MS = 60 * 60 * 1000` hopped an hour at a
+ *     time and drained at every hop — the defect `_seat.ts` has just fixed for
+ *     the seat layer, which measured ~98 hops across a week in which 27 jobs ever
+ *     ran. `walkClockTo` hops to each moment the queue actually wants and then to
+ *     the target, and `drain` is imported from `_seat.ts` rather than written a
+ *     second time. The travel BUDGET is untouched: it was sized from measurement,
+ *     per suite, and it is what stops a stage dragging time until something fires.
+ *   - **the record.** It wrote a `TurnRecord[]` to `<arm>.json` and a second
+ *     script renamed the fields into `record.json` — a conversion whose own header
+ *     called itself "a rename, not an interpretation". Every turn goes through
+ *     `_capture.ts` now: one appended line, flushed as it happens, so a run that
+ *     dies on turn 19 of 30 keeps eighteen good turns instead of none.
+ *   - **the truncation.** `FIELD_CAP = 400_000` capped every recorded field.
+ *     `_capture.ts` lifts the flight recorder's cap for the length of the run and
+ *     there is no cap in this file at all.
+ *
+ * ONE RUN DIRECTORY PER ARM, WHICH IS WHAT AN ARM IS
+ * -----------------------------------------------------------------------------
+ * A thinking sweep used to write several `<arm>.json` files into ONE directory,
+ * and `.probe/README.md` had to explain in prose that two of them must never be
+ * merged because they are different academies. They are different runs, so they
+ * get different run directories now — each with its own `record.json`, its own
+ * `score.md`, and `arm` on the run — and `npm run report` opens any of them.
+ *
  * WHAT IT DOES TO A SHARED DATABASE
  * -----------------------------------------------------------------------------
  * Half of these stages are moments rather than sentences, so the arc moves domain
@@ -65,10 +106,11 @@
  *
  *   - **the clock** is THIS academy's own (0024's per-academy `sim_clock` row),
  *     never the world's, so a real tenant sharing this database keeps real time
- *     while the arc walks days. It moves in steps of at most an hour, to the next
- *     scheduled moment where there is one sooner, within a total budget, and the
- *     row is dropped before the process exits. See `CLOCK_STEP_MS` and "The clock".
- *   - **the queue** is drained for THIS academy only. See `drainOwnJobs`.
+ *     while the arc walks days. It lands on every moment the queue wants
+ *     something, within a total budget, and the row is dropped before the process
+ *     exits. See `CLOCK_BUDGET_MS` and `walkClockTo`.
+ *   - **the queue** is drained for THIS academy only — `_seat.ts`'s `drain`,
+ *     which scopes on §6.6's `payload->>'academy_id'`.
  *   - **the business** is dropped on the way out, and its jobs with it, unless
  *     `--keep`. Nothing else in the world is touched.
  *
@@ -81,24 +123,191 @@
  * genuinely cold prompt cache — the honest starting condition for a cost reading.
  */
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
+
+import { isPeak } from '../lib/pricing'
+
 import { loadEnvFiles, c } from './_env'
-import { costUsd, isPeak, USD_INR } from '../lib/pricing'
+import { makeBudget, resolveConfig, type DriveConfig } from './_drive-config'
 
-const argv = process.argv.slice(2)
-function flag(name: string, fallback = ''): string {
-  const i = argv.findIndex((a) => a === `--${name}` || a.startsWith(`--${name}=`))
-  if (i === -1) return fallback
-  const a = argv[i] as string
-  return a.includes('=') ? a.slice(a.indexOf('=') + 1) : (argv[i + 1] ?? fallback)
+/**
+ * The emulator, decided before anything can read the environment.
+ *
+ * `.env.local` ships `TRANSPORT=cloud`. A probe that takes the cloud path hard-
+ * fails at the credential gate on every turn — zero rounds, zero tokens, an empty
+ * reply — which on the page is indistinguishable from a model that read the
+ * message and said nothing back, an hour and a few hundred rupees in. `_seat.ts`
+ * pins it for the same reason and says so in its own comment. Taken before
+ * `loadEnvFiles`, which never overwrites a key that is already set, and before
+ * `resolveConfig` can read `MODEL_MAIN` and freeze the parsed environment around
+ * the wrong answer.
+ */
+process.env.TRANSPORT = 'emulator'
+loadEnvFiles()
+
+/**
+ * Say what is wrong and stop, in `_drive-config`'s words and with its exit code.
+ *
+ * Not a thrown Error: tsx prints a stack above the message, and the one line that
+ * matters — the flag that was misspelled — ends up under twelve frames of node
+ * internals in a terminal somebody is about to scroll past.
+ */
+function die(headline: string, ...detail: string[]): never {
+  console.error()
+  console.error(c.red(`x  ${headline}`))
+  for (const d of detail) console.error(`   ${d}`)
+  console.error()
+  process.exit(2)
 }
-const has = (name: string) => argv.includes(`--${name}`)
 
-const MODELS = flag('models', 'deepseek-v4-flash,deepseek-v4-pro')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean)
+/**
+ * The settings that are this instrument's own, and the only ones it parses.
+ *
+ * Everything else in the argv goes to `resolveConfig`, which knows the drive
+ * settings and refuses anything that is neither. That is the whole arrangement:
+ * two vocabularies, one refusal, and no way for a flag to be silently dropped by
+ * the file that did not recognise it. `--child` is not for a person — it is how
+ * the parent tells a spawned process which side of the fork it is on.
+ */
+const PROBE_FLAGS = {
+  suite: 'value',
+  case: 'value',
+  stage: 'value',
+  persona: 'value',
+  models: 'value',
+  thinking: 'value',
+  limit: 'value',
+  child: 'bare',
+} as const
+
+/**
+ * Drive settings `resolveConfig` will happily parse and this instrument cannot
+ * honour — refused by name, with what to use instead.
+ *
+ * A flag that resolves and then does nothing is the exact failure `_drive-config`
+ * exists to stop, arriving from the other end: `--days 5` on a probe would parse,
+ * validate against `SCHEDULE`, print no warning and change nothing about the run
+ * it was passed to. The arc's length is its case list and its travel is
+ * `CLOCK_BUDGET_MS`; neither is a number a schedule flag can move.
+ */
+const NOT_MINE: Record<string, string> = {
+  preset: 'a preset is a shape of week; a probe is a list of cases — use --suite',
+  days: 'how far the arc may travel is CLOCK_BUDGET_MS, sized per suite from measurement',
+  windows: 'the arc has stages rather than windows — use --stage',
+  personas: 'the speaker is resolved out of the rows the arc built — use --persona',
+  concurrency: 'one model per process, on purpose — see the header',
+  ramp: 'the ramp is a persona overlay; this instrument has it as --suite holistic',
+  config: 'the probe has no campaign file — name the settings on the command line',
+}
+
+type Flagged = Record<string, string | true>
+
+/**
+ * Take this instrument's settings out of the argv and hand the rest on.
+ *
+ * A token that is not one of `PROBE_FLAGS` passes through UNTOUCHED, its value
+ * with it, so `resolveConfig` sees exactly the argv a drive would have seen and
+ * refuses an unknown flag, a one-dash flag and a missing value with its own
+ * messages. Nothing here guesses: a probe flag that wants a value and is not
+ * given one stops the run rather than falling back to a default, which is what
+ * the old `flag()` did at every one of its ten call sites.
+ */
+function splitFlags(argv: string[]): { mine: Flagged; rest: string[] } {
+  const mine: Flagged = {}
+  const rest: string[] = []
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i] as string
+    if (!token.startsWith('--') || token === '--') {
+      rest.push(token)
+      continue
+    }
+    const eq = token.indexOf('=')
+    const name = eq === -1 ? token.slice(2) : token.slice(2, eq)
+    if (!(name in PROBE_FLAGS)) {
+      rest.push(token)
+      continue
+    }
+    if (eq !== -1) {
+      mine[name] = token.slice(eq + 1)
+      continue
+    }
+    if (PROBE_FLAGS[name as keyof typeof PROBE_FLAGS] === 'bare') {
+      mine[name] = true
+      continue
+    }
+    const next = argv[i + 1]
+    if (next === undefined || next.startsWith('--')) die(`--${name} needs a value`)
+    mine[name] = next as string
+    i += 1
+  }
+  return { mine, rest }
+}
+
+const { mine: MINE, rest: DRIVE_ARGV } = splitFlags(process.argv.slice(2))
+
+for (const [name, why] of Object.entries(NOT_MINE)) {
+  if (DRIVE_ARGV.some((t) => t === `--${name}` || t.startsWith(`--${name}=`))) {
+    die(
+      `--${name} is a drive setting and this is a probe`,
+      why,
+      'It would resolve, validate, print nothing and change nothing about the run —',
+      'which is how two runs end up compared on a difference that was never applied.',
+    )
+  }
+}
+
+/**
+ * The drive settings, resolved by the one resolver: `--model`, `--arm`, `--seed`,
+ * `--keep`, `--budget-min`, `--budget-inr`.
+ *
+ * It also resolves days, windows, personas, concurrency and the ramp, and every
+ * flag that could move any of them is refused above — so those five are always
+ * the defaults, are never printed, and are never written into the record. A field
+ * a run cannot change is not a fact about that run.
+ *
+ * It refuses an unknown flag by printing the DRIVE settings and exiting, which is
+ * the right list for a drive and half the list here — somebody who typed
+ * `--stagee` would be shown thirteen flags, none of them `--stage`. Re-listing
+ * its flags in this file to pre-empt that is the duplication this file has just
+ * finished removing, so the probe's own names are appended to ITS message on the
+ * way out instead. `writeSync` on fd 2 rather than `console.error`, because
+ * writing to a pipe is asynchronous on Windows and an exit handler does not wait.
+ */
+let resolving = false
+process.on('exit', (code) => {
+  if (!resolving || code !== 2) return
+  const mineFlags = Object.keys(PROBE_FLAGS)
+    .filter((f) => f !== 'child')
+    .map((f) => `--${f}`)
+    .join(' ')
+  writeSync(2, `   this instrument also takes: ${mineFlags}\n\n`)
+})
+resolving = true
+const cfg: DriveConfig = resolveConfig(DRIVE_ARGV)
+resolving = false
+
+const str = (key: keyof typeof PROBE_FLAGS, fallback = ''): string => {
+  const v = MINE[key]
+  return typeof v === 'string' && v.trim() ? v.trim() : fallback
+}
+const list = (key: keyof typeof PROBE_FLAGS): string[] =>
+  str(key)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+const IS_CHILD = MINE.child === true
+
+/**
+ * Which models to sweep, one child and one fresh academy each.
+ *
+ * Nobody naming a model gets `MODEL_MAIN` — the model this checkout is actually
+ * configured to run — rather than the two-model pair that used to be hard-coded
+ * here. A comparison is a thing you ask for; a second academy, a second cold
+ * cache and a second hour of turns is not a sensible default for `npm run probe`.
+ */
+const MODELS = list('models').length ? list('models') : [cfg.model]
 /**
  * The thinking sweep — `--thinking default,off,low,high`.
  *
@@ -109,22 +318,20 @@ const MODELS = flag('models', 'deepseek-v4-flash,deepseek-v4-pro')
  * zero thinking amputates (`schedule`, `remember` and `view` fired 0, 3 and 1
  * times across 93 driven zero-thinking turns; at low, `schedule` fires inline).
  *
- * One variable at a time: an arm is a whole child process with a fresh academy,
- * so a thinking arm never shares rows or a warm cache with another.
+ * One variable at a time: an arm is a whole child process with a fresh academy
+ * and a run directory of its own, so a thinking arm never shares rows, a warm
+ * cache or a record with another.
  */
-const THINKING_ARMS = flag('thinking', 'default')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean)
+const THINKING_ARMS = list('thinking').length ? list('thinking') : ['default']
+
 /**
  * When this run happened, in UTC, and therefore which of DeepSeek's two rate
- * cards applied to it. Read once so every record in a run is priced the same way
- * and the header can say which it was.
+ * cards applied to it. Read once so the header can say which it was.
  */
 const RUN_AT = new Date()
-const ONLY = flag('case')
-const ONLY_STAGE = flag('stage')
-const ONLY_PERSONA = flag('persona')
+const ONLY = str('case')
+const ONLY_STAGE = str('stage')
+const ONLY_PERSONA = str('persona')
 /**
  * Stop after the first N selected cases — a smoke run rather than a reading.
  *
@@ -134,11 +341,14 @@ const ONLY_PERSONA = flag('persona')
  * the suite in order and stops, which is a probe of "does a turn work at all"
  * and is NOT a reading about the stages it never reached.
  */
-const LIMIT = Number(flag('limit', '0')) || 0
-const OUT_DIR = flag('out', join(process.cwd(), '.probe'))
+const LIMIT = ((): number => {
+  const raw = str('limit')
+  if (!raw) return 0
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n < 1) die(`--limit takes a whole number of turns, not ${raw}`)
+  return n
+})()
 
-/** When this process started — the run's wall-clock origin, stamped into `record.json`. */
-const STARTED = new Date().toISOString()
 /**
  * Which arc to walk. `arc` is the lifecycle sweep; `f-o` is the regression suite
  * for the findings the month drive raised and the 15 Aug commits claim to have
@@ -149,7 +359,7 @@ const STARTED = new Date().toISOString()
  * class needs a class, a coach and two families, and there is no version of
  * that setup worth having twice.
  */
-const SUITE = flag('suite', 'arc')
+const SUITE = str('suite', 'arc')
 /**
  * `stress` and `stress-week` drive the SAME BUSINESS — one solo badminton
  * academy, one human wearing both hats — so everything keyed on the shape of
@@ -2965,6 +3175,17 @@ const ACTIVE: Case[] = LIMIT
  * left is measurement — how long, what could be tapped, what was suppressed, how
  * many attempts it took — and every one of those is a number a reader uses rather
  * than a verdict handed to them.
+ *
+ * WHY THIS STAYS, NOW THAT `_capture.ts` RECORDS THE MESSAGES ITSELF
+ * -----------------------------------------------------------------------------
+ * The standard record keeps every message in the turn's window, whoever it
+ * reached, and joins the unsuppressed ones into `reply` — which is the right
+ * answer to "did anybody else hear anything" and the wrong answer to "what did
+ * THIS person read". The arc has four personas and a queue that talks to the
+ * others, so on the turns where that difference matters most the two are not the
+ * same sentence. Both are kept: the window is on the turn, this is beside it, and
+ * `Outbound` carries no list or link flag at all, so an affordance that is a
+ * picker rather than a button is only visible from here.
  * -------------------------------------------------------------------------- */
 
 type OneMessage = { body: string; buttons: string[]; link: boolean; list: boolean; suppressed: string | null }
@@ -2977,7 +3198,8 @@ type ReplyReport = {
   link: boolean
   suppressed: string | null
   /**
-   * Every outbound attempt this turn made, suppressed ones included.
+   * Every outbound attempt this turn made to this person, suppressed ones
+   * included.
    *
    * The last surviving message is what the person read, but it is not the whole
    * story: a turn that composed the same message twice — once illegally, once
@@ -3013,91 +3235,51 @@ function readReply(msgs: any[]): ReplyReport {
   }
 }
 
+/** A case that never got as far as a message. Not zero evidence — no evidence. */
+const NO_REPLY: ReplyReport = {
+  body: '',
+  words: 0,
+  buttons: [],
+  list: false,
+  link: false,
+  suppressed: null,
+  all: [],
+}
+
 /* -------------------------------------------------------------------------- *
- * Cost. Reported, never ranked on.
+ * What the standard turn cannot hold.
  *
- * The table used to live here TOO, a second copy of `lib/pricing.ts` with the
- * same "one place to be wrong" comment on top of it — which made it two places,
- * and they had already drifted apart on the one number this migration turns on
- * (the cached-input rate). It is imported now.
+ * `_capture.ts` records a turn: what was said, every round, every statement,
+ * every message in the window, the counts, the cost. This is the rest of what a
+ * CASE is, and it is small on purpose — six fields against the thirty the old
+ * `TurnRecord` carried, because everything else on that type was a second name
+ * for something the standard shape already stores.
  *
- * The UTC hour and the rate that was applied are recorded per run, because
- * DeepSeek bills peak hours at double: two identical runs at different times of
- * day bill differently, and an unexplained cost delta between them is a probe
- * defect rather than a finding.
- * -------------------------------------------------------------------------- */
-/* -------------------------------------------------------------------------- *
- * Record shape shared between child and parent.
+ * It rides in `run.extra`, which is where `_capture.ts` puts evidence a driver
+ * collects that is not a turn and not the world, and the panels are in the same
+ * order as the turns: the i-th panel belongs to the i-th turn, because both are
+ * appended once per case and neither is ever reordered.
+ *
+ * `beforeTap` and `afterTap` are here rather than on the turn for one reason, and
+ * it is worth writing down: `Turn` declares both and `scripts/report.mjs` renders
+ * their difference, but `TurnMeta` — what a driver is allowed to hand over — has
+ * no slot for either, so no driver can currently fill them. Until it does, the
+ * two photographs live beside the turns instead of on them.
  * -------------------------------------------------------------------------- */
 
-type TurnRecord = {
-  model: string
-  /** Which arm of the thinking sweep produced this turn. `default` is the loop deciding. */
-  thinking: string
-  modelReported: string | null
+type Panel = {
+  /** The case name, so a panel can be checked against the turn it belongs to. */
   case: string
-  stage: Stage
-  persona: Persona
-  /** Who actually spoke, or why nobody could. */
-  spokeAs: string | null
-  what: string
-  said: string
+  /** Where the arc walked the clock to for this case, and what ran on the way. */
   clockNote: string | null
   /** Whether a confirmation was offered, and what taking it produced. */
   tapNote: string | null
-  /** What the queue did around this turn — the ladder, in the order it fired. */
-  jobs: string[]
+  /** Which model the product says answered — the child's `MODEL_MAIN`, read back. */
+  modelReported: string | null
+  /** What THIS person read, as against everything the window sent. */
   reply: ReplyReport
   /**
-   * The flight recorder, one entry per tool call AND per model round.
-   *
-   * `reasoning` and `drafted` were being written into these entries and were
-   * absent from this type, so every reader was type-checked into blindness:
-   * the fields existed in the JSON on disk, `score.md` could not name them
-   * without an error, and the instrument reported thinking it had recorded.
-   * A record shape that omits a field the recorder writes is not a smaller
-   * type, it is a lie about the evidence.
-   */
-  tools: {
-    round: number
-    name: string
-    args: string
-    result: string
-    /** The model's own deliberation for this round, verbatim and uncapped. */
-    reasoning?: string
-    /** Prose it wrote this round before any tool ran. */
-    drafted?: string
-    error?: string
-  }[]
-  toolNames: string[]
-  rounds: number
-  latencyMs: number
-  inTok: number
-  cachedTok: number
-  outTok: number
-  usd: number | null
-  error: string | null
-  /**
-   * Rows this turn audited, and messages of its own that actually went out.
-   *
-   * Counts, and only counts. Three booleans stood here — `claimedDone`,
-   * `backedByWrite`, `spokeWithNoFootprint` — and the note beside the first one
-   * called it "a HINT for the reader's eye, not a verdict", which is exactly what
-   * a boolean in a record cannot be. It was printed as `UNBACKED CLAIM` in red.
-   *
-   * `wrote: 0` beside a reply that says "I've added those families" is the same
-   * evidence and a better instrument, because the reader decides what it means
-   * and can be wrong out loud rather than being handed a conclusion.
-   */
-  wrote: number
-  reached: number
-  /**
-   * Every statement the model composed this turn, as it was sent and as Postgres
-   * answered — the refused ones included. See `lib/agent/sql-trace.ts`.
-   */
-  sql: import('@/lib/agent/sql-trace').SqlRecord[]
-  /**
-   * The business, photographed either side of the harness's thumb.
+   * The business, counted either side of the harness's thumb.
    *
    * A tap is not a neutral observer — the button exists to change the world — so
    * for any case whose subject is what the button changes, a single snapshot is
@@ -3105,59 +3287,20 @@ type TurnRecord = {
    */
   beforeTap: Record<string, unknown> | null
   afterTap: Record<string, unknown> | null
-  /**
-   * The product's own turn id.
-   *
-   * Recorded so a reading of a turn and a MEASUREMENT of it can be joined. The
-   * records file is a copy; `turn` and `message` are the original, and every
-   * reader that works from the original had no way to say which case a turn
-   * belonged to without one.
-   */
-  turnId?: string | null
-  /**
-   * ALL of them, because a beat is more than one turn.
-   *
-   * Tapping a staged plan opens a second turn. `turnId` is the first — the one
-   * that composed the work — and that is the one a reading wants, so it stays.
-   * But every count keyed on a turn id (`wrote`, `reached`) has to span both, or
-   * the confirmation's own writes are attributed to nothing.
-   */
-  turnIds?: string[]
-  /**
-   * EVERY outbound row in the beat's window, whoever it reached.
-   *
-   * `reply` is deliberately scoped to the person who spoke — see the note at the
-   * query — and that scoping quietly cost the run its most important evidence.
-   * Three turns of the stress week messaged two people, the parent and the
-   * owner, and the record kept one of each: 23 recorded against 31 rows carrying
-   * `origin='turn'`. Those were exactly the turns where *did it really tell
-   * somebody?* is the question — an injury relayed to the coach, a move routed to
-   * the owner, a refund case escalated — and the answer had to be recovered from
-   * the `message` table by hand afterwards.
-   *
-   * The product recorded it correctly: `origin` and `turn_id` are on every row,
-   * which is what F-I's closure promised. The instrument discarded it at the
-   * `where` clause. That is the inverse of layer 5's rule and the cheaper half to
-   * fix. Shape matches `_capture.ts`'s `Outbound` so both drivers' records read
-   * the same.
-   */
-  outbound?: {
-    to: string | null
-    body: string
-    buttons: string[]
-    status: string
-    origin: string | null
-    suppressedReason: string | null
-  }[]
 }
+
+type Run = import('./_capture').Run
+type Turn = import('./_capture').Turn
+type Round = import('./_capture').Round
 
 /* ========================================================================== *
  * The clock
  *
  * DRIVING.md's second trap: one big hop skips whole job ladders, because every
  * job correctly declines a precondition that has already passed. The transcript
- * reads calm and nothing has been tested. So time moves in steps of at most an
- * hour, and to the next scheduled moment where there is one sooner than that.
+ * reads calm and nothing has been tested. So the walk LANDS on every moment the
+ * queue wants something, in order, and runs it there — `_seat.ts`'s walk, whose
+ * header carries the measurement that replaced the hourly one.
  *
  * **The clock this probe moves is its OWN, and that is load-bearing now that a
  * real tenant can share the database.** 0024 gave `sim_clock` a nullable
@@ -3180,39 +3323,13 @@ type TurnRecord = {
  * that made the old shared-clock discipline necessary are kept anyway, because
  * two probes can still share a database with each other:
  *
- *   - time moves in steps of at most an hour, never one big hop.
+ *   - no moment the queue wants is ever hopped over.
  *   - total travel is capped, and a stage that wants more than the cap FAILS.
  *   - the tenant's row is dropped on the way out — by `reset(academyId)`, which
  *     DELETES it so the tenant follows the world again, and by the `on delete
  *     cascade` on `sim_clock.academy_id` when the business itself is dropped.
  * ========================================================================== */
 
-/* ========================================================================== *
- * FULL VISIBILITY
- *
- * A probe record is evidence, and evidence that stops mid-sentence is a guess.
- *
- * These fields used to be sliced to 700 and 900 characters. The model's own
- * reasoning rides inside a `(model)` row's `args`, so the 700 cap cut the
- * thinking off part-way through the sentence that explained the decision, and
- * any query returning more than a few rows lost its rows. A report built on
- * that can say WHAT a turn did and never WHY — and "why" is the whole question
- * when a turn goes wrong. A model that did not know it should stop somebody's
- * messages and a model that knew and could not are the same tool trace and
- * different bugs.
- *
- * So nothing is truncated silently. The cap is high enough not to bind in
- * normal use, and when it does bind it says so in the record, in the record's
- * own words, rather than ending mid-token and looking complete.
- * ========================================================================== */
-const FIELD_CAP = 400_000
-function full(v: unknown): string {
-  const s = typeof v === 'string' ? v : JSON.stringify(v ?? null)
-  if (s.length <= FIELD_CAP) return s
-  return `${s.slice(0, FIELD_CAP)}\n…[TRUNCATED — ${s.length - FIELD_CAP} more characters of ${s.length}]`
-}
-
-const CLOCK_STEP_MS = 60 * 60 * 1000
 /**
  * Total travel one probe run may spend, across every stage.
  *
@@ -3232,13 +3349,13 @@ const CLOCK_STEP_MS = 60 * 60 * 1000
  *
  * The measured worst case is ~67h — 42.5h to the first session, then the hops
  * between the sessions the later stages need. 96h leaves headroom for a slower
- * calendar without being unbounded. The clock is still shared, still stepped an
- * hour at a time, and still put back on the way out; this raises what the probe
- * may borrow, not whether it returns it.
+ * calendar without being unbounded. The clock is still this academy's own, still
+ * lands on every due moment, and is still given back on the way out; this is what
+ * the probe may borrow, not whether it returns it.
  */
 // The realistic suite's whole subject is time passing around unanswered
 // questions — five deliberate gaps of a day-plus on top of the session-anchored
-// walks — so it borrows more. Still bounded, still stepped, still put back.
+// walks — so it borrows more. Still bounded, still landed, still put back.
 //
 // The tennis suite is a MONTH. Its whole subject is what a per-session business
 // looks like after four weeks of briefs, digests, reminders and dunning have run
@@ -3275,30 +3392,43 @@ const CLOCK_BUDGET_MS =
    // spends the shortfall on the last turn rather than the first.
    : SUITE === 'holistic' ? 240
    : 96) * 60 * 60 * 1000
+
 /**
  * A guard against a target that keeps receding, not a limit on the budget.
  *
- * Per WALK, not per run, so a suite whose individual hops are days rather than
- * hours needs it raised or every long hop silently stops short and the case
- * after it reads a world that never arrived. A week-long hop is 168 one-hour
- * steps and the old 120 cut it at five days.
+ * `_seat.ts` carries the argument and this is the same number for the same
+ * reason: a walk cannot need more hops than there are distinct moments the queue
+ * wants between here and the target, and every hop lands strictly later than the
+ * last, so the loop cannot fail to make progress. The bound is here for the day
+ * that stops being true — a clock that will not advance, a job re-enqueued at the
+ * instant it just ran — so a pathological walk ends rather than spinning for the
+ * rest of the run.
+ *
+ * It is no longer keyed on the suite. It used to be, because a hop was an hour
+ * and a week-long walk was therefore 168 of them; a hop is a due moment now, and
+ * how many of those a month holds is a fact about the queue rather than about how
+ * far the clock travelled.
  */
-const MAX_CLOCK_STEPS = SUITE === 'tennis' || STRESSY || SUITE === 'holistic' ? 900 : 120
+const MAX_HOPS = 900
 
 /* ========================================================================== *
- * CHILD — one model, one fresh academy, the whole arc.
+ * CHILD — one model, one fresh academy, the whole arc, one run directory.
  * ========================================================================== */
 
 async function runChild(model: string, arm: string): Promise<void> {
-  loadEnvFiles()
+  /**
+   * `_seat.ts` first, and not for tidiness: it pins `TRANSPORT` and then opens
+   * the database, so anything imported ahead of it could read and freeze the
+   * environment first. Dynamic, so the PARENT — which only spawns children —
+   * never opens a connection at all.
+   */
+  const seat = await import('./_seat')
   const { createAcademy, createTestContact, dropAcademy, inboundFromContact, worldAcademyIds } =
     await import('@/lib/seed')
   const { withSession } = await import('@/lib/db')
-  const { captureSql, drainSql } = await import('@/lib/agent/sql-trace')
-  const { captureFullTrace } = await import('@/lib/agent/turn-trace')
   const clock = await import('@/lib/clock')
-  const { HANDLERS, JobSkip, planAheadFor } = await import('@/lib/jobs')
-  const { msOf } = await import('@/lib/jobs/util')
+  const { planAheadFor } = await import('@/lib/jobs')
+  const { openRun, writeSidecar } = await import('./_capture')
 
   /**
    * The business this arm drives, and the name every message it sends will use.
@@ -3327,7 +3457,7 @@ async function runChild(model: string, arm: string): Promise<void> {
    *
    * Bound here rather than at the import because `made` does not exist until the
    * line above, and bound as three names the rest of the file already uses so no
-   * call site has to remember the argument. Forgetting it at one of the six call
+   * call site has to remember the argument. Forgetting it at one of the call
    * sites would move the world instead, which is exactly the failure this is
    * removing, and a wrapper cannot be forgotten.
    */
@@ -3354,8 +3484,8 @@ async function runChild(model: string, arm: string): Promise<void> {
    * from the second run onwards every coach and client message matches two
    * contacts and resolves to neither.
    *
-   * That is checked here rather than left to `neverLanded` below because the cost
-   * is asymmetric — the collision only bites once the arc has composed its
+   * That is checked here rather than left to the landing check below because the
+   * cost is asymmetric — the collision only bites once the arc has composed its
    * families, which is nine turns and most of the money in. Refusing costs one
    * query. `--keep` is what leaves these behind, and it is the right flag to have;
    * it just needs clearing up after, and nothing said so.
@@ -3392,16 +3522,6 @@ async function runChild(model: string, arm: string): Promise<void> {
       ),
     )
     process.exit(3)
-  }
-
-  /**
-   * The per-case cursor, on the clock `created_at` actually runs on (0027 — the
-   * tenant clock). A host-time cursor against domain-time stamps re-admits the
-   * whole backlog into "this turn" the moment the arc has walked the clock.
-   */
-  const domainNow = async (): Promise<string> => {
-    const rows = await q<{ at: string }>(`select app.now()::text as at`)
-    return rows[0]?.at ? new Date(String(rows[0].at)).toISOString() : new Date().toISOString()
   }
 
   // Somebody with no role, so the stranger case has a number to arrive from.
@@ -3460,61 +3580,36 @@ async function runChild(model: string, arm: string): Promise<void> {
   await worldAcademyIds({ refresh: true })
 
   /**
-   * Claim and run everything due FOR THIS ACADEMY ONLY.
+   * Claim and run everything due FOR THIS ACADEMY ONLY — `_seat.ts`'s drain,
+   * which is the same query with the same §6.6 tenant predicate on it.
    *
-   * `runDueJobs` claims globally — `job` has no tenant column — so calling it here
-   * would run every other business's queue from inside this probe, sending their
-   * messages and spending their model calls. The claim below is the runner's, with
-   * one predicate added: §6.6 puts the tenant in every payload, so scoping is
-   * possible without a migration. The WORK is still the product's — `HANDLERS` is
-   * imported, never reimplemented — so a handler bug still shows up here.
+   * `runDueJobs` claims globally — `job` has no tenant column — so calling that
+   * here would run every other business's queue from inside this probe, sending
+   * their messages and spending their model calls. There were two copies of the
+   * scoped version, this file's and the seat's, and they had already drifted:
+   * this one logged `ran <kind>` where the seat logs `<kind>:done`, and
+   * `scripts/report.mjs` splits a job string on the colon to name the kind — so
+   * every job a probe ran was rendered as a kind called `ran materialize_sessions`.
    */
-  async function drainOwnJobs(): Promise<string[]> {
-    const log: string[] = []
-    await planAheadFor(made.academyId).catch((e) => log.push(`plan failed: ${(e as Error)?.message}`))
-    for (let round = 0; round < 8; round++) {
-      const batch = await q(`
-        with due as (
-          select id from job
-           where status = 'pending' and run_at <= app.now()
-             and payload->>'academy_id' = '${made.academyId}'
-           order by run_at asc, created_at asc
-           limit 50
-           for update skip locked
-        )
-        update job j
-           set status = 'running', attempts = j.attempts + 1, locked_at = app.now(), locked_by = 'probe'
-          from due
-         where j.id = due.id
-        returning j.*`)
-      if (batch.length === 0) break
-      batch.sort((a: any, b: any) => msOf(a.run_at) - msOf(b.run_at))
-      for (const job of batch) {
-        const handler = (HANDLERS as any)[job.kind]
-        if (!handler) {
-          await q(`update job set status = 'failed', last_error = 'no handler', locked_at = null where id = '${job.id}'::uuid`)
-          log.push(`FAIL ${job.kind} — no handler`)
-          continue
-        }
-        try {
-          await handler(job)
-          await q(`update job set status = 'done', last_error = null, locked_at = null where id = '${job.id}'::uuid`)
-          log.push(`ran ${job.kind}`)
-        } catch (e) {
-          const skipped = e instanceof JobSkip
-          const reason = String((e as any)?.reason ?? (e as Error)?.message ?? e).slice(0, 200).replace(/'/g, "''")
-          await q(
-            `update job set status = '${skipped ? 'skipped' : 'failed'}', last_error = '${reason}', locked_at = null
-              where id = '${job.id}'::uuid`,
-          )
-          log.push(`${skipped ? 'skip' : 'FAIL'} ${job.kind} — ${reason}`)
-        }
-      }
-    }
-    return log
-  }
+  const drain = (plan?: boolean): Promise<string[]> => seat.drain(made.academyId, { plan })
 
-  /** Step THIS ACADEMY forward to `target`, draining as it goes. Never in one hop. */
+  /**
+   * Walk THIS academy's clock to `target`, running the queue at every moment it
+   * wants something.
+   *
+   * The hourly step is gone and the reason is `_seat.ts`'s: hopping an hour at a
+   * time was one way to guarantee that a job due at 09:00 is REACHED rather than
+   * stepped over, and asking the queue when it next wants something is the same
+   * guarantee for a fraction of the writes. Across a settled week the hourly walk
+   * paid ~98 hops — each one a clock write, a planner pass and a queue poll — for
+   * 27 jobs that ever ran.
+   *
+   * The planner runs when it is OWED: once before the first hop so the hop query
+   * sees a planned queue, then at the top of the first drain after any drain that
+   * ran something, because a handler that ran here can create the rows the next
+   * jobs are planned from. The trailing pass is for the last drain, which has no
+   * next hop to owe it to.
+   */
   let clockMovedMs = 0
   async function walkClockTo(target: Date, log: string[]): Promise<string> {
     const from = await now()
@@ -3531,25 +3626,32 @@ async function runChild(model: string, arm: string): Promise<void> {
       // reason went away.
       return `REFUSED: ${target.toISOString()} is ${(distance / 3_600_000).toFixed(1)}h away and ${(left / 3_600_000).toFixed(1)}h of clock budget is left`
     }
-    let steps = 0
-    while (steps < MAX_CLOCK_STEPS) {
+    await planAheadFor(made.academyId).catch((e) => log.push(`plan failed: ${(e as Error)?.message}`))
+    let owed = false
+    let hops = 0
+    while (hops < MAX_HOPS) {
       const at = await now()
-      const remaining = target.getTime() - at.getTime()
-      if (remaining <= 0) break
-      let step = Math.min(CLOCK_STEP_MS, remaining)
+      if (at.getTime() >= target.getTime()) break
+      // Asked again on every hop rather than listed once, because the drain that
+      // just ran may have enqueued work due before the target — and a job planned
+      // during this walk is exactly the one the hourly loop caught by accident.
       const next = await nextEventAt()
-      if (next) {
-        const toNext = next.getTime() - at.getTime()
-        if (toNext > 0 && toNext < step) step = toNext
-      }
+      const hopTo =
+        next && next.getTime() > at.getTime() && next.getTime() < target.getTime() ? next : target
+      const step = hopTo.getTime() - at.getTime()
       await advance(step)
       clockMovedMs += step
-      steps++
-      log.push(...(await drainOwnJobs()))
+      hops++
+      const ran = await drain(owed)
+      owed = ran.length > 0
+      log.push(...ran)
+    }
+    if (owed) {
+      await planAheadFor(made.academyId).catch((e) => log.push(`plan failed: ${(e as Error)?.message}`))
     }
     const spent = ((await now()).getTime() - from.getTime()) / 3_600_000
-    return `${spent.toFixed(1)}h in ${steps} step${steps === 1 ? '' : 's'} → ${target.toISOString()}${
-      steps >= MAX_CLOCK_STEPS ? ' (STOPPED at the step guard)' : ''
+    return `${spent.toFixed(1)}h in ${hops} hop${hops === 1 ? '' : 's'} → ${target.toISOString()}${
+      hops >= MAX_HOPS ? ' (STOPPED at the hop guard)' : ''
     }`
   }
 
@@ -3582,92 +3684,125 @@ async function runChild(model: string, arm: string): Promise<void> {
     return rows[0] ? { id: String(rows[0].id), name: String(rows[0].full_name) } : null
   }
 
-  const records: TurnRecord[] = []
+  /**
+   * The run, opened before the first case so the directory exists from this
+   * moment and every turn lands in it as it happens.
+   *
+   * `arm` and `variant` are on the RUN because that is what they are facts about.
+   * `probe-model` used to run a thinking sweep as several files in one directory
+   * and `.probe/README.md` had to say in prose that two of them must never be
+   * merged; they are separate runs now and the record says which is which.
+   */
+  const rec = await openRun({
+    suite: SUITE,
+    model,
+    academyId: made.academyId,
+    arm,
+    variant: { thinking: arm, suite: SUITE, seed: cfg.seed, world: label },
+    note: `${label} — ${SUITE}, ${ACTIVE.filter(selected).length} case(s)`,
+    q: (sql: string) => q(sql),
+    domainNow: () => now(),
+  })
+  await writeSidecar(rec.dir, 'config.json', {
+    suite: SUITE,
+    model,
+    arm,
+    seed: cfg.seed,
+    keep: cfg.keep,
+    ...(cfg.budgetMin === undefined ? {} : { budgetMin: cfg.budgetMin }),
+    ...(cfg.budgetInr === undefined ? {} : { budgetInr: cfg.budgetInr }),
+    ...(ONLY ? { case: ONLY } : {}),
+    ...(ONLY_STAGE ? { stage: ONLY_STAGE } : {}),
+    ...(ONLY_PERSONA ? { persona: ONLY_PERSONA } : {}),
+    ...(LIMIT ? { limit: LIMIT } : {}),
+    clockBudgetHours: CLOCK_BUDGET_MS / 3_600_000,
+  })
+
+  /**
+   * Reports, never kills. `_drive-config` explains why at length and the reason
+   * is this file's own: `_capture.ts` attributes a turn's evidence by a domain-
+   * time cursor, so a process killed mid-turn leaves that turn's messages, jobs
+   * and SQL attributed to nothing. The budget is asked BETWEEN cases, where
+   * stopping costs nothing, and the run then closes the normal way.
+   */
+  const budget = makeBudget(cfg)
+  const panels: Panel[] = []
+  let stopped: string | null = null
+  /** Day one is the first case's domain instant; everything else is arithmetic on it. */
+  let firstAtMs: number | null = null
+
   try {
-    /**
-     * Full visibility, for the whole arc, with no way to ask for less.
-     *
-     * `captureFullTrace` lifts the flight recorder's 4,000-character cap, so the
-     * arguments of a six-write `plan` and the rows a `read` came back with are
-     * stored whole rather than ending mid-token. `captureSql` records every
-     * statement the model composed byte for byte — including the ones Postgres
-     * REFUSED, which never reach a tool trace at all because the tool call that
-     * carried them is recorded once, as a summary.
-     *
-     * There is no flag for either. A run that recorded less than this has to be
-     * re-run to be judged, and a re-run is never the same run.
-     */
-    await captureSql({ rows: true }, async () => {
-     await captureFullTrace(async () => {
     for (const kase of ACTIVE) {
       if (ONLY && kase.name !== ONLY) continue
       if (ONLY_STAGE && kase.stage !== ONLY_STAGE) continue
       if (ONLY_PERSONA && kase.persona !== ONLY_PERSONA) continue
       process.stderr.write(c.dim(`  ${model} · ${kase.stage}/${kase.name} as ${kase.persona} …\n`))
 
-      const jobs: string[] = []
+      const walked: string[] = []
       let clockNote: string | null = null
       if (kase.clock) {
         const target = await kase.clock(q).catch(() => null)
-        clockNote = target ? await walkClockTo(new Date(target), jobs) : 'no moment to walk to — nothing matched'
+        clockNote = target ? await walkClockTo(new Date(target), walked) : 'no moment to walk to — nothing matched'
       }
 
       const speaker = await contactFor(kase)
+      const at = await now()
+      if (firstAtMs === null) firstAtMs = at.getTime()
+      const day = Math.floor((at.getTime() - firstAtMs) / 86_400_000) + 1
 
-      /**
-       * A case whose clock was REFUSED is a case whose world never arrived, and
-       * running the turn anyway produces a reading about a moment that does not
-       * exist yet. Both directions are noise, and the 16 Aug drive produced one
-       * of each: `coach-confirms` was refused and then PASSED, because its checks
-       * are satisfied by any confirmed future session; `coach-marks-register` was
-       * refused and then FAILED four checks about a register for a class that had
-       * not finished — while the model, correctly, said so.
-       *
-       * So the turn is not sent and no check is run. The record carries the
-       * refusal and nothing else, which reads as DID NOT RUN rather than as a
-       * pass or a fail. This is DRIVING.md's opening trap in its second form: not
-       * a harness that asks nothing, but one that scores an answer to a question
-       * the world could not pose.
-       */
-      if (clockNote?.startsWith('REFUSED')) {
-        process.stderr.write(c.yellow(`    skipped — ${clockNote}\n`))
-        records.push({
-          model,
-          thinking: arm,
-          modelReported: null,
-          case: kase.name,
-          stage: kase.stage,
-          persona: kase.persona,
-          spokeAs: speaker?.name ?? null,
-          what: kase.what,
-          said: kase.text,
-          clockNote,
-          tapNote: null,
-          jobs,
-          reply: { body: '', words: 0, buttons: [], list: false, link: false, suppressed: null, all: [] },
-          tools: [],
-          toolNames: [],
-          rounds: 0,
-          latencyMs: 0,
-          inTok: 0,
-          cachedTok: 0,
-          outTok: 0,
-          usd: null,
-          error: null,
-          wrote: 0,
-          reached: 0,
-          sql: [],
-          beforeTap: null,
-          afterTap: null,
-        })
-        continue
+      const panel: Panel = {
+        case: kase.name,
+        clockNote,
+        tapNote: null,
+        modelReported: null,
+        reply: NO_REPLY,
+        beforeTap: null,
+        afterTap: null,
       }
-      const startedAt = await domainNow()
-      let fatal: string | null = null
-      /** Set only when the message never became a turn at all — see below. */
-      let neverLanded: string | null = null
-      if (speaker) {
-        try {
+
+      const turn = await rec.turn(
+        {
+          id: kase.name,
+          who: speaker?.name ?? '',
+          persona: kase.persona,
+          say: kase.text,
+          day,
+          // The arc's stage IS its named slot in the run, which is what a window
+          // is: `report.mjs` and `index.jsonl` both group by it, and until now a
+          // probe record carried no stage at all.
+          window: kase.stage,
+          intent: kase.what,
+        },
+        async (sink) => {
+          sink.jobs.push(...walked)
+
+          /**
+           * A case whose clock was REFUSED is a case whose world never arrived,
+           * and driving the turn anyway produces a reading about a moment that
+           * does not exist yet. Both directions are noise, and the 16 Aug drive
+           * produced one of each: `coach-confirms` was refused and then PASSED,
+           * because its checks are satisfied by any confirmed future session;
+           * `coach-marks-register` was refused and then FAILED four checks about
+           * a register for a class that had not finished — while the model,
+           * correctly, said so.
+           *
+           * THROWN AS A STRING, not as an `Error`. `_capture.ts` stores `e.stack`
+           * for an `Error` and `String(e)` for anything else, and the stack of a
+           * harness refusal is twelve frames of noise in a record whose subject
+           * is the model. The turn is still appended, with the reason in `error`
+           * and no rounds, which reads as DID NOT RUN rather than as a bad turn.
+           */
+          if (clockNote?.startsWith('REFUSED')) {
+            process.stderr.write(c.yellow(`    skipped — ${clockNote}\n`))
+            throw `did not run — ${clockNote}`
+          }
+          if (!speaker) {
+            process.stderr.write(c.red(`    DID NOT RUN — no ${kase.persona} in the world the arc built\n`))
+            throw `did not run — the ${kase.persona} this case speaks as is not in the world the arc built${
+              kase.who ? ` (looking for "${kase.who}")` : ''
+            }`
+          }
+
           /**
            * **The result is read, and this is not defensive tidying — it is the
            * difference between a model failure and a harness failure.**
@@ -3700,326 +3835,102 @@ async function runChild(model: string, arm: string): Promise<void> {
           if (!landed?.ok) {
             const why = landed?.unresolved
               ? `§10.1 could not tell which academy ${speaker.name} belongs to — ${
-                  (landed.candidates ?? []).map((c: any) => c.name).join(' vs ') || 'no candidates'
+                  (landed.candidates ?? []).map((x: any) => x.name).join(' vs ') || 'no candidates'
                 }. Another business on this sender holds the same number; drop the stale one and re-drive.`
               : landed?.notFound
                 ? 'no academy in the world owns that contact'
                 : 'the inbound did not land, and did not say why'
-            neverLanded = `the message never reached a turn — ${why}`
-          } else if (landed.academyId && landed.academyId !== made.academyId) {
-            neverLanded =
-              `the message landed in a DIFFERENT business (${landed.academyId}) — ` +
-              `this turn was driven against somebody else's rows`
+            process.stderr.write(c.red(`    DID NOT RUN — ${why}\n`))
+            throw `the message never reached a turn — ${why}`
           }
-          fatal = neverLanded
-        } catch (e) {
-          fatal = (e as Error)?.message?.slice(0, 300) ?? String(e)
-        }
-      }
-
-      /**
-       * Same reasoning as the refused clock walk above, one step further along: a
-       * question the world could not pose must not be scored. If the sentence never
-       * became a turn, every check below is being asked about a world nobody spoke
-       * to, and each one it fails is charged to the model. Record the refusal and
-       * nothing else.
-       */
-      if (neverLanded) {
-        process.stderr.write(c.red(`    DID NOT RUN — ${neverLanded}\n`))
-        records.push({
-          model,
-          thinking: arm,
-          modelReported: null,
-          case: kase.name,
-          stage: kase.stage,
-          persona: kase.persona,
-          spokeAs: speaker?.name ?? null,
-          what: kase.what,
-          said: kase.text,
-          clockNote,
-          tapNote: null,
-          jobs,
-          reply: { body: '', words: 0, buttons: [], list: false, link: false, suppressed: null, all: [] },
-          tools: [],
-          toolNames: [],
-          rounds: 0,
-          latencyMs: 0,
-          inTok: 0,
-          cachedTok: 0,
-          outTok: 0,
-          usd: null,
-          error: neverLanded,
-          wrote: 0,
-          reached: 0,
-          sql: [],
-          beforeTap: null,
-          afterTap: null,
-        })
-        continue
-      }
-
-      /**
-       * EVERY turn in the window, oldest first — not the newest one.
-       *
-       * This was `order by created_at desc limit 1`, and a tap opens a SECOND
-       * turn: so the trace kept was the thumb's, and the trace of the turn that
-       * composed the work — the reasoning, the reads, the plan — was thrown away
-       * on exactly the cases interesting enough to carry a confirmation.
-       * `_capture.ts` carries this fix and the comment explaining it; it was
-       * never ported here.
-       *
-       * `t` stays the FIRST turn, because the scalars a reading wants (which
-       * model answered, what it errored with) belong to the turn that did the
-       * thinking. Everything countable is summed across the beat instead.
-       */
-      const turns = speaker
-        ? await q(
-            `select id, model, rounds, latency_ms, prompt_tokens, cached_tokens, output_tokens,
-                    error, tool_calls, output
-               from turn where created_at >= '${startedAt}'::timestamptz
-                and contact_id = '${speaker.id}'::uuid
-              order by created_at asc`,
-          )
-        : []
-      const t = turns[0] ?? {}
-      const turnIds = turns.map((x: any) => String(x.id)).filter(Boolean)
-      const sum = (k: string) => turns.reduce((a: number, x: any) => a + Number(x?.[k] ?? 0), 0)
-      // The first error is the one worth reading — a tap that fails because the
-      // turn before it failed is a symptom, not a second fault.
-      const firstError = turns.find((x: any) => x?.error)?.error ?? null
-
-      // Scoped to the person who spoke. Once the arc has more than one persona and
-      // a queue that talks to the others, "everything outbound in this window" is
-      // not what this person read — it is this person's reply mixed with whatever
-      // the same turn said to the coach and the parent.
-      const msgs = speaker
-        ? await q(
-            `select body, payload, suppressed_reason from message
-              where direction = 'outbound' and created_at >= '${startedAt}'::timestamptz
-                and contact_id = '${speaker.id}'::uuid
-              order by created_at asc`,
-          )
-        : []
-      /**
-       * And the same window with the scoping taken off, kept beside it.
-       *
-       * Not instead of: the panel above answers "what did THIS person read", and
-       * that question needs the narrow set. This one answers "did anyone else
-       * hear anything", which is a different question and the one three of the
-       * stress week's hardest turns turned on. Both are cheap; keeping only the
-       * narrow one is what made a routed proposal indistinguishable from a
-       * promise nobody kept.
-       */
-      const allOut = speaker
-        ? await q(
-            `select c.phone_e164 as to, m.body, m.payload, m.status, m.origin, m.suppressed_reason
-               from message m left join contact c on c.id = m.contact_id
-              where m.direction = 'outbound' and m.created_at >= '${startedAt}'::timestamptz
-              order by m.created_at asc`,
-          )
-        : []
-      /**
-       * The world as the MODEL left it, before the harness's thumb lands.
-       *
-       * A confirmation button exists to change the world, so for any case whose
-       * subject is the thing the button changes, evidence collected after the tap
-       * describes the harness rather than the model. Driven 16 Aug,
-       * `coach-marks-register` marked the register perfectly — Aarav absent, the
-       * other two present — and the tap then chose `[Aarav told me]`, which is that
-       * button's correct behaviour: it converts the absence to `cancelled_timely`.
-       * Anything read afterwards was reading the thumb.
-       *
-       * So both states are kept, and a reader can see which is which. Nothing here
-       * decides whether the difference between them is good.
-       */
-      const beforeTap = speaker ? await worldSnapshot(q) : null
-
-      // The tap goes down the same road a thumb does — `inboundFromContact` with an
-      // `actionId` and no text — so the plan that runs is the one stored in the
-      // action row (§2.2), not a re-reading of the sentence.
-      let tapNote: string | null = null
-      let tapped: string | null = null
-      if (kase.tap && speaker) {
-        // Newest message first: the confirmation is on the last thing said, and an
-        // older message in the same window may carry a stale one.
-        const offered = [...msgs]
-          .reverse()
-          .flatMap((m: any) => (Array.isArray(m?.payload?.buttons) ? m.payload.buttons : []))
-          // uuid-shaped only: a SUPPRESSED message stores placeholder ids
-          // ("pending-0") for buttons that were never minted, and feeding one
-          // into the uuid IN-list below killed a whole child process with
-          // `invalid input syntax for type uuid` — the harness dying on a
-          // message the product had correctly refused to send.
-          .filter((b: any) => b?.actionId && /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(String(b.actionId)))
-        const kinds = offered.length
-          ? await q(
-              `select id::text as id, kind from action
-                where id in (${offered.map((b: any) => `'${String(b.actionId)}'`).join(',')})`,
-            )
-          : []
-        const kindOf = new Map(kinds.map((r: any) => [String(r.id), String(r.kind)]))
-        const hit = offered.find((b: any) => ['steps', 'operation'].includes(kindOf.get(String(b.actionId)) ?? ''))
-        if (!hit) {
-          tapNote = `nothing staged to tap — ${offered.map((b: any) => `[${b?.title}: ${kindOf.get(String(b.actionId)) ?? '?'}]`).join(' ') || 'no buttons at all'}`
-        } else {
-          const tappedAt = await domainNow()
-          tapped = String(hit.title ?? '')
-          try {
-            await inboundFromContact({ contactId: speaker.id, actionId: String(hit.actionId) })
-            const after = await q(
-              `select body from message
-                where direction = 'outbound' and suppressed_reason is null
-                  and contact_id = '${speaker.id}'::uuid and created_at >= '${tappedAt}'::timestamptz
-                order by created_at desc limit 1`,
-            )
-            tapNote = `tapped [${hit.title}] → ${String(after[0]?.body ?? '(nothing came back)')}`
-          } catch (e) {
-            tapNote = `tapped [${hit.title}] and it threw: ${(e as Error)?.message}`
+          if (landed.academyId && landed.academyId !== made.academyId) {
+            throw `the message landed in a DIFFERENT business (${landed.academyId}) — this turn was driven against somebody else's rows`
           }
-        }
-      }
 
-      // Every turn in the beat contributes its rounds, for the same reason the
-      // query above stopped taking only the last one: the tap's trace and the
-      // composing turn's trace are both evidence and neither substitutes.
-      const trace: any[] = turns.flatMap((x: any) => {
-        if (Array.isArray(x?.tool_calls)) return x.tool_calls
-        // The driver reads its own database, so this is normally already parsed;
-        // a string means a driver that stringified it, and losing the whole beat's
-        // reasoning to a JSON shape is not worth a throw.
-        if (typeof x?.tool_calls === 'string') {
-          try {
-            const parsed = JSON.parse(x.tool_calls)
-            return Array.isArray(parsed) ? parsed : []
-          } catch {
-            return []
-          }
-        }
-        return []
-      })
-      const tools = trace.map((x: any) => {
-        const msg = x?.args?.message
-        return {
-          round: Number(x?.round ?? 0),
-          name: String(x?.name ?? '?'),
-          args: full(x?.args ?? {}),
-          // The RESULT, not just the call. A tool that refuses returns
-          // `{result:{error, hint, signature}}` rather than throwing, so `error`
-          // is empty on exactly the failures worth reading — which is why the
-          // first run could show `plan → plan` with identical arguments and no
-          // way to see what the model was told in between.
-          result: full(x?.result ?? null),
           /**
-           * The model's own thinking, lifted out of the `args` blob to a field
-           * of its own.
+           * Scoped to the person who spoke, and read BEFORE the tap.
            *
-           * It used to be reachable only as a JSON string inside a JSON string,
-           * under a 700-character cap that cut it off mid-sentence — so a report
-           * could say WHAT a turn did and never WHY. Why is the whole question
-           * when a turn goes wrong: the difference between a model that did not
-           * know it should stop somebody's messages and one that knew and could
-           * not is invisible in the tool names, and decides what you fix.
+           * The turn's whole window is on the record already, whoever it reached.
+           * This is the other question — what did THIS person read — and it is
+           * taken before the thumb lands because the tap's own reply is a separate
+           * fact that belongs in `tapNote`. It is also where the buttons come
+           * from: a confirmation is offered on the last thing said.
            */
-          ...(() => {
-            /**
-             * Three shapes, because this reads runs written before and after the
-             * 17 Aug fix, and a reader that understands only the newest one
-             * renders an empty "what it was thinking" for every older record
-             * while looking like it looked.
-             *
-             *   1. `x.reasoning` — the field `loop.ts` writes now, on every
-             *      round that deliberated.
-             *   2. `x.args.message.reasoning_content` as an OBJECT — the old
-             *      path, on rounds that returned no prose and whose assistant
-             *      blob fitted inside `traceValue`'s 2,000-character cap.
-             *   3. the same, as a truncated JSON STRING — the old path when it
-             *      did NOT fit, which is what silently lost the long ones. It
-             *      will not `JSON.parse`, so the text is dug out with a regex
-             *      and labelled: a reasoning cut off mid-sentence is still the
-             *      only evidence of what the model was doing, and dropping it
-             *      is how the instrument went blind in the first place.
-             */
-            const direct = (x as any)?.reasoning
-            if (typeof direct === 'string' && direct.trim()) return { reasoning: direct }
-            if (typeof msg?.reasoning_content === 'string' && msg.reasoning_content.trim()) {
-              return { reasoning: msg.reasoning_content }
-            }
-            if (typeof msg === 'string') {
+          const mine = await q(
+            `select body, payload, suppressed_reason from message
+              where direction = 'outbound' and contact_id = '${speaker.id}'::uuid
+                and created_at >= '${at.toISOString()}'::timestamptz
+              order by created_at asc`,
+          )
+          panel.reply = readReply(mine)
+
+          /**
+           * The world as the MODEL left it, before the harness's thumb lands.
+           *
+           * A confirmation button exists to change the world, so for any case whose
+           * subject is the thing the button changes, evidence collected after the tap
+           * describes the harness rather than the model. Driven 16 Aug,
+           * `coach-marks-register` marked the register perfectly — Aarav absent, the
+           * other two present — and the tap then chose `[Aarav told me]`, which is that
+           * button's correct behaviour: it converts the absence to `cancelled_timely`.
+           * Anything read afterwards was reading the thumb.
+           */
+          panel.beforeTap = await worldSnapshot(q)
+
+          // The tap goes down the same road a thumb does — `inboundFromContact` with an
+          // `actionId` and no text — so the plan that runs is the one stored in the
+          // action row (§2.2), not a re-reading of the sentence.
+          if (kase.tap) {
+            // Newest message first: the confirmation is on the last thing said, and an
+            // older message in the same window may carry a stale one.
+            const offered = [...mine]
+              .reverse()
+              .flatMap((m: any) => (Array.isArray(m?.payload?.buttons) ? m.payload.buttons : []))
+              // uuid-shaped only: a SUPPRESSED message stores placeholder ids
+              // ("pending-0") for buttons that were never minted, and feeding one
+              // into the uuid IN-list below killed a whole child process with
+              // `invalid input syntax for type uuid` — the harness dying on a
+              // message the product had correctly refused to send.
+              .filter((b: any) => b?.actionId && /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(String(b.actionId)))
+            const kinds = offered.length
+              ? await q(
+                  `select id::text as id, kind from action
+                    where id in (${offered.map((b: any) => `'${String(b.actionId)}'`).join(',')})`,
+                )
+              : []
+            const kindOf = new Map(kinds.map((r: any) => [String(r.id), String(r.kind)]))
+            const hit = offered.find((b: any) => ['steps', 'operation'].includes(kindOf.get(String(b.actionId)) ?? ''))
+            if (!hit) {
+              panel.tapNote = `nothing staged to tap — ${offered.map((b: any) => `[${b?.title}: ${kindOf.get(String(b.actionId)) ?? '?'}]`).join(' ') || 'no buttons at all'}`
+            } else {
+              const tappedAt = await now()
               try {
-                const parsed = JSON.parse(msg)
-                if (typeof parsed?.reasoning_content === 'string' && parsed.reasoning_content.trim()) {
-                  return { reasoning: parsed.reasoning_content }
-                }
-              } catch {
-                const hit = /"reasoning_content"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(msg)
-                if (hit?.[1]) {
-                  try {
-                    const text = JSON.parse(`"${hit[1].replace(/"$/, '')}"`)
-                    return { reasoning: `${text}\n…[TRUNCATED UPSTREAM — this run predates the loop.ts reasoning fix]` }
-                  } catch {
-                    /* fall through — an unparseable fragment is worse than none */
-                  }
-                }
+                await inboundFromContact({ contactId: speaker.id, actionId: String(hit.actionId) })
+                const after = await q(
+                  `select body from message
+                    where direction = 'outbound' and suppressed_reason is null
+                      and contact_id = '${speaker.id}'::uuid
+                      and created_at >= '${tappedAt.toISOString()}'::timestamptz
+                    order by created_at desc limit 1`,
+                )
+                panel.tapNote = `tapped [${hit.title}] → ${String(after[0]?.body ?? '(nothing came back)')}`
+              } catch (e) {
+                panel.tapNote = `tapped [${hit.title}] and it threw: ${(e as Error)?.message}`
               }
             }
-            return {}
-          })(),
-          // What it wrote as prose on this round, before any tool ran.
-          ...(typeof msg?.content === 'string' && msg.content.trim() ? { drafted: msg.content } : {}),
-          ...(x?.error ? { error: String(x.error) } : {}),
-        }
-      })
-      // The model's own per-round records ride in the same array as the tool
-      // calls, deliberately — the score file wants them, because "what it wrote
-      // on round 3 before calling nothing" is the evidence a wrong reply raises.
-      // The `tools` COLUMN is a different question and must not count them.
-      const toolNames = tools.filter((x) => !x.name.startsWith('(')).map((x) => x.name)
-      const reply = readReply(msgs)
+          }
 
-      // Everything the turn queued that is already due — `create_class` writes no
-      // sessions of its own, a marked register schedules the outcomes, and the
-      // reply the family gets is a job rather than a sentence. Reading the world
-      // before this ran was reading it one layer short of what the person sees.
-      jobs.push(...(await drainOwnJobs()))
+          // Everything the turn queued that is already due — `create_class` writes no
+          // sessions of its own, a marked register schedules the outcomes, and the
+          // reply the family gets is a job rather than a sentence. Reading the world
+          // before this ran was reading it one layer short of what the person sees.
+          sink.jobs.push(...(await drain()))
+        },
+      )
 
       /**
-       * What this turn actually DID, beside what it said — as two numbers.
-       *
-       * These are counts, and that is the whole of what they are. `wrote: 0` next
-       * to a reply that says "I've added those families" is the most important
-       * thing in this record, and it is important because a READER sees the two
-       * side by side — not because anything here decided they contradict.
-       *
-       * A boolean stood where each of these numbers is now, and the record of why
-       * is the argument against the whole family. `claimedDone` was a past-tense
-       * regex over the reply: the realism drive's measured overclaim count read
-       * **0** while the drive contained exactly one — *"I've flagged it to the
-       * owner"* about a child's injury, with no message behind it — because the
-       * verb list had no telling-verbs in it. Adding them fixed that instance and
-       * not the class, and the product's own copy of the same idea missed "retry",
-       * the single likeliest verb in a recovery draft.
-       *
-       * `backedByWrite` and `spokeWithNoFootprint` were honester — queried, not
-       * matched — and still wrong to store, because both are an opinion about what
-       * the numbers mean, frozen where the next reader cannot argue with it.
-       * Answering a question from a read writes nothing and sends nothing, and is
-       * correct. The number says so and stops.
-       */
-      // Across every turn in the beat, not just the first. A confirmation's
-      // writes belong to the tap's turn, and counting only the composing turn
-      // reported `wrote: 0` next to a plan that had just run.
-      const idList = turnIds.map((id) => `'${id}'::uuid`).join(', ')
-      const footprint = idList
-        ? await q(`select
-             (select count(*)::int from audit_entry
-               where turn_id in (${idList}) and diff is not null)         as wrote,
-             (select count(*)::int from message
-               where turn_id in (${idList}) and direction = 'outbound'
-                 and suppressed_reason is null)                          as reached`)
-        : [{ wrote: 0, reached: 0 }]
-
-      /**
-       * The world as the tap left it, against the world as the model left it.
+       * The world as the tap and the queue left it, against the world as the
+       * model left it.
        *
        * Both are stored. Which of the two a question is about depends on the
        * question, and the harness is not in a position to know: `duplicate-class`
@@ -4027,74 +3938,60 @@ async function runChild(model: string, arm: string): Promise<void> {
        * the confirmed plan actually wrote. A record that kept one had already
        * decided, and decided wrong half the time.
        */
-      const afterTap = speaker ? await worldSnapshot(q) : null
+      panel.afterTap = speaker ? await worldSnapshot(q) : null
+      if (turn.turnIds.length) {
+        const [row] = await q(`select model from turn where id = '${turn.turnIds[0]}'::uuid`)
+        panel.modelReported = row?.model ? String(row.model) : null
+      }
+      panels.push(panel)
 
-      records.push({
-        model,
-        thinking: arm,
-        modelReported: t.model ?? null,
-        case: kase.name,
-        stage: kase.stage,
-        persona: kase.persona,
-        spokeAs: speaker?.name ?? null,
-        what: kase.what,
-        said: kase.text,
-        clockNote,
-        tapNote,
-        jobs,
-        reply,
-        tools,
-        toolNames,
-        // Summed across the beat. A tap is a real model turn with its own rounds
-        // and its own tokens, and billing it to nobody understated every case
-        // that carried a confirmation — which is most of the expensive ones.
-        rounds: sum('rounds'),
-        latencyMs: sum('latency_ms'),
-        inTok: sum('prompt_tokens'),
-        cachedTok: sum('cached_tokens'),
-        outTok: sum('output_tokens'),
-        usd: costUsd(model, sum('prompt_tokens'), sum('cached_tokens'), sum('output_tokens'), RUN_AT),
-        error: fatal ?? (firstError ? String(firstError) : null),
-        // Counts, not verdicts. See the note where these are computed.
-        wrote: Number(footprint[0]?.wrote ?? 0),
-        reached: Number(footprint[0]?.reached ?? 0),
-        /**
-         * Every statement the model composed this turn, byte for byte.
-         *
-         * Drained here rather than captured per turn, because a turn is driven in
-         * two pieces — the message, then the thumb — with the harness's own world
-         * reads in between. Draining at the boundary attributes both pieces to the
-         * turn and excludes nothing the model sent.
-         *
-         * The harness's own reads are in here too, and that is honest rather than
-         * tidy: they run as the same process against the same database, and a
-         * reader who cannot tell them apart from the model's would be misled by
-         * either choice. The model's carry `role: 'readonly'` for a read and
-         * `role: 'user'`/`'service'` for a write; the harness's carry the note it
-         * passed. Filtering them out here would be the instrument deciding again.
-         */
-        sql: drainSql(),
-        beforeTap,
-        afterTap,
-        turnId: t.id ?? null,
-        turnIds,
-        outbound: allOut.map((m: any) => ({
-          to: m.to ?? null,
-          body: String(m.body ?? ''),
-          buttons: Array.isArray(m.payload?.buttons)
-            ? m.payload.buttons.map((b: any) => String(b?.title ?? ''))
-            : [],
-          status: String(m.status ?? ''),
-          origin: m.origin ?? null,
-          suppressedReason: m.suppressed_reason ?? null,
-        })),
-      })
+      budget.spend(turn.inr ?? 0)
+      const hit = budget.exhausted()
+      if (hit) {
+        stopped =
+          `stopped after ${panels.length} of ${ACTIVE.filter(selected).length} cases: the ` +
+          `${hit.hit === 'min' ? `${cfg.budgetMin}-minute` : `₹${cfg.budgetInr}`} budget was reached ` +
+          `(${budget.elapsedMin().toFixed(1)} min, ₹${budget.spentInr().toFixed(2)})`
+        process.stderr.write(c.yellow(`  ${stopped}\n`))
+        break
+      }
     }
-     })
-    })
   } finally {
-    mkdirSync(OUT_DIR, { recursive: true })
-    writeFileSync(join(OUT_DIR, `${armFile(model, arm)}.json`), JSON.stringify(records, null, 2))
+    /**
+     * The one line this process writes to STDOUT, and the only thing the parent
+     * reads back from it. FIRST, before anything that could fail.
+     *
+     * `openRun` names the directory, so the parent cannot know it in advance, and
+     * guessing it from the newest entry in `.probe/runs` would pick up whatever
+     * else was driving this checkout. `record.json` is flushed after every turn,
+     * so the directory is worth opening even if the close below throws. Progress
+     * and errors go to stderr, which the parent inherits, so this stays parseable.
+     */
+    process.stdout.write(`run-dir ${rec.dir}\n`)
+
+    /**
+     * Closing the record must not be able to cost the academy its cleanup.
+     *
+     * Everything under here gives back the clock and drops the business, and a
+     * throw on the way past would leave a probe world on the shared sender — the
+     * exact state the stray guard at the top of this function refuses to drive
+     * next to. The turns are already on disk either way: `_capture.ts` appends
+     * them as they happen, and `deriveRun` can rebuild every other file in the
+     * directory from the log at any time.
+     */
+    try {
+      if (stopped) rec.run.note = `${rec.run.note ?? ''} — ${stopped}`.replace(/^ — /, '')
+      const { run } = await rec.close({
+        ...(panels[panels.length - 1]?.afterTap ? { world: panels[panels.length - 1]!.afterTap! } : {}),
+        extra: { cases: panels },
+      })
+      // Inside the run directory, beside the record, because that is where a
+      // per-suite extra goes — `.probe/score.md` was one file for every probe ever
+      // run and the next run overwrote it.
+      writeFileSync(join(rec.dir, 'score.md'), scoreLines(run, panels).join('\n'))
+    } catch (e) {
+      process.stderr.write(c.red(`  could not close the record — ${(e as Error).message}\n`))
+    }
 
     /**
      * Give the clock back by DELETING this tenant's row, not by winding it back.
@@ -4118,7 +4015,7 @@ async function runChild(model: string, arm: string): Promise<void> {
     if (clockMovedMs !== 0) {
       process.stderr.write(c.dim(`  clock given back (${(clockMovedMs / 3_600_000).toFixed(1)}h of travel, this academy only)\n`))
     }
-    if (!has('keep')) {
+    if (!cfg.keep) {
       // `job` has no FK to `academy`, so dropping the business leaves its queue
       // behind for the next tick anywhere in the world to pick up and fail on.
       await q(`delete from job where payload->>'academy_id' = '${made.academyId}'`).catch(() => null)
@@ -4130,65 +4027,84 @@ async function runChild(model: string, arm: string): Promise<void> {
 }
 
 /* ========================================================================== *
- * PARENT — spawn a child per model, then report.
+ * score.md — every turn, typed, thought, queried, wrote, replied.
  * ========================================================================== */
-
-/** One file per arm, so two thinking arms of one model never overwrite each other. */
-function armFile(model: string, thinking: string): string {
-  return `${model}${thinking === 'default' ? '' : `--thinking-${thinking}`}`.replace(/[^\w.-]/g, '_')
-}
 
 /** How an arm is named everywhere a person reads it. */
 function armLabel(model: string, thinking: string): string {
   return thinking === 'default' ? model : `${model} · thinking=${thinking}`
 }
 
-function spawnChild(model: string, thinking: string): Promise<number> {
-  return new Promise((resolve) => {
-    const child = spawn(
-      process.execPath,
-      [
-        join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs'),
-        join(process.cwd(), 'scripts', 'probe-model.ts'),
-        '--child', '--model', model, '--arm', thinking, '--out', OUT_DIR,
-        '--suite', SUITE,
-        ...(ONLY ? ['--case', ONLY] : []),
-        ...(ONLY_STAGE ? ['--stage', ONLY_STAGE] : []),
-        ...(ONLY_PERSONA ? ['--persona', ONLY_PERSONA] : []),
-        ...(LIMIT ? ['--limit', String(LIMIT)] : []),
-        ...(has('keep') ? ['--keep'] : []),
-      ],
-      {
-        // `PROBE_THINKING` is read at the client boundary (`lib/agent/deepseek.ts`)
-        // and is absent in production: pinning a tier is a probe instrument, not a
-        // setting. `default` leaves the loop to choose per turn, as it ships.
-        env: {
-          ...process.env,
-          MODEL_MAIN: model,
-          ...(thinking === 'default' ? {} : { PROBE_THINKING: thinking }),
-        },
-        stdio: ['ignore', 'inherit', 'inherit'],
-      },
-    )
-    child.on('exit', (code) => resolve(code ?? 1))
-  })
+/**
+ * A recorded value as text, whole.
+ *
+ * `FIELD_CAP = 400_000` and a `full()` that appended "…[TRUNCATED — n more
+ * characters]" stood here. There is no cap now, in this file or under it:
+ * `_capture.ts` opens `captureFullTrace` for the length of the run, which lifts
+ * the flight recorder's own 4,000-character limit, and the rounds arrive here as
+ * the objects the recorder stored rather than as strings somebody had already
+ * decided the length of.
+ */
+const text = (v: unknown): string => (typeof v === 'string' ? v : JSON.stringify(v ?? null))
+
+/**
+ * The model's own deliberation for one round, in whichever of three shapes the
+ * run happens to hold it.
+ *
+ * A reader that understands only the newest one renders an empty "what it was
+ * thinking" for every older record while looking exactly like it looked:
+ *
+ *   1. `round.reasoning` — the field `loop.ts` writes now, on every round that
+ *      deliberated.
+ *   2. `args.message.reasoning_content` as an OBJECT — the old path, on rounds
+ *      that returned no prose and whose assistant blob fitted inside
+ *      `traceValue`'s 2,000-character cap.
+ *   3. the same, as a truncated JSON STRING — the old path when it did NOT fit,
+ *      which is what silently lost the long ones. It will not `JSON.parse`, so
+ *      the text is dug out with a regex and labelled: a reasoning cut off mid-
+ *      sentence is still the only evidence of what the model was doing, and
+ *      dropping it is how the instrument went blind in the first place.
+ */
+function reasoningOf(r: Round): string {
+  const direct = (r as any)?.reasoning
+  if (typeof direct === 'string' && direct.trim()) return direct
+  const msg = (r as any)?.args?.message
+  if (typeof msg?.reasoning_content === 'string' && msg.reasoning_content.trim()) {
+    return msg.reasoning_content
+  }
+  if (typeof msg === 'string') {
+    try {
+      const parsed = JSON.parse(msg)
+      if (typeof parsed?.reasoning_content === 'string' && parsed.reasoning_content.trim()) {
+        return parsed.reasoning_content
+      }
+    } catch {
+      const hit = /"reasoning_content"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(msg)
+      if (hit?.[1]) {
+        try {
+          const out = JSON.parse(`"${hit[1].replace(/"$/, '')}"`)
+          return `${out}\n…[TRUNCATED UPSTREAM — this run predates the loop.ts reasoning fix]`
+        } catch {
+          /* an unparseable fragment is worse than none */
+        }
+      }
+    }
+  }
+  return ''
 }
 
-function selected(k: Case): boolean {
-  return (!ONLY || k.name === ONLY) && (!ONLY_STAGE || k.stage === ONLY_STAGE) && (!ONLY_PERSONA || k.persona === ONLY_PERSONA)
+/** What a round wrote as prose, before any tool ran. */
+function draftedOf(r: Round): string {
+  const msg = (r as any)?.args?.message
+  return typeof msg?.content === 'string' && msg.content.trim() ? msg.content : ''
 }
 
-function report(all: TurnRecord[]): void {
-  // An arm — one model at one thinking tier — is the unit everything groups by.
-  // Grouping by model alone would average the two arms of a sweep into one row
-  // and hide the only comparison the sweep exists to make.
-  const arms = [...new Set(all.map((r) => `${r.model} ${r.thinking ?? 'default'}`))].map((k) => {
-    const [model, thinking] = k.split(' ') as [string, string]
-    return { model, thinking, label: armLabel(model, thinking) }
-  })
-  const forArm = (a: { model: string; thinking: string }) =>
-    all.filter((r) => r.model === a.model && (r.thinking ?? 'default') === a.thinking)
+/** Tool calls, as against the model's own rounds. The `(…)` names are not tools. */
+const toolNamesOf = (t: Turn): string[] =>
+  (t.rounds ?? []).filter((r) => !String(r.name).startsWith('(')).map((r) => String(r.name))
+const modelRoundsOf = (t: Turn): Round[] => (t.rounds ?? []).filter((r) => String(r.name) === '(model)')
 
+function scoreLines(run: Run, panels: Panel[]): string[] {
   const lines: string[] = [
     '# probe-model — full evidence',
     '',
@@ -4250,195 +4166,336 @@ function report(all: TurnRecord[]): void {
     'the three defects named above all appeared in one run of two and vanished in the',
     'other.',
     '',
+    `## ${armLabel(run.model, String(run.arm ?? 'default'))}`,
+    '',
   ]
-  for (const arm of arms) {
-    const mine = forArm(arm)
-    if (!mine.length) continue
-    lines.push(`## ${arm.label}`, '')
-    let stage = ''
-    for (const r of mine) {
-      if (r.stage !== stage) {
-        stage = r.stage
-        lines.push(`### stage: ${stage}`, '')
-      }
-      lines.push(`#### ${r.case} — ${r.what}`, '')
-      lines.push(`**Spoken by:** ${r.persona}${r.spokeAs ? ` (${r.spokeAs})` : ' — NOBODY FOUND'}`, '')
-      if (r.clockNote) lines.push(`**Clock:** ${r.clockNote}`, '')
-      lines.push(`**Typed:** ${r.said}`, '')
-      if (r.tapNote) lines.push(`**Then:** ${r.tapNote}`, '')
-      lines.push(`**What the person read** (${r.reply.words} words${r.reply.suppressed ? `, SUPPRESSED: ${r.reply.suppressed}` : ''}):`, '', '```', r.reply.body || '(nothing)', '```', '')
-      const affordance = [
-        r.reply.buttons.length ? `buttons: ${r.reply.buttons.map((b) => `\`${b}\``).join(' · ')}` : '',
-        r.reply.link ? 'link button' : '',
-        r.reply.list ? 'list picker' : '',
-      ].filter(Boolean)
-      lines.push(`**Affordance:** ${affordance.join(' · ') || 'none — they must type'}`, '')
-      if (r.reply.all.length > 1) {
-        lines.push(`**All ${r.reply.all.length} outbound attempts:**`, '')
-        for (const [i, m] of r.reply.all.entries()) {
-          lines.push(
-            `${i + 1}. ${m.suppressed ? `~~suppressed: ${m.suppressed}~~` : 'sent'} — ` +
-              `${m.buttons.length} buttons${m.link ? ' + link' : ''}${m.list ? ' + list' : ''} — "${m.body.slice(0, 90)}…"`,
-          )
-        }
-        lines.push('')
-      }
-      /**
-       * What it was thinking, printed.
-       *
-       * The recorder was fixed on 17 Aug and this reader was not, which is the
-       * worse half of the same bug: `loop.ts` writes the reasoning untruncated
-       * to its own field, the JSON record carries it, and `score.md` — the file
-       * every reading is actually done from — rendered only `args`, where the
-       * SAME text rides as a copy that `traceValue` cuts at 2,000 characters.
-       *
-       * So the evidence was present and invisible, which is worse than absent:
-       * a turn with 3,373 characters of deliberation printed as no `(model)`
-       * thinking at all, and a reader who went looking found a duplicate ending
-       * mid-sentence and concluded the instrument was lossy. Both readings are
-       * wrong, and both were reached from this file.
-       *
-       * Printed BEFORE the arguments, because the order a turn is read in is
-       * why → what, not what → why.
-       */
-      const deliberated = r.tools.filter((t) => typeof t.reasoning === 'string' && t.reasoning.trim())
-      const thoughtChars = deliberated.reduce((n, t) => n + (t.reasoning as string).length, 0)
-      lines.push(
-        `**Tools** (${r.rounds} rounds): ${r.toolNames.join(' → ') || 'none'}` +
-          (deliberated.length
-            ? ` · deliberated on ${deliberated.length} of them, ${thoughtChars.toLocaleString()} characters of it`
-            : ' · no reasoning recorded on any round'),
-        '',
-      )
-      for (const t of r.tools) {
-        lines.push(`- r${t.round} \`${t.name}\` ${t.error ? `**THREW: ${t.error}**` : ''}`)
-        const thinking = typeof t.reasoning === 'string' ? t.reasoning.trim() : ''
-        if (thinking) {
-          // Four backticks: reasoning quotes the model's own fenced blocks often
-          // enough that three would close the fence early and spill the rest of
-          // the thinking into the document as prose.
-          lines.push(
-            '',
-            `  **what it was thinking** (${thinking.length.toLocaleString()} chars, verbatim):`,
-            '',
-            '  ````text',
-            ...thinking.split('\n').map((l) => `  ${l}`),
-            '  ````',
-          )
-        }
-        if (typeof t.drafted === 'string' && t.drafted.trim()) {
-          lines.push(
-            '',
-            '  **what it wrote this round, before any tool ran:**',
-            '',
-            '  ````text',
-            ...t.drafted.trim().split('\n').map((l) => `  ${l}`),
-            '  ````',
-          )
-        }
-        lines.push('', '  ```json', `  ${t.args}`, '  ```')
-        // The blob below carries its own copy of the thinking, cut at 2,000
-        // characters by the recorder. Saying so is the difference between a
-        // reader trusting the complete text above and doubting the record.
-        if (thinking && /reasoning_content/.test(t.args)) {
-          lines.push(
-            `  > the \`reasoning_content\` inside that blob is a **truncated duplicate** of the thinking printed above — read the block, not the blob.`,
-          )
-        }
-        if (t.result && t.result !== 'null') lines.push(`  → \`${t.result}\``)
+  if (run.note) lines.push(`${run.note}`, '')
+
+  let stage = ''
+  for (const [i, t] of (run.turns ?? []).entries()) {
+    const p = panels[i] ?? null
+    const reply = p?.reply ?? NO_REPLY
+    const here = String(t.window ?? '')
+    if (here !== stage) {
+      stage = here
+      lines.push(`### stage: ${stage || '(unstaged)'}`, '')
+    }
+    lines.push(`#### ${t.id} — ${t.intent ?? ''}`, '')
+    lines.push(`**Spoken by:** ${t.persona}${t.who ? ` (${t.who})` : ' — NOBODY FOUND'}`, '')
+    if (p?.clockNote) lines.push(`**Clock:** ${p.clockNote}`, '')
+    lines.push(`**Typed:** ${t.say}`, '')
+    if (p?.tapNote) lines.push(`**Then:** ${p.tapNote}`, '')
+    lines.push(
+      `**What the person read** (${reply.words} words${reply.suppressed ? `, SUPPRESSED: ${reply.suppressed}` : ''}):`,
+      '',
+      '```',
+      reply.body || '(nothing)',
+      '```',
+      '',
+    )
+    const affordance = [
+      reply.buttons.length ? `buttons: ${reply.buttons.map((b) => `\`${b}\``).join(' · ')}` : '',
+      reply.link ? 'link button' : '',
+      reply.list ? 'list picker' : '',
+    ].filter(Boolean)
+    lines.push(`**Affordance:** ${affordance.join(' · ') || 'none — they must type'}`, '')
+    if (reply.all.length > 1) {
+      lines.push(`**All ${reply.all.length} outbound attempts:**`, '')
+      for (const [j, m] of reply.all.entries()) {
+        lines.push(
+          `${j + 1}. ${m.suppressed ? `~~suppressed: ${m.suppressed}~~` : 'sent'} — ` +
+            `${m.buttons.length} buttons${m.link ? ' + link' : ''}${m.list ? ' + list' : ''} — "${m.body.slice(0, 90)}…"`,
+        )
       }
       lines.push('')
-      if (r.jobs.length) lines.push(`**Queue:** ${r.jobs.join(' · ')}`, '')
-      /**
-       * The world, either side of the thumb.
-       *
-       * 154 hand-written expectations stood here, printed as a tick or a cross per
-       * case. What replaces them is the whole business, counted, twice — and only
-       * the counts that MOVED, because a reader looking for what a turn did should
-       * not have to scan twenty-five unchanged numbers to find the two that
-       * changed.
-       *
-       * The tick is gone on purpose. A green row never meant the turn was good; it
-       * meant one query the case author thought of came back the shape they
-       * expected. Every defect worth having found on this arc was found by
-       * reading, and passed every tick on the page.
-       */
-      const moved = worldDiff(r.beforeTap, r.afterTap)
-      lines.push(
-        `**This turn wrote** ${r.wrote} audited row${r.wrote === 1 ? '' : 's'} and reached ` +
-          `${r.reached} ${r.reached === 1 ? 'phone' : 'phones'}.`,
-        '',
-      )
-      if (moved.length) lines.push('**What moved in the database**', '', ...moved.map((m) => `- ${m}`), '')
-      else if (r.afterTap) lines.push('**What moved in the database:** nothing.', '')
-
-      /**
-       * The statements, byte for byte.
-       *
-       * Since the wrapper operations were deleted, nearly every write in this
-       * product is SQL the model composed itself, and a refused statement never
-       * appears in the tool trace at all — the `plan` call that carried six writes
-       * is recorded once, as a summary. This is the half a flight recorder cannot
-       * show, and it is printed in full rather than sampled.
-       */
-      const modelSql = r.sql.filter((x) => !x.note?.startsWith('harness'))
-      if (modelSql.length) {
-        const refused = modelSql.filter((x) => x.error)
-        lines.push(
-          `**SQL the model wrote** — ${modelSql.length} statement${modelSql.length === 1 ? '' : 's'}, ` +
-            `${modelSql.filter((x) => x.kind === 'read').length} read, ` +
-            `${modelSql.filter((x) => x.kind !== 'read').length} write` +
-            `${refused.length ? `, **${refused.length} refused**` : ''}`,
-          '',
-        )
-        for (const x of modelSql) {
-          const head = x.error
-            ? `refused as \`${x.role}\``
-            : `${x.kind} · ${x.rowCount} row${x.rowCount === 1 ? '' : 's'}${x.truncated ? ' (TRUNCATED at the cap)' : ''}` +
-              (x.kind !== 'read' && x.rowCount === 0 ? ' — matched nothing, raised nothing' : '')
-          lines.push(`- ${head}`, '', '```sql', x.sql, '```', '')
-          if (x.error) lines.push(`  > \`${x.error}\``, '')
-        }
-      }
-      lines.push(
-        `**Cost:** ${(r.latencyMs / 1000).toFixed(1)}s · ${r.inTok} in (${r.inTok ? Math.round((100 * r.cachedTok) / r.inTok) : 0}% cached) / ${r.outTok} out · ` +
-          (r.usd === null ? 'unpriced' : `$${r.usd.toFixed(4)} ≈ ₹${(r.usd * USD_INR).toFixed(2)}`),
-        '',
-      )
-      if (r.error) lines.push(`> ❌ turn error: ${r.error}`, '')
-      lines.push('---', '')
     }
-  }
-  mkdirSync(OUT_DIR, { recursive: true })
-  writeFileSync(join(OUT_DIR, 'score.md'), lines.join('\n'))
+    /**
+     * Everything on the wire, whoever it reached — the index, not a second copy
+     * of the panel above.
+     *
+     * Unfiltered, deliberately. The panel above answers "what did THIS person
+     * read" and this answers "did anybody else hear anything", and the two
+     * overlap by one or two rows on an ordinary turn. Guessing which rows are
+     * the overlap is what the old record did by scoping the query, and it cost
+     * the run its most important evidence: three turns of the stress week
+     * messaged two people, the parent and the owner, and the record kept one of
+     * each — 23 recorded against 31 rows carrying `origin='turn'`. Those were
+     * exactly the turns where *did it really tell somebody?* is the question,
+     * and the answer had to be recovered from the `message` table by hand.
+     */
+    if ((t.messages ?? []).length) {
+      lines.push(`**Everything on the wire in this window** (${t.messages.length}):`, '')
+      for (const m of t.messages) {
+        lines.push(
+          `- ${m.to ?? '(no number)'} · ${m.origin ?? 'origin unknown'}` +
+            `${m.suppressedReason ? ` · ~~suppressed: ${m.suppressedReason}~~` : ''} — "${m.body.slice(0, 120)}…"`,
+        )
+      }
+      lines.push('')
+    }
 
-  console.log(`\n${c.bold('per turn')}`)
-  console.log(c.dim(`${'model'.padEnd(24)} ${'stage'.padEnd(12)} ${'case'.padEnd(22)} ${'who'.padEnd(9)} ${'rows'.padEnd(6)} ${'tools'.padEnd(26)} ${'reply'.padEnd(7)} ${'aff'.padStart(4)} ${'rnd'.padStart(3)} ${'secs'.padStart(5)} ${'₹'.padStart(6)}`))
-  for (const r of all) {
-    // Audited rows this turn wrote. Not a fraction and not coloured: there is no
-    // denominator, because nothing here is scored.
-    const cell = c.dim((r.wrote ? String(r.wrote) : '—').padEnd(6))
-    const aff = r.reply.buttons.length ? `${r.reply.buttons.length}b` : r.reply.link ? 'link' : r.reply.list ? 'list' : '—'
-    console.log(
-      `${armLabel(r.model, r.thinking ?? 'default').padEnd(30)} ${r.stage.padEnd(12)} ${r.case.padEnd(22)} ${(r.spokeAs ? r.persona : c.red(r.persona)).padEnd(9)} ${cell} ` +
-        `${(r.toolNames.join(',') || '-').slice(0, 25).padEnd(26)} ` +
-        `${String(r.reply.words).padStart(4)}w  ${aff.padStart(4)} ${String(r.rounds).padStart(3)} ` +
-        `${(r.latencyMs / 1000).toFixed(1).padStart(5)} ${(r.usd === null ? '?' : (r.usd * USD_INR).toFixed(2)).padStart(6)}` +
-        (r.error ? c.red(`  ERROR`) : ''),
+    /**
+     * What it was thinking, printed.
+     *
+     * The recorder was fixed on 17 Aug and this reader was not, which is the
+     * worse half of the same bug: `loop.ts` writes the reasoning untruncated
+     * to its own field, the JSON record carries it, and `score.md` — the file
+     * every reading is actually done from — rendered only `args`, where the
+     * SAME text rides as a copy that `traceValue` cuts at 2,000 characters.
+     *
+     * So the evidence was present and invisible, which is worse than absent:
+     * a turn with 3,373 characters of deliberation printed as no `(model)`
+     * thinking at all, and a reader who went looking found a duplicate ending
+     * mid-sentence and concluded the instrument was lossy. Both readings are
+     * wrong, and both were reached from this file.
+     *
+     * Printed BEFORE the arguments, because the order a turn is read in is
+     * why → what, not what → why.
+     */
+    const rounds = t.rounds ?? []
+    const deliberated = rounds.filter((r) => reasoningOf(r).trim())
+    const thoughtChars = deliberated.reduce((n, r) => n + reasoningOf(r).length, 0)
+    lines.push(
+      `**Tools** (${modelRoundsOf(t).length} rounds): ${toolNamesOf(t).join(' → ') || 'none'}` +
+        (deliberated.length
+          ? ` · deliberated on ${deliberated.length} of them, ${thoughtChars.toLocaleString()} characters of it`
+          : ' · no reasoning recorded on any round'),
+      '',
     )
+    for (const r of rounds) {
+      lines.push(`- r${r.round} \`${r.name}\` ${r.error ? `**THREW: ${r.error}**` : ''}`)
+      const thinking = reasoningOf(r).trim()
+      if (thinking) {
+        // Four backticks: reasoning quotes the model's own fenced blocks often
+        // enough that three would close the fence early and spill the rest of
+        // the thinking into the document as prose.
+        lines.push(
+          '',
+          `  **what it was thinking** (${thinking.length.toLocaleString()} chars, verbatim):`,
+          '',
+          '  ````text',
+          ...thinking.split('\n').map((l) => `  ${l}`),
+          '  ````',
+        )
+      }
+      const drafted = draftedOf(r).trim()
+      if (drafted) {
+        lines.push(
+          '',
+          '  **what it wrote this round, before any tool ran:**',
+          '',
+          '  ````text',
+          ...drafted.split('\n').map((l) => `  ${l}`),
+          '  ````',
+        )
+      }
+      const args = text(r.args ?? {})
+      lines.push('', '  ```json', `  ${args}`, '  ```')
+      // The blob below carries its own copy of the thinking, cut at 2,000
+      // characters by the recorder. Saying so is the difference between a
+      // reader trusting the complete text above and doubting the record.
+      if (thinking && /reasoning_content/.test(args)) {
+        lines.push(
+          `  > the \`reasoning_content\` inside that blob is a **truncated duplicate** of the thinking printed above — read the block, not the blob.`,
+        )
+      }
+      const result = text(r.result ?? null)
+      if (result && result !== 'null') lines.push(`  → \`${result}\``)
+    }
+    lines.push('')
+    if (t.jobs?.length) lines.push(`**Queue:** ${t.jobs.join(' · ')}`, '')
+
+    /**
+     * The world, either side of the thumb.
+     *
+     * 154 hand-written expectations stood here, printed as a tick or a cross per
+     * case. What replaces them is the whole business, counted, twice — and only
+     * the counts that MOVED, because a reader looking for what a turn did should
+     * not have to scan twenty-five unchanged numbers to find the two that
+     * changed.
+     *
+     * The tick is gone on purpose. A green row never meant the turn was good; it
+     * meant one query the case author thought of came back the shape they
+     * expected. Every defect worth having found on this arc was found by
+     * reading, and passed every tick on the page.
+     */
+    const moved = worldDiff(p?.beforeTap ?? null, p?.afterTap ?? null)
+    /**
+     * The window, not the turn id — and the difference is worth stating.
+     *
+     * These used to be counted as `audit_entry`/`message` rows carrying one of
+     * this beat's turn ids. `_capture.ts` counts everything stamped at or after
+     * the moment the turn began, which is the standard record's definition and a
+     * wider net: a standing job that came due while the turn was in flight is in
+     * these numbers and was not in the old ones. Same evidence, one boundary out,
+     * and the sentence says which.
+     */
+    lines.push(
+      `**In this turn's window:** ${t.wrote} audited row${t.wrote === 1 ? '' : 's'} written and ` +
+        `${t.sent} ${t.sent === 1 ? 'phone' : 'phones'} reached.`,
+      '',
+    )
+    if (moved.length) lines.push('**What moved in the database**', '', ...moved.map((m) => `- ${m}`), '')
+    else if (p?.afterTap) lines.push('**What moved in the database:** nothing.', '')
+
+    /**
+     * The statements, byte for byte.
+     *
+     * Since the wrapper operations were deleted, nearly every write in this
+     * product is SQL the model composed itself, and a refused statement never
+     * appears in the tool trace at all — the `plan` call that carried six writes
+     * is recorded once, as a summary. This is the half a flight recorder cannot
+     * show, and it is printed in full rather than sampled.
+     */
+    const modelSql = (t.sql ?? []).filter((x) => !x.note?.startsWith('harness'))
+    if (modelSql.length) {
+      const refused = modelSql.filter((x) => x.error)
+      lines.push(
+        `**SQL the model wrote** — ${modelSql.length} statement${modelSql.length === 1 ? '' : 's'}, ` +
+          `${modelSql.filter((x) => x.kind === 'read').length} read, ` +
+          `${modelSql.filter((x) => x.kind !== 'read').length} write` +
+          `${refused.length ? `, **${refused.length} refused**` : ''}`,
+        '',
+      )
+      for (const x of modelSql) {
+        const head = x.error
+          ? `refused as \`${x.role}\``
+          : `${x.kind} · ${x.rowCount} row${x.rowCount === 1 ? '' : 's'}${x.truncated ? ' (TRUNCATED at the cap)' : ''}` +
+            (x.kind !== 'read' && x.rowCount === 0 ? ' — matched nothing, raised nothing' : '')
+        lines.push(`- ${head}`, '', '```sql', x.sql, '```', '')
+        if (x.error) lines.push(`  > \`${x.error}\``, '')
+      }
+    }
+    const cached = t.tokens.prompt ? Math.round((100 * t.tokens.cached) / t.tokens.prompt) : 0
+    lines.push(
+      `**Cost:** ${(t.ms / 1000).toFixed(1)}s · ${t.tokens.prompt} in (${cached}% cached) / ${t.tokens.output} out · ` +
+        (t.inr === null ? 'unpriced' : `₹${t.inr.toFixed(2)}`),
+      '',
+    )
+    if (p?.modelReported && p.modelReported !== run.model) {
+      lines.push(`> the product says **${p.modelReported}** answered, not ${run.model}.`, '')
+    }
+    if (t.error) lines.push(`> ❌ turn error: ${t.error}`, '')
+    lines.push('---', '')
+  }
+  return lines
+}
+
+/* ========================================================================== *
+ * PARENT — spawn a child per arm, then read the records back.
+ * ========================================================================== */
+
+/** One finished arm: where it was written, and what it recorded. */
+type ArmRun = { model: string; thinking: string; label: string; dir: string; run: Run; panels: Panel[] }
+
+function spawnChild(model: string, thinking: string): Promise<{ code: number; dir: string | null }> {
+  return new Promise((resolve) => {
+    const child = spawn(
+      process.execPath,
+      [
+        join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs'),
+        join(process.cwd(), 'scripts', 'probe-model.ts'),
+        '--child',
+        '--model', model,
+        '--arm', thinking,
+        '--suite', SUITE,
+        // The same seed in every arm, because the arms are one campaign and a
+        // seed that differs per arm is a variable nobody meant to introduce.
+        '--seed', cfg.seed,
+        ...(ONLY ? ['--case', ONLY] : []),
+        ...(ONLY_STAGE ? ['--stage', ONLY_STAGE] : []),
+        ...(ONLY_PERSONA ? ['--persona', ONLY_PERSONA] : []),
+        ...(LIMIT ? ['--limit', String(LIMIT)] : []),
+        ...(cfg.keep ? ['--keep'] : []),
+        ...(cfg.budgetMin === undefined ? [] : ['--budget-min', String(cfg.budgetMin)]),
+        ...(cfg.budgetInr === undefined ? [] : ['--budget-inr', String(cfg.budgetInr)]),
+      ],
+      {
+        // `PROBE_THINKING` is read at the client boundary (`lib/agent/deepseek.ts`)
+        // and is absent in production: pinning a tier is a probe instrument, not a
+        // setting. `default` leaves the loop to choose per turn, as it ships.
+        env: {
+          ...process.env,
+          MODEL_MAIN: model,
+          ...(thinking === 'default' ? {} : { PROBE_THINKING: thinking }),
+        },
+        // stdout is PIPED and stderr is INHERITED: the child's progress goes
+        // straight to the terminal as it happens, and the one line it prints on
+        // stdout — where it wrote the run — comes back here.
+        stdio: ['ignore', 'pipe', 'inherit'],
+      },
+    )
+    let out = ''
+    child.stdout?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => {
+      out += chunk
+    })
+    child.on('exit', (code) => {
+      const hit = /^run-dir (.+)$/m.exec(out)
+      resolve({ code: code ?? 1, dir: hit?.[1] ? hit[1].trim() : null })
+    })
+  })
+}
+
+function selected(k: Case): boolean {
+  return (!ONLY || k.name === ONLY) && (!ONLY_STAGE || k.stage === ONLY_STAGE) && (!ONLY_PERSONA || k.persona === ONLY_PERSONA)
+}
+
+/** One arm's record, read back off disk. Null with a reason rather than a throw. */
+function readArm(model: string, thinking: string, dir: string): ArmRun | null {
+  try {
+    const run = JSON.parse(readFileSync(join(dir, 'record.json'), 'utf8')) as Run
+    const panels = ((run.extra as any)?.cases ?? []) as Panel[]
+    return { model, thinking, label: armLabel(model, thinking), dir, run, panels }
+  } catch (e) {
+    console.log(c.red(`  could not read ${join(dir, 'record.json')} — ${(e as Error).message}`))
+    return null
+  }
+}
+
+/**
+ * The console summary. Every column is a count, a name or a rupee figure.
+ *
+ * The "failed checks, by how often" tally stood at the bottom of this. It ranked
+ * labels by how many turns tripped them, which on a run where one invariant fails
+ * by arithmetic reads as the single most important thing about the run — five
+ * times over, in red.
+ */
+function summarise(arms: ArmRun[]): void {
+  console.log(`\n${c.bold('per turn')}`)
+  console.log(
+    c.dim(
+      `${'model'.padEnd(24)} ${'stage'.padEnd(12)} ${'case'.padEnd(22)} ${'who'.padEnd(9)} ${'rows'.padEnd(6)} ${'tools'.padEnd(26)} ${'reply'.padEnd(7)} ${'aff'.padStart(4)} ${'rnd'.padStart(3)} ${'secs'.padStart(5)} ${'₹'.padStart(6)}`,
+    ),
+  )
+  for (const arm of arms) {
+    for (const [i, t] of (arm.run.turns ?? []).entries()) {
+      const reply = arm.panels[i]?.reply ?? NO_REPLY
+      // Audited rows this turn's window wrote. Not a fraction and not coloured:
+      // there is no denominator, because nothing here is scored.
+      const cell = c.dim((t.wrote ? String(t.wrote) : '—').padEnd(6))
+      const aff = reply.buttons.length ? `${reply.buttons.length}b` : reply.link ? 'link' : reply.list ? 'list' : '—'
+      console.log(
+        `${arm.label.padEnd(30)} ${String(t.window ?? '').padEnd(12)} ${String(t.id).padEnd(22)} ${(t.who ? t.persona : c.red(t.persona)).padEnd(9)} ${cell} ` +
+          `${(toolNamesOf(t).join(',') || '-').slice(0, 25).padEnd(26)} ` +
+          `${String(reply.words).padStart(4)}w  ${aff.padStart(4)} ${String(modelRoundsOf(t).length).padStart(3)} ` +
+          `${(t.ms / 1000).toFixed(1).padStart(5)} ${(t.inr === null ? '?' : t.inr.toFixed(2)).padStart(6)}` +
+          (t.error ? c.red(`  ERROR`) : ''),
+      )
+    }
   }
 
   console.log(`\n${c.bold('totals')} ${c.dim(isPeak(RUN_AT) ? '(peak rates)' : '(off-peak rates)')}`)
   for (const arm of arms) {
-    const mine = forArm(arm)
-    if (!mine.length) continue
-    const usd = mine.reduce((a, r) => a + (r.usd ?? 0), 0)
+    const turns = arm.run.turns ?? []
+    if (!turns.length) continue
+    const inr = turns.reduce((a, t) => a + (t.inr ?? 0), 0)
     console.log(
-      `  ${arm.label.padEnd(30)} ${mine.length} turns · ` +
-        `${mine.reduce((a, r) => a + r.wrote, 0)} rows written · ` +
-        `${mine.reduce((a, r) => a + r.reached, 0)} messages out · ` +
-        `${mine.filter((r) => r.error).length} errored · ` +
-        `${(mine.reduce((a, r) => a + r.latencyMs, 0) / mine.length / 1000).toFixed(1)}s avg · ₹${(usd * USD_INR).toFixed(2)} total`,
+      `  ${arm.label.padEnd(30)} ${turns.length} turns · ` +
+        `${turns.reduce((a, t) => a + t.wrote, 0)} rows written · ` +
+        `${turns.reduce((a, t) => a + t.sent, 0)} messages out · ` +
+        `${turns.filter((t) => t.error).length} errored · ` +
+        `${(turns.reduce((a, t) => a + t.ms, 0) / turns.length / 1000).toFixed(1)}s avg · ₹${inr.toFixed(2)} total`,
     )
     /**
      * How much of the thinking this run actually holds.
@@ -4450,9 +4507,9 @@ function report(all: TurnRecord[]): void {
      * NONE says so in red rather than printing a confident summary of a turn it
      * could not see inside.
      */
-    const rounds = mine.flatMap((r) => r.tools).filter((t) => t.name === '(model)')
-    const thought = rounds.filter((t) => (t.reasoning ?? '').trim())
-    const chars = thought.reduce((a, t) => a + (t.reasoning as string).length, 0)
+    const rounds = turns.flatMap(modelRoundsOf)
+    const thought = rounds.filter((r) => reasoningOf(r).trim())
+    const chars = thought.reduce((a, r) => a + reasoningOf(r).length, 0)
     const line =
       `  ${''.padEnd(30)} reasoning on ${thought.length}/${rounds.length} model rounds` +
       `${rounds.length ? ` (${Math.round((100 * thought.length) / rounds.length)}%)` : ''}` +
@@ -4460,21 +4517,17 @@ function report(all: TurnRecord[]): void {
     console.log(rounds.length && !thought.length ? c.red(`${line} — THE RUN CANNOT SAY WHY ANYTHING HAPPENED`) : c.dim(line))
   }
 
-  // The "failed checks, by how often" tally stood here. It ranked labels by how
-  // many turns tripped them, which on a run where one invariant fails by
-  // arithmetic reads as the single most important thing about the run — five
-  // times over, at the bottom of the report, in red.
   console.log(
     `\n${c.bold('nothing here is scored')} ${c.dim('— the run is evidence. Read the turns and judge them by hand:')}`,
   )
-  console.log(c.dim(`  ${join(OUT_DIR, 'score.md')} — every turn: typed, thought, queried, wrote, replied`))
-  console.log(c.dim('  the rubric is at the top of that file'))
+  for (const arm of arms) console.log(c.dim(`  ${join(arm.dir, 'score.md')}`))
+  console.log(c.dim('  the rubric is at the top of each of those files, and npm run report opens the record'))
 }
 
 /* ========================================================================== */
 
-if (has('child')) {
-  await runChild(flag('model'), flag('arm', 'default'))
+if (IS_CHILD) {
+  await runChild(cfg.model, cfg.arm ?? 'default')
 } else {
   const chosen = ACTIVE.filter(selected)
   // `--persona coach --case lookup` is an empty intersection, and running it built
@@ -4488,64 +4541,35 @@ if (has('child')) {
   console.log(
     c.dim(
       `${MODELS.length} model(s) × ${THINKING_ARMS.length} thinking arm(s) × ${chosen.length} case(s) across ` +
-        `${new Set(chosen.map((k) => k.stage)).size} stage(s), one fresh academy each`,
+        `${new Set(chosen.map((k) => k.stage)).size} stage(s), one fresh academy and one run directory each`,
     ),
   )
   // Which rate card this run is billed at, said before it starts rather than
   // worked out afterwards from a total that looks wrong.
   console.log(
     c.dim(
-      `started ${RUN_AT.toISOString()} — ${isPeak(RUN_AT) ? 'PEAK rates (double — consider waiting)' : 'off-peak rates'}`,
+      `started ${RUN_AT.toISOString()} — ${isPeak(RUN_AT) ? 'PEAK rates (double — consider waiting)' : 'off-peak rates'} · seed ${cfg.seed}`,
     ),
   )
+  const done: ArmRun[] = []
   for (const arm of ARMS) {
     console.log(c.bold(`\n${armLabel(arm.model, arm.thinking)}`))
-    const code = await spawnChild(arm.model, arm.thinking)
+    const { code, dir } = await spawnChild(arm.model, arm.thinking)
     if (code !== 0) console.log(c.red(`  child exited ${code}`))
-  }
-  const all: TurnRecord[] = []
-  for (const arm of ARMS) {
-    const path = join(OUT_DIR, `${armFile(arm.model, arm.thinking)}.json`)
-    if (existsSync(path)) all.push(...(JSON.parse(readFileSync(path, 'utf8')) as TurnRecord[]))
-  }
-  if (!all.length) console.log(c.red('no records — every child failed'))
-  else report(all)
-
-  /**
-   * The record every other instrument writes, so the one reader can open this run.
-   *
-   * `scripts/report.mjs` finds a run by sorting `.probe/runs/` and opening
-   * `record.json`. This instrument wrote only `<arm>.json` and `score.md`, so its
-   * runs — the hardest suites in the repo — were the ones nobody could open in the
-   * standard reader. The conversion lives in `_record-from-probe.ts` and is shared
-   * with the CLI that backfills older runs, so a fresh record and a backfilled one
-   * are the same bytes for the same input.
-   *
-   * **Only for a single-arm run, and that is not a limitation to route around.** A
-   * thinking sweep writes one file per arm; those are different runs of the same
-   * suite against different academies, and merging them would make every count on
-   * the page the sum of two worlds. Pick one with `record-from-probe --arm`.
-   */
-  if (all.length && ARMS.length === 1) {
-    const arm = ARMS[0]!
-    const armPath = join(OUT_DIR, `${armFile(arm.model, arm.thinking)}.json`)
-    if (existsSync(armPath)) {
-      try {
-        const { toRunFromFile } = await import('./_record-from-probe')
-        const run = toRunFromFile(armPath, { suite: SUITE, model: arm.model, startedAt: STARTED })
-        const out = join(OUT_DIR, 'record.json')
-        writeFileSync(out, JSON.stringify(run, null, 2))
-        console.log(c.dim(`  ${out} — the same shape every instrument writes; npm run report opens it`))
-      } catch (e) {
-        // Never fail a completed run over its own bookkeeping: the arm file and
-        // score.md are already on disk and they are the measurement.
-        console.log(c.red(`  could not write record.json — ${(e as Error).message}`))
-      }
+    if (!dir) {
+      console.log(c.red('  the child wrote no run directory — nothing to read back'))
+      continue
     }
-  } else if (all.length && ARMS.length > 1) {
-    console.log(
-      c.dim(`  ${ARMS.length} arms — no record.json written; pick one:`) +
-        `\n  npx tsx scripts/record-from-probe.ts --run ${OUT_DIR} --arm <model>`,
-    )
+    const read = readArm(arm.model, arm.thinking, dir)
+    if (read) done.push(read)
   }
+  if (!done.length) {
+    console.log(c.red('no records — every child failed'))
+    // Said in the exit code as well as on the screen. The stray-world refusal
+    // below exits 3 in the CHILD, and the parent used to return normally over
+    // the top of it — so `npm run probe && npm run report` reported a clean
+    // probe and then rendered somebody else's run. A probe that recorded
+    // nothing has not passed; it has not run.
+    process.exitCode = 1
+  } else summarise(done)
 }

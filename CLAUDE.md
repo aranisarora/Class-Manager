@@ -15,8 +15,8 @@ belongs.
 | understand how a turn actually runs, or which **stage** a defect belongs to | [`docs/ANATOMY.md`](./docs/ANATOMY.md) — the order things run in, end to end. `MECHANISMS.md` is an inventory and has no time in it |
 | decide where a fix belongs | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the layers, and the trap list |
 | change what the product does | [`docs/product-spec.md`](./docs/product-spec.md) |
-| test, drive, or judge a run | [`docs/DRIVING.md`](./docs/DRIVING.md), then [`docs/JUDGING.md`](./docs/JUDGING.md) |
-| touch anything in `scripts/` | [`scripts/README.md`](./scripts/README.md) — 58 files, four jobs |
+| test, drive, or judge a run | [`docs/DRIVING.md`](./docs/DRIVING.md) — the instruments over one spine, what a run costs before you start it, and how to read one back — then [`docs/JUDGING.md`](./docs/JUDGING.md) |
+| touch anything in `scripts/` | [`scripts/README.md`](./scripts/README.md) — 62 files, four jobs |
 | record something that broke | [`findings/`](./findings/README.md) — [`OPEN.md`](./findings/OPEN.md) is the status board (generated), [`DECIDED.md`](./findings/DECIDED.md) is what was deliberately not fixed |
 | deploy | [`docs/DEPLOY.md`](./docs/DEPLOY.md) |
 
@@ -98,10 +98,16 @@ npm run seed                # fixtures
 npm run db:push             # migrations
 
 npm run drive               # be a person talking to the bot, one command at a time
-npm run probe               # the scripted lifecycle arc, one academy per model
+npm run probe               # the scripted lifecycle arc, one academy per model — ten suites
 npm run ask                 # interrogate the prefix, toolless — the derivable ceiling
 npm run probe:sql           # the SQL ladder
-npm run drive:week          # one settled week with standing jobs firing
+npm run drive:week          # the agent week — four personas who can see only their phone
+npm run drive:week -- --preset smoke        # one day, one window: ~₹1.30 and 4-7 min
+npm run drive:week -- --days 7 --budget-min 40   # simulated length, then the real stop
+npm run drive:week -- gc --hours 6           # reap this driver's stale worlds
+npm run ab -- --variant doctrine=<file>      # the same week twice, one thing changed
+npm run ab -- --variant ref=<sha> --dry-run  # prepare and hash both arms, spend nothing
+npx tsx scripts/live.ts open --days 7        # the human seat, blindfolded
 
 npm run runs                # every recorded run, newest first
 npm run report              # render the newest run as one standalone page

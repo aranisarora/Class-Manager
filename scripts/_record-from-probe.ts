@@ -1,8 +1,12 @@
 /**
  * _record-from-probe — turn `probe-model`'s per-arm records into the one record shape.
  *
- * Not a command. `scripts/record-from-probe.ts` is the CLI over this, and
- * `probe-model.ts` calls it at the end of a run so a fresh run never needs the CLI.
+ * Not a command, and as of 20 Aug 2026 not on any live path either.
+ * `scripts/record-from-probe.ts` is the CLI over this and is now its ONLY caller:
+ * `probe-model` used to hand its per-arm file here at the end of a run, and it
+ * writes the standard record itself now, through `_capture.ts`, one directory per
+ * arm. So nothing made after that date comes through here. What is left is the
+ * runs already on disk — see the CLI's header for which ones and why.
  *
  * WHY THIS EXISTS
  * -----------------------------------------------------------------------------

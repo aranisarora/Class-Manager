@@ -48,23 +48,62 @@
  * ran, tokens, seconds and rupees. `npm run report` renders it, and a judgement
  * is written beside it — see JUDGING.md. Nothing in here scores anything.
  *
- * WHY THE TURNS ARE SERIALISED
+ * WHERE THE SEAT ITSELF LIVES
  * -----------------------------------------------------------------------------
- * Three seats can be occupied at once and in a real academy they are. But
- * `_capture.ts` attributes evidence by a domain-time cursor — everything stamped
- * at or after the moment a turn began belongs to that turn — and two turns
- * running at once make that attribution false in both directions: each collects
- * the other's messages, jobs and audit rows. A record whose turns each contain a
- * bit of the neighbouring turn is not a record.
+ * `scripts/_seat.ts`. The blindfold, the phone, the clock walk and the turn are
+ * that file's, and this one is the commands a person types at them — because the
+ * agent week that is coming sits in the same seat, and two copies of a blindfold
+ * is one copy that quietly forgets the suppression clause.
  *
- * So a lock file serialises the turns and nothing else. Seats still run
- * concurrently; they queue at the moment of speaking. The cost is a minute of
- * waiting and the gain is that turn 23 means turn 23.
+ * WHY THE TURNS ARE NO LONGER SERIALISED
+ * -----------------------------------------------------------------------------
+ * Three seats can be occupied at once and in a real academy they are. Every turn
+ * here used to queue behind a lock file, for one reason: the record was a
+ * read-modify-write of `record.json`, so two seats speaking at once each read the
+ * file, each appended one turn, and the second write erased the first. A week
+ * with four people in it was driven one sentence at a time, thirty seconds of
+ * model call each, because of how the recorder happened to store things.
+ *
+ * `_capture.ts` appends ONE LINE per turn now and `_derive.ts` numbers the log by
+ * append order, so there is nothing left to erase and nothing left to queue for.
+ * The lock survives for the two pieces of state that are still shared and still
+ * rewritten whole: the academy clock, which `window` and `endday` move, and
+ * `session.json`'s `day`. Both are held for the length of the write.
+ *
+ * What is NOT solved by any of that is attribution: `_capture.ts` windows a
+ * turn's evidence by domain time — everything stamped at or after the moment the
+ * turn began — so two seats speaking in the same instant each collect the other's
+ * messages and audit rows. Read the record accordingly.
  */
-import { mkdir, readFile, writeFile, appendFile, rm, open as openFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, appendFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { loadEnvFiles, c } from './_env'
+/**
+ * The seat, shared with the agent week. It loads the environment and forces the
+ * emulator transport itself, on the same reasoning as the line below — a module
+ * body runs before the body of whatever imported it, so it cannot rely on this
+ * file having done it.
+ */
+import {
+  POINTER,
+  SEAT_HOME,
+  TZ,
+  die,
+  drain,
+  drive,
+  logSeat,
+  q,
+  queueTurn,
+  readPhone,
+  readSession,
+  renderPhone,
+  updateSession,
+  walkTo,
+  withLock,
+  writeSession,
+  type Session,
+} from './_seat'
 
 loadEnvFiles()
 /**
@@ -76,12 +115,8 @@ loadEnvFiles()
 process.env.TRANSPORT = 'emulator'
 
 const { dropAcademy, inboundFromContact } = await import('@/lib/seed')
-const { withSession } = await import('@/lib/db')
 const { reopenRun, saveRun, runDir } = await import('./_capture')
 const clock = await import('@/lib/clock')
-const { HANDLERS, JobSkip, planAheadFor } = await import('@/lib/jobs')
-const { msOf } = await import('@/lib/jobs/util')
-const { costInr } = await import('@/lib/pricing')
 const { env } = await import('@/lib/env')
 const { buildSettledAcademy } = await import('./_world')
 const { PERSONAS, SCHEDULE, WINDOW_AT, windowCounts, INPUT_REALISM } = await import('./_personas')
@@ -96,11 +131,6 @@ const { RAMP_LIFE, TIERS } = await import('./_ramp')
 const RAMP = process.env.SIM_RAMP === '1'
 type PersonaKey = import('./_personas').PersonaKey
 type WindowName = import('./_personas').Window
-
-const TZ = 'Asia/Kolkata'
-const HOME = join('.probe', 'live')
-const POINTER = join(HOME, 'current')
-const LOCK = join(HOME, 'turn.lock')
 
 const argv = process.argv.slice(2)
 const cmd = argv[0] ?? 'help'
@@ -126,317 +156,6 @@ const positionals = (): string[] => {
   return out
 }
 
-type Session = {
-  dir: string
-  academyId: string
-  days: number
-  day: number
-  contacts: Record<string, string>
-  roster: { name: string; role: string; contactId: string; phone: string }[]
-  /** Per persona, the `created_at` of the last message their phone has shown them. */
-  cursor: Record<string, string>
-  startedAt: string
-}
-
-/* ---------------------------------------------------------------- plumbing */
-
-const q = async <T = any>(academyId: string, sql: string): Promise<T[]> =>
-  withSession({ role: 'service', academyId }, async (tx) => (await tx.unsafe(sql)) as unknown as T[])
-
-async function readSession(): Promise<Session> {
-  if (!existsSync(POINTER)) die('no live run is open. Start one with:  npx tsx scripts/live.ts open')
-  const dir = (await readFile(POINTER, 'utf8')).trim()
-  return JSON.parse(await readFile(join(dir, 'session.json'), 'utf8')) as Session
-}
-async function writeSession(s: Session): Promise<void> {
-  await writeFile(join(s.dir, 'session.json'), JSON.stringify(s, null, 2))
-}
-
-function die(msg: string): never {
-  console.error(`  ${msg}`)
-  process.exit(2)
-}
-
-/**
- * One turn at a time, across processes.
- *
- * `wx` is the whole mechanism: creating the file is the acquire, and it either
- * succeeds or it does not. A lock older than the longest a turn has ever taken is
- * broken rather than waited on, because the process that made it is dead — a
- * persona's shell was interrupted, or the machine slept — and a run that hangs
- * forever on a dead process's lock loses the rest of the week.
- */
-async function withLock<T>(label: string, fn: () => Promise<T>): Promise<T> {
-  await mkdir(HOME, { recursive: true })
-  const STALE_MS = 12 * 60_000
-  for (let i = 0; i < 900; i++) {
-    try {
-      const fh = await openFile(LOCK, 'wx')
-      await fh.writeFile(`${process.pid} ${label} ${new Date().toISOString()}`)
-      await fh.close()
-      try {
-        return await fn()
-      } finally {
-        await rm(LOCK, { force: true })
-      }
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
-      try {
-        if (Date.now() - statSync(LOCK).mtimeMs > STALE_MS) await rm(LOCK, { force: true })
-      } catch {}
-      await new Promise((r) => setTimeout(r, 2000))
-    }
-  }
-  return die('waited 30 minutes for the turn lock and it never came free')
-}
-
-/* ------------------------------------------------------------- the world */
-
-/** Run every job that is due, then everything that becoming due unlocked. */
-async function drain(academyId: string): Promise<string[]> {
-  const log: string[] = []
-  await planAheadFor(academyId).catch((e) => log.push(`plan failed: ${(e as Error)?.message}`))
-  for (let round = 0; round < 10; round++) {
-    const batch = await q<any>(
-      academyId,
-      `with due as (
-         select id from job
-          where status = 'pending' and run_at <= app.now()
-            and payload->>'academy_id' = '${academyId}'
-          order by run_at asc, created_at asc limit 50 for update skip locked
-       )
-       update job j set status = 'running', attempts = j.attempts + 1,
-              locked_at = app.now(), locked_by = 'live'
-         from due where j.id = due.id returning j.*`,
-    )
-    if (!batch.length) break
-    batch.sort((a: any, b: any) => msOf(a.run_at) - msOf(b.run_at))
-    for (const job of batch) {
-      const handler = (HANDLERS as any)[job.kind]
-      if (!handler) {
-        await q(academyId, `update job set status='failed', last_error='no handler', locked_at=null where id='${job.id}'::uuid`)
-        continue
-      }
-      try {
-        await handler(job)
-        await q(academyId, `update job set status='done', last_error=null, locked_at=null where id='${job.id}'::uuid`)
-        log.push(`${job.kind}:done`)
-      } catch (e) {
-        const skip = e instanceof JobSkip
-        const why = String((e as any)?.reason ?? (e as Error)?.message ?? e).slice(0, 200).replace(/'/g, "''")
-        await q(
-          academyId,
-          `update job set status='${skip ? 'skipped' : 'failed'}', last_error='${why}', locked_at=null where id='${job.id}'::uuid`,
-        )
-        log.push(`${job.kind}:${skip ? 'skipped' : `FAILED ${why}`}`)
-      }
-    }
-  }
-  return log
-}
-
-/**
- * Walk this academy's clock forward to a local time today, draining as it goes.
- *
- * Never in one hop. A standing job due at 09:00 must actually be REACHED and run,
- * not stepped over — a jump from 08:00 to 20:00 leaves the 09:00 job pending with
- * a run_at in the past, and the day's proactive surface simply never happens.
- */
-async function walkTo(academyId: string, localHHMM: string): Promise<string[]> {
-  const jobs: string[] = []
-  for (let guard = 0; guard < 48; guard++) {
-    const here = clock.inZone(await clock.now(academyId), TZ)
-    const [h, m] = localHHMM.split(':').map(Number)
-    const target = (h ?? 0) * 60 + (m ?? 0)
-    const [ch, cm] = here.time.split(':').map(Number)
-    const nowMin = (ch ?? 0) * 60 + (cm ?? 0)
-    if (nowMin >= target) break
-    await clock.advance(Math.min(60, target - nowMin) * 60_000, academyId)
-    jobs.push(...(await drain(academyId)))
-  }
-  return jobs
-}
-
-/* -------------------------------------------------------- the seat's view */
-
-type Seen = {
-  at: string
-  body: string
-  buttons: string[]
-  listButton: string | null
-  listRows: { title: string; description: string | null }[]
-  link: string | null
-}
-
-/**
- * Everything this contact's phone has shown since they last looked, and nothing
- * else.
- *
- * Suppressed rows are excluded because the person never saw them — a message
- * stopped by a cap or an opt-out did not tell anybody anything, and showing it to
- * the seat would hand the reader a fact the real recipient does not have. Failed
- * rows go for the same reason.
- */
-async function readPhone(s: Session, key: PersonaKey, advance: boolean): Promise<Seen[]> {
-  const contactId = s.contacts[key]!
-  const since = s.cursor[key] ?? s.startedAt
-  /**
-   * `created_at::text`, not `created_at`.
-   *
-   * The cursor is a high-water mark compared with `>`, and Postgres keeps
-   * timestamps to the microsecond while a JS `Date` keeps them to the
-   * millisecond. Round-tripping the value through `new Date(...).toISOString()`
-   * therefore stores a cursor slightly BEHIND the row it came from, and the last
-   * message of every look reappears at the top of the next one. The seat reads it
-   * as the bot having sent the same thing twice, which is a defect the product
-   * does not have and would have gone into the write-up as one.
-   */
-  const rows = await q<any>(
-    s.academyId,
-    `select m.created_at, m.created_at::text as raw_at, m.body, m.payload, m.status
-       from message m
-      where m.direction = 'outbound'
-        and m.contact_id = '${contactId}'::uuid
-        and m.created_at > '${since}'::timestamptz
-        and m.suppressed_reason is null
-        and m.status <> 'failed'
-      order by m.created_at asc`,
-  )
-  const seen: Seen[] = rows.map((m: any) => {
-    const p = m.payload ?? {}
-    return {
-      at: clock.inZone(new Date(m.created_at), TZ).label,
-      body: String(m.body ?? ''),
-      buttons: Array.isArray(p.buttons) ? p.buttons.map((b: any) => String(b?.title ?? '')) : [],
-      listButton: p.list?.buttonText ? String(p.list.buttonText) : null,
-      listRows: Array.isArray(p.list?.sections)
-        ? p.list.sections.flatMap((sec: any) =>
-            (sec?.rows ?? []).map((r: any) => ({
-              title: String(r?.title ?? ''),
-              description: r?.description ? String(r.description) : null,
-            })),
-          )
-        : [],
-      link: p.link?.title ? String(p.link.title) : null,
-    }
-  })
-  if (advance && rows.length) {
-    s.cursor[key] = String(rows[rows.length - 1].raw_at)
-    await writeSession(s)
-  }
-  return seen
-}
-
-function renderPhone(seen: Seen[]): string {
-  if (!seen.length) return '  (nothing arrived. Your phone stayed silent.)'
-  const L: string[] = []
-  for (const m of seen) {
-    L.push(`  ┌─ ${m.at} ── Class Manager ${'─'.repeat(Math.max(0, 44 - m.at.length))}`)
-    for (const line of m.body.split('\n')) L.push(`  │ ${line}`)
-    if (m.buttons.length) L.push(`  │`), L.push(`  │ tap:  ${m.buttons.map((b) => `[ ${b} ]`).join('   ')}`)
-    if (m.listButton) {
-      L.push(`  │`)
-      L.push(`  │ menu:  [ ${m.listButton} ]`)
-      for (const r of m.listRows) L.push(`  │   · ${r.title}${r.description ? ` — ${r.description}` : ''}`)
-    }
-    if (m.link) L.push(`  │`), L.push(`  │ link:  [ ${m.link} ]`)
-    L.push(`  └${'─'.repeat(62)}`)
-  }
-  return L.join('\n')
-}
-
-/** Every seat command, and what it showed. The blindfold, made auditable. */
-async function logSeat(s: Session, entry: Record<string, unknown>): Promise<void> {
-  await appendFile(
-    join(s.dir, 'seat.jsonl'),
-    JSON.stringify({ at: new Date().toISOString(), day: s.day, ...entry }) + '\n',
-  )
-}
-
-/* ------------------------------------------------------------- one turn */
-
-/**
- * Post something as this person, let the product do whatever it does, and show
- * them their phone.
- *
- * The record is opened INSIDE the lock and closed inside it, so the read of
- * `record.json`, the append and the write are one critical section. Two seats
- * speaking at once would otherwise each read the file, each append one turn, and
- * the second write would erase the first.
- */
-async function drive(
-  s: Session,
-  key: PersonaKey,
-  meta: { say: string; kind: 'say' | 'tap' },
-  fn: () => Promise<void>,
-): Promise<Seen[]> {
-  return withLock(`${key}:${meta.kind}`, async () => {
-    const at = clock.inZone(await clock.now(s.academyId), TZ)
-    const rec = await reopenRun(s.dir, {
-      academyId: s.academyId,
-      q: (sql: string) => q(s.academyId, sql),
-      domainNow: () => clock.now(s.academyId),
-    })
-    await rec.turn(
-      {
-        id: `d${s.day}-${at.time}-${key}${meta.kind === 'tap' ? '-tap' : ''}`,
-        who: PERSONAS[key].name,
-        persona: PERSONAS[key].seat,
-        say: meta.say,
-        day: s.day,
-        ...(meta.kind === 'tap' ? { tapped: meta.say } : {}),
-      },
-      fn,
-    )
-    // Re-read rather than reuse: another seat's process may have moved its own
-    // cursor while this turn was running, and writing a stale copy of the whole
-    // session back would rewind it.
-    return readPhone(await readSession(), key, true)
-  })
-}
-
-/**
- * Drain the queue AS A TURN, so the proactive surface is measured like every
- * other thing this product does.
- *
- * Until 20 Aug 2026 the three drains below ran outside `rec.turn()` entirely.
- * Every morning brief, evening digest, coach nudge and dunning message therefore
- * ran with no tokens, no milliseconds, no SQL, no reasoning and no rupees against
- * it — 49 of the 137 messages delivered in `2026-08-18-14-38-live`, on a surface
- * `lib/clock.ts` opens by calling "~70% of this product". The instrument was
- * measuring the conversational third and extrapolating the whole.
- *
- * It was not even that the evidence was thrown away: `days.jsonl` kept the job
- * names and the unprompted bodies, and `close` folds them into `run.days`. But
- * `report.mjs` renders `record.json`'s TURNS, so a shape nothing renders is a
- * shape nobody reads, and the run's own cost table quietly excluded the majority
- * of what the product says.
- *
- * There is nobody in the seat for these, so `who` and `persona` are both
- * `queue` — which is what makes them legible in the report's split table, where
- * the proactive surface now sits beside the four people as its own row. `say` is
- * empty because nobody typed anything, and an invented sentence there would be
- * the harness putting words in the product's mouth.
- *
- * The caller passes a thunk that returns the drain log; `_capture.ts` takes it
- * from the sink rather than asking the database, because the database cannot
- * answer — see `TurnSink`.
- */
-async function queueTurn(s: Session, id: string, run: () => Promise<string[]>): Promise<string[]> {
-  const rec = await reopenRun(s.dir, {
-    academyId: s.academyId,
-    q: (sql: string) => q(s.academyId, sql),
-    domainNow: () => clock.now(s.academyId),
-  })
-  const t = await rec.turn(
-    { id, who: 'queue', persona: 'queue', say: '', day: s.day },
-    async (sink) => {
-      sink.jobs.push(...(await run()))
-    },
-  )
-  return t.jobs
-}
-
 /* ------------------------------------------------------------- commands */
 
 async function main(): Promise<void> {
@@ -457,7 +176,7 @@ async function main(): Promise<void> {
       console.log(c.bold(`\n  live — ${days} days, ${spread.reduce((a, b) => a + b, 0)} seat windows, ${spread[0]} each\n`))
       const world = await buildSettledAcademy({ log: (m) => console.log(c.dim(`  ${m}`)) })
       const dir = await runDir('live')
-      await mkdir(HOME, { recursive: true })
+      await mkdir(SEAT_HOME, { recursive: true })
       await mkdir(join(dir, 'diary'), { recursive: true })
 
       await saveRun(dir, {
@@ -473,6 +192,12 @@ async function main(): Promise<void> {
         turns: [],
       })
 
+      /**
+       * No cursor map. Every persona's phone starts at `startedAt` and moves in
+       * `cursors/<persona>` from their first look onward — one file per seat, so
+       * no seat can write another's mark back to where it used to be. `_seat.ts`
+       * says what that cost when they shared one blob.
+       */
       const startedAt = (await clock.now(world.academyId)).toISOString()
       const session: Session = {
         dir,
@@ -481,7 +206,6 @@ async function main(): Promise<void> {
         day: 1,
         contacts: world.contacts,
         roster: world.roster,
-        cursor: Object.fromEntries(Object.keys(PERSONAS).map((k) => [k, startedAt])),
         startedAt,
       }
       await writeSession(session)
@@ -507,11 +231,13 @@ async function main(): Promise<void> {
 
     /* ---------------------------------------------------------- window */
     case 'window': {
-      const s = await readSession()
       const w = (flag('window') ?? 'morning') as WindowName
-      const day = Number(flag('day') ?? s.day)
-      s.day = day
-      await writeSession(s)
+      // Read, changed and written under the lock, because `day` is the one field
+      // of the session two commands still both write.
+      const s = await updateSession((cur) => {
+        cur.day = Number(flag('day') ?? cur.day)
+      })
+      const day = s.day
       /**
        * `--at HH:MM` overrides the window's default hour.
        *
@@ -521,9 +247,9 @@ async function main(): Promise<void> {
        * only land after the thing it is about measures the harness.
        */
       const at = flag('at') || WINDOW_AT[w]
-      // Inside the lock, exactly as `drive` is: the record is read, appended and
-      // written as one critical section, or a seat speaking at the same moment
-      // erases whichever of the two wrote first.
+      // Under the lock because the WALK is: it moves the academy clock, which
+      // every seat shares, and two windows opened at once would each advance past
+      // the other's target and drain the day in an order neither asked for.
       const jobs = await withLock(`window:${day}:${w}`, () =>
         queueTurn(s, `d${day}-${w}-queue`, () => walkTo(s.academyId, at)),
       )
@@ -564,11 +290,16 @@ async function main(): Promise<void> {
         join(s.dir, 'days.jsonl'),
         JSON.stringify({ day: s.day, window: 'overnight', jobs, unprompted }) + '\n',
       )
-      s.day += 1
-      await writeSession(s)
+      // Re-read under the lock rather than incremented on the copy above: this
+      // command has been running for the length of a walk, and writing a whole
+      // session back from memory would put every other field back where it was
+      // when the day started.
+      const next = await updateSession((cur) => {
+        cur.day += 1
+      })
       console.log(`  day closed. jobs: ${jobs.length ? [...new Set(jobs)].join(', ') : 'none'}`)
       console.log(`  standing messages sent unprompted: ${unprompted.length}`)
-      console.log(`  next day: ${s.day} — ${clock.inZone(await clock.now(s.academyId), TZ).label}`)
+      console.log(`  next day: ${next.day} — ${clock.inZone(await clock.now(s.academyId), TZ).label}`)
       break
     }
 

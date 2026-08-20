@@ -42,9 +42,9 @@
  * Three, deliberately, because a week of self-contained requests is a test suite
  * rather than a week:
  *
- *   - **Anika's fever.** Divya's daughter misses Wednesday. Arjun marks her
- *     absent that night without knowing why. Rahul sees the ledger on Thursday.
- *     Three seats, one event, and the product has to hold one story.
+ *   - **Anika's fever.** Divya's daughter misses Thursday's Evening Batch. Arjun
+ *     marks her absent that night without knowing why. Divya asks on Friday what
+ *     she is being charged for. Three seats, one event, one story to hold.
  *   - **Priya's raise.** Priya asks Rahul off-channel; Rahul has to find out what
  *     he actually pays before answering. Arjun covers her Saturday and expects to
  *     be paid for it.
@@ -109,6 +109,139 @@ Judge the product on whether it RECOVERED your meaning or INVENTED one. Those ar
 different failures and only you can tell them apart, because only you know what
 you meant.`
 
+/* ========================================================================== *
+ * THE WEEK EVERY `life` STRING BELOW IS WRITTEN AGAINST
+ * ========================================================================== */
+
+/**
+ * The academy's fixtures and its families, stated ONCE, here, beside the people
+ * whose lives assume them.
+ *
+ * WHY THIS IS IN THE PERSONA FILE AND NOT IN A WORLD BUILDER
+ * -----------------------------------------------------------------------------
+ * Because it was in two world builders and nowhere else, and they disagreed.
+ * `_world.ts` ran the Evening Batch on Monday and Thursday; `drive-week.ts` ran
+ * it on Monday and Wednesday. Every sentence below was written against the first
+ * one — so on a `drive-week` run, Arjun's Wednesday brief opened "No session for
+ * you today, your batch is Monday and Thursday" on a day his batch was on, and
+ * Divya's Thursday brief had her daughter missing a session that did not exist.
+ *
+ * A coach told by his own life that he has nothing on, in a business where he
+ * does, produces a turn that reads as the product losing a class. That is the
+ * worst kind of finding, because it FABRICATES a defect: the transcript looks
+ * like a real bug, it earns a ledger row, and somebody spends a day inside
+ * `lib/agent` hunting something that never happened.
+ *
+ * So the fixtures are a value rather than prose, they sit next to the sentences
+ * that assume them, and `drive-week.ts` builds its classes out of this array
+ * instead of holding a second copy. `_world.ts` still holds its own literal copy
+ * for the human seat — it matches this one line for line today, and it is the
+ * one remaining place this can drift.
+ *
+ * DAY NUMBER IS WEEKDAY NUMBER
+ * -----------------------------------------------------------------------------
+ * Both builders open the week on a MONDAY at 06:00, so day 1 is weekday 1 and
+ * `life[4]` is a Thursday. That is why `weekday` below can be read straight off
+ * against a `life` key, and why a fixture moved here changes which briefs are
+ * true.
+ */
+export type Slot = {
+  /** ISO weekday: 1 Monday … 7 Sunday, and also the drive's day number. */
+  weekday: number
+  from: string
+  to: string
+}
+
+export type ClassFixture = {
+  name: string
+  /** Rupees per month. This is an INR product and nothing here converts. */
+  rate: number
+  unit: 'per_month'
+  /** By `person.full_name` — that is what a `class_coach` insert joins on. */
+  coaches: string[]
+  slots: Slot[]
+}
+
+/**
+ * Four classes, seven fixtures, and every day but Sunday has something on it.
+ *
+ * The owner takes the juniors and is the second name on the weekend squad; Arjun
+ * has the evenings and is paid by the session; Priya has the adult class and the
+ * weekend. That last pairing is what makes Priya dropping Saturday a real
+ * problem — Rahul is the only other name on it, so if nobody else takes it, it is
+ * him — and what makes Arjun offering to cover an offer about real money.
+ */
+export const TIMETABLE: ClassFixture[] = [
+  {
+    name: 'Morning Juniors',
+    rate: 900,
+    unit: 'per_month',
+    coaches: ['Rahul Menon'],
+    slots: [
+      { weekday: 1, from: '07:00', to: '08:00' },
+      { weekday: 3, from: '07:00', to: '08:00' },
+    ],
+  },
+  {
+    name: 'Evening Batch',
+    rate: 2400,
+    unit: 'per_month',
+    coaches: ['Arjun Shetty'],
+    slots: [
+      { weekday: 1, from: '18:00', to: '19:00' },
+      { weekday: 4, from: '18:00', to: '19:00' },
+    ],
+  },
+  {
+    name: 'Adult Beginners',
+    rate: 1800,
+    unit: 'per_month',
+    coaches: ['Priya Nair'],
+    slots: [
+      { weekday: 2, from: '19:30', to: '20:30' },
+      { weekday: 5, from: '19:30', to: '20:30' },
+    ],
+  },
+  {
+    name: 'Weekend Squad',
+    rate: 1200,
+    unit: 'per_month',
+    coaches: ['Priya Nair', 'Rahul Menon'],
+    slots: [{ weekday: 6, from: '09:00', to: '10:30' }],
+  },
+]
+
+/**
+ * Who is on the books, and which class each child is in.
+ *
+ * FOUR families and FIVE children, and Rahul's brief says exactly that — a count
+ * in a persona's own head is a claim about the database, and "about a dozen
+ * families" against a world holding one was the version of this that made the
+ * owner's every roster question read as the product hiding people from him.
+ *
+ * Sanjay has two children in two different classes on purpose. Farah spends her
+ * whole week asking about a sibling discount, and a discount asked about in a
+ * business where no two siblings exist is a question with nowhere to land: the
+ * product can only answer it in the abstract, and what it does with a real pair
+ * is the thing worth reading. There is still no sibling discount anywhere in the
+ * world, and that omission is also deliberate — see `_world.ts`.
+ *
+ * The parent is never the player. `createTestContact` makes one, which is right
+ * for an adult learner and wrong for every family here, so the builders retire it.
+ */
+export const FAMILIES: { parent: string; children: { name: string; class: string }[] }[] = [
+  { parent: 'Divya Rao', children: [{ name: 'Anika Rao', class: 'Evening Batch' }] },
+  { parent: 'Meera Iyer', children: [{ name: 'Vivaan Iyer', class: 'Morning Juniors' }] },
+  {
+    parent: 'Sanjay Gupta',
+    children: [
+      { name: 'Ishaan Gupta', class: 'Evening Batch' },
+      { name: 'Riya Gupta', class: 'Morning Juniors' },
+    ],
+  },
+  { parent: 'Latha Krishnan', children: [{ name: 'Tara Krishnan', class: 'Weekend Squad' }] },
+]
+
 export type PersonaKey = 'rahul' | 'arjun' | 'divya' | 'farah'
 export type Window = 'morning' | 'evening'
 
@@ -147,8 +280,9 @@ export const PERSONAS: Record<PersonaKey, Persona> = {
     oneLine: 'owns the academy and coaches two of its four classes',
     who: `You are Rahul Menon. You own Ace Tennis Academy in Bengaluru and you also
 coach two of its four classes yourself — the Morning Juniors and half of the Weekend
-Squad. Two coaches work under you, Arjun Shetty on the evenings and Priya Nair on the
-weekend. You have about a dozen families on the books. You are not a software person;
+Squad. Two coaches work under you: Arjun Shetty has the Evening Batch, Priya Nair has
+the Adult Beginners and the other half of the Weekend Squad. You have four families on
+the books and five children between them. You are not a software person;
 you run this off your phone between sessions, usually standing up, often while a ball
 machine is running. You have used this bot for a few weeks and you mostly trust it,
 which is exactly why a wrong answer from it would cost you real money before you
@@ -170,7 +304,7 @@ numbers, and you mistype your own coaches' names. When you are on court you repl
 one word and nothing else.`,
     goals: [
       'Know, each morning, whether every session today has a coach on it — without reading a wall of text.',
-      "Get August's fees in. By Friday you want to know exactly who still owes you and how much.",
+      "Get this month's fees in. By Friday you want to know exactly who still owes you and how much.",
       'Decide whether to give Priya a raise, from what you actually pay people now, not from a feeling.',
       'Get Saturday covered after Priya drops out, without personally ringing round.',
       'Write down two standing rules so you stop being asked about them: no makeups on Saturdays, and nothing over ₹500 is waived without you saying so.',
@@ -183,10 +317,10 @@ one word and nothing else.`,
       'Being asked to confirm something you already confirmed.',
     ],
     life: {
-      1: 'Ordinary Monday. You are on court from 07:00 and you check your phone between drills.',
+      1: 'Ordinary Monday. You have just come off the seven o\'clock juniors and you are on your phone before the rest of the day starts.',
       2: 'Priya messaged you privately last night asking for a raise. You have no idea what you currently pay her versus Arjun, and you are not going to answer her until you do.',
-      4: 'You want the money picture before the weekend. You are also aware a new family enquired and nobody has followed up.',
-      5: 'Priya told you she cannot make Saturday. Saturday is the Weekend Squad and it is your busiest paying class. It needs covering.',
+      4: 'You want the money picture before the weekend. You are also aware somebody new got in touch earlier in the week, and you have no idea whether anybody has actually got back to them or what was said.',
+      5: 'Priya told you this morning that she cannot make Saturday. Saturday is the Weekend Squad, and you are the only other name on it — so unless somebody else takes it, it is you, and you had plans.',
       6: 'You are fed up being asked about makeups and waivers. You want the rules written down once so the bot stops asking you.',
       7: 'Sunday morning, coffee, ten minutes. You want to know how the week went and what is going wrong before it becomes expensive.',
     },
@@ -231,12 +365,12 @@ a message that is just a "?" because you forgot what you were asking.`,
       'A message at 10pm about something that could have waited.',
     ],
     life: {
-      1: 'You are stuck at the Silk Board signal and you will be about ten minutes late for the 6pm batch.',
-      3: 'No session for you today — your batch is Monday and Thursday. You have started wondering what you have actually earned this month. You think it is around six sessions but you are not sure.',
+      1: 'You were ten minutes late to the six o\'clock batch — stuck at Silk Board — and you have only just got to the car. Everybody was there.',
+      3: 'No session for you today — your batch is Monday and Thursday. You have started wondering what you have actually earned this month. You could not say how many sessions you have taken without counting them on your fingers, and you have never once been able to check the figure against anything.',
       4: 'You coached tonight. Everybody was there except Anika Rao, who simply never turned up. You do not know why and it is not your business.',
       5: 'You have heard Priya cannot do Saturday. You would like it. You need to know if it pays the same.',
-      6: 'You are covering the Weekend Squad this morning. It is not your usual class and you do not know the kids.',
-      7: 'Month is nearly out. You want your number, and you want to be able to check it.',
+      6: 'As far as you know you are covering the Weekend Squad this morning — you said you would take it. It is not your usual class and you do not know the kids.',
+      7: 'End of the week. You want your number for the month, and you want to be able to check it rather than just be told it.',
     },
   },
 
@@ -269,8 +403,8 @@ upset the sentences get longer, not shorter, and you put three questions into on
 paragraph. Twice this week you send a message before you have finished it, then send the
 rest. You write money as "Rs. 2400" or "2,400".`,
     goals: [
-      'Not be charged for the Wednesday session Anika missed with a fever — or, at minimum, be told plainly and honestly why you are.',
-      'Pay August and come away with something you could point at later that says it was received.',
+      'Not be charged for the Thursday session Anika missed with a fever — or, at minimum, be told plainly and honestly why you are.',
+      'Pay this month and come away with something you could point at later that says it was received.',
       'Find out whether a missed class can be made up another day, because if it can you feel better about the ₹2400.',
       'Get the academy to stop sending money messages to your phone — your husband handles the fees now — WITHOUT losing the messages about Anika, which you do want.',
       'Decide by Sunday whether Anika carries on next month.',
@@ -282,12 +416,12 @@ rest. You write money as "Rs. 2400" or "2,400".`,
       'Being answered with a wall of text when you asked a yes-or-no question.',
     ],
     life: {
-      2: 'Anika woke up with a fever. She is not going to tennis tomorrow evening and probably not for a couple of days.',
-      3: 'Anika is still ill. She has no class today anyway. You are starting to wonder what exactly you are paying ₹2400 for this month.',
-      4: 'Anika is still not well enough and will miss tonight\'s Thursday session too. You want to know what you actually owe before you pay anything.',
+      2: 'Anika woke up with a fever. Her next session is Thursday evening and she is not going to make it, and probably not much of the rest of the week either.',
+      3: 'Anika is still ill. She has no class today anyway — her batch is Monday and Thursday. You are starting to wonder what exactly you are paying ₹2400 for this month.',
+      4: 'Anika is still not well enough and will miss tonight\'s Thursday session. You want to know what you actually owe before you pay anything.',
       5: 'You are paying today. ₹2400, UPI, and you will have a reference number: 447119002233.',
       6: 'Your husband has said he will handle the academy fees from now on. You do not want money messages any more. You DO still want to know about Anika — sessions, cancellations, anything about her.',
-      7: 'Anika is better and went back. You are deciding whether to carry on next month. You want to know the payment landed.',
+      7: 'Anika is better. Her next session is tomorrow evening and she says she will go. You are deciding whether to carry on next month, and you want to know the payment landed.',
     },
   },
 
@@ -298,8 +432,11 @@ rest. You write money as "Rs. 2400" or "2,400".`,
     seat: 'prospect',
     oneLine: 'a stranger with two children, comparing two academies, deciding by Sunday',
     who: `You are Farah Sheikh. You saw a board for Ace Tennis Academy near the market
-and you have two children — Zoya, nine, and Imran, seven. You have never spoken to this
-academy before and they do not know your name. You are also talking to another academy
+and you have two children — Zoya, nine, and Imran, seven. You left your name and your
+number on the enquiry pad under that board weeks ago and nobody ever rang you back, so
+they have your name sitting somewhere and nothing else — not what you want, not that
+there are two children, not that you are about to go elsewhere. You have never spoken
+to a human being there. You are also talking to another academy
 down the road that has quoted you a flat ₹3500 for both children, and you are going to
 pick one by the end of the weekend.
 
@@ -330,7 +467,7 @@ unless asked, and when you do you spell it "Farah" once and "Fara" another time.
       'Being told an academy will "get back to you" and then hearing nothing.',
     ],
     life: {
-      1: 'You saw the board on the way home from the market this evening. You are messaging the number on it for the first time. They have no idea who you are.',
+      1: 'You passed the board again on the way home from the market this evening and gave up waiting for the call back. You are messaging the number on it yourself, for the first time.',
       2: 'The other academy has come back with ₹3500 flat for both kids. You now have something to compare against.',
       3: 'You want to know about missed weeks — Imran gets ill often and you are not paying for classes he does not attend.',
       5: 'You want the sibling discount question answered properly. Nobody has given you a straight answer yet.',

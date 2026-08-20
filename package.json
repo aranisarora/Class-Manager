@@ -15,6 +15,7 @@
     "probe": "tsx scripts/probe-model.ts",
     "probe:sql": "tsx scripts/probe-sql.ts",
     "drive:week": "tsx scripts/drive-week.ts",
+    "ab": "tsx scripts/ab.ts",
     "ask": "tsx scripts/probe-ask.ts",
     "surface": "tsx scripts/probe-surface.ts",
     "guards": "tsx scripts/guard-value.ts",
