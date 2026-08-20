@@ -152,3 +152,4 @@ numbers cannot be a free choice.
 | `blank.json` | `{}`. The owner and nobody else — the default, and the moment before onboarding. |
 | `settled-tennis.json` | Ace Tennis Academy: the owner also coaches, two coaches, four classes, four families, five children, one account in arrears. |
 | `multi-coach.json` | Four coaches, six clients, the admin also coaching, an adult learner, and a coach nobody has given a class to. |
+| `solo-coach-group.json` | Kamath Badminton: one man running the whole thing. He coaches all four group classes himself, twelve families, fourteen teenagers between 13 and 16, two accounts in arrears and three prospects. Every seat carries a `voice`, and they are written for the input this product will actually meet — a coach who is not a technical person, parents typing between meetings, and requests for things nobody built: message my son directly, send it to all the parents, email me a receipt, make a group. |

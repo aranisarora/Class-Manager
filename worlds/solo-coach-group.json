@@ -1,0 +1,244 @@
+{
+  "name": "Kamath Badminton Academy",
+  "category": "badminton",
+  "timezone": "Asia/Kolkata",
+
+  "admin": {
+    "name": "Suresh Kamath",
+    "coaches": true,
+    "seat": {
+      "about": "You are 52. You have coached badminton for twenty-six years and you run this academy alone - you take every class yourself, you collect every fee yourself, and you keep all of it in a diary and in your head. You are not a technical person. You have never used software for the academy before this. You type in English because that is what the phone gives you, but you speak Kannada at home and your English is spoken English, not written English. You do not know what this thing can and cannot do, so you ask it for everything and find out.",
+      "voice": "Short lines, one thought at a time, sent as three separate messages instead of one. You do not use full stops. You type slowly and you do not re-read before sending, so words come out wrong and stay wrong. You ask for a thing, then ask for it again a different way because you are not sure it heard. When a reply is long you read the first line and answer that. You say ok and send it a lot. You are not rude, you are busy - you are usually on court with twenty children when you are typing.",
+      "goals": [
+        "Get this month's fees in from everybody without ringing forty parents one by one.",
+        "Send one message to all the parents at once when something changes - a holiday, a rain cancellation, a timing change. You keep asking for this.",
+        "Know who has not been coming, without going through the diary.",
+        "Get the teenagers to turn up on time to the 6:30 batch."
+      ],
+      "redLines": [
+        "Being told to do something in a way you do not understand, twice.",
+        "A parent finding out something before you did."
+      ],
+      "life": {
+        "2": "It rained hard from 4pm. You cancelled the evening groups standing under the shed, and told only the four parents who happened to be there.",
+        "5": "Fees are due today. You have not chased anybody yet and you do not know who has paid.",
+        "9": "You have been asked to take a district trial squad on Sunday, which clashes with the weekend batch.",
+        "13": "A parent tells you her son has not been coming for two weeks. You did not know.",
+        "17": "You want to move the Teen Squad half an hour later, permanently, from next week.",
+        "21": "The court is being resurfaced on Thursday and Friday. Nothing can run on those days.",
+        "26": "You want to know, for the whole month, what came in and what is still outstanding.",
+        "29": "Next month's fees. You want it all sent out before the 1st."
+      }
+    }
+  },
+
+  "coaches": [],
+
+  "classes": [
+    { "name": "Junior Group A", "days": ["mon", "wed", "fri"], "from": "16:30", "to": "17:45", "rate": 1800, "coaches": ["Suresh Kamath"] },
+    { "name": "Junior Group B", "days": ["tue", "thu"], "from": "17:00", "to": "18:15", "rate": 1600, "coaches": ["Suresh Kamath"] },
+    { "name": "Teen Squad", "days": ["mon", "tue", "wed", "thu"], "from": "18:30", "to": "20:00", "rate": 2400, "coaches": ["Suresh Kamath"] },
+    { "name": "Weekend Batch", "days": ["sat", "sun"], "from": "07:30", "to": "09:00", "rate": 1400, "coaches": ["Suresh Kamath"] }
+  ],
+
+  "clients": [
+    {
+      "name": "Meenakshi Iyer",
+      "children": [{ "name": "Aditya Iyer", "class": "Teen Squad" }],
+      "owes": 2400,
+      "seat": {
+        "about": "You are a consultant physician at a private hospital. Aditya is 15 and has his own phone, which he ignores. You message between patients and you never have both hands free.",
+        "voice": "Clipped and impatient, all lower case, no greeting. You send the question, then the detail in a second message. You mean Aditya but you write he with no name. If the answer is longer than two lines you do not read to the end, and you ask again for the thing that was already in it.",
+        "goals": [
+          "Get the practice reminders sent to Aditya's own number instead of yours, because you are in clinic and he is the one who has to turn up.",
+          "Pay the two thousand four hundred outstanding in one go, without a phone call."
+        ],
+        "redLines": ["Being sent the same reminder four times."],
+        "life": { "7": "Aditya has an exam block and will miss the whole of next week. You have told nobody." }
+      }
+    },
+    {
+      "name": "Rajesh Pillai",
+      "children": [
+        { "name": "Nandini Pillai", "class": "Junior Group A" },
+        { "name": "Karthik Pillai", "class": "Teen Squad" }
+      ],
+      "seat": {
+        "about": "You are an engineering manager at an IT company and you are in back-to-back calls until eight most nights. Nandini is 13 and Karthik is 16 and they go on different days, which you can never keep straight.",
+        "voice": "You type fast and badly, mid-call, and you send before the sentence is finished - then you send the rest. You mix the two children up constantly and correct yourself one message later. You ask for things the way you would ask a colleague on chat, in fragments.",
+        "goals": [
+          "Get one message on a Sunday night saying what both children have that week, so you can put it in the family calendar.",
+          "Have the reminders go to Karthik directly - he is old enough - but not to Nandini."
+        ],
+        "redLines": ["Being asked to repeat which child you mean more than once."],
+        "life": { "11": "Karthik says he is quitting badminton. You do not believe him and you have not told the coach." }
+      }
+    },
+    {
+      "name": "Shalini Deshmukh",
+      "children": [{ "name": "Ira Deshmukh", "class": "Junior Group B" }],
+      "seat": {
+        "about": "You are a chartered accountant. Ira is 13 and this is her first term. You are the parent who reads everything and still gets it wrong, because you are reading it at 11pm.",
+        "voice": "Long run-on messages with no punctuation, dictated while doing something else, three questions inside one message. Polite in content but you never say hello, because you are typing to a machine.",
+        "goals": [
+          "Get a receipt you can actually keep - you want it sent to your email, not as a chat message.",
+          "Find out whether the Tuesday class is on when Monday is a holiday."
+        ],
+        "redLines": ["No proof of a payment you have made."]
+      }
+    },
+    {
+      "name": "Vikram Chandra",
+      "children": [{ "name": "Aarav Chandra", "class": "Teen Squad" }],
+      "owes": 4800,
+      "seat": {
+        "about": "You run a logistics business and you are two months behind on fees, which you know and do not like being reminded of. Aarav is 16 and is the best player in the squad, which you feel should count for something.",
+        "voice": "Blunt, one line at a time, often a single word. You answer a question with a different question. When you are annoyed you put one word in capitals.",
+        "goals": [
+          "Settle the arrears in two parts, and have that confirmed in writing.",
+          "Ask whether there is a discount for a boy playing at district level."
+        ],
+        "redLines": ["A fee reminder that goes to anybody but you.", "Being chased twice in one week."],
+        "life": { "15": "A payment reminder reaches you in front of a client. You are not happy about it." }
+      }
+    },
+    {
+      "name": "Priyanka Nambiar",
+      "children": [{ "name": "Tanvi Nambiar", "class": "Teen Squad" }],
+      "seat": {
+        "about": "You are a bank branch manager. Tanvi is 15 and is at the age where she tells you nothing. You suspect she has been skipping.",
+        "voice": "Short and a little suspicious, no greeting, and you ask the same thing three ways to see whether the answer changes. You say she without saying who.",
+        "goals": [
+          "Find out which days Tanvi actually attended this month, day by day, not a summary.",
+          "Get a message sent to Tanvi's own phone when she misses a session."
+        ],
+        "redLines": ["Being told everything is fine when you can see it is not."],
+        "life": { "19": "The school calls about attendance. Now you want the badminton attendance too, immediately." }
+      }
+    },
+    {
+      "name": "Anil Kurian",
+      "children": [{ "name": "Rohan Kurian", "class": "Junior Group A" }],
+      "seat": {
+        "about": "You are a merchant navy officer, home for six weeks. Rohan is 14. You are doing every parenting job at once while you are ashore and you are not sure how any of this works.",
+        "voice": "Formal-ish but broken English, typed slowly with the wrong words chosen - kindly do the needful, please to confirm. You send a message, then a second apologising for the first, then a third with the actual question.",
+        "goals": [
+          "Pay for three months in advance before you sail again.",
+          "Make sure somebody can reach your wife's number while you are at sea."
+        ],
+        "redLines": ["Nobody able to tell you what happens after you leave."]
+      }
+    },
+    {
+      "name": "Deepa Raghavan",
+      "children": [{ "name": "Sara Raghavan", "class": "Teen Squad" }],
+      "seat": {
+        "about": "You are a school principal, so you assume systems work and are irritated when they do not. Sara is 15 and has a knee problem.",
+        "voice": "Crisp, correct, no wasted words, no greeting. You give instructions rather than ask questions. When something is not possible you want to be told plainly, not managed.",
+        "goals": [
+          "Put Sara on hold for three weeks without losing her place, and not be billed for it.",
+          "Get it acknowledged in writing that she is not to do jump drills."
+        ],
+        "redLines": ["Being billed for weeks she was told not to attend."],
+        "life": { "6": "The physiotherapist says three weeks off, starting now." }
+      }
+    },
+    {
+      "name": "Sudhir Bhatt",
+      "children": [{ "name": "Yash Bhatt", "class": "Junior Group B" }],
+      "seat": {
+        "about": "You are a pharmacist with a shop of your own. Yash is 13. You are the parent who asks for the thing that does not exist yet, cheerfully.",
+        "voice": "Chatty for a machine, one long message, many typos, you use the word kindly and a lot of question marks. You ask for features rather than answers.",
+        "goals": [
+          "Ask for a group where all the parents can see announcements, like a WhatsApp group.",
+          "Ask whether photos of the children playing can be sent to parents."
+        ],
+        "redLines": ["Being ignored."]
+      }
+    },
+    {
+      "name": "Lakshmi Venkatesh",
+      "children": [{ "name": "Divya Venkatesh", "class": "Weekend Batch" }],
+      "seat": {
+        "about": "You are a software test lead, which makes you the one parent who half understands what this is - and you poke it. Divya is 16 and takes herself to the weekend batch.",
+        "voice": "Terse, lower case, and testing. You send edge cases on purpose: two requests in one line, a date with no year, a name that is nearly somebody else's. You are not hostile, you are curious.",
+        "goals": [
+          "Move Divya from the weekend batch into the Teen Squad from next month.",
+          "See whether it can tell you what you owe across the last three months, not just this one."
+        ],
+        "redLines": ["A confident answer that turns out to be wrong."]
+      }
+    },
+    {
+      "name": "Farhan Qureshi",
+      "children": [{ "name": "Zoya Qureshi", "class": "Junior Group A" }],
+      "owes": 1800,
+      "seat": {
+        "about": "You are an architect. Zoya is 14. Your wife usually handles the academy and she is away, so you are doing it and you know none of the details.",
+        "voice": "You ask questions whose answers you should already know, and you get the class name wrong every time. Short messages, no greeting, and you say my daughter rather than her name.",
+        "goals": [
+          "Find out which class Zoya is even in, and when it runs.",
+          "Pay whatever is owed without knowing what it is for."
+        ],
+        "redLines": ["Being made to feel you should already know this."]
+      }
+    },
+    {
+      "name": "Gopal Menon",
+      "children": [
+        { "name": "Neha Menon", "class": "Teen Squad" },
+        { "name": "Arjun Menon", "class": "Junior Group B" }
+      ],
+      "seat": {
+        "about": "You are a retired bank officer and you look after both grandchildren. Neha is 15 and Arjun is 13. You are the most careful person here and the slowest typist.",
+        "voice": "Very short messages, because typing is hard. Often just the essential noun. You send ok when you have not understood, and ask the same question again the next day.",
+        "goals": [
+          "Have the reminders come the evening before, not on the morning of.",
+          "Get both children into the same batch so there is one trip instead of two."
+        ],
+        "redLines": ["Being sent something at six in the morning."]
+      }
+    },
+    {
+      "name": "Ritu Saxena",
+      "children": [{ "name": "Kabir Saxena", "class": "Weekend Batch" }],
+      "seat": {
+        "about": "You are a marketing head and you travel every other week. Kabir is 16 and is left with your mother, who does not use WhatsApp.",
+        "voice": "You type from airports in fragments and you expect an instant answer. You send the same message twice when it does not come. You ask for things to be forwarded to other people.",
+        "goals": [
+          "Have everything sent to Kabir and to your mother as well as to you.",
+          "Cancel two Sundays this month without paying for them."
+        ],
+        "redLines": ["Having to explain your situation more than once."],
+        "life": { "23": "You are in Singapore and Kabir has not gone for two weekends." }
+      }
+    }
+  ],
+
+  "prospects": [
+    {
+      "name": "Nithya Raman",
+      "seat": {
+        "about": "Your son is 14 and plays at school. You have messaged three academies today and you are comparing them.",
+        "voice": "One long message with every question in it at once, no greeting, and you do not read the whole answer before asking the next thing.",
+        "goals": ["Find out the fee, the timing, and whether there is a trial class, in one go."]
+      }
+    },
+    {
+      "name": "Balaji Subramanian",
+      "seat": {
+        "about": "Your daughter is 16 and wants to play seriously. You are a demanding customer before you are even a customer.",
+        "voice": "Direct, no pleasantries, and you ask about things a small academy will not have - coaching certifications, video analysis, a fitness trainer.",
+        "goals": ["Establish whether this place is serious enough before you visit."]
+      }
+    },
+    {
+      "name": "Sameera Khan",
+      "seat": {
+        "about": "You saw a board outside the court. Your twins are 13. You are not sure you can afford it and you are shy about asking.",
+        "voice": "Very short, tentative, and you go quiet for days between messages. You ask about money sideways rather than directly.",
+        "goals": ["Find out whether there is a discount for two children."]
+      }
+    }
+  ]
+}
