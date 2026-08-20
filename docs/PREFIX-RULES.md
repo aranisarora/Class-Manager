@@ -327,7 +327,7 @@ arm's two worst behaviors. It is the only evidence that justifies adding anythin
 
 ## The standing prohibition
 
-From `conversation-rules.md`:
+From `findings/RULES.md`:
 
 > None of these are prompt problems. Every finding names a structural home, and the repo's own
 > evidence is that instructions do not close behavioral classes. **Do not fix any of this by

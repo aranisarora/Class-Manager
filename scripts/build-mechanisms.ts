@@ -6,9 +6,9 @@
  *
  * WHY THIS EXISTS
  * -----------------------------------------------------------------------------
- * This repo records, at length, *what went wrong* — 2,966 lines across
+ * This repo recorded, at length, *what went wrong* — 3,013 lines across
  * `findings/` — and *what the code is* — 15,866 lines in `lib/agent/`, of which
- * roughly 100,000 tokens are comments. It records nowhere *what mechanism now
+ * roughly 100,000 tokens are comments. It recorded nowhere *what mechanism now
  * exists and which class of defect it retires*.
  *
  * That gap has a measurable cost. An agent asked to analyse a bad run reads the
@@ -21,14 +21,15 @@
  *
  * So the docstrings become an index. A `@mechanism` tag marks a paragraph that
  * describes a mechanism rather than an implementation detail, and this collects
- * them into one page of about 2,000 tokens — the file you hand an analysis agent
- * INSTEAD of "read the brain and understand that it is sophisticated".
+ * them into one page whose scan tier is about 4,000 tokens — the file you hand an
+ * analysis agent INSTEAD of "read the brain and understand that it is
+ * sophisticated". `lib/agent` is ~209,000 tokens and does not fit.
  *
  * WHY GENERATED AND NOT WRITTEN
  * -----------------------------------------------------------------------------
  * A hand-written capability list is a second copy of a fact, and this repo has
- * the receipts on what that costs: `conversation-rules.md` kept status in a table
- * and in its headings, they diverged, and `npm run findings` reported twenty
+ * the receipts on what that costs: the old ledger kept status in a table
+ * and in its headings, they diverged, and `npm run findings` reported twenty-nine
  * shipped mechanisms as open defects for three days. The tag lives beside the
  * code it describes, moves when the code moves, and dies when the code dies.
  * Same discipline as `check-schema-doc` and `check-rls-doc`: a document that
@@ -204,8 +205,26 @@ md.push(
 )
 md.push('')
 md.push(
-  'If you are about to propose a fix, find it here first. Twenty of the last twenty analysis',
-  'proposals named mechanisms that had already shipped.',
+  'If you are about to propose a fix, look for it here first. On 20 Aug 2026 `npm run findings`',
+  'reported 38 findings open and **29 of them were already built** — the ledger said so in a table',
+  'nothing parsed. Analysis kept proposing `context_query` validation (F-AP), message `stateKey`',
+  '(F-AN) and event-text filling (F-AZ), all shipped.',
+)
+md.push('')
+md.push('## Adding to this file')
+md.push('')
+md.push(
+  'Tag the mechanism where it lives, in a block comment beside the code:',
+  '',
+  '```',
+  ' * @mechanism <realSymbol> — <what it does, and the class of defect it retires>.',
+  ' *   <continuation lines indented, same comment block, no blank comment line inside>',
+  ' *   Closes F-XX.',
+  '```',
+  '',
+  'The name must be a symbol that really appears in that file — the build rejects an invented one.',
+  '`Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not',
+  'exist, or one still marked open, fails. Then run `npm run mechanisms`.',
 )
 md.push('')
 md.push(`${mechanisms.length} mechanisms · ${closedByMech.size} findings closed by one · ${openFindings.length} findings still open`)

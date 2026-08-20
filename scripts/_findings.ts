@@ -31,7 +31,7 @@
  *
  * What they genuinely share is the FINDING: the thing that broke, once, in
  * production or in a drive. So that is what is shared, and it is not copied here
- * either — `conversation-rules.md` is the ledger and stays the ledger. This reads
+ * either — `OPEN.md` and `CLOSED.md` are the ledger and stay the ledger. This reads
  * it. A registry that duplicates its source is a fourth thing to drift.
  *
  * WHAT COVERAGE MEANS HERE, AND WHAT IT DOES NOT
@@ -46,7 +46,23 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
-const LEDGER = join('findings', 'conversation-rules.md')
+/**
+ * Two files, one fact each.
+ *
+ * `OPEN.md` holds what is broken, with the detail, and is hand-written. `CLOSED.md`
+ * holds one line per retired finding and nothing else. A code lives in exactly one
+ * of them, which is what makes "is F-AN open?" answerable by looking rather than by
+ * reconciling.
+ *
+ * This replaced a 1,830-line narrative ordered by drive date that kept status in a
+ * summary table AND in its headings. They diverged, `npm run findings` trusted the
+ * stale half, and twenty-nine shipped mechanisms read as outstanding defects for
+ * three days — long enough for analysis to keep proposing work that was done. The
+ * narrative is in git (`git show ee21e4b:findings/conversation-rules.md`); what each
+ * closed fix actually IS lives in the code, tagged `@mechanism`.
+ */
+const OPEN_FILE = join('findings', 'OPEN.md')
+const CLOSED_FILE = join('findings', 'CLOSED.md')
 
 /** Where a finding might be staged. Order is cheapest-to-run first. */
 export const INSTRUMENTS = [
@@ -88,96 +104,61 @@ export function anchorFor(heading: string): string {
 }
 
 /**
- * Every finding in the ledger, with what stages it.
+ * Every finding, open and closed, with what stages it.
  *
- * Headings look like `### F-AU · <title>` and a closed one carries `**closed
- * <date>**` in the heading itself. Both are parsed from the heading rather than
- * from the open-findings table above it, because the table is edited by hand and
- * has fallen out of step with the headings twice; the heading is written when the
- * finding is, and is the more reliable of the two.
+ * Open ones are the `### F-XX · <title>` headings in `OPEN.md`; closed ones are the
+ * `| **F-XX** | <title> | <when> |` rows in `CLOSED.md`. Status is not parsed out of
+ * prose any more, and it is not written down twice — where the code LIVES is the
+ * status, so the two cannot disagree without a code being in both files, which
+ * `check:findings` refuses outright.
  */
 export function readFindings(root: string = process.cwd()): Finding[] {
-  const path = join(root, LEDGER)
-  if (!existsSync(path)) return []
-  const md = readFileSync(path, 'utf8')
+  const read = (p: string) => (existsSync(join(root, p)) ? readFileSync(join(root, p), 'utf8') : '')
 
   const sources = INSTRUMENTS.map((i) => ({
     label: i.label,
-    text: existsSync(join(root, i.file)) ? readFileSync(join(root, i.file), 'utf8') : '',
+    text: read(i.file),
   }))
 
   const out: Finding[] = []
   const seen = new Set<string>()
-  for (const m of md.matchAll(/^#{2,4}\s+(F-[A-Z]+)\s*·\s*(.+)$/gm)) {
+
+  /** Word-boundary on both sides: `F-A` must not match inside `F-AU`. */
+  const stagedBy = (code: string) => {
+    const re = new RegExp(`\\b${code}\\b`)
+    return sources.filter((s) => re.test(s.text)).map((s) => s.label)
+  }
+
+  for (const m of read(OPEN_FILE).matchAll(/^#{2,4}\s+(F-[A-Z]+)\s*·\s*(.+)$/gm)) {
     const code = m[1] as string
     if (seen.has(code)) continue
     seen.add(code)
     const heading = (m[2] ?? '').trim()
-    // Word-boundary on both sides: `F-A` must not match inside `F-AU`.
-    const re = new RegExp(`\\b${code}\\b`)
     out.push({
       code,
-      title: heading.replace(/\s*—?\s*\*\*(closed|fixed)[^*]*\*\*\s*$/i, '').trim(),
-      closed: /\*\*(closed|fixed)\b/i.test(heading),
-      stagedBy: sources.filter((s) => re.test(s.text)).map((s) => s.label),
+      title: heading,
+      closed: false,
+      stagedBy: stagedBy(code),
       anchor: anchorFor(`${code} · ${heading}`),
     })
   }
+
+  for (const m of read(CLOSED_FILE).matchAll(/^\s*\|\s*\*{0,2}(F-[A-Z]+)\*{0,2}\s*\|([^|]*)\|/gm)) {
+    const code = m[1] as string
+    if (seen.has(code)) continue
+    seen.add(code)
+    out.push({
+      code,
+      title: (m[2] ?? '').trim(),
+      closed: true,
+      stagedBy: stagedBy(code),
+      anchor: '',
+    })
+  }
+
   return out
 }
 
-
-/**
- * `findings/OPEN.md` — the short list that is actually read.
- *
- * The ledger is 1,800 lines ordered by drive date, and on 20 Aug 2026 it held 46
- * findings of which 35 were closed. Nobody could answer "what is open?" from it,
- * so nobody asked it — they asked an agent, which read the stale half and
- * proposed fixes that had shipped.
- *
- * This writes the answer down. It is GENERATED and not maintained, because a
- * second hand-kept list of one fact is the precise failure being repaired here:
- * the ledger already kept status in a table AND in its headings, they diverged,
- * and twenty shipped mechanisms read as open defects for three days.
- *
- * Each row links back rather than copying. The detail — what broke, what it cost,
- * where the fix belongs — stays in the ledger where it was written; an index that
- * restates its source is a third thing to drift.
- */
-export function renderOpen(all: Finding[]): string {
-  const open = all.filter((f) => !f.closed)
-  const led = 'conversation-rules.md'
-  const rows = open.map(
-    (f) =>
-      `| **${f.code}** | ${f.title} | ${f.stagedBy.length ? f.stagedBy.join(' ') : '**nothing**'} | [detail](./${led}${f.anchor}) |`,
-  )
-  return [
-    '# What is open',
-    '',
-    '<!-- GENERATED by `npm run findings -- --write`. Do not edit. -->',
-    '',
-    `${open.length} open · ${all.length - open.length} closed · ${all.length} recorded in total.`,
-    '',
-    'Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md)',
-    '— what the brain already does. The most common failure here is re-proposing a mechanism that',
-    'shipped weeks ago.',
-    '',
-    '"Staged by" is which instrument mentions the code. It is not a claim that the case is good,',
-    'and nothing here asserts the finding will not recur — read the run.',
-    '',
-    '| # | What is wrong | Staged by | |',
-    '| --- | --- | --- | --- |',
-    ...rows,
-    '',
-    '---',
-    '',
-    `Detail lives in [\`${led}\`](./${led}), which is the write surface and the archive both.`,
-    'Retire a finding by building the mechanism and tagging it `@mechanism … Closes F-XX`, then',
-    'marking the ledger heading closed — `npm run check:mechanisms` refuses a tag that claims a',
-    'finding the ledger still calls open, so the two cannot drift apart.',
-    '',
-  ].join('\n')
-}
 
 /* -------------------------------------------------------------------------- *
  * Run directly for the table.
@@ -207,16 +188,6 @@ if (process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('scripts/_fi
    * cost, where the fix belongs — stays in the ledger where it was written; this
    * is an index, and an index that restates its source is a third thing to drift.
    */
-  if (argv.includes('--write')) {
-    const { writeFileSync } = await import('node:fs')
-    const all = readFindings()
-    writeFileSync(join('findings', 'OPEN.md'), renderOpen(all), 'utf8')
-    console.log(c.green(`
-  findings/OPEN.md — ${all.filter((f) => !f.closed).length} open of ${all.length}.
-`))
-    process.exit(0)
-  }
-
   let findings = readFindings()
   if (onlyOpen) findings = findings.filter((f) => !f.closed)
   if (onlyBare) findings = findings.filter((f) => f.stagedBy.length === 0)

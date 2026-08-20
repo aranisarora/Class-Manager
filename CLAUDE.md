@@ -25,7 +25,7 @@ These are the conventions that are load-bearing and not guessable from the code.
 
 **Behaviour is not fixed by prompting.** Every finding in the ledger names a *structural*
 home. The repo's own evidence is that instructions do not close behavioural classes — so a
-defect gets a mechanism, not a paragraph of doctrine. `findings/conversation-rules.md` says
+defect gets a mechanism, not a paragraph of doctrine. `findings/README.md` says
 this in its own header, and it means it.
 
 **Nothing in an instrument scores anything.** The instruments record; a person or a judge model
@@ -44,12 +44,33 @@ model's reasoning, its SQL, or the rows it touched cannot answer the question th
 is how six report generators grew, and they are gone.
 
 **Check `MECHANISMS.md` before proposing anything.** On 20 Aug 2026 `npm run findings`
-reported 38 of 43 findings open; 21 of those had shipped mechanisms and the ledger said so
-in a table nobody parsed. Analysis kept re-proposing `context_query` validation (F-AP),
+reported 38 of 43 findings open; **29 of those had shipped mechanisms** and the ledger said so
+in a table nothing parsed. Analysis kept re-proposing `context_query` validation (F-AP),
 message `stateKey` (F-AN) and event-text filling (F-AZ) — all built. The brain does not fit
-in a context window, so "read the brain and understand it is sophisticated" does not work;
-the index is what works. `npm run check:findings` and `npm run check:mechanisms` keep both
-honest, as build failures.
+in a context window — `lib/agent` alone is ~209k tokens — so "read the brain and understand it
+is sophisticated" is not an instruction anyone can follow. The index is what works: the scan
+tier of [`docs/MECHANISMS.md`](./docs/MECHANISMS.md) is ~4k tokens and answers *"does something
+already handle this?"* before a file is opened.
+
+**A finding is retired by a mechanism, not by a paragraph.** The four steps, in order:
+
+1. **Build the mechanism.** Not a line of doctrine — see the rule above this one.
+2. **Tag it beside the code**, in a block comment on the thing itself:
+   ```
+    * @mechanism <realSymbol> — <what it does, and the class of defect it retires>.
+    *   <continuation indented, same comment block, no blank comment line inside>
+    *   Closes F-XX.
+   ```
+   The name must be a symbol that really appears in that file. `Closes F-XX` is optional and is
+   checked against the ledger.
+3. **Move its row** from `findings/OPEN.md` to `findings/CLOSED.md`, one line, with the date.
+4. **Regenerate the index:** `npm run mechanisms`.
+
+Skip a step and a gate fails. `check:mechanisms` refuses an index that does not match the tags, a
+tag naming a symbol that is not there, or a `Closes` clause for a finding the ledger still calls
+open. `check:findings` refuses a code that is in both `OPEN.md` and `CLOSED.md`, used twice in
+either, or named in `DECIDED.md` without being open. That is what stops them drifting apart, and
+drifting apart is what cost the twenty-nine.
 
 **Money is in rupees.** This is an INR-billing product. `lib/pricing.ts` is the one place that
 converts.

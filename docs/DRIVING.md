@@ -202,6 +202,6 @@ one page; this is for producing a judgement rather than reading one.
 The first live week is `.probe/runs/2026-08-17-18-07-live` — 82 conversational turns over
 seven days, judged by five readers into `judgement.json`, written up in
 `.probe/reports/2026-08-18-live-week-analysis.html`, with the findings staged in
-[`findings-live-week.md`](../findings/findings-live-week.md).
+the live-week findings (in git: `git show ee21e4b:findings/findings-live-week.md`).
 
 ---

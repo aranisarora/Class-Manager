@@ -31,7 +31,7 @@ PROBE_FULL_TRACE=1 npm run dev
 
 ## 2 · What has already broken
 
-`_findings.ts` (`npm run findings`) reads the ledger in `../conversation-rules.md` — it does not
+`_findings.ts` (`npm run findings`) reads `../findings/OPEN.md` and `../findings/CLOSED.md` — it does not
 copy it — and cross-references every `F-xx` against the instruments, so the table answers one
 question nothing else could: **which of the things that have already broken does no instrument
 even ask about?** `--open` and `--bare` narrow it.

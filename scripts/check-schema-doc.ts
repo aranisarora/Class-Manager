@@ -5,7 +5,7 @@
  *
  * WHY
  * -----------------------------------------------------------------------------
- * Almost every SQL defect found on 17 Aug 2026 (conversation-rules.md Part 6) was
+ * Almost every SQL defect found on 17 Aug 2026 (the 17 Aug SQL pass; see `findings/CLOSED.md`) was
  * the same defect: `SCHEMA_DOC` said something the database does not say, or did
  * not say something the database enforces. A column that is NOT NULL and unmarked,
  * a view under the wrong schema, a column that does not exist at all — each one

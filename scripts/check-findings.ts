@@ -1,307 +1,189 @@
 /**
- * check-findings — does the ledger agree with itself about what is still broken?
+ * check-findings — does `findings/` agree with itself about what is broken?
  *
  *   npm run check:findings
  *
  * WHY THIS EXISTS
  * -----------------------------------------------------------------------------
  * On 20 Aug 2026 `npm run findings` reported 38 of 43 findings open. The ledger's
- * own "Closed by the architecture pass" table named 20 of those as closed, each
- * with the mechanism that closed it, and all 20 were verified present and wired:
+ * own closed tables named 29 of those as closed, each with the mechanism that
+ * closed it, and every one verified present and reachable in code:
  *
- *   F-C  F-E  F-G  F-AF F-AG F-AJ F-AN F-AO F-AP F-AQ
- *   F-AS F-AT F-AW F-AX F-AY F-AZ F-BH F-BI F-BJ F-BK
+ *   F-C  F-E  F-G  F-AF F-AG F-AJ F-AM F-AN F-AO F-AP F-AQ F-AS F-AT F-AV F-AW
+ *   F-AX F-AY F-AZ F-BH F-BI F-BJ F-BK F-BM F-BN F-BO F-BP F-BQ F-BR F-BS F-BT
  *
- * `_findings.ts` reads status from the `### F-XX ·` heading, on purpose, and says
- * why: the table "has fallen out of step with the headings twice; the heading is
- * written when the finding is, and is the more reliable of the two." That
- * assumption inverted. The 17 Aug architecture pass wrote its closures into the
- * TABLE and never touched the HEADINGS, so the tool trusted the stale half and
- * reported twenty shipped mechanisms as outstanding defects.
+ * Status lived in a summary table AND in the headings below it. The 17 Aug
+ * architecture pass wrote its closures into the table and never touched the
+ * headings; `_findings.ts` reads headings, on purpose, and so it trusted the stale
+ * half. The cost was not tidiness: `npm run findings` is the first move an agent
+ * asked to analyse a bad run makes, and it handed back a to-do list of shipped
+ * work — `context_query` validation (F-AP), message `stateKey` (F-AN), event-text
+ * filling (F-AZ), all built.
  *
- * The cost of that is not tidiness. `npm run findings` is the first move an agent
- * asked to analyse a bad run makes, and it was handing back a list of defects
- * that were already built — which is why analysis kept proposing `context_query`
- * validation (F-AP, built), message `stateKey` (F-AN, built) and event-text
- * filling (F-AZ, built). The agent was reporting what the repo told it.
- *
- * Three more defects sat in the same file, all invisible to `_findings.ts`:
- *
- *   - `F-BA` and `F-BB` appeared only in a table, with no `###` heading. The
- *     parser reads headings, so neither existed as far as any coverage check knew.
- *   - `F-I` and `F-BL` were each used twice for different defects. The parser
- *     dedupes by code, so the second of each was silently dropped.
- *   - `F-BH` was assigned to two unrelated defects — `business_rule` having no
- *     reader (Part 7) and a definer view missing `full_name` (Part 8).
+ * The shape is what fixed it, not this program. A finding's status is now WHICH
+ * FILE IT IS IN — `OPEN.md` or `CLOSED.md` — so there is no second copy to fall
+ * out of step with. This exists to keep that property true.
  *
  * WHAT IT ASSERTS
  * -----------------------------------------------------------------------------
- *   1. No code is claimed both open and closed.
- *   2. Every code named in a status table has a `###` heading.
- *   3. No code is used for two different findings.
- *   4. Heading status and table status agree.
- *   5. Every heading's code is accounted for in some status table.
+ *   1. No code appears in both `OPEN.md` and `CLOSED.md`.
+ *   2. No code is used twice inside either file.
+ *   3. Every code named in `DECIDED.md` is open — a deliberate non-fix is still a
+ *      defect, and one that quietly moved to CLOSED is the failure this repo keeps
+ *      re-learning.
+ *   4. It actually parsed something.
  *
- * It reads one markdown file and nothing else, so like `check-layout` it is safe
- * anywhere and cheap enough to run before the instruments rather than after.
+ * It reads three markdown files and nothing else, so like `check-layout` it is
+ * safe anywhere and cheap enough to run before the instruments rather than after.
  *
  * WHAT IT DOES NOT ASSERT
  * -----------------------------------------------------------------------------
- * Nothing here judges whether a finding is *actually* fixed. A heading marked
- * closed is a person's claim, and this only checks the file states that claim
- * once. Whether the mechanism exists and is reachable is a code question; whether
- * the behaviour happens is a drive question. Per `docs/JUDGING.md`, no instrument
- * in this repo scores anything, and this one does not start.
+ * Nothing here judges whether a finding is really fixed. A row in `CLOSED.md` is a
+ * person's claim; whether the mechanism exists and is reachable is a code question
+ * (`check:mechanisms` asks part of it), and whether the behaviour happens is a
+ * drive question. Per `docs/JUDGING.md`, no instrument in this repo scores
+ * anything, and this one does not start.
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { c } from './_env'
-import { readFindings, renderOpen } from './_findings'
 
-const LEDGER = join('findings', 'conversation-rules.md')
-
-type Row = { code: string; line: number; state: 'open' | 'closed'; where: string }
-type Head = { code: string; line: number; state: 'open' | 'closed'; title: string }
+const OPEN = join('findings', 'OPEN.md')
+const CLOSED = join('findings', 'CLOSED.md')
+const DECIDED = join('findings', 'DECIDED.md')
 
 const problems: string[] = []
 const notes: string[] = []
 
-const path = join(process.cwd(), LEDGER)
-if (!existsSync(path)) {
-  console.log(c.red(`\n  ${LEDGER} is missing — the ledger is the thing this checks.\n`))
-  process.exit(1)
+/** Split on either terminator: `core.autocrlf` is on, so a fresh checkout is CRLF. */
+const lines = (p: string): string[] =>
+  existsSync(join(process.cwd(), p)) ? readFileSync(join(process.cwd(), p), 'utf8').split(/\r?\n/) : []
+
+type Hit = { code: string; line: number }
+
+/** `### F-BA · <title>` — a finding that is open, with its detail under it. */
+function headings(p: string): Hit[] {
+  const out: Hit[] = []
+  lines(p).forEach((l, i) => {
+    const m = l.match(/^#{2,4}\s+(F-[A-Z]+)\s*·/)
+    if (m) out.push({ code: m[1] as string, line: i + 1 })
+  })
+  return out
 }
-/**
- * Split on either terminator and keep neither.
- *
- * `git config core.autocrlf` is true on the machine this was written on, so a
- * fresh checkout of this file arrives with CRLF. A trailing `\r` is a line
- * terminator to a JavaScript regex, which means `$` will not match after it and
- * every `^#{2,4}…$` heading silently stops matching — the checker reported "0
- * findings · the ledger agrees with itself" against a ledger with 46 headings and
- * 26 disagreements. A checker that passes because it read nothing is the exact
- * failure it exists to catch.
- */
-const lines = readFileSync(path, 'utf8').split(/\r?\n/)
+
+/** `| **F-AN** | <title> | <when> |` — a finding that is closed, one line only. */
+function rows(p: string): Hit[] {
+  const out: Hit[] = []
+  lines(p).forEach((l, i) => {
+    const m = l.match(/^\s*\|\s*\*{0,2}(F-[A-Z]+)\*{0,2}\s*\|/)
+    if (m) out.push({ code: m[1] as string, line: i + 1 })
+  })
+  return out
+}
+
+const openHits = headings(OPEN)
+const closedHits = rows(CLOSED)
 
 /* -------------------------------------------------------------------------- *
- * Parse: headings, and the status tables they sit under
+ * 1 · No code in both files
  * -------------------------------------------------------------------------- *
  *
- * A status table is a markdown table appearing under a heading that declares a
- * state — "What is open right now", "Closed 17 Aug 2026, by the architecture
- * pass", "Still open". Every other table in the file (there are many: schema
- * grids, cost tables, drive results) is not a status claim and is skipped, which
- * is why the state comes from the enclosing heading rather than from the row.
+ * The single property the whole shape rests on. If a code can be in both, status
+ * is written down twice, and the two copies are exactly what diverged before.
  */
-const rows: Row[] = []
-const heads: Head[] = []
-
-/** The enclosing heading's state claim, or null if this heading makes none. */
-function tableState(heading: string): 'open' | 'closed' | null {
-  const h = heading.toLowerCase()
-  if (/\bclosed\b/.test(h)) return 'closed'
-  if (/\bopen\b/.test(h)) return 'open'
-  return null
-}
-
-let section = ''
-let sectionState: 'open' | 'closed' | null = null
-
-for (let i = 0; i < lines.length; i++) {
-  const line = lines[i] as string
-  const no = i + 1
-
-  const h = line.match(/^(#{2,4})\s+(.*)$/)
-  if (h) {
-    const text = (h[2] as string).trim()
-
-    // `### F-AU · <title>` — a finding's own heading, and the state it declares.
-    const f = text.match(/^(F-[A-Z]+)\s*·\s*(.+)$/)
-    if (f) {
-      const code = f[1] as string
-      const title = (f[2] as string).trim()
-      heads.push({
-        code,
-        line: no,
-        state: /\*\*(closed|fixed)\b/i.test(title) ? 'closed' : 'open',
-        title: title.replace(/\s*—?\s*\*\*(closed|fixed)[^*]*\*\*\s*$/i, '').trim(),
-      })
-      // A finding heading is not a status-table heading; keep the enclosing one.
-      continue
-    }
-
-    section = text
-    sectionState = tableState(text)
-    continue
-  }
-
-  /**
-   * A table row under a state-declaring heading: `| **F-AU** | … |`.
-   *
-   * One row may close several findings at once — `| **F-AJ, F-AM** | The verb
-   * lists are gone entirely…` closes two, and `| **F-AO, F-AV** |` two more.
-   * Reading only the first code was this checker's own first bug: it passed four
-   * findings it should have flagged, in a program written to flag exactly that.
-   */
-  if (sectionState && /^\s*\|/.test(line)) {
-    const cell = line.match(/^\s*\|([^|]*)\|/)
-    if (cell) {
-      for (const m of (cell[1] as string).matchAll(/\bF-[A-Z]+\b/g)) {
-        rows.push({ code: m[0], line: no, state: sectionState, where: section })
-      }
-    }
-  }
-}
-
-/* -------------------------------------------------------------------------- *
- * 1 · No code claimed both open and closed
- * -------------------------------------------------------------------------- */
-const byCode = new Map<string, Row[]>()
-for (const r of rows) byCode.set(r.code, [...(byCode.get(r.code) ?? []), r])
-
-for (const [code, rs] of byCode) {
-  const states = new Set(rs.map((r) => r.state))
-  if (states.size > 1) {
-    const at = rs.map((r) => `${r.state} at :${r.line} (${r.where})`).join(' / ')
-    problems.push(`${code} is claimed both open and closed — ${at}`)
-  }
-}
-
-/* -------------------------------------------------------------------------- *
- * 2 · Every code in a status table has a heading
- * -------------------------------------------------------------------------- */
-const headCodes = new Set(heads.map((h) => h.code))
-for (const [code, rs] of byCode) {
-  if (!headCodes.has(code)) {
+const closedBy = new Map(closedHits.map((h) => [h.code, h]))
+for (const o of openHits) {
+  const cl = closedBy.get(o.code)
+  if (cl) {
     problems.push(
-      `${code} is in a status table (:${rs[0]!.line}, ${rs[0]!.where}) but has no "### ${code} ·" ` +
-        `heading — every reader of this ledger parses headings, so it is invisible to all of them`,
+      `${o.code} is in both files — open at ${OPEN}:${o.line} and closed at ${CLOSED}:${cl.line}. ` +
+        `A finding's status is which file it is in, so it cannot be in both.`,
     )
   }
 }
 
 /* -------------------------------------------------------------------------- *
- * 3 · No code used for two different findings
+ * 2 · No code used twice inside one file
  * -------------------------------------------------------------------------- *
  *
  * Two headings with one code is not a formatting slip. `_findings.ts` dedupes by
- * code, so the second finding is dropped from every coverage table without ever
- * saying so — it does not read as missing, it reads as absent.
+ * code, so the second finding is dropped from every coverage table without saying
+ * so — it does not read as missing, it reads as absent. F-I and F-BL were each
+ * doing this, and F-BH named two unrelated defects at once.
  */
-const headsByCode = new Map<string, Head[]>()
-for (const h of heads) headsByCode.set(h.code, [...(headsByCode.get(h.code) ?? []), h])
-
-for (const [code, hs] of headsByCode) {
-  if (hs.length < 2) continue
-  const titles = new Set(hs.map((h) => h.title.toLowerCase()))
-  const at = hs.map((h) => `:${h.line} "${h.title.slice(0, 46)}"`).join('  ·  ')
-  if (titles.size > 1) {
-    problems.push(`${code} names ${hs.length} different findings — ${at}. One of them is unreachable.`)
-  } else {
-    notes.push(`${code} has ${hs.length} headings with the same title (${at}) — later ones are dropped`)
+for (const [file, hits] of [
+  [OPEN, openHits],
+  [CLOSED, closedHits],
+] as const) {
+  const byCode = new Map<string, Hit[]>()
+  for (const h of hits) byCode.set(h.code, [...(byCode.get(h.code) ?? []), h])
+  for (const [code, hs] of byCode) {
+    if (hs.length > 1) {
+      problems.push(`${code} appears ${hs.length}× in ${file} (lines ${hs.map((h) => h.line).join(', ')})`)
+    }
   }
 }
 
 /* -------------------------------------------------------------------------- *
- * 4 · Heading status and table status agree
- * -------------------------------------------------------------------------- */
-for (const [code, rs] of byCode) {
-  const hs = headsByCode.get(code)
-  if (!hs?.length) continue
-  const tableState = rs[0]!.state
-  const headState = hs[0]!.state
-  if (new Set(rs.map((r) => r.state)).size > 1) continue // already reported by 1
-  if (tableState !== headState) {
+ * 3 · Everything DECIDED.md names is still open
+ * -------------------------------------------------------------------------- *
+ *
+ * `DECIDED.md` is the expensive file: each entry is a defect somebody proved the
+ * obvious fix would make worse. A decision not to fix is not a fix, so its code
+ * belongs in `OPEN.md`. If one drifts into `CLOSED.md` the reasoning becomes
+ * invisible at exactly the moment somebody is about to redo the work.
+ */
+const openCodes = new Set(openHits.map((h) => h.code))
+const decided = new Set<string>()
+for (const l of lines(DECIDED)) {
+  const m = l.match(/^#{2,3}\s+(F-[A-Z]+)\s*·/)
+  if (m) decided.add(m[1] as string)
+}
+for (const code of decided) {
+  if (!openCodes.has(code)) {
     problems.push(
-      `${code}: the table says ${tableState} (:${rs[0]!.line}, ${rs[0]!.where}) but the heading ` +
-        `says ${headState} (:${hs[0]!.line}). \`npm run findings\` reads the heading.`,
+      `${code} has an entry in ${DECIDED} but is not open in ${OPEN}. A deliberate non-fix is ` +
+        `still a defect; if it really was fixed, delete its ${DECIDED} entry and say what closed it.`,
     )
   }
 }
 
 /* -------------------------------------------------------------------------- *
- * 5 · Every heading is accounted for in some status table
- * -------------------------------------------------------------------------- *
- *
- * A note rather than a failure: findings are written into a Part as they are
- * found, and reaching the summary table is a separate motion. But a finding that
- * never reaches one is a finding nobody is tracking, which is how F-BU and F-BV
- * sat unstaged.
- */
-for (const [code, hs] of headsByCode) {
-  if (byCode.has(code)) continue
-  if (hs[0]!.state === 'closed') continue // closed in place, never tabled — fine
-  notes.push(`${code} (:${hs[0]!.line}) is open but appears in no status table`)
-}
-
-/* -------------------------------------------------------------------------- *
- * 6 · findings/OPEN.md still says what the ledger says
- * -------------------------------------------------------------------------- *
- *
- * `OPEN.md` is the short list people and agents actually read, generated from
- * this ledger. The moment it is generated it becomes a second copy of one fact,
- * which is the failure mode this whole file is repairing — so it gets the same
- * treatment as `docs/MECHANISMS.md`: regenerate, byte-compare, fail on drift.
- * Closing a finding without regenerating leaves the read surface claiming a
- * defect that is fixed, which is exactly how this started.
- */
-{
-  const openPath = join(process.cwd(), 'findings', 'OPEN.md')
-  const rendered = renderOpen(readFindings())
-  const current = existsSync(openPath) ? readFileSync(openPath, 'utf8').replace(/\r\n/g, '\n') : ''
-  if (!current) {
-    notes.push('findings/OPEN.md does not exist yet — run `npm run findings -- --write`')
-  } else if (current !== rendered) {
-    problems.push(
-      'findings/OPEN.md is out of date — the ledger changed and the read surface did not. ' +
-        'Run `npm run findings -- --write`.',
-    )
-  }
-}
-
-/* -------------------------------------------------------------------------- *
- * 7 · This program actually read something
+ * 4 · This program actually read something
  * -------------------------------------------------------------------------- *
  *
  * Every assertion above is of the form "nothing disagrees", and all of them hold
- * vacuously against an empty parse. This one is not paranoia: the CRLF bug noted
- * at `lines` made every heading regex miss, and the run printed "the ledger agrees
- * with itself" in green while the ledger held 26 disagreements. A silent pass is
- * the worst outcome a checker has, so the parse states its own floor.
+ * vacuously against an empty parse. Not paranoia: an earlier version of this file
+ * split on '\n' against a CRLF checkout, every heading regex missed, and it printed
+ * "the ledger agrees with itself" in green over 26 real disagreements. A silent
+ * pass is the worst outcome a checker has, so the parse states its own floor.
  */
-if (heads.length === 0) {
+if (!openHits.length && !closedHits.length) {
   problems.push(
-    `no "### F-XX ·" headings parsed out of ${lines.length} lines — this program read nothing, ` +
-      `so every check below it passed vacuously. Suspect the parse, not the ledger.`,
+    `parsed no findings out of ${OPEN} and ${CLOSED} — this program read nothing, so every check ` +
+      `above passed vacuously. Suspect the parse, not the findings.`,
   )
-} else if (rows.length === 0) {
-  notes.push('no status-table rows parsed — the summary tables may have been renamed or removed')
 }
 
 /* -------------------------------------------------------------------------- *
  * The verdict
  * -------------------------------------------------------------------------- */
-const openCount = heads.filter((h) => h.state === 'open').length
 console.log(
-  c.dim(
-    `\n  ${heads.length} findings · ${openCount} open by heading · ` +
-      `${byCode.size} tabled · ${rows.length} table rows read`,
-  ),
+  c.dim(`\n  ${openHits.length} open · ${closedHits.length} closed · ${decided.size} decided-not-to-fix`),
 )
 for (const n of notes) console.log(c.yellow(`  note: ${n}`))
 
 if (!problems.length) {
-  console.log(c.green('\n  the ledger agrees with itself.\n'))
+  console.log(c.green('\n  findings/ agrees with itself.\n'))
   process.exit(0)
 }
-console.log(c.red(`\n  ${problems.length} disagreement(s) inside the ledger:\n`))
+console.log(c.red(`\n  ${problems.length} disagreement(s):\n`))
 for (const p of problems) console.log(c.red(`  ✗ ${p}`))
 console.log(
   c.dim(
-    '\n  A ledger that disagrees with itself is worse than no ledger: `npm run findings`\n' +
-      '  is the first thing an agent reads before analysing a run, and a finding wrongly\n' +
-      '  listed open is a fix it will propose again — already built, already shipped.\n',
+    '\n  A findings list that disagrees with itself is worse than none: `npm run findings` is\n' +
+      '  the first thing an agent reads before analysing a run, and a finding wrongly listed\n' +
+      '  open is a fix it will propose again — already built, already shipped.\n',
   ),
 )
 process.exit(1)

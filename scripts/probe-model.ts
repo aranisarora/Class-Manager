@@ -142,7 +142,7 @@ const STARTED = new Date().toISOString()
 /**
  * Which arc to walk. `arc` is the lifecycle sweep; `f-o` is the regression suite
  * for the findings the month drive raised and the 15 Aug commits claim to have
- * fixed (findings-archive.md F-O).
+ * fixed (F-O, `findings/CLOSED.md`).
  *
  * A suite is a list of cases, and the F-O one REUSES the arc's setup cases by
  * reference rather than restating them: a regression case about cancelling a
@@ -786,7 +786,7 @@ const FO_CASES: Case[] = [
 
 /* ========================================================================== *
  * The F-Q regression suite — the month-drive re-read of 16 Aug 2026
- * (findings-archive.md F-Q). Every case reproduces something the drive did
+ * (F-Q, `findings/CLOSED.md`). Every case reproduces something the drive did
  * wrong that the F-O suite could not see, and asks whether this pass's fixes
  * hold under the real loop.
  * ========================================================================== */
@@ -2457,7 +2457,7 @@ const STRESS_WEEK_CASES: Case[] = [
  * questions it does not ask spliced in at the points where the world can
  * already answer them.
  *
- * Both are open rows in `conversation-rules.md` that no suite has ever driven:
+ * Both are open rows in `findings/OPEN.md` that no suite has ever driven:
  * F-BA, because nothing in the month ever asks for a register to be marked LATE
  * (`st-coach-register` marks one from the floor, through the protocol), and
  * F-BG, because `st-watch-again` asks for a second watch rather than asking what

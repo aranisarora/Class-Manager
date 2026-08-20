@@ -33,7 +33,7 @@ fired inside an answer that had already said it never sees an image. `/it worked
 The general shape: a pattern over prose is negation-blind, so it cannot tell asserting a
 thing from ruling it out, and those are opposite turns. A query over the world is honest
 but narrow — it answers the question its author thought of in advance, and every finding in
-`conversation-rules.md` came from somewhere else. And a green column is read as a pass
+`findings/` came from somewhere else. And a green column is read as a pass
 however carefully the note beside it says otherwise.
 
 **You are the instrument. Read the turns.**
@@ -83,7 +83,7 @@ node scripts/judge-feed.mjs --academy "Smash Badminton"   # live, mid-drive
 And before deciding a run was thorough, ask what it never asked about:
 
 ```bash
-npm run findings           # every F-xx in conversation-rules.md, and what stages it
+npm run findings           # every F-xx in findings/, and what stages it
 npm run findings -- --bare # the ones no instrument asks about at all
 ```
 
@@ -265,7 +265,7 @@ measurement can always be joined.
 
 Only `n`, `score` and `reason` are required. Write `axes` where the breakdown is the
 interesting part, and `finding` where a turn re-stages something already in
-`conversation-rules.md` — that is what makes a recurrence visible across runs.
+`findings/OPEN.md` — that is what makes a recurrence visible across runs.
 
 `scripts/judge.mjs` writes the same file from a judge model when there is nobody free to
 read. It is interchangeable with a person's, deliberately: a machine verdict can be

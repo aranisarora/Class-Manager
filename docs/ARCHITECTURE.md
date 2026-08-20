@@ -3,7 +3,7 @@
 The shape of the product, why it is shaped that way, and where any new thing belongs.
 
 `product-spec.md` says what the product does. `DRIVING.md` says how to find out whether it
-does it. `PREFIX-RULES.md` governs the prompt. `conversation-rules.md` holds what is currently
+does it. `PREFIX-RULES.md` governs the prompt. `findings/OPEN.md` holds what is currently
 broken. **This file governs the shape** — read it before you build any capability, add any
 table, write any guard, or create any new way for a message to reach a person.
 

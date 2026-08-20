@@ -7,8 +7,24 @@ already handles it, and it exists because the alternative — reading the brain 
 209,000 tokens for `lib/agent` alone and still leaves you guessing, since a mechanism is
 rarely named after the defect it retires.
 
-If you are about to propose a fix, find it here first. Twenty of the last twenty analysis
-proposals named mechanisms that had already shipped.
+If you are about to propose a fix, look for it here first. On 20 Aug 2026 `npm run findings`
+reported 38 findings open and **29 of them were already built** — the ledger said so in a table
+nothing parsed. Analysis kept proposing `context_query` validation (F-AP), message `stateKey`
+(F-AN) and event-text filling (F-AZ), all shipped.
+
+## Adding to this file
+
+Tag the mechanism where it lives, in a block comment beside the code:
+
+```
+ * @mechanism <realSymbol> — <what it does, and the class of defect it retires>.
+ *   <continuation lines indented, same comment block, no blank comment line inside>
+ *   Closes F-XX.
+```
+
+The name must be a symbol that really appears in that file — the build rejects an invented one.
+`Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
+exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
 136 mechanisms · 15 findings closed by one · 11 findings still open
 

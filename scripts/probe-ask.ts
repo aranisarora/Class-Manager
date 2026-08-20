@@ -40,7 +40,7 @@
  * a live academy, and every extra fact in it is a fact the model did not have to
  * derive. What is under test is the PREFIX.
  *
- * Scenarios marked (F-xx) are real, from `conversation-rules.md`. Each is a thing that
+ * Scenarios marked (F-xx) are real, from `findings/OPEN.md` and `findings/CLOSED.md`. Each is a thing that
  * actually went wrong, replayed as a question rather than a drive.
  *
  * NOTHING HERE GRADES ANYTHING
@@ -110,7 +110,7 @@ type Q = {
   /** What this scenario is FOR — the thing a reader should be looking for in the answer. */
   note: string
   /**
-   * The ledger entry this scenario re-stages, from `conversation-rules.md`.
+   * The ledger entry this scenario re-stages, from `findings/`.
    *
    * Declared rather than inferred from the note, so `npm run findings` can say
    * which findings no instrument asks about — the list that has been the source of

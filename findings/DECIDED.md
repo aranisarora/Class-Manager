@@ -26,7 +26,7 @@ row saying the deletion happened — so the nightly job cannot tell "never assig
 
 **Why the obvious fix was refused.** Adding a tombstone column to `session_coach` touches
 **about thirty readers, six of them RLS** — counted 20 Aug against HEAD, listed in
-[the ledger](./conversation-rules.md#f-bl-session_coach-cannot-record-a-removal). A partial
+[OPEN.md](./OPEN.md#f-bl--session_coach-cannot-record-a-removal). A partial
 application **fails open**: miss one security helper and a coach sees sessions they were removed
 from. The design comparison in Part 9 notes the shape that would be idiomatic *"in a codebase
 where `session_coach` had five readers; it has thirty."*
