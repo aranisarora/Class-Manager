@@ -1,0 +1,63 @@
+{
+  "name": "Ace Tennis Academy",
+  "category": "tennis",
+  "timezone": "Asia/Kolkata",
+  "admin": { "name": "Rahul Menon", "coaches": true },
+  "coaches": [
+    { "name": "Arjun Shetty", "pay": 600, "unit": "per_session" },
+    { "name": "Priya Nair", "pay": 9000, "unit": "per_month" }
+  ],
+  "clients": [
+    { "name": "Divya Rao", "children": ["Anika Rao"] },
+    { "name": "Meera Iyer", "children": ["Vivaan Iyer"] },
+    { "name": "Sanjay Gupta", "children": ["Ishaan Gupta", "Riya Gupta"] },
+    { "name": "Latha Krishnan", "children": ["Tara Krishnan"] }
+  ],
+  "prospects": [
+    { "name": "Kavita Shah" },
+    { "name": "Nikhil Bose" },
+    { "name": "Farah Sheikh" }
+  ],
+  "classes": [
+    {
+      "name": "Morning Juniors",
+      "days": ["mon", "wed"],
+      "from": "07:00",
+      "to": "08:00",
+      "rate": 900,
+      "unit": "per_month",
+      "coaches": ["Rahul Menon"],
+      "enrolled": ["Vivaan Iyer", "Riya Gupta"]
+    },
+    {
+      "name": "Evening Batch",
+      "days": ["mon", "thu"],
+      "from": "18:00",
+      "to": "19:00",
+      "rate": 2400,
+      "unit": "per_month",
+      "coaches": ["Arjun Shetty"],
+      "enrolled": ["Anika Rao", "Ishaan Gupta"]
+    },
+    {
+      "name": "Adult Beginners",
+      "days": ["tue", "fri"],
+      "from": "19:30",
+      "to": "20:30",
+      "rate": 1800,
+      "unit": "per_month",
+      "coaches": ["Priya Nair"],
+      "enrolled": []
+    },
+    {
+      "name": "Weekend Squad",
+      "days": ["sat"],
+      "from": "09:00",
+      "to": "10:30",
+      "rate": 1200,
+      "unit": "per_month",
+      "coaches": ["Priya Nair", "Rahul Menon"],
+      "enrolled": ["Tara Krishnan"]
+    }
+  ]
+}

@@ -196,6 +196,7 @@ app/emulator/             the world, tray, panes, clock, event log, faults
 app/api/                  the Meta webhook, the emulator API, the ops gate, the cron tick
 components/emulator/      the phone, rendered
 supabase/migrations/      the schema — RLS on every table
+worlds/                   hand-written academies to drive — `worlds/README.md` is the format
 scripts/                  the instruments and the checks — `scripts/README.md` indexes them
 scripts/drive.ts          the harness — talk to it, then read the tables back
 ```

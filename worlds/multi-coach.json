@@ -1,0 +1,42 @@
+{
+  "name": "Smash Badminton Academy",
+  "category": "badminton",
+  "admin": { "name": "Nisha Balakrishnan", "coaches": true },
+  "coaches": 4,
+  "clients": 6,
+  "prospects": 2,
+  "classes": [
+    {
+      "name": "Under-10 Beginners",
+      "days": ["mon", "wed"],
+      "from": "16:30",
+      "to": "17:30",
+      "rate": 1500,
+      "enrolled": 3
+    },
+    {
+      "name": "Under-14 Intermediate",
+      "days": ["tue", "thu"],
+      "from": "17:30",
+      "to": "18:45",
+      "rate": 2200,
+      "enrolled": 2
+    },
+    {
+      "name": "Evening Adults",
+      "days": ["mon", "wed", "fri"],
+      "from": "19:00",
+      "to": "20:00",
+      "rate": 1800,
+      "coaches": ["Nisha Balakrishnan"]
+    },
+    {
+      "name": "Saturday Squad",
+      "days": ["sat"],
+      "from": "08:00",
+      "to": "10:00",
+      "rate": 1200,
+      "enrolled": 1
+    }
+  ]
+}

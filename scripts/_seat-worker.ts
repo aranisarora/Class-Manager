@@ -101,6 +101,7 @@ const { readTurns } = await import('./_derive')
 const { inboundFromContact } = await import('@/lib/seed')
 
 type PersonaKey = import('./_personas').PersonaKey
+type Persona = import('./_personas').Persona
 type Window = import('./_personas').Window
 type SeatAction = import('./_persona-agent').SeatAction
 type Usage = import('@/lib/agent/deepseek').GenResult['usage']
@@ -162,9 +163,30 @@ const KEY = arg('persona') as PersonaKey
 const MODEL = arg('model')
 const SEED = arg('seed')
 
-const persona = PERSONAS[KEY]
+/**
+ * Who is sitting here — the four by name, and everybody else out of the run.
+ *
+ * `PERSONAS` holds the canonical four and can never hold anybody else: a spec
+ * world's seats are composed at run time by `briefsFromWorld`, and their keys
+ * (`admin-nisha-balakrishnan`) are derived from a JSON file that did not exist
+ * when this module was written. `drive-week.ts` writes every seat of the run —
+ * both worlds, one shape, keyed the same way `session.json.contacts` is — to
+ * `briefs.json` BEFORE it spawns the first worker, precisely so this lookup has
+ * somewhere to go. Without the fallback a `--world` run dies here, every seat at
+ * once, with a message naming the four people who are not in it.
+ */
+const persona: Persona =
+  PERSONAS[KEY] ??
+  (
+    JSON.parse(
+      await readFile(join(DIR, 'briefs.json'), 'utf8').catch(() => '{}'),
+    ) as Record<string, Persona>
+  )[KEY]
 if (!persona) {
-  console.error(`  _seat-worker: no such seat ${KEY}. One of ${Object.keys(PERSONAS).join(', ')}`)
+  console.error(
+    `  _seat-worker: no such seat ${KEY}. One of ${Object.keys(PERSONAS).join(', ')}, ` +
+      `or a seat in ${join(DIR, 'briefs.json')}.`,
+  )
   process.exit(2)
 }
 
@@ -302,6 +324,10 @@ async function move(ask: Ask): Promise<Told> {
       kind: actionId ? 'tap' : 'say',
       window: ask.window,
       intent: m.intent,
+      // Named here rather than looked up there: this seat may be the ninetieth
+      // person in a world spec, and `PERSONAS` holds four. See `drive()`.
+      who: persona.name,
+      seat: persona.seat,
       // An object rather than a sentence: the action is evidence about the person
       // and there is no field on a turn that holds it. `personaReasoning` is
       // `unknown` precisely so a driver does not have to clip what it knows.

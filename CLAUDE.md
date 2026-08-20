@@ -16,7 +16,7 @@ belongs.
 | decide where a fix belongs | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the layers, and the trap list |
 | change what the product does | [`docs/product-spec.md`](./docs/product-spec.md) |
 | test, drive, or judge a run | [`docs/DRIVING.md`](./docs/DRIVING.md) — the instruments over one spine, what a run costs before you start it, and how to read one back — then [`docs/JUDGING.md`](./docs/JUDGING.md) |
-| touch anything in `scripts/` | [`scripts/README.md`](./scripts/README.md) — 62 files, four jobs |
+| touch anything in `scripts/` | [`scripts/README.md`](./scripts/README.md) — 63 files, four jobs |
 | record something that broke | [`findings/`](./findings/README.md) — [`OPEN.md`](./findings/OPEN.md) is the status board (generated), [`DECIDED.md`](./findings/DECIDED.md) is what was deliberately not fixed |
 | deploy | [`docs/DEPLOY.md`](./docs/DEPLOY.md) |
 

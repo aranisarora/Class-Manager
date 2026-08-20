@@ -4,6 +4,8 @@
  *   npx tsx scripts/drive-week.ts                      # the whole week, four seats
  *   npx tsx scripts/drive-week.ts --preset smoke       # one window, two seats
  *   npx tsx scripts/drive-week.ts --days 3 --windows morning
+ *   npx tsx scripts/drive-week.ts --world blank        # the owner, alone, day one
+ *   npx tsx scripts/drive-week.ts --world worlds/multi-coach.json
  *   npx tsx scripts/drive-week.ts --arm B --config arms/b.json --budget-inr 250
  *   npx tsx scripts/drive-week.ts gc --hours 6         # reap this driver's stale worlds
  *
@@ -54,6 +56,45 @@
  * literals, three classes, and a comment claiming four. And with four slots the
  * week had nothing at all on Tuesday, Thursday or Friday while the comment beside
  * it said no day was empty. Seven fixtures now, and Sunday is the only quiet day.
+ *
+ * ANY OTHER ACADEMY, AND WHY THE DEFAULT ONE IS STILL BUILT BY HAND
+ * -----------------------------------------------------------------------------
+ * `--world` drives somebody else's business: `blank` is the owner alone the
+ * morning after onboarding, and a path is a spec `scripts/_world-spec.ts` reads.
+ * Without it nothing about this file changes — the same two hundred lines below
+ * build the same tennis club out of `TIMETABLE` and `FAMILIES`.
+ *
+ * That duplication is deliberate and it is the second-cheapest option, not the
+ * cheapest. `worlds/settled-tennis.json` transcribes the canonical world and could
+ * in principle replace the builder below, and the brief for this change said to
+ * prefer that ONLY if the result is identical row for row and only if that is
+ * verified by comparing rather than assumed. It is not verified: nothing has run
+ * both builders against one database and diffed the rows, and the two differ on
+ * paper already — this one derives `+9193` numbers from seven digits of the
+ * academy id and the spec builder derives `+9194` numbers from six, so the
+ * contacts alone are not the same rows. Swapping it on the strength of a
+ * transcription that `worlds/README.md` itself calls the stale copy would put
+ * every `life` string in `_personas.ts` at the mercy of a JSON file nothing
+ * checks. So: the canonical path is untouched, and the spec path is new code
+ * beside it.
+ *
+ * WHO SITS IN A SPEC WORLD'S SEATS
+ * -----------------------------------------------------------------------------
+ * Not these four. Rahul's brief names Ace Tennis Academy, its four classes and its
+ * two coaches; against a badminton club with five coaches every sentence he owns
+ * is false, and a seat arguing from a false premise fabricates defects — which is
+ * the exact class of harness failure `TIMETABLE`'s header describes and which cost
+ * twenty-four corrections on 20 Aug 2026. So a spec world's seats are its own
+ * people: `briefsFromWorld` in `_personas.ts` composes one brief per person out of
+ * the spec the world was built from, so nothing in a brief can contradict the
+ * database. This file writes no persona prose.
+ *
+ * Their week is composed here, because `SCHEDULE` is written for the four by name.
+ * `deriveSchedule` deals a world's own seats across the same windows and asserts
+ * the result is balanced before the run starts, on the same reasoning the
+ * canonical assertion below rests on: a week that gives the owner eleven windows
+ * and a client two reports the owner's experience as though it were the product's,
+ * and the imbalance is invisible in the report it writes.
  *
  * WINDOWS, NOT TURNS
  * -----------------------------------------------------------------------------
@@ -132,13 +173,15 @@ const { withSession } = await import('@/lib/db')
 const { reopenRun, runDir, saveRun, writeSidecar } = await import('./_capture')
 const { readTurns } = await import('./_derive')
 const clock = await import('@/lib/clock')
-const { FAMILIES, INPUT_REALISM, PERSONAS, SCHEDULE, TIMETABLE, WINDOW_AT, windowCounts } =
+const { briefsFromWorld, FAMILIES, INPUT_REALISM, PERSONAS, SCHEDULE, TIMETABLE, WINDOW_AT, windowCounts } =
   await import('./_personas')
 const { RAMP_LIFE, TIERS } = await import('./_ramp')
-const { describeConfig, makeBudget, resolveConfig } = await import('./_drive-config')
+const { CANONICAL_WORLD, BLANK_WORLD, describeConfig, makeBudget, recordedConfig, resolveConfig } =
+  await import('./_drive-config')
 const { costInr } = await import('@/lib/pricing')
 
 type PersonaKey = import('./_personas').PersonaKey
+type Brief = import('./_personas').Brief
 type WindowName = import('./_personas').Window
 type DriveConfig = import('./_drive-config').DriveConfig
 type Ask = import('./_seat-worker').Ask
@@ -159,7 +202,7 @@ const ALL_WINDOWS = Object.keys(WINDOW_AT) as WindowName[]
  */
 const MOVE_TIMEOUT_MS = 15 * 60_000
 
-/** The business. The four base36 characters after it are the run's own token. */
+/** The canonical business. The four base36 characters after it are the run's token. */
 const NAME = 'Ace Tennis Academy'
 /**
  * Every world this driver has made, and nothing else — built from `NAME` so the
@@ -169,6 +212,20 @@ const NAME = 'Ace Tennis Academy'
  */
 const MINE = new RegExp(`^${NAME} [0-9a-z]{4}$`)
 
+/**
+ * The three names in the canonical book with nothing against them, and the seat
+ * key each one answers to.
+ *
+ * A list rather than three `createTestContact` statements only so that
+ * `canonicalLine()` can say "3 prospects" by counting rather than by claiming.
+ * The order is the order their phone numbers are allocated in — see the loop.
+ */
+const PROSPECTS = [
+  { key: 'kavita', name: 'Kavita Shah' },
+  { key: 'nikhil', name: 'Nikhil Bose' },
+  { key: 'farah', name: 'Farah Sheikh' },
+] as const
+
 const NO_SPEND = { promptTokens: 0, outputTokens: 0, cachedTokens: 0 }
 
 /* ========================================================================== *
@@ -177,8 +234,31 @@ const NO_SPEND = { promptTokens: 0, outputTokens: 0, cachedTokens: 0 }
 
 type BuiltWorld = {
   academyId: string
+  academyName: string
+  /** Contact id per SEAT KEY — what `_seat-worker.ts` looks itself up by. */
   contacts: Record<string, string>
   roster: { name: string; role: string; contactId: string; phone: string }[]
+}
+
+/**
+ * Which academy, resolved before a run directory exists.
+ *
+ * Everything expensive is behind `build`. Reading a spec, refusing it, composing
+ * its briefs and dealing its week all happen first, so a misspelled key in a
+ * hand-written file costs a second and leaves nothing behind — never half a world
+ * and then a stack trace, which is a business on a shared sender that nobody
+ * afterwards can prove is dead.
+ */
+type WorldPlan = {
+  /** The reference, exactly as `--world` had it. `canonical` when it was absent. */
+  ref: string
+  /** One English line about the business, for the top of the run and the record. */
+  is: string
+  /** Every seat this world has, keyed as the driver and the worker name them. */
+  briefs: Record<string, Brief>
+  /** Who is at a phone, in which window of which day. */
+  schedule: Record<number, Record<WindowName, string[]>>
+  build(token: string, log: (s: string) => void): Promise<BuiltWorld>
 }
 
 /**
@@ -191,7 +271,7 @@ type BuiltWorld = {
  * exists, and neither says the word "deleted". The token in the name is what makes
  * `gc` able to reap safely later, with an age it can check.
  */
-async function buildWorld(name: string, log: (s: string) => void): Promise<BuiltWorld> {
+async function buildCanonicalWorld(name: string, log: (s: string) => void): Promise<BuiltWorld> {
   const made = await createAcademy({ name, adminName: 'Rahul Menon', timezone: TZ, category: 'tennis' })
   const academyId = made.academyId
   const qq = (sql: string) => q(academyId, sql)
@@ -260,10 +340,18 @@ async function buildWorld(name: string, log: (s: string) => void): Promise<Built
    * cannot exist without a name the product can already read — and the brief that
    * used to say "they do not know your name" was contradicted by the database
    * before she had typed a word.
+   *
+   * A list rather than three statements, so `canonicalLine()` can count them.
+   * Numbers 4, 5 and 6 are the same three numbers the three statements allocated,
+   * and they have to stay contiguous and in this order: a phone here is derived
+   * from the academy id and its index, and moving an index moves a person's
+   * number.
    */
-  const kavita = await createTestContact({ academyId, name: 'Kavita Shah', role: 'prospect', phone: phone(4) })
-  const nikhil = await createTestContact({ academyId, name: 'Nikhil Bose', role: 'prospect', phone: phone(5) })
-  const farah = await createTestContact({ academyId, name: 'Farah Sheikh', role: 'prospect', phone: phone(6) })
+  const prospects = new Map<string, string>()
+  for (const [i, who] of PROSPECTS.entries()) {
+    const made = await createTestContact({ academyId, name: who.name, role: 'prospect', phone: phone(4 + i) })
+    prospects.set(who.key, made.contactId)
+  }
   const meera = await createTestContact({ academyId, name: 'Meera Iyer', role: 'client', phone: phone(7) })
   const sanjay = await createTestContact({ academyId, name: 'Sanjay Gupta', role: 'client', phone: phone(8) })
   const latha = await createTestContact({ academyId, name: 'Latha Krishnan', role: 'client', phone: phone(9) })
@@ -398,14 +486,13 @@ async function buildWorld(name: string, log: (s: string) => void): Promise<Built
 
   return {
     academyId,
+    academyName: name,
     contacts: {
       rahul: made.adminContactId,
       arjun: arjun.contactId,
       priya: priya.contactId,
       divya: divya.contactId,
-      kavita: kavita.contactId,
-      nikhil: nikhil.contactId,
-      farah: farah.contactId,
+      ...Object.fromEntries(prospects),
       meera: meera.contactId,
       sanjay: sanjay.contactId,
       latha: latha.contactId,
@@ -415,13 +502,273 @@ async function buildWorld(name: string, log: (s: string) => void): Promise<Built
 }
 
 /* ========================================================================== *
+ * WHICH WORLD
+ * ========================================================================== */
+
+/** The last day `SCHEDULE` puts anybody at a phone. Seven, read rather than typed. */
+const SCHEDULED_DAYS = Math.max(...Object.keys(SCHEDULE).map(Number))
+
+/**
+ * How thickly the canonical week fills its windows, read off `SCHEDULE`.
+ *
+ * Twenty-four seat turns over fourteen windows — a shade under two people at a
+ * phone at once, which is what a Tuesday evening at a real academy looks like and
+ * is the only density anybody here has driven and read back. A derived week aims
+ * at the same figure rather than at one speaker per window, because concurrent
+ * messages are half of what this instrument is for: a world with eleven people in
+ * it and one speaker per window is a different instrument wearing this one's name.
+ */
+const DENSITY =
+  Object.values(windowCounts(SCHEDULED_DAYS)).reduce((a, b) => a + b, 0) /
+  (SCHEDULED_DAYS * ALL_WINDOWS.length)
+
+/**
+ * The canonical world in one line, in the shape `describeWorld` writes for a spec
+ * world, so two runs' configs can be read beside each other.
+ *
+ * Counted from `TIMETABLE`, `FAMILIES` and `PROSPECTS` — the statements this file
+ * builds its rows out of — rather than typed. A description that disagrees with
+ * the world it describes is the whole failure this change exists to stop, and a
+ * hand-written "four families" was how the last one started.
+ */
+function canonicalLine(): string {
+  const kids = FAMILIES.reduce((a, f) => a + f.children.length, 0)
+  const slots = TIMETABLE.reduce((a, cls) => a + cls.slots.length, 0)
+  // Everybody `class_coach` names, less the owner, who is counted as the owner.
+  const employed = new Set(TIMETABLE.flatMap((cls) => cls.coaches))
+  employed.delete('Rahul Menon')
+  return (
+    `${NAME} (tennis, ${TZ}) — Rahul Menon owns it and coaches, ${employed.size} coaches, ` +
+    `${FAMILIES.length} clients with ${kids} children, ${PROSPECTS.length} prospects, ` +
+    `${TIMETABLE.length} classes over ${slots} sessions a week, ${kids} enrolments.`
+  )
+}
+
+/**
+ * Deal a world's own seats across its windows, evenly, and prove it before the
+ * first sentence is typed.
+ *
+ * `SCHEDULE` gives the canonical four six windows each and `live.ts` asserts it,
+ * because a week that gives the owner eleven windows and a client two reports the
+ * owner's experience as though it were the product's — and three of one drive's
+ * open findings came off a phone with no role attached to it. A spec world has no
+ * hand-written schedule to assert, so this deals one that is balanced by
+ * construction and then checks the construction.
+ *
+ * Turn `t` goes to cell `floor(t·cells/turns)` and to seat `t mod seats`, which
+ * gives every seat exactly the same number of windows and puts consecutive seats
+ * in consecutive turns — so two turns landing in one window are two different
+ * people, which is what the harness needs and what a naive shuffle does not
+ * guarantee. Both facts are asserted below anyway: this file's own history is a
+ * comment claiming a balance the code beneath it did not have.
+ */
+function deriveSchedule(
+  seats: string[],
+  days: number,
+  windows: WindowName[],
+): Record<number, Record<WindowName, string[]>> {
+  if (!seats.length) die('a world with nobody in it cannot be driven')
+  const cells = days * windows.length
+  /**
+   * At most one window per seat per cell — `cells` is the ceiling, and it binds
+   * for a world with one person in it, where the canonical density would put the
+   * owner at his own phone twice in one evening.
+   */
+  const perSeat = Math.min(cells, Math.max(1, Math.round((cells * DENSITY) / seats.length)))
+  const turns = perSeat * seats.length
+
+  const dealt: string[][] = Array.from({ length: cells }, () => [])
+  for (let t = 0; t < turns; t++) {
+    ;(dealt[Math.floor((t * cells) / turns)] as string[]).push(seats[t % seats.length] as string)
+  }
+
+  const counts = new Map<string, number>(seats.map((s) => [s, 0]))
+  dealt.forEach((cell, i) => {
+    const seen = new Set<string>()
+    for (const who of cell) {
+      if (seen.has(who)) {
+        die(`derived schedule puts ${who} at a phone twice in window ${i + 1} of ${cells}`)
+      }
+      seen.add(who)
+      counts.set(who, (counts.get(who) ?? 0) + 1)
+    }
+  })
+  const spread = [...counts.values()]
+  if (Math.max(...spread) !== Math.min(...spread)) {
+    die(
+      `derived schedule is not balanced: ${[...counts].map(([k, v]) => `${v} ${k}`).join(' · ')}`,
+    )
+  }
+  const empty = dealt.filter((cell) => !cell.length).length
+  if (empty) {
+    console.log(
+      c.yellow(
+        `  !  ${empty} of ${cells} windows have nobody at a phone — ${seats.length} seats over ${days} days does not fill them`,
+      ),
+    )
+  }
+
+  const schedule: Record<number, Record<WindowName, string[]>> = {}
+  for (let d = 1; d <= days; d++) {
+    const row = {} as Record<WindowName, string[]>
+    windows.forEach((w, i) => {
+      row[w] = dealt[(d - 1) * windows.length + i] ?? []
+    })
+    schedule[d] = row
+  }
+  return schedule
+}
+
+/**
+ * Read `--world`, refuse it if it is not one, and hand back everything the run
+ * needs before anything exists.
+ *
+ * Nothing here writes a row. A spec that will not parse, a key nobody spelled
+ * right, a `--personas` naming somebody who is not in the file: all of them stop
+ * the process here, before a run directory, before an academy, and therefore
+ * before there is a business on a shared sender that nobody can afterwards prove
+ * is dead.
+ */
+async function planWorld(cfg: DriveConfig): Promise<WorldPlan> {
+  if (cfg.world === CANONICAL_WORLD) {
+    return {
+      ref: CANONICAL_WORLD,
+      is: canonicalLine(),
+      briefs: PERSONAS,
+      schedule: SCHEDULE,
+      build: (token, log) => buildCanonicalWorld(`${NAME} ${token}`, log),
+    }
+  }
+
+  /**
+   * Imported here rather than at the top, because a canonical run should not have
+   * to load the spec reader to not use it — and because the failure this branch is
+   * about is a hand-written file, which cannot break a run that named no file.
+   */
+  const { BLANK, buildWorld: buildSpecWorld, describeWorld, loadWorldSpec, validateSpec } =
+    await import('./_world-spec')
+
+  /**
+   * The refusal is printed, not thrown.
+   *
+   * `validateSpec` names the exact path and the exact value — `classes[0].days[0]
+   * — is "tues". One of: sun, mon, tue, …` — and it is a hand-written file that
+   * put it there, so the person who needs that line is at this terminal now.
+   * Thrown, tsx puts it under six frames of `node:internal` and above a
+   * `Node.js v22` banner, which is the precise defect `_drive-config.ts`'s `fail()`
+   * exists to avoid: "the one line that matters ends up under twelve frames of
+   * node internals, in a terminal somebody is about to scroll past." Nothing has
+   * been built at this point, so there is nothing to unwind and no reason to keep
+   * the stack.
+   */
+  let spec: import('./_world-spec').NormalSpec
+  try {
+    spec =
+      cfg.world === BLANK_WORLD ? validateSpec(BLANK, 'the blank world') : await loadWorldSpec(cfg.world)
+  } catch (e) {
+    die((e as Error).message)
+  }
+
+  /**
+   * The briefs come from `_personas.ts` and this file writes none of its own.
+   *
+   * `briefsFromWorld` composes one per person out of the spec the world is built
+   * from, so no sentence in a brief can contradict the database. A loop here would
+   * be a second place to forget the admin or to hand a client's name over with the
+   * coach role — see that function's own header.
+   */
+  const all = briefsFromWorld({ spec, days: cfg.days })
+  const known = new Map(all.map((b) => [b.key, b]))
+  const chosen = cfg.personas.length ? cfg.personas.map((k) => seatIn(known, k, cfg.world)) : all
+
+  return {
+    ref: cfg.world,
+    is: describeWorld(spec),
+    briefs: Object.fromEntries(known),
+    schedule: deriveSchedule(chosen.map((b) => b.key), cfg.days, cfg.windows),
+    async build(token, log): Promise<BuiltWorld> {
+      const built = await buildSpecWorld(spec, { token, log })
+
+      /**
+       * The clock is set AFTER the build, and it is the one thing here that
+       * cannot be done in the right order.
+       *
+       * `_world-spec.ts` says to set the academy's clock first and it is right:
+       * every date it writes is `app.now()` minus an interval. But a clock is a
+       * `sim_clock` row per tenant (0024) and a tenant cannot have one before it
+       * exists, and `buildWorld` is the thing that makes it exist. Setting the
+       * WORLD clock instead would move every other academy in the database,
+       * including one another drive is in the middle of — which is the failure the
+       * per-tenant clock was added to fix.
+       *
+       * So the two historical dates it writes — a class's `starts_on` and an
+       * enrolment's `started_on` — are relative to the world clock rather than to
+       * this academy's Monday, and are therefore up to a week further back than
+       * they would otherwise be. That is harmless: they only have to be in the
+       * past. What is NOT harmless is a world clock wound forward past the week
+       * this run opens on, which would leave a business whose classes have not
+       * started yet and whose week is silent for a reason nothing prints. That is
+       * counted and refused.
+       */
+      const { DateTime } = await import('luxon')
+      let monday = DateTime.now().setZone(spec.timezone).startOf('week').set({ hour: 6, minute: 0, second: 0, millisecond: 0 })
+      if (monday <= DateTime.now().setZone(spec.timezone)) monday = monday.plus({ weeks: 1 })
+      await clock.setTo(monday.toJSDate(), built.academyId)
+      log(`clock set to ${monday.toFormat('EEE d LLL yyyy, HH:mm')} ${spec.timezone}`)
+
+      const zone = spec.timezone.replace(/'/g, "''")
+      const [ahead] = await q<{ n: number }>(
+        built.academyId,
+        `select (select count(*) from class where starts_on > (app.now() at time zone '${zone}')::date)
+              + (select count(*) from enrollment where started_on > (app.now() at time zone '${zone}')::date) as n`,
+      )
+      if (Number(ahead?.n ?? 0) > 0) {
+        die(
+          `${built.academyName} has ${ahead?.n} classes or enrolments that have not started yet — ` +
+            `the world clock was ahead of ${monday.toFormat('d LLL yyyy')} when the world was built. ` +
+            `Wind the shared clock back to real time and run again.`,
+        )
+      }
+
+      const contacts: Record<string, string> = {}
+      for (const b of all) {
+        const id = built.contacts[b.name]
+        if (!id) die(`${b.name} has a brief and no contact in ${built.academyName}`)
+        contacts[b.key] = id as string
+      }
+      return { academyId: built.academyId, academyName: built.academyName, contacts, roster: built.roster }
+    },
+  }
+}
+
+/**
+ * One named seat, or a refusal that lists the ones this world has.
+ *
+ * `--personas` cannot be checked against a spec world until the spec has been
+ * read, so `_drive-config.ts` carries the names through as written and they are
+ * refused here. A name nothing matches is a seat nothing drove, and the run then
+ * looks exactly like the run that was asked for.
+ */
+function seatIn(known: Map<string, Brief>, key: string, world: string): Brief {
+  const found = known.get(key)
+  if (found) return found
+  return die(
+    `--personas: ${world} has no seat "${key}"\n` +
+      `   its seats: ${[...known.keys()].join(', ')}`,
+  )
+}
+
+/* ========================================================================== *
  * THE SEATS
  * ========================================================================== */
 
 type Seat = {
-  key: PersonaKey
+  /** The world's own handle for this person — `divya`, or `client-divya-rao`. */
+  key: string
   /** Ask for one move and wait for it. Starts the child if it is not up. */
   ask(a: Ask): Promise<Told>
+  /** Did this seat sit down? Asked once, before the week, and never again. */
+  ready(): Promise<boolean>
   end(): void
 }
 
@@ -433,7 +780,7 @@ type Seat = {
  * (`_seat-worker.ts`) rather than introducing itself to an academy it has been
  * talking to since Monday.
  */
-function openSeat(key: PersonaKey, dir: string, cfg: DriveConfig): Seat {
+function openSeat(key: string, dir: string, cfg: DriveConfig): Seat {
   let child: ChildProcess | null = null
   let booting: Promise<void> | null = null
   const waiting = new Map<string, (t: Told) => void>()
@@ -494,6 +841,15 @@ function openSeat(key: PersonaKey, dir: string, cfg: DriveConfig): Seat {
 
   return {
     key,
+    /**
+     * Awaited rather than nulled, so `ask` still owns the boot it started. A
+     * child that exited during start-up has already cleared `child` in its own
+     * exit handler, which is what makes this a fact rather than a guess.
+     */
+    async ready(): Promise<boolean> {
+      if (booting) await booting
+      return !!child && child.connected
+    },
     async ask(a: Ask): Promise<Told> {
       if (!child) booting = start()
       if (booting) {
@@ -555,6 +911,16 @@ async function main(): Promise<void> {
   const cfg = resolveConfig(argv)
 
   /**
+   * The world, read and refused before a run directory exists.
+   *
+   * A spec that will not parse or a seat nobody spelled right stops the process
+   * here, having created nothing. The alternative is half a world on a shared
+   * sender that nothing afterwards can prove is dead.
+   */
+  const plan = await planWorld(cfg)
+  const canonical = plan.ref === CANONICAL_WORLD
+
+  /**
    * Balanced by construction, and asserted rather than intended.
    *
    * `windowCounts` reads `SCHEDULE`, which gives each of the four six windows over
@@ -567,17 +933,38 @@ async function main(): Promise<void> {
    * only run making the claim. `--preset smoke` is one window and two seats and is
    * deliberately not balanced; refusing it would be refusing the run somebody asked
    * for on the strength of a promise they did not make.
+   *
+   * A spec world's week has already been through the same assertion, one that
+   * refuses rather than warns — `deriveSchedule` built it, so it is a construction
+   * this file is responsible for rather than a table somebody wrote by hand.
    */
-  const counts = windowCounts(cfg.days)
+  const counts = canonical ? windowCounts(cfg.days) : windowsPerSeat(plan.schedule, cfg)
   const spread = Object.values(counts)
-  const whole = cfg.personas.length === ALL_PERSONAS.length && cfg.windows.length === ALL_WINDOWS.length
+  const whole =
+    canonical && cfg.personas.length === ALL_PERSONAS.length && cfg.windows.length === ALL_WINDOWS.length
   const balance = Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(' · ')
   if (whole && Math.max(...spread) !== Math.min(...spread)) {
     die(`seats are not balanced over ${cfg.days} days: ${balance}`)
   }
 
+  /**
+   * Who is actually driven.
+   *
+   * `cfg.personas` is empty only for a spec world nobody narrowed — the canonical
+   * one always names its four, because `_drive-config.ts` knows them and fills
+   * them in. Empty therefore means everybody this world has.
+   */
+  const driven = new Set<string>(cfg.personas.length ? cfg.personas : Object.keys(plan.briefs))
+  /**
+   * How many of them may be mid-turn together. `cfg.concurrency` is `0` when a
+   * spec world's seats had not been counted yet, and "everybody at once" is what
+   * the default has always meant — see `DriveConfig.concurrency`.
+   */
+  const width = cfg.concurrency || driven.size
+
   console.log(c.bold(`\n  drive-week — ${describeConfig(cfg)}`))
-  console.log(c.dim(`  schedule: ${balance}${whole ? '' : ' (before this run’s filters)'}\n`))
+  console.log(c.dim(`  world:    ${plan.is}`))
+  console.log(c.dim(`  schedule: ${balance}${whole || !canonical ? '' : ' (before this run’s filters)'}\n`))
 
   const dir = await runDir('week')
   /**
@@ -590,9 +977,9 @@ async function main(): Promise<void> {
   // Held to the shape `MINE` matches, so a name this driver writes is always a
   // name `gc` can reap. A world named outside that shape is one nothing reaps.
   const token = /^[0-9a-z]{4}$/.test(tail) ? tail : 'zzzz'
-  const academyName = `${NAME} ${token}`
 
-  const world = await buildWorld(academyName, (m) => console.log(c.dim(`  ${m}`)))
+  const world = await plan.build(token, (m) => console.log(c.dim(`  ${m}`)))
+  const academyName = world.academyName
   const academyId = world.academyId
   const sql = (s: string) => q(academyId, s)
 
@@ -614,19 +1001,25 @@ async function main(): Promise<void> {
     startedAt: new Date().toISOString(),
     academyId,
     note:
-      `One settled week at ${academyName}, driven by persona agents who can see nothing but ` +
-      `their own phone. The owner coaches: Rahul holds an academy_admin row and a coach row ` +
-      `over one person. Nothing is scripted — every sentence was composed by somebody reading ` +
-      `the reply.`,
+      canonical ?
+        `One settled week at ${academyName}, driven by persona agents who can see nothing but ` +
+        `their own phone. The owner coaches: Rahul holds an academy_admin row and a coach row ` +
+        `over one person. Nothing is scripted — every sentence was composed by somebody reading ` +
+        `the reply.`
+      : `One week at ${academyName}, built from ${plan.ref}: ${plan.is} Its seats are its own ` +
+        `people — every brief was composed out of the same spec the rows were built from, so no ` +
+        `sentence in one can contradict the database. Nothing is scripted, and each seat can see ` +
+        `nothing but its own phone.`,
     ...(cfg.arm ? { arm: cfg.arm } : {}),
     variant: {
       days: cfg.days,
       windows: cfg.windows,
-      personas: cfg.personas,
-      concurrency: cfg.concurrency,
+      personas: [...driven],
+      concurrency: width,
       seed: cfg.seed,
       model: cfg.model,
       ramp: cfg.ramp,
+      world: plan.ref,
     },
     turns: [],
   })
@@ -639,22 +1032,74 @@ async function main(): Promise<void> {
    * found them mixed into the turns could not tell the measurement from the
    * intention behind it. Together they are what a second run needs to be the same
    * run: `--config <that file> --seed <that seed>` reproduces the setup.
+   *
+   * `recordedConfig` fills in the two fields that could not be known when the
+   * flags were read — which seats a spec world turned out to have, and therefore
+   * how many of them speak at once — and puts the line the world was described by
+   * beside the reference it came from. A run whose world nobody wrote down cannot
+   * be compared with another, and `worlds/multi-coach.json` is a filename that can
+   * name a different business next month with nothing in either record to say so.
    */
-  await writeSidecar(dir, 'config.json', cfg)
-  await writeSidecar(dir, 'manifest.json', await manifest(cfg, academyId, academyName, dir))
+  await writeSidecar(
+    dir,
+    'config.json',
+    recordedConfig(cfg, { is: plan.is, seats: [...driven], concurrency: width }),
+  )
+  await writeSidecar(dir, 'manifest.json', await manifest(cfg, plan, academyId, academyName, dir))
+  /**
+   * The briefs this run's seats are sitting in, beside the record — and the
+   * handover to the seats themselves.
+   *
+   * One object, keyed by seat key, holding a whole `Persona` per seat, and it has
+   * the same shape for both worlds: `{ rahul: {…}, arjun: {…} }` for the canonical
+   * four, `{ 'admin-nisha-balakrishnan': {…}, … }` for a spec world. That is what
+   * makes it a handover rather than a copy — `_seat-worker.ts` resolves a key
+   * through `PERSONAS`, which holds the four and cannot hold anybody else, so a
+   * seat whose key is not one of the four is read from HERE. Written before the
+   * first seat is spawned, for that reason.
+   *
+   * For the canonical world it is also a copy of something version-controlled and
+   * costs nothing. For a spec world it is the only place the exact text a seat was
+   * handed survives a run, because the spec it was composed from can be edited
+   * tomorrow.
+   */
+  await writeSidecar(dir, 'briefs.json', plan.briefs)
 
   console.log(`  academy  ${academyName} — ${academyId}`)
+  console.log(`  seats    ${[...driven].join(', ')}`)
   console.log(`  record   ${dir}`)
 
   // Sat down before the first window, so a seat's node start-up happens while the
   // timetable below is being materialised rather than inside a turn's stopwatch.
-  const seats = new Map<PersonaKey, Seat>(cfg.personas.map((k) => [k, openSeat(k, dir, cfg)]))
+  const seats = new Map<string, Seat>([...driven].map((k) => [k, openSeat(k, dir, cfg)]))
   // Whatever happens to this process, the seats it started go with it. A week that
   // dies on a bad query would otherwise leave children holding open database
   // connections and an IPC channel to nobody.
   process.on('exit', () => {
     for (const seat of seats.values()) seat.end()
   })
+
+  /**
+   * Did anybody sit down.
+   *
+   * Asked once, here, and never again — a seat that flakes mid-week is already
+   * handled by starting a fresh one at the next window, and refusing the run for
+   * that would cost six days to save one turn. A run in which NOBODY could start
+   * is a different claim: it will walk the whole clock, fire every standing job,
+   * record fourteen queue turns and no seat turns at all, and read afterwards as a
+   * product nobody talked to rather than as a harness that never opened.
+   *
+   * The likeliest cause is a seat key `_seat-worker.ts` cannot resolve. It reads
+   * `PERSONAS` — which holds the canonical four — and `briefs.json` is where the
+   * rest of them are, written above.
+   */
+  const sat = await Promise.all([...seats.values()].map((s) => s.ready()))
+  if (sat.length && !sat.some(Boolean)) {
+    die(
+      `not one of ${[...driven].join(', ')} could sit down — see the seat's own error above.\n` +
+        `   A seat is looked up by key: the four in PERSONAS, and everybody else in ${join(dir, 'briefs.json')}.`,
+    )
+  }
 
   /**
    * Materialise the timetable before anybody speaks, so day 1 is a business with
@@ -667,8 +1112,8 @@ async function main(): Promise<void> {
   console.log(`  clock    ${clock.inZone(await clock.now(academyId), TZ).label} · ${opened.length} jobs\n`)
 
   /** Who has walked out, and when. A departure is an outcome, not a failure. */
-  const departures: { persona: PersonaKey; day: number; window: string; say: string }[] = []
-  const gone = new Set<PersonaKey>()
+  const departures: { persona: string; day: number; window: string; say: string }[] = []
+  const gone = new Set<string>()
   /** What the seats themselves cost, which is not what the product cost. */
   const seatSpend = { inr: 0, prompt: 0, cached: 0, output: 0, moves: 0, failures: 0 }
 
@@ -722,19 +1167,19 @@ async function main(): Promise<void> {
         window: w,
       })
       const at = clock.inZone(await clock.now(academyId), TZ)
-      const active = (SCHEDULE[day]?.[w] ?? []).filter((k) => cfg.personas.includes(k) && !gone.has(k))
+      const active = (plan.schedule[day]?.[w] ?? []).filter((k) => driven.has(k) && !gone.has(k))
       console.log(
         `    ${at.time} ${c.bold(w.padEnd(8))} ${c.dim(`${walked.length} jobs`)}` +
           `  ${c.dim(active.length ? active.join(', ') : '(nobody at a phone)')}`,
       )
 
-      await inFlight(active, cfg.concurrency, async (key) => {
+      await inFlight(active, width, async (key) => {
         const seat = seats.get(key)
         if (!seat) return
         /**
          * `life` is written against `TIMETABLE` and `FAMILIES` in `_personas.ts`,
-         * which is what this world is built from, so a brief cannot name a day or
-         * a person the database does not have.
+         * which is what the canonical world is built from, so a brief cannot name
+         * a day or a person the database does not have.
          *
          * `RAMP_LIFE` overrides it under `--ramp` and is anchored to the same
          * fixtures, but it is NOT covered by that guarantee everywhere: its
@@ -742,8 +1187,15 @@ async function main(): Promise<void> {
          * here writes a closed period — the product bills the open one itself on
          * the first drain, so there is nothing behind it to settle. Read a ramped
          * arrears turn as a harness gap before filing it as a defect.
+         *
+         * A spec world's briefs carry no `life` at all, deliberately — a fever on
+         * Tuesday is narrative and no spec holds one, so a generated life event
+         * would be invention handed to the seat as circumstance. Those seats get
+         * no `today` and the phone says nothing unusual is happening. `--ramp` is
+         * refused outright against a spec world, because `RAMP_LIFE` is keyed by
+         * the four names and every lookup would miss in silence.
          */
-        const today = (cfg.ramp ? RAMP_LIFE[key]?.[day] : undefined) ?? PERSONAS[key].life[day]
+        const today = (cfg.ramp ? RAMP_LIFE[key as PersonaKey]?.[day] : undefined) ?? plan.briefs[key]?.life[day]
         const told = await seat.ask({
           id: `d${day}-${w}-${key}`,
           day,
@@ -880,11 +1332,20 @@ async function main(): Promise<void> {
     days: await readJsonl(join(dir, 'days.jsonl')),
     extra: {
       // The briefs, so a reader can see what each person was TRYING to do before
-      // judging whether they got it.
-      personas: PERSONAS,
+      // judging whether they got it. Every seat the world has, not only the ones
+      // this run drove — a reader comparing two runs of one world needs to see
+      // who was left out of the narrower of them.
+      personas: plan.briefs,
       inputRealism: INPUT_REALISM,
-      schedule: SCHEDULE,
+      schedule: plan.schedule,
       windowAt: WINDOW_AT,
+      /**
+       * The reference, and the line it meant on the day. Named `builtFrom` rather
+       * than `world`, because `close()` already puts the world's closing COUNTS at
+       * the top of the record under that word and two `world` keys a level apart
+       * is a reader asking which one they are looking at.
+       */
+      builtFrom: { ref: plan.ref, is: plan.is },
       roster: world.roster,
       // Every seat move with what the phone showed when it was made. The
       // blindfold, auditable months later rather than promised in a comment.
@@ -947,9 +1408,25 @@ async function main(): Promise<void> {
  * Two guards. The name must carry a run token — a hand-made `Ace Tennis Academy`,
  * `_world.ts`'s, or a business somebody is using is not matched and never will be
  * — and the world must be older than the threshold. A stamp that will not parse or
- * that sits in the future is left alone, which is the safe direction: `app.now()`
- * is the tenant's clock, and a world whose clock was wound forward is a world this
- * has no honest age for.
+ * that sits in the future has no honest age: `app.now()` is the tenant's clock, and
+ * every drive winds it forward, so a world built ten minutes ago is stamped a day
+ * ahead of this process. Any `--hours N` above zero leaves those alone, which is
+ * the safe direction — the world might be one a run is still driving. `--hours 0`
+ * reaps them, because it already reaps a world one second old and is the sentence
+ * "age is not the guard here".
+ *
+ * A SPEC WORLD IS NOT MATCHED BY NAME, AND IS STILL REAPED
+ * -----------------------------------------------------------------------------
+ * `--world worlds/multi-coach.json` builds `Smash Badminton Academy <token>`, and
+ * a name-shaped guard cannot tell that from a real business somebody called that.
+ * The proof is the phone numbers instead: `_world-spec.ts` derives every one of
+ * its contacts as `+9194` + six digits of the academy id, and it chose `94`
+ * precisely so it could never land on `+9199…` (what `createAcademy` and
+ * `createTestContact` allocate) or `+9193…` (what the builder above derives).
+ * Nothing else in this repository writes a `+9194` number, so a world whose admin
+ * has one was built by that builder, from here, and the four-character token on
+ * the end says which run. Both halves are required, so a business that merely ends
+ * in four base36 characters is left alone.
  */
 async function collectGarbage(rest: string[]): Promise<void> {
   const i = rest.findIndex((a) => a === '--hours' || a.startsWith('--hours='))
@@ -957,22 +1434,54 @@ async function collectGarbage(rest: string[]): Promise<void> {
   const hours = i === -1 ? 6 : Number(raw)
   if (!Number.isFinite(hours) || hours < 0) die(`gc --hours takes a number of hours, not "${raw}"`)
 
-  console.log(c.bold(`\n  drive-week gc — worlds matching "${NAME} <token>" older than ${hours}h\n`))
+  console.log(
+    c.bold(
+      `\n  drive-week gc — "${NAME} <token>" and spec worlds on +9194 numbers, older than ${hours}h\n`,
+    ),
+  )
   let dropped = 0
   for (const id of await worldAcademyIds({ refresh: true })) {
     const [row] = await withSession({ role: 'service', academyId: id }, async (tx) =>
-      (await tx`select name, created_at from academy where id = ${id}::uuid`) as unknown as {
+      (await tx`select a.name, a.created_at,
+                       exists (select 1 from contact c
+                                where c.academy_id = a.id and c.phone_e164 like '+9194%') as spec
+                  from academy a where a.id = ${id}::uuid` ) as unknown as {
         name: string
         created_at: string | Date
+        spec: boolean
       }[],
     )
-    if (!row || !MINE.test(row.name)) continue
+    if (!row) continue
+    // Either this driver's own name with a token on it, or a world the spec
+    // builder made — proved by the number block only it allocates from — whose
+    // name also ends in a run token. See the header.
+    if (!MINE.test(row.name) && !(row.spec && /^.+ [0-9a-z]{4}$/.test(row.name))) continue
+    /**
+     * The age is measured against the HOST clock and `created_at` was written by
+     * the TENANT's, which every drive winds forward — so a world made ten minutes
+     * ago reads as twenty-five hours in the FUTURE. `--hours 6` must still leave
+     * that alone: a stamp with no honest age might belong to a run that is still
+     * going, and reaping it mid-week is the exact disaster in the header.
+     *
+     * `--hours 0` is the other sentence. It already means "age is not the guard,
+     * reap everything I can prove is mine" for every world with a readable stamp —
+     * including one a second old — so honouring it for an unreadable one adds no
+     * risk it did not already carry. Without this, `gc` could never reap the worlds
+     * it exists to reap: `--hours 0` printed five academies "kept — -25.6h old"
+     * and dropped nothing, which reads as a clean database and is not one.
+     */
     const ageH = (Date.now() - new Date(row.created_at).getTime()) / 3_600_000
-    if (!(ageH >= hours)) {
-      console.log(c.dim(`  keeping ${row.name} — ${Number.isFinite(ageH) ? `${ageH.toFixed(1)}h old` : 'no readable age'}`))
+    const dated = Number.isFinite(ageH) && ageH >= 0
+    if (dated ? ageH < hours : hours > 0) {
+      console.log(
+        c.dim(
+          `  keeping ${row.name} — ` +
+            (dated ? `${ageH.toFixed(1)}h old` : 'no honest age — its clock is ahead of this one'),
+        ),
+      )
       continue
     }
-    console.log(`  dropping ${row.name} (${ageH.toFixed(1)}h) — ${id}`)
+    console.log(`  dropping ${row.name} (${dated ? `${ageH.toFixed(1)}h` : 'undated'}) — ${id}`)
     await withSession({ role: 'service', academyId: id }, async (tx) => {
       await tx`delete from job where payload->>'academy_id' = ${id}`
     }).catch(() => null)
@@ -997,6 +1506,7 @@ async function collectGarbage(rest: string[]): Promise<void> {
  */
 async function manifest(
   cfg: DriveConfig,
+  plan: WorldPlan,
   academyId: string,
   academyName: string,
   dir: string,
@@ -1042,9 +1552,33 @@ async function manifest(
       database: db,
       tz: TZ,
     },
-    world: { academyId, academyName },
+    // `ref` is what was typed and `is` is what it turned out to mean. A manifest
+    // is a file people paste into issues, and "worlds/multi-coach.json" pasted
+    // into one six months from now names whatever that file holds then.
+    world: { academyId, academyName, ref: plan.ref, is: plan.is },
     argv: process.argv.slice(2),
   }
+}
+
+/**
+ * How many windows each seat gets in a schedule this file dealt.
+ *
+ * `windowCounts` in `_personas.ts` answers the same question about `SCHEDULE` and
+ * cannot answer it about anything else — it is written around the four names. This
+ * counts whatever is in front of it, so the line a run prints about its balance is
+ * the same line whichever world it is in.
+ */
+function windowsPerSeat(
+  schedule: Record<number, Record<WindowName, string[]>>,
+  cfg: DriveConfig,
+): Record<string, number> {
+  const n: Record<string, number> = {}
+  for (let d = 1; d <= cfg.days; d++) {
+    for (const w of cfg.windows) {
+      for (const k of schedule[d]?.[w] ?? []) n[k] = (n[k] ?? 0) + 1
+    }
+  }
+  return n
 }
 
 async function readJsonl(path: string): Promise<unknown[]> {

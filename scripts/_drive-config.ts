@@ -9,6 +9,8 @@
  *
  *   … --preset smoke
  *   … --days 5 --windows morning --personas rahul,divya --ramp
+ *   … --world blank                 # the owner, alone, the morning after onboarding
+ *   … --world worlds/multi-coach.json
  *   … --config arms/b.json --arm B --budget-min 45 --budget-inr 250
  *
  * WHY THIS EXISTS
@@ -44,6 +46,34 @@
  * all stop the process before it costs anything. Refusing at second zero is
  * free; finding out during the judgement, two hours and a few hundred rupees
  * later, is not.
+ *
+ * WHICH WORLD, AND WHY THE DEFAULT IS A WORD RATHER THAN AN ABSENCE
+ * -----------------------------------------------------------------------------
+ * `--world` names the academy the week happens in. `canonical` is the four-family
+ * tennis club `_personas.ts` states once and `drive-week.ts` builds from it;
+ * `blank` is the owner alone, the morning after onboarding finished; anything else
+ * is a reference `scripts/_world-spec.ts` resolves — a bare name, a path, or
+ * inline JSON. Unset resolves to the *word* `canonical` rather than to nothing,
+ * because two runs whose world field is absent are indistinguishable from two runs
+ * of the same world, and they may have been about two different businesses.
+ *
+ * The REFERENCE is carried here and never the spec. Reading one is asynchronous
+ * and this function is not — but the real reason is that a spec which resolves is
+ * a world that gets BUILT, and the driver is the only thing entitled to decide
+ * when rows start existing. So `world` is a string here, and `drive-week.ts` turns
+ * it into an academy before it has opened a run directory, so an unreadable file
+ * or a misspelled key costs nothing at all.
+ *
+ * WHY `personas` IS CHECKED IN TWO PLACES
+ * -----------------------------------------------------------------------------
+ * It is a subset filter over the seats of whichever world is being driven, and
+ * which names are legal therefore depends on the world. Against `canonical` the
+ * four are known here, so a fifth is refused here, free, with the legal ones
+ * printed. Against a spec world the seats are that spec's own people and nothing
+ * has read the file yet, so the names are carried as written and `drive-week.ts`
+ * refuses them against the roster it composed — the same refusal one stage later,
+ * and still before anything is created. `[]` means every seat the world has, and
+ * only a spec world can produce it.
  *
  * THE BUDGET REPORTS, IT DOES NOT KILL
  * -----------------------------------------------------------------------------
@@ -86,9 +116,25 @@ export type DriveConfig = {
   days: number
   /** Which windows run each day, in the order the clock reaches them. */
   windows: WindowName[]
-  /** Who is in this run. A subset filters `SCHEDULE`; it does not rewrite it. */
-  personas: PersonaKey[]
-  /** Seats in flight per window. */
+  /**
+   * Which seats are in this run, as a subset of the world's own people.
+   *
+   * Against `canonical` these are the four in `_personas.ts`, checked here, and a
+   * subset filters `SCHEDULE` rather than rewriting it. Against a spec world they
+   * are that spec's people, checked by the driver once the file has been read.
+   * `[]` means all of them and is reachable only for a spec world.
+   */
+  personas: string[]
+  /**
+   * The academy this week happens in: `canonical`, `blank`, or a reference
+   * `loadWorldSpec` resolves — a bare name, a path, or inline JSON.
+   */
+  world: string
+  /**
+   * Seats in flight per window. `0` is "as many as there are seats", which is
+   * what the default means everywhere and the only way to say it before a spec
+   * world has been read and its people counted.
+   */
   concurrency: number
   /** Stop cleanly after this many real minutes. Absent means no time limit. */
   budgetMin?: number
@@ -126,6 +172,23 @@ const SCHEDULED_DAYS = Math.max(...Object.keys(SCHEDULE).map(Number))
 const RAMP_TIERS = Math.max(...Object.keys(TIERS).map(Number))
 
 /**
+ * The two worlds that are words rather than files.
+ *
+ * `canonical` is not a spec and deliberately has none: `drive-week.ts` builds it
+ * out of `TIMETABLE` and `FAMILIES` in `_personas.ts`, which is the ONE statement
+ * of that timetable and the thing every `life` string was written against.
+ * `worlds/settled-tennis.json` transcribes it and is explicitly the stale copy
+ * when the two disagree — so pointing the default at the transcription would make
+ * the default world a file that is allowed to be wrong.
+ *
+ * `blank` is `BLANK` in `scripts/_world-spec.ts`: the owner, alone, at
+ * `onboarding_state = 'live'`. It is a word rather than `worlds/blank.json` for
+ * the same reason a missing file should not be able to break the default.
+ */
+export const CANONICAL_WORLD = 'canonical'
+export const BLANK_WORLD = 'blank'
+
+/**
  * A preset is read-only, arrays included.
  *
  * `Object.freeze` stops at the object it is handed and leaves the arrays under it
@@ -156,11 +219,19 @@ const frozen = (p: Preset): Preset => {
  * else and `check()` either warns that a seat never gets a window or refuses the
  * run outright for having nobody at a phone — a smoke run driving a schedule of
  * its own is not smoke-testing the harness anybody else runs.
+ *
+ * `day` and `week` name no seats, and that is a change with a reason rather than
+ * a tidy-up. "All four" IS the default, so restating it altered nothing while
+ * there was one world — and it stops being nothing the moment `--world` exists,
+ * because those four names against a badminton academy are four people who are
+ * not in it, and `--preset week --world blank` would then be refused for naming a
+ * roster the preset never meant to name. A preset that restates a default is a
+ * preset that quietly narrows every world it did not know about.
  */
 export const PRESETS: Readonly<Record<string, Preset>> = Object.freeze({
   smoke: frozen({ days: 1, windows: ['evening'], personas: ['arjun', 'farah'] }),
-  day: frozen({ days: 1, windows: [...ALL_WINDOWS], personas: [...ALL_PERSONAS] }),
-  week: frozen({ days: 7, windows: [...ALL_WINDOWS], personas: [...ALL_PERSONAS] }),
+  day: frozen({ days: 1, windows: [...ALL_WINDOWS] }),
+  week: frozen({ days: 7, windows: [...ALL_WINDOWS] }),
 })
 
 /* -------------------------------------------------------------- refusing */
@@ -188,13 +259,28 @@ function warn(headline: string, ...detail: string[]): void {
 
 /* -------------------------------------------------------------- coercion */
 
-type Layer = Partial<DriveConfig> & { preset?: string }
+/**
+ * One source's settings, before the layers are merged.
+ *
+ * `personas` is the one field that does not arrive as its final type. Which seat
+ * names are legal depends on which world is being driven, and the world may be
+ * named in a DIFFERENT layer than the seats are — `--world blank --config
+ * arms/b.json`, where the file names the seats — so a per-layer check would be
+ * reading one layer's names against another layer's world, or against no world at
+ * all. The names are carried with the place they were written instead, and
+ * `resolveConfig` checks them once, after the merge, when there is a world.
+ */
+type Layer = Omit<Partial<DriveConfig>, 'personas'> & {
+  preset?: string
+  personas?: { names: string[]; at: string }
+}
 
 const FLAGS = {
   preset: 'value',
   days: 'value',
   windows: 'value',
   personas: 'value',
+  world: 'value',
   concurrency: 'value',
   'budget-min': 'value',
   'budget-inr': 'value',
@@ -230,6 +316,32 @@ function bool(value: unknown, at: string): boolean {
   if (s === '' || s === 'true' || s === '1') return true
   if (s === 'false' || s === '0') return false
   return fail(`${at} is a switch: give it nothing, or true/false — not ${String(value)}`)
+}
+
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/**
+ * A world reference, from a flag or from the `config.json` a run wrote.
+ *
+ * `--world blank` is a word and `--world worlds/multi-coach.json` is a path, so
+ * on a command line this is just a string. A recorded config carries
+ * `{"ref": …, "is": …}` instead, because a run that wrote down only the path
+ * recorded a filename which may since have been edited under it — `is` is the one
+ * English line `describeWorld` produced at the time, and it is evidence about what
+ * that reference MEANT on the day. The ref is the load-bearing half; reading one
+ * back takes the ref and leaves the sentence where it is.
+ *
+ * Any other key inside is refused, on the same reasoning as every other refusal
+ * here: a `world` object carrying `"days"` is a setting nothing applies.
+ */
+function worldRef(value: unknown, at: string): string {
+  if (!isObj(value)) return str(value, at)
+  const extra = Object.keys(value).filter((k) => k !== 'ref' && k !== 'is')
+  if (extra.length) {
+    fail(`${at}.${extra[0]}: not part of a recorded world`, 'A world holds `ref`, and `is` for the line it was described by.')
+  }
+  return str(value.ref, `${at}.ref`)
 }
 
 /** `a,b` from the command line, `["a","b"]` from a file, one shape out of both. */
@@ -281,7 +393,12 @@ function toLayer(raw: Record<string, unknown>, where: (key: string) => string): 
         L.windows = pick(list(value, at), ALL_WINDOWS, at, 'window')
         break
       case 'personas':
-        L.personas = pick(list(value, at), ALL_PERSONAS, at, 'seat')
+        // Not checked against the four here — see `Layer`. Only that it is a
+        // non-empty list of names, which is true of every world.
+        L.personas = { names: list(value, at), at }
+        break
+      case 'world':
+        L.world = worldRef(value, at)
         break
       case 'concurrency':
         L.concurrency = num(value, at, { int: true, min: 1 })
@@ -431,11 +548,13 @@ function stampSeed(): string {
  * layers were already fresh: `pick()` returns `legal.filter(…)`, a new array each
  * call, and a file is parsed per resolve. Only the preset layer was shared.
  */
-function copyPreset(p: Preset): Partial<DriveConfig> {
+function copyPreset(name: string, p: Preset): Layer {
   const { windows, personas, ...rest } = p
-  const out: Partial<DriveConfig> = { ...rest }
+  const out: Layer = { ...rest }
   if (windows) out.windows = [...windows]
-  if (personas) out.personas = [...personas]
+  // Where the names came from, carried so a refusal can say "--preset smoke names
+  // these two" rather than blaming a flag nobody typed.
+  if (personas) out.personas = { names: [...personas], at: `--preset ${name}` }
   return out
 }
 
@@ -464,16 +583,24 @@ export function resolveConfig(argv: string[]): DriveConfig {
       'different run wearing the name of the one that was asked for.',
     )
   }
-  const preset: Partial<DriveConfig> = presetName ? copyPreset(PRESETS[presetName]!) : {}
+  const preset: Layer = presetName ? copyPreset(presetName, PRESETS[presetName]!) : {}
 
   const m = { ...preset, ...file, ...cli }
 
+  const world = m.world ?? CANONICAL_WORLD
   const windows = m.windows ?? [...ALL_WINDOWS]
-  const personas = m.personas ?? [...ALL_PERSONAS]
+  const personas = resolveSeats(m.personas, world)
   const cfg: DriveConfig = {
     days: m.days ?? 7,
     windows,
     personas,
+    world,
+    /**
+     * Everybody at once, which is what the default has always meant. For the
+     * canonical world that is four; for a spec world nothing here knows the
+     * number yet, so it is carried as `0` and the driver reads it as "all of
+     * them" — see `DriveConfig.concurrency`.
+     */
     concurrency: m.concurrency ?? personas.length,
     seed: m.seed ?? stampSeed(),
     model: m.model ?? mainModel(),
@@ -493,6 +620,34 @@ export function resolveConfig(argv: string[]): DriveConfig {
 
   check(cfg)
   return cfg
+}
+
+/**
+ * Which seats, checked where they can be checked.
+ *
+ * Against the canonical world an unknown name is refused here, free, with the
+ * four legal ones printed. Against a spec world nothing has read the file, so the
+ * names go through as written and `drive-week.ts` refuses them against the roster
+ * it composed.
+ *
+ * The one case worth catching early is a PRESET's seats against a spec world.
+ * `smoke` names `arjun` and `farah` because those two are who `SCHEDULE` puts in
+ * day 1's evening, which is a fact about the canonical academy and about no other
+ * — so the run is not a narrower version of what was asked for, it is a run of two
+ * people who do not exist. Said here rather than left to the driver, because the
+ * fix is to drop the preset rather than to rename anybody.
+ */
+function resolveSeats(given: Layer['personas'], world: string): string[] {
+  if (!given) return world === CANONICAL_WORLD ? [...ALL_PERSONAS] : []
+  if (world === CANONICAL_WORLD) return pick(given.names, ALL_PERSONAS, given.at, 'seat')
+  if (given.at.startsWith('--preset ')) {
+    fail(
+      `${given.at} names the canonical seats and --world ${world} has its own people`,
+      `It puts ${given.names.join(' and ')} at a phone, and those two are who SCHEDULE has in`,
+      'day 1’s evening at Ace Tennis Academy. Ask for the shape instead: --days 1 --windows evening.',
+    )
+  }
+  return [...given.names]
 }
 
 /** Read `MODEL_MAIN` only when nobody named a model, and say so when it is absent. */
@@ -517,13 +672,35 @@ function mainModel(): string {
  */
 function check(cfg: DriveConfig): void {
   if (!cfg.windows.length) fail(`no windows: give at least one of ${ALL_WINDOWS.join(', ')}`)
-  if (!cfg.personas.length) fail(`no seats: give at least one of ${ALL_PERSONAS.join(', ')}`)
+  const canonical = cfg.world === CANONICAL_WORLD
 
   if (cfg.days > SCHEDULED_DAYS) {
     fail(
-      `--days ${cfg.days} runs past the end of the schedule`,
-      `SCHEDULE in scripts/_personas.ts covers ${SCHEDULED_DAYS} days, so days ${SCHEDULED_DAYS + 1}–${cfg.days} put nobody at a phone.`,
-      'They would still burn clock and standing jobs, and read afterwards as silence.',
+      `--days ${cfg.days} runs past the end of the week`,
+      canonical ?
+        `SCHEDULE in scripts/_personas.ts covers ${SCHEDULED_DAYS} days, so days ${SCHEDULED_DAYS + 1}–${cfg.days} put nobody at a phone.`
+      : `A drive opens on a Monday at 06:00 and its DAY NUMBER is the ISO weekday, which is the invariant`,
+      canonical ?
+        'They would still burn clock and standing jobs, and read afterwards as silence.'
+      : `every timetable and every brief is read across. Day ${SCHEDULED_DAYS + 1} is a second Monday, and a brief written for day 1 would arrive on it.`,
+    )
+  }
+
+  /**
+   * The ramp is a persona overlay, and the personas it overlays are the four.
+   *
+   * `RAMP_LIFE` in `_ramp.ts` is keyed by `PersonaKey`, so against a spec world's
+   * own people every lookup misses and the day falls back to the ordinary brief.
+   * The run would then be identical to an unramped one and recorded as
+   * `ramp: true` — a difference that was never applied, wearing the name of the
+   * one that was asked for, which is the whole failure this file exists to stop.
+   */
+  if (cfg.ramp && !canonical) {
+    fail(
+      `--ramp and --world ${cfg.world} cannot both be true`,
+      'RAMP_LIFE in scripts/_ramp.ts is written for rahul, arjun, divya and farah by name.',
+      'Against another world every tier would miss, the week would be the ordinary one,',
+      'and the record would still say it was ramped.',
     )
   }
 
@@ -535,6 +712,16 @@ function check(cfg: DriveConfig): void {
       `unramped one across days that were identical. Run --days ${RAMP_TIERS}, or drop --ramp.`,
     )
   }
+
+  /**
+   * Everything below reads `SCHEDULE`, and `SCHEDULE` is written for the four.
+   *
+   * A spec world's week is derived from its own seats by `drive-week.ts` and
+   * asserted balanced there, where the roster exists. Checking a spec world's seat
+   * names against this table would refuse every one of them.
+   */
+  if (!canonical) return
+  if (!cfg.personas.length) fail(`no seats: give at least one of ${ALL_PERSONAS.join(', ')}`)
 
   // Who actually gets a phone, once the day count, the windows and the seat
   // filter have all been applied to SCHEDULE.
@@ -579,10 +766,16 @@ function check(cfg: DriveConfig): void {
 export function describeConfig(cfg: DriveConfig): string {
   const parts: string[] = [
     `${cfg.days}d × ${cfg.windows.join('/')}`,
-    `${cfg.personas.join(',')} ×${cfg.concurrency}`,
+    // Empty seats and zero concurrency are the same sentence — "whoever this
+    // world turns out to have" — and printing `` ×0`` would read as a run of
+    // nobody rather than as a number the driver has not filled in yet.
+    `${cfg.personas.length ? cfg.personas.join(',') : 'every seat'} ×${cfg.concurrency || 'all'}`,
     cfg.model,
     `seed ${cfg.seed}`,
   ]
+  // Named only when it is not the default, because a line that says `canonical`
+  // on every run is a line nobody reads on the one run it matters.
+  if (cfg.world !== CANONICAL_WORLD) parts.push(`world ${cfg.world}`)
   if (cfg.arm) parts.push(`arm ${cfg.arm}`)
   const limits: string[] = []
   if (cfg.budgetMin !== undefined) limits.push(`${cfg.budgetMin}min`)
@@ -591,6 +784,39 @@ export function describeConfig(cfg: DriveConfig): string {
   if (cfg.ramp) parts.push('ramp')
   if (cfg.keep) parts.push('keep')
   return parts.join(' · ')
+}
+
+/* ---------------------------------------------------------------- record */
+
+/**
+ * The config as a run writes it down, and as `--config` reads it back.
+ *
+ * Two fields are resolved rather than asked for, and both are unreadable until
+ * the world has been built. `personas` is `[]` for a spec world at resolve time
+ * and the world's own people afterwards; `concurrency` is `0` there and a count
+ * afterwards. Writing `cfg` untouched would put both zeroes in the record, and a
+ * reader comparing two runs would be comparing two absences.
+ *
+ * `world` grows the English line `describeWorld` produced, beside the reference
+ * it produced it from. The reference alone is a filename, and a filename is a
+ * claim about a file as it stands today rather than about the business that was
+ * driven — `worlds/multi-coach.json` names one world this week and could name a
+ * different one next month, with nothing in either record to say so.
+ *
+ * What comes out is still a config file: `--config <that file> --seed <that seed>`
+ * repeats the run, because `worldRef` reads the object form and `resolveSeats`
+ * carries a spec world's seat names through as written.
+ */
+export function recordedConfig(
+  cfg: DriveConfig,
+  world: { is: string; seats: string[]; concurrency: number },
+): Record<string, unknown> {
+  return {
+    ...cfg,
+    personas: [...world.seats],
+    concurrency: world.concurrency,
+    world: { ref: cfg.world, is: world.is },
+  }
 }
 
 /* ---------------------------------------------------------------- budget */

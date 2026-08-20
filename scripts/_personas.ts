@@ -54,6 +54,17 @@
  */
 
 /**
+ * TYPE ONLY, AND IT HAS TO STAY THAT WAY.
+ *
+ * `_world-spec.ts` imports `_seat.ts`, and `_seat.ts` imports THIS file — so a
+ * value import here would close a ring that has top-level `await` in it. Erased at
+ * compile time, this edge does not exist at runtime, and `briefFromWorld` at the
+ * bottom of this file therefore takes a spec that has ALREADY been through
+ * `validateSpec`. Its header says what that buys and what it refuses.
+ */
+import type { Day, NormalSpec, WorldSpec } from './_world-spec'
+
+/**
  * HOW REAL PEOPLE ACTUALLY TYPE, AND WHY IT IS PART OF THE INSTRUMENT
  * -----------------------------------------------------------------------------
  * Every sentence this repo has ever driven the product with was spelled
@@ -242,15 +253,26 @@ export const FAMILIES: { parent: string; children: { name: string; class: string
   { parent: 'Latha Krishnan', children: [{ name: 'Tara Krishnan', class: 'Weekend Squad' }] },
 ]
 
+/** The four hand-written seats below. `briefFromWorld` makes people who are not in it. */
 export type PersonaKey = 'rahul' | 'arjun' | 'divya' | 'farah'
 export type Window = 'morning' | 'evening'
 
+/** The axis every score in this repo is split by. Four, and never averaged. */
+export type SeatRole = 'admin' | 'coach' | 'client' | 'prospect'
+
 export type Persona = {
-  key: PersonaKey
+  /**
+   * A stable handle for this person, used in the seat's own noise coin
+   * (`messyLine`) and in listings. A `string` rather than `PersonaKey` because a
+   * brief generated out of a world spec is a fifth, sixth and ninetieth person
+   * with no place in that union — see `briefFromWorld`. `PERSONAS` below is still
+   * keyed by `PersonaKey`, so `--seat rahul` and `SCHEDULE` are unchanged.
+   */
+  key: string
   /** The name on the phone. */
   name: string
   /** admin | coach | client | prospect — the axis every score is split by. */
-  seat: 'admin' | 'coach' | 'client' | 'prospect'
+  seat: SeatRole
   /** One line, for a listing. */
   oneLine: string
   /** Who they are, in their own frame. Read aloud before typing anything. */
@@ -505,4 +527,666 @@ export function windowCounts(days: number): Record<PersonaKey, number> {
     for (const w of ['morning', 'evening'] as Window[])
       for (const k of SCHEDULE[d]?.[w] ?? []) n[k] = (n[k] ?? 0) + 1
   return n as Record<PersonaKey, number>
+}
+
+/* ========================================================================== *
+ * THE SAME SEAT, IN SOMEBODY ELSE'S ACADEMY
+ * ========================================================================== */
+
+/**
+ * A brief is a persona. There is deliberately no second persona system here.
+ *
+ * WHY THIS EXISTS
+ * -----------------------------------------------------------------------------
+ * Everything above this line is written for ONE business. Rahul's `who` names Ace
+ * Tennis Academy, its four classes and its two coaches; Arjun's names the days his
+ * batch runs; Divya's names her daughter and the class she is in. Twenty-four
+ * contradictions between that text and the world it was driven against were fixed
+ * on 20 Aug 2026, and why they mattered is in `TIMETABLE`'s header above: a coach
+ * told by his own brief that he has nothing on, on a day he does, produces a
+ * transcript that reads exactly like the product losing a class. It earns a ledger
+ * row, and somebody spends a day inside `lib/agent` hunting a defect that never
+ * happened. The harness fabricated it.
+ *
+ * `worlds/` now makes any academy in a minute — five coaches, a chess club, eleven
+ * families. Point these four at one and every sentence they own is false at once.
+ * Rahul introduces himself as the owner of a tennis academy that is not there,
+ * with coaches who do not work for him, and the run measures nothing.
+ *
+ * So the split: a person's FACTS come out of the spec, and their VOICE is written
+ * by hand. `who`, `oneLine` and `goals` below are composed from the world the
+ * driver actually built, so they CANNOT contradict it — every claim they make
+ * about the business, the people in it, or this person's place in it was read out
+ * of the spec, so there is no sentence in them a reader could check against the
+ * world and find false. `voice`, `typing` and `redLines` are four short
+ * hand-written blocks, one per role, and they assert nothing about any world: they
+ * are about how a person on a phone types, and what would make them walk. When a
+ * line is tempting but not derivable — "you drive her there", "you are not a
+ * software person" — it belongs in the voice block, and that is where those two
+ * went.
+ *
+ * WHAT A BRIEF SAYS, AND WHAT IT LEAVES THEM TO ASK FOR
+ * -----------------------------------------------------------------------------
+ * The second rule, and the one that keeps the instrument worth running. A brief
+ * states what this person could say without looking anything up: their own name,
+ * their own children, the classes those children are in, the published rate, their
+ * own pay UNIT, who else works there. It never states a balance, a total, a
+ * register, a month's bill, or a figure for anybody's pay.
+ *
+ * Those are the answers. `_persona-agent.ts` puts the blindfold this way round —
+ * a judgement about clarity is worthless if the reader could check the answer
+ * against the rows — and `owes` IS a row. A parent whose brief opens with ₹4,800
+ * no longer has to ask what she owes, and the turn that would have measured
+ * whether the product can say so plainly never happens. So `owes` is referenced as
+ * something outstanding and never as a number, the owner is never told his arrears
+ * total, and a coach is told he is paid by the session and not how much.
+ *
+ * A prospect gets the least of anybody: the name of the business, and what it
+ * plays. Not the timetable, not a price. Farah's week is worth reading precisely
+ * because she has to get a number out of it that it must not invent, and a brief
+ * carrying the price list would answer her own question before she typed it.
+ *
+ * WHY `life` IS EMPTY
+ * -----------------------------------------------------------------------------
+ * A `life` string is narrative — a fever on Tuesday, a coach dropping Saturday, an
+ * offer from the academy down the road. None of it is in a spec and none of it
+ * could be derived from one, so a generated `life` would be invention handed to
+ * the seat as circumstance: the exact false premise this function exists to
+ * prevent, reintroduced one layer up. Generated briefs get `{}`, the seat prints
+ * "Nothing unusual is happening to you today", and a driver with a calendar of its
+ * own passes the day's pressure through `SeatContext.today` — which is what
+ * `_ramp.ts` already does for its five tiers.
+ *
+ * WHY IT TAKES A NORMALISED SPEC AND WILL NOT NORMALISE ONE ITSELF
+ * -----------------------------------------------------------------------------
+ * `validateSpec` lives in `_world-spec.ts`, which imports `_seat.ts`, which
+ * imports THIS file. A runtime import here would close that ring, and the ring has
+ * top-level `await` in it. So the import at the top of this file is `import type`
+ * — erased at compile time, no edge at runtime — and what arrives has to have been
+ * through the validator already. `loadWorldSpec()` and `validateSpec()` both
+ * return a `NormalSpec`, so any caller that has read a world has one in hand.
+ *
+ * That is the right constraint anyway. A count is not a roster: `"coaches": 4` has
+ * no names in it, and a class that omitted `coaches` was dealt one round-robin
+ * across the whole file by the validator. Guessing either here would produce a
+ * coach told he teaches nothing while the database has him down for two classes —
+ * the fabricated defect at the top of this comment, wearing a new hat. So an
+ * un-expanded spec is refused by name, and never repaired.
+ */
+
+/** Same shape as a hand-written seat, because it goes into the same seat. */
+export type Brief = Persona
+
+/** Who to write a brief for. The name must be in the spec, spelled as it is there. */
+export type BriefPerson = {
+  /** As `person.full_name` has it — the spec's own spelling. */
+  name: string
+  role: SeatRole
+  /** Overrides the derived handle. Only needed when two worlds are driven at once. */
+  key?: string
+}
+
+/* ------------------------------------------------------------ small change */
+
+/**
+ * Small numbers are spelled out, because people say them that way.
+ *
+ * "You have 4 families on the books and 5 children between them" is a report
+ * about a business. "four families and five children between them" is somebody
+ * describing their own. The brief is read aloud by the seat before it types, and
+ * the register of the whole file is the second one. Past twelve it goes back to
+ * digits, which is also what a person does.
+ */
+const NUMBER_WORDS = [
+  'no', 'one', 'two', 'three', 'four', 'five', 'six',
+  'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve',
+]
+const words = (n: number): string =>
+  Number.isInteger(n) && n >= 0 && n < NUMBER_WORDS.length ? (NUMBER_WORDS[n] as string) : String(n)
+
+const count = (n: number, one: string, many = `${one}s`): string => `${words(n)} ${n === 1 ? one : many}`
+
+/** For a count that opens a sentence. */
+const Cap = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1)
+
+/** Rupees. This is an INR product and nothing here converts. */
+const rupees = (n: number): string => `₹${n.toLocaleString('en-IN')}`
+
+/** "a", "a and b", "a, b and c". Nothing here is ever long enough to need more. */
+function andList(xs: string[]): string {
+  if (xs.length === 0) return ''
+  if (xs.length === 1) return xs[0] as string
+  return `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`
+}
+
+const DAY_LABEL: Record<Day, string> = {
+  sun: 'Sundays', mon: 'Mondays', tue: 'Tuesdays', wed: 'Wednesdays',
+  thu: 'Thursdays', fri: 'Fridays', sat: 'Saturdays',
+}
+
+/**
+ * "18:00" as somebody would say it out loud, because a brief is read as speech.
+ *
+ * A person tells you their batch is at six, not at 18:00, and the seat is being
+ * asked to type like a person. The dot in "7.30pm" is how it is written here.
+ */
+function spoken(hhmm: string): string {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim())
+  if (!m) return hhmm
+  const h = Number(m[1])
+  const min = Number(m[2])
+  const h12 = h % 12 === 0 ? 12 : h % 12
+  const suffix = h < 12 ? 'am' : 'pm'
+  return min === 0 ? `${h12}${suffix}` : `${h12}.${String(min).padStart(2, '0')}${suffix}`
+}
+
+type SpecClass = NormalSpec['classes'][number]
+
+/** "Mondays and Thursdays, 6pm to 7pm". */
+function when(cls: SpecClass): string {
+  const days = cls.days.length ? andList(cls.days.map((d) => DAY_LABEL[d])) : 'no day at all'
+  return `${days}, ${spoken(cls.from)} to ${spoken(cls.to)}`
+}
+
+/** "₹2,400 a month", "₹600 a session", or the honest absence of a price. */
+function priced(cls: SpecClass): string {
+  if (cls.rate === undefined) return 'no price on it'
+  return `${rupees(cls.rate)} a ${cls.unit === 'per_session' ? 'session' : 'month'}`
+}
+
+/** Who takes it, with the reader written as "you" when the reader is one of them. */
+function taughtBy(cls: SpecClass, reader: string): string {
+  if (!cls.coaches.length) return 'Nobody is on it.'
+  const others = cls.coaches.filter((c) => c.toLowerCase() !== reader.toLowerCase())
+  const mine = others.length < cls.coaches.length
+  if (mine && !others.length) return 'You take it.'
+  if (mine) return `${andList(others)} and you take it.`
+  return others.length === 1 ? `${others[0]} takes it.` : `${andList(others)} take it.`
+}
+
+const slug = (s: string): string =>
+  s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'seat'
+
+/** "a tennis academy". `category` is display only, and this is the display. */
+function aBusiness(s: NormalSpec): string {
+  const c = s.category.trim()
+  return `a ${c.toLowerCase() === 'sport' ? 'sports' : c} academy`
+}
+
+/**
+ * How far away the end of the week is, for a goal with a deadline in it.
+ *
+ * A goal that says "by Sunday" in a three-day run is a goal nobody can reach, and
+ * a seat that reads one either ignores it or spends the run apologising for being
+ * early. `days` is the driver's own, out of `DriveConfig`.
+ */
+function horizon(days: number): string {
+  return days === 1 ? 'today' : days >= 7 ? 'by the end of the week' : `by the end of day ${days}`
+}
+
+/** The same, opening a sentence. */
+const Horizon = (days: number): string => Cap(horizon(days))
+
+/* ---------------------------------------------------- the four hand-written */
+
+/**
+ * The only new prose here, and the only part of a brief not read out of a world.
+ *
+ * One block per ROLE rather than one per person, because how somebody types is a
+ * fact about them and their thumbs, not about which academy employs them. A coach
+ * walking to the car with a bag of balls over his shoulder types the same way in a
+ * chess club as in a tennis one. These four are reused across every world there
+ * will ever be; the canonical four above keep their own, which are sharper because
+ * they were written for one person rather than for a role.
+ *
+ * They assert NOTHING about any world — no class, no name, no price, no day. That
+ * is the property that makes them safe to reuse, and it is the thing to check
+ * before adding a line to one.
+ */
+const ROLE_VOICE: Record<SeatRole, string> = {
+  admin: `You are not a software person. You run this off your phone between
+sessions, standing up, usually with something else going on. Short, lowercase, no
+punctuation you do not need — you do not say please to software. One thing at a
+time, and you are annoyed if you have to ask twice. Long answers get skimmed, so if
+the number that matters is in the fourth sentence you will miss it and act on the
+wrong one — and that is a real outcome, not a mistake to avoid. You mostly trust
+this thing, which is exactly why a wrong answer from it would cost you money before
+you noticed. When you are busy you answer with a single word.`,
+
+  coach: `Fast, clipped, lowercase. "ok" and "cool" are whole messages. If something
+takes more than two exchanges you abandon it and do it later, or not at all. You
+will tap a button rather than type a name, every time. You do not get to see what
+families pay and you think that is right — but what YOU are paid is your business,
+and you have never once been able to check the figure against anything.`,
+
+  client: `You do the driving, you make the time for it, and when it goes wrong it
+lands on you. Full sentences, proper punctuation, warm. You apologise at the start
+of things that are not your fault. You are indirect about money — you ask "do we
+still get charged for that?" rather than "I want a refund". If you are fobbed off
+you do not argue, you go quiet, and then you leave. That silence is the most
+important thing you do all week, so use it if it has been earned.`,
+
+  prospect: `Direct, no greeting, no small talk. You ask the price first and
+everything else second. You will not repeat something you have already told them,
+and if you are asked for it twice you say so. A vague answer gets the same question
+again, more bluntly. You are not going to be managed: if you have to fill in a form
+before anybody will tell you a number, you lose interest — and losing interest, and
+saying so, is a legitimate end to your week.`,
+}
+
+const ROLE_TYPING: Record<SeatRole, string> = {
+  admin: `You type fast and badly with one thumb, outdoors, in sun you cannot see the
+screen in. No capitals, almost no full stops. You drop the subject of the sentence
+constantly — "covered for sat?" — because you know what you meant. The second half
+of a thought arrives as its own message a few seconds later. Hinglish when you are
+irritated: "abhi tak nahi hua?", "chalo", "theek hai". You mistype numbers, and you
+mistype the names of the people who work for you.`,
+
+  coach: `The worst typist of anybody here, and you do not care. Everything lowercase,
+no punctuation at all, heavy swipe-typing — so you send whole WRONG WORDS rather
+than misspellings: "there" for "their", "bath" for "batch", a child's name turned
+into a different word altogether. Three fragments in a row as you think of them.
+You are usually walking, or carrying something. "k", "ok", "done" are complete
+messages. Sometimes you send a "?" because you forgot what you were asking.`,
+
+  client: `The cleanest typist here — you were taught to write properly and you still
+do — but you are nearly always one-handed and half-attending, so autocorrect wins
+more often than you notice. It capitalises the wrong words and turns names into
+other names. You do not proofread. When you are upset the sentences get longer, not
+shorter, and three questions end up inside one paragraph. Sometimes a message goes
+before you have finished it and the rest follows after. Money you write as
+"Rs. 2400" or "2,400".`,
+
+  prospect: `You dictate. Half your messages are voice notes turned into text: one
+long run-on, no punctuation, three questions inside it, a word or two transcribed
+wrong. The other half are two words, because you are impatient. You do not give
+your name unless you are asked, and you spell it differently the second time. You
+send "?" on its own when you have been left waiting.`,
+}
+
+const ROLE_RED_LINES: Record<SeatRole, string[]> = {
+  admin: [
+    'Being told something was done when it was not. You would find out weeks later and stop trusting the whole thing.',
+    'Being shown a UUID, a timestamp, or a sentence that reads like it came out of a log file.',
+    'Having to type a sentence to say yes to something.',
+    'Being asked to confirm something you already confirmed.',
+  ],
+  coach: [
+    "Being shown a family's fees or debts. You should not be able to see that, and if you can, something is broken.",
+    "Having to type a learner's name to mark them absent.",
+    'Being told a number for your pay that turns out to be wrong.',
+    'A message at 10pm about something that could have waited until the morning.',
+  ],
+  client: [
+    'Being charged for something you did not receive, and told it is policy without being told what the policy is.',
+    'Being told "done" when nothing has actually changed — you find out when the next message arrives.',
+    'Being asked for the same money twice.',
+    'A wall of text in answer to a yes-or-no question.',
+  ],
+  prospect: [
+    'Being asked for your name, or for who it is for, more than once.',
+    'Being quoted a price that turns out to be wrong when you follow it up.',
+    'Being made to fill in a form before anybody will tell you what it costs.',
+    'Being told they will get back to you, and then hearing nothing.',
+  ],
+}
+
+/* ------------------------------------------------------------- the refusal */
+
+/**
+ * Assert that this spec has been through `validateSpec`, and say what to do if it
+ * has not.
+ *
+ * It checks exactly the fields the validator EXPANDS — a count into names, an
+ * omitted `coaches` into a round-robin deal, an omitted `children` into one child,
+ * an `enrolled` number into a list. Those are the places where reading a raw spec
+ * would produce a brief that quietly disagrees with the database, and every one of
+ * them is silent: nothing throws, the run completes, and the transcript reads like
+ * the product losing people.
+ */
+function normalised(spec: WorldSpec): NormalSpec {
+  function refuse(what: string): never {
+    throw new Error(
+      `briefFromWorld was given a spec ${what}. It takes what \`loadWorldSpec()\` or ` +
+        `\`validateSpec()\` returned — the expanded form, with every count turned into names ` +
+        `and every default filled in. A brief composed from the raw form describes a business ` +
+        `that is not the one the world was built from, and nothing downstream can see that.`,
+    )
+  }
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) refuse('that is not an object')
+  const s = spec as NormalSpec
+  // The rosters first, because a count is the failure worth naming: `{"coaches": 4}`
+  // is a spec somebody wrote by hand and passed straight in, and "no name on it" is
+  // a true complaint about it that points at the wrong thing.
+  for (const k of ['coaches', 'clients', 'prospects'] as const) {
+    const list = (s as unknown as Record<string, unknown>)[k]
+    if (typeof list === 'number') {
+      refuse(`whose \`${k}\` is still a count — there are no names in it to write a brief from`)
+    }
+    if (!Array.isArray(list)) refuse(`whose \`${k}\` is not a list`)
+    for (let i = 0; i < list.length; i++) {
+      if (typeof (list[i] as { name?: unknown } | null)?.name !== 'string') {
+        refuse(`whose \`${k}[${i}]\` has no name`)
+      }
+    }
+  }
+  for (let i = 0; i < s.clients.length; i++) {
+    if (!Array.isArray(s.clients[i]?.children)) {
+      refuse(`whose \`clients[${i}].children\` has not been filled in`)
+    }
+  }
+  for (const k of ['name', 'category', 'timezone'] as const) {
+    if (typeof s[k] !== 'string') refuse(`with no \`${k}\` on it`)
+  }
+  if (!s.admin || typeof s.admin.name !== 'string') refuse('with no `admin.name` on it')
+  if (!Array.isArray(s.classes)) refuse('whose `classes` is not a list')
+  for (let i = 0; i < s.classes.length; i++) {
+    const cls = s.classes[i] as SpecClass | undefined
+    if (typeof cls?.name !== 'string') refuse(`whose \`classes[${i}]\` has no name`)
+    if (!Array.isArray(cls.days)) refuse(`whose \`classes[${i}].days\` is not a list`)
+    if (!Array.isArray(cls.coaches)) {
+      refuse(
+        `whose \`classes[${i}].coaches\` has not been dealt — the validator does that ` +
+          `round-robin, and guessing it here would tell a coach he teaches nothing`,
+      )
+    }
+    if (!Array.isArray(cls.enrolled)) {
+      refuse(
+        `whose \`classes[${i}].enrolled\` is still a count — the validator deals the children ` +
+          `in order, and guessing it here would put the wrong child on a register`,
+      )
+    }
+  }
+  return s
+}
+
+/* --------------------------------------------------------------- the brief */
+
+/**
+ * One person in one world, as a seat `_persona-agent.ts` can sit in unchanged.
+ *
+ *   const spec  = await loadWorldSpec('multi-coach')
+ *   const world = await buildWorld(spec, { token })
+ *   const brief = briefFromWorld({ spec, person: world.roster[3]!, days: cfg.days })
+ *   const { move } = await nextMove({ persona: brief, day, window, phone, said, seed, model })
+ *
+ * `world.roster` entries already carry `{ name, role }`, so a driver hands one
+ * straight over. The name is looked up in the spec, and a name that is not there
+ * is REFUSED, listing the ones that are — a misspelling has to fail here, because
+ * the alternative is a brief about nobody, and that is a whole week of somebody
+ * confidently describing a business they have no part in.
+ */
+export function briefFromWorld(o: { spec: WorldSpec; person: BriefPerson; days: number }): Brief {
+  const s = normalised(o.spec)
+  const role = o.person.role
+  if (!Number.isInteger(o.days) || o.days < 1) {
+    throw new Error(
+      `briefFromWorld needs how many days the run is, not ${JSON.stringify(o.days)}. ` +
+        'It is what puts a deadline on a goal that the run is long enough to reach.',
+    )
+  }
+  const days = o.days
+
+  const asked = String(o.person.name ?? '').trim()
+  const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
+  function notThere(had: string[]): never {
+    throw new Error(
+      `briefFromWorld was asked for ${JSON.stringify(asked)} as a ${role}, and this world has ` +
+        `no such ${role}. It has: ${had.length ? had.join(', ') : 'nobody in that seat'}. ` +
+        'Names are matched as `person.full_name` spells them.',
+    )
+  }
+
+  /* ------------------------------------------------------------ the person */
+
+  const coach = s.coaches.find((c) => same(c.name, asked))
+  const client = s.clients.find((c) => same(c.name, asked))
+  const prospect = s.prospects.find((p) => same(p.name, asked))
+  if (role === 'admin' && !same(s.admin.name, asked)) notThere([s.admin.name])
+  if (role === 'coach' && !coach) notThere(s.coaches.map((c) => c.name))
+  if (role === 'client' && !client) notThere(s.clients.map((c) => c.name))
+  if (role === 'prospect' && !prospect) notThere(s.prospects.map((p) => p.name))
+
+  const name =
+    role === 'admin' ? s.admin.name
+    : role === 'coach' ? (coach as { name: string }).name
+    : role === 'client' ? (client as { name: string }).name
+    : (prospect as { name: string }).name
+
+  /* -------------------------------------------------------- what is around them */
+
+  const teaches = (who: string): SpecClass[] =>
+    s.classes.filter((cls) => cls.coaches.some((c) => same(c, who)))
+  const inClass = (learner: string): SpecClass[] =>
+    s.classes.filter((cls) => cls.enrolled.some((e) => same(e, learner)))
+
+  const who: string[] = []
+  const goals: string[] = []
+  let oneLine = ''
+
+  /* ------------------------------------------------------------------ admin */
+
+  if (role === 'admin') {
+    const mine = s.admin.coaches ? teaches(name) : []
+    const staff = s.coaches.map((c) => c.name)
+    const kids = s.clients.reduce((a, cl) => a + cl.children.length, 0)
+    /**
+     * An adult learner is a client with `"children": []`, and counting them as a
+     * family with children in it gets the sentence wrong in the direction that
+     * matters: "two families and two children between them, one of them an adult
+     * learner" reads as one of the CHILDREN being an adult. The owner's own head
+     * count is the number he checks every roster answer against.
+     */
+    const adults = s.clients.filter((cl) => !cl.children.length).length
+    const families = s.clients.length - adults
+
+    oneLine = `owns ${s.name}${mine.length ? ` and coaches ${words(mine.length)} of its ${count(s.classes.length, 'class', 'classes')}` : ''}`
+
+    who.push(
+      `You are ${name}. You own ${s.name}, ${aBusiness(s)}. ` +
+        (s.admin.coaches
+          ? mine.length
+            ? `You coach as well — ${andList(mine.map((c) => c.name))} ${mine.length === 1 ? 'is' : 'are'} yours.`
+            : 'You have a coach\'s chair here yourself, though no class is on you at the moment.'
+          : 'You do not coach any of it yourself.'),
+    )
+    who.push(
+      staff.length
+        ? `${Cap(count(staff.length, 'coach', 'coaches'))} ${staff.length === 1 ? 'works' : 'work'} under you: ${andList(staff)}.`
+        : 'Nobody else coaches here.',
+    )
+    if (s.classes.length) {
+      who.push('')
+      who.push('What runs, and when:')
+      for (const cls of s.classes) who.push(`  - ${cls.name} — ${when(cls)}, ${priced(cls)}. ${taughtBy(cls, name)}`)
+      who.push('')
+    } else who.push('Nothing is on the timetable yet.')
+    who.push(
+      !s.clients.length ? 'Nobody is on the books yet.'
+      : families && adults
+        ? `You have ${count(families, 'family', 'families')} on the books with ${count(kids, 'child', 'children')} between them, and ${count(adults, 'adult learner')} besides.`
+      : families
+        ? `You have ${count(families, 'family', 'families')} on the books and ${count(kids, 'child', 'children')} between them.`
+        : `You have ${count(adults, 'adult learner')} on the books and no children at all.`,
+    )
+
+    goals.push('Know, each morning, whether every session today has a coach on it — without reading a wall of text.')
+    if (s.clients.length) {
+      goals.push(`Get this month's fees in. ${Horizon(days)} you want to know exactly who still owes you, and how much.`)
+      goals.push('Know how many learners are really on the books. You would have to count, and you are not certain of the number.')
+    }
+    if (s.coaches.length) {
+      goals.push(
+        s.coaches.some((c) => c.pay !== undefined)
+          ? `Know what you actually pay ${andList(staff)} — from the figures, not from a feeling.`
+          : `Get what you pay ${andList(staff)} written down somewhere you can check it, because right now it is nowhere.`,
+      )
+    }
+    goals.push('Write down a standing rule or two, so you stop being asked about them.')
+    goals.push(`${Horizon(days)}, be told anything you should be worried about — and be right to trust that list.`)
+  }
+
+  /* ------------------------------------------------------------------ coach */
+
+  if (role === 'coach') {
+    const mine = teaches(name)
+    const others = s.coaches.filter((c) => !same(c.name, name)).map((c) => c.name)
+
+    oneLine = mine.length
+      ? `coaches ${andList(mine.map((c) => c.name))} at ${s.name}`
+      : `is on the staff at ${s.name} with no class on them`
+
+    who.push(`You are ${name}. You coach at ${s.name}, ${aBusiness(s)}. ${s.admin.name} owns it.`)
+    if (mine.length) {
+      who.push('')
+      who.push('What is on you:')
+      for (const cls of mine) who.push(`  - ${cls.name} — ${when(cls)}.`)
+      who.push('')
+    } else {
+      who.push('Nothing is on you at the moment. No class here has your name against it.')
+    }
+    if (others.length) {
+      who.push(`${andList(others)} also ${others.length === 1 ? 'coaches' : 'coach'} here.`)
+    }
+    who.push(
+      coach?.pay === undefined
+        ? 'Nothing has ever been written down anywhere about what you are paid.'
+        : coach.unit === 'per_session'
+          ? 'You are paid by the session.'
+          : 'You are paid a wage, monthly.',
+    )
+
+    if (mine.length) {
+      goals.push(
+        `Know who is on the register for ${andList(mine.map((c) => c.name))} before you get there, without having to ask every time.`,
+      )
+      goals.push('Mark attendance in under thirty seconds, standing up, one-handed.')
+    } else {
+      goals.push('Find out what you are actually meant to be teaching here, because nothing has been put on you.')
+    }
+    goals.push(
+      coach?.pay === undefined
+        ? 'Find out what you are being paid, because nobody has ever told you a figure.'
+        : coach.unit === 'per_session'
+          ? 'Find out what you have earned this month and whether it matches what you think. You could not say how many sessions you have taken without counting them on your fingers.'
+          : 'Find out what you are owed this month and whether it matches what you think.',
+    )
+    goals.push('Not be chased about things that are not yours: fees, family disputes, anything with money in it that is not your money.')
+  }
+
+  /* ----------------------------------------------------------------- client */
+
+  if (role === 'client') {
+    const children = client?.children ?? []
+    /** A client with no children IS the learner — that is what `"children": []` says. */
+    const self = children.length === 0
+    const learners = self ? [name] : children
+    const enrolments = learners.flatMap((l) => inClass(l))
+    const monthly = enrolments.filter((cls) => cls.rate !== undefined && cls.unit !== 'per_session')
+    const owes = client?.owes ?? 0
+
+    oneLine = self ? `learns at ${s.name} and pays for it` : `has ${count(children.length, 'child', 'children')} at ${s.name}`
+
+    who.push(
+      self
+        ? `You are ${name}. You are on the books yourself at ${s.name}, ${aBusiness(s)}.`
+        : `You are ${name}. You have ${count(children.length, 'child', 'children')} on the books at ${s.name}, ${aBusiness(s)}.`,
+    )
+    who.push('')
+    for (const l of learners) {
+      const inThem = inClass(l)
+      const subject = self ? 'You are' : `${l} is`
+      if (!inThem.length) {
+        who.push(`  - ${subject} on the books and not in any class.`)
+        continue
+      }
+      for (const cls of inThem) who.push(`  - ${subject} in the ${cls.name} — ${when(cls)}, ${priced(cls)}.`)
+    }
+    who.push('')
+    if (monthly.length > 1) {
+      who.push(`That is ${rupees(monthly.reduce((a, cls) => a + (cls.rate ?? 0), 0))} a month in total.`)
+    }
+    if (owes > 0) {
+      who.push(
+        'You did not settle last month in full. You know there is something still outstanding on your account, and you could not say what.',
+      )
+    } else if (owes < 0) {
+      who.push('There is money sitting on your account from before — you paid ahead, or something was credited back.')
+    }
+    // Derivable, not stance: `createTestContact` puts a client in the chair as the
+    // account holder, so the account really is in this person's name and the bill
+    // really does come to them. Everything about the driving, the arguing and the
+    // apologising is in `ROLE_VOICE.client`, where it asserts nothing.
+    who.push('The account is in your name. You are the one who is billed, and the one who pays.')
+
+    goals.push(
+      self
+        ? 'Know whether you are expected this week, and be told if that changes.'
+        : `Know whether ${andList(children)} ${children.length === 1 ? 'is' : 'are'} expected this week, and be told if that changes.`,
+    )
+    goals.push(
+      'Find out what you owe before you pay anything, and come away with something you could point at later that says it was received.',
+    )
+    if (owes > 0) {
+      goals.push('Get to the bottom of what is still outstanding from before, and whether it is right. You are not paying twice for one month.')
+    }
+    goals.push('Find out whether a missed class can be made up another day, or whether the money is simply gone.')
+    goals.push(
+      `Decide ${horizon(days)} whether ${self ? 'you carry' : children.length === 1 ? `${children[0]} carries` : 'they carry'} on next month.`,
+    )
+  }
+
+  /* --------------------------------------------------------------- prospect */
+
+  if (role === 'prospect') {
+    oneLine = `a stranger with ${s.name}'s number and nothing else`
+
+    who.push(`You are ${name}. You are not a customer of ${s.name} — you have their number, and that is the whole of it.`)
+    who.push(`It is ${aBusiness(s)}. You do not know what runs there, on what days, at what time, or what any of it costs.`)
+    who.push(
+      'Nothing has been said between you and them yet. They have your name written down somewhere and nothing else — not what you want, not who it is for.',
+    )
+
+    goals.push('Get a real monthly number out of them. Not "it depends" — a number, or a clear reason there cannot be one yet.')
+    goals.push('Find out what actually runs there, and when, and whether any of it fits around your week.')
+    goals.push('Find out what happens if a week is missed — is it lost, is it made up, is it credited.')
+    goals.push('Come and watch a session before you commit to anything.')
+    goals.push(`Make a decision ${horizon(days)} and say so, either way.`)
+  }
+
+  return {
+    key: o.person.key?.trim() || `${role}-${slug(name)}`,
+    name,
+    seat: role,
+    oneLine,
+    who: who.join('\n').replace(/\n{3,}/g, '\n\n').trim(),
+    voice: ROLE_VOICE[role],
+    typing: ROLE_TYPING[role],
+    goals,
+    redLines: ROLE_RED_LINES[role],
+    // Empty on purpose — see this section's header. A generated life event is
+    // invention dressed as circumstance. A driver with a calendar of its own
+    // passes the day's pressure through `SeatContext.today` instead.
+    life: {},
+  }
+}
+
+/**
+ * Everybody in a world, in the order `buildWorld` creates them.
+ *
+ * Here so that a driver wiring up `--world` writes no loop of its own. A second
+ * loop somewhere else is a second place to forget the admin, or to hand a client's
+ * name over with the coach role — which `briefFromWorld` refuses loudly, so it is
+ * a run that does not start rather than a run that lies, but it is still a run
+ * that did not happen.
+ */
+export function briefsFromWorld(o: { spec: WorldSpec; days: number }): Brief[] {
+  const s = normalised(o.spec)
+  const people: BriefPerson[] = [
+    { name: s.admin.name, role: 'admin' },
+    ...s.coaches.map((c) => ({ name: c.name, role: 'coach' as const })),
+    ...s.clients.map((c) => ({ name: c.name, role: 'client' as const })),
+    ...s.prospects.map((p) => ({ name: p.name, role: 'prospect' as const })),
+  ]
+  return people.map((person) => briefFromWorld({ spec: s, person, days: o.days }))
 }

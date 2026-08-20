@@ -199,6 +199,7 @@ const NOT_MINE: Record<string, string> = {
   concurrency: 'one model per process, on purpose — see the header',
   ramp: 'the ramp is a persona overlay; this instrument has it as --suite holistic',
   config: 'the probe has no campaign file — name the settings on the command line',
+  world: 'a probe builds its own world as the arc goes — there is nothing here for a spec to replace',
 }
 
 type Flagged = Record<string, string | true>

@@ -160,6 +160,12 @@ export type SeatMeta = {
   window?: string
   intent?: string
   personaReasoning?: unknown
+  /**
+   * Who this is and what they are to the business, when the caller knows and
+   * `PERSONAS` cannot — a seat composed from a world spec. See `drive()`.
+   */
+  who?: string
+  seat?: import('./_personas').SeatRole
 }
 
 /* ---------------------------------------------------------------- plumbing */
@@ -467,7 +473,7 @@ async function writeCursor(s: Session, key: string, at: string): Promise<void> {
  * the seat would hand the reader a fact the real recipient does not have. Failed
  * rows go for the same reason.
  */
-export async function readPhone(s: Session, key: PersonaKey, advance: boolean): Promise<Seen[]> {
+export async function readPhone(s: Session, key: string, advance: boolean): Promise<Seen[]> {
   const contactId = s.contacts[key]!
   const since = await readCursor(s, key)
   /**
@@ -562,10 +568,28 @@ export async function logSeat(s: Session, entry: Record<string, unknown>): Promi
  */
 export async function drive(
   s: Session,
-  key: PersonaKey,
+  key: string,
   meta: SeatMeta,
   fn: () => Promise<void>,
 ): Promise<Seen[]> {
+  /**
+   * Who the record says this was — from the caller when it has them, and from
+   * `PERSONAS` only for the four.
+   *
+   * `PERSONAS` holds the canonical four and cannot hold anybody else: a spec
+   * world's seats are composed at run time out of a JSON file. `PERSONAS[key].name`
+   * therefore threw `Cannot read properties of undefined` INSIDE the turn, once
+   * per seat, on every `--world` run — thirteen seats failed at 20:15 and the run
+   * finished with four queue turns and a record that reads as a product nobody
+   * talked to. A caller holding the persona names it; a caller that does not is
+   * driving one of the four.
+   */
+  const known = PERSONAS[key as PersonaKey]
+  const who = meta.who ?? known?.name
+  const seat = meta.seat ?? known?.seat
+  if (!who || !seat) {
+    die(`no seat named ${key}, and the caller named neither who is sitting in it nor their role`)
+  }
   const at = clock.inZone(await clock.now(s.academyId), TZ)
   const rec = await reopenRun(s.dir, {
     academyId: s.academyId,
@@ -575,8 +599,8 @@ export async function drive(
   await rec.turn(
     {
       id: `d${s.day}-${at.time}-${key}${meta.kind === 'tap' ? '-tap' : ''}`,
-      who: PERSONAS[key].name,
-      persona: PERSONAS[key].seat,
+      who,
+      persona: seat,
       say: meta.say,
       day: s.day,
       // Whose turn this is. Two seats speaking in the same window used to blend:
