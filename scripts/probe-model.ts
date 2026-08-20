@@ -2544,7 +2544,7 @@ const STRESS_CASES: Case[] = [
  *
  * So this suite is chosen by EVIDENCE rather than by coverage. Every case below
  * is one of the month's hardest turns, and hard is defined by what the hand
- * reading of the 17 Aug stress month actually found (`.probe/reports/
+ * reading of the 17 Aug stress month actually found (`.probe/archive/reports/
  * 2026-08-17-stress-month-analysis.html`), not by which finding a case cites:
  *
  *   - the four turns that scored below 5/10 — all four of them client turns,

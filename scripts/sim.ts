@@ -158,7 +158,7 @@ import { loadEnvFiles, c } from './_env'
  * emulator transport in its own module body, because either file can be the
  * process's entry point and an importer's body has not run yet when this one does.
  */
-import { TZ, die, drain, q, queueTurn, walkTo, writeSession, type Session } from './_seat'
+import { TZ, WorldGone, die, drain, q, queueTurn, walkTo, writeSession, type Session } from './_seat'
 
 loadEnvFiles()
 /**
@@ -843,13 +843,41 @@ async function main(): Promise<void> {
   }
 
   /**
+   * How the run ended: a ceiling, a world that went away, or nothing.
+   *
+   * Declared up here rather than beside the loop because `queue` below closes
+   * over it, and the first queue turn happens before the first day does.
+   */
+  let stoppedBy: 'min' | 'inr' | 'world-gone' | null = null
+
+  /**
+   * Every clock walk and every drain goes through here.
+   *
+   * `queueTurn` throws `WorldGone` when the academy this run drives has been
+   * deleted underneath it. Caught once, in one place, so a vanished world reaches
+   * the loop as the same kind of fact a budget ceiling does: the record below is
+   * written either way — short but whole, which is a run that can still be
+   * judged — and `stoppedBy` names which of the three ended it.
+   */
+  const queue = async (...args: Parameters<typeof queueTurn>): Promise<string[]> => {
+    try {
+      return await queueTurn(...args)
+    } catch (e) {
+      if (!(e instanceof WorldGone)) throw e
+      stoppedBy = 'world-gone'
+      console.log(c.red(`\n  ${e.message}`))
+      return []
+    }
+  }
+
+  /**
    * Materialise the timetable before anybody speaks, so day 1 is a business with
    * sessions in it rather than one whose first question has no answer. Recorded as
    * turn 1: it is the first thing the product does in this run, it costs money,
    * and a run whose opening move is missing from its own record begins by
    * understating itself.
    */
-  const opened = await queueTurn(session, 'd1-open-queue', () => drain(academyId))
+  const opened = await queue(session, 'd1-open-queue', () => drain(academyId))
   console.log(`  clock    ${clock.inZone(await clock.now(academyId), TZ).label} · ${opened.length} jobs\n`)
 
   /** Who has walked out, and when. A departure is an outcome, not a failure. */
@@ -882,8 +910,6 @@ async function main(): Promise<void> {
     return total + seatSpend.inr
   }
 
-  let stoppedBy: 'min' | 'inr' | null = null
-
   for (let day = 1; day <= cfg.days && !stoppedBy; day++) {
     session.day = day
     // The file on disk is what a worker reads when it is restarted mid-week; a
@@ -904,9 +930,16 @@ async function main(): Promise<void> {
        * a job stepped over is a morning brief, a T-60 prompt or a register that
        * never happened, and the day then reads as a quiet one.
        */
-      const walked = await queueTurn(session, `d${day}-${w}-queue`, () => walkTo(academyId, WINDOW_AT[w]), {
+      const walked = await queue(session, `d${day}-${w}-queue`, () => walkTo(academyId, WINDOW_AT[w]), {
         window: w,
       })
+      /**
+       * Nobody is asked to speak into a business that is not there. A deleted
+       * world surfaces at the window's clock walk, above, because the clock is
+       * the first thing a window touches — and every seat after it would spend a
+       * model call to be shown an empty phone and say something into nothing.
+       */
+      if (stoppedBy) break
       const at = clock.inZone(await clock.now(academyId), TZ)
       const active = (plan.schedule[day]?.[w] ?? []).filter((k) => driven.has(k) && !gone.has(k))
       console.log(
@@ -983,7 +1016,7 @@ async function main(): Promise<void> {
        * stands. A reply that promises a reminder promises a job, and a job that
        * runs after the record closes is a promise nothing in the record kept.
        */
-      const after = await queueTurn(session, `d${day}-${w}-drain`, () => drain(academyId), { window: w })
+      const after = await queue(session, `d${day}-${w}-drain`, () => drain(academyId), { window: w })
       await appendFile(
         join(dir, 'days.jsonl'),
         JSON.stringify({ day, window: w, at: at.label, jobs: [...walked, ...after] }) + '\n',
@@ -1016,7 +1049,7 @@ async function main(): Promise<void> {
      * Close the day out past the evening digest and into the small hours, so the
      * overnight jobs run and tomorrow starts on a queue somebody has drained.
      */
-    const night = await queueTurn(
+    const night = await queue(
       session,
       `d${day}-overnight-queue`,
       async () => {

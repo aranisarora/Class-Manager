@@ -76,7 +76,7 @@ Open it with:
 ```bash
 npm run report                           # newest run, as a page
 npm run runs                             # which runs exist, and which are judged
-node scripts/report.mjs --run .probe/runs/2026-08-17-13-09-arc
+node scripts/report.mjs --run .probe/runs/<dir>
 node scripts/judge-feed.mjs --academy "Smash Badminton"   # live, mid-drive
 ```
 
@@ -244,7 +244,7 @@ measurement can always be joined.
 
 ```json
 {
-  "run": ".probe/runs/2026-08-17-13-09-arc",
+  "run": ".probe/archive/runs/2026-08-17-1230-stress-month",
   "judge": "aranis",
   "at": "2026-08-17",
   "verdict": "The conversation is close to excellent and the consequences are not.",
@@ -280,7 +280,7 @@ page — the per-turn table with your scores, the persona split, every turn open
 its reasoning and its SQL, and the seven axes with the evidence under each.
 
 The analysis that page is modelled on is
-`.probe/reports/2026-08-17-stress-month-analysis.html`. Three things made it worth reading,
+`.probe/archive/reports/2026-08-17-stress-month-analysis.html`. Three things made it worth reading,
 and they are worth copying:
 
 - **The verdict is one sentence, first.** *"The conversation is close to excellent and the

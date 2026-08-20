@@ -322,7 +322,7 @@ product previewed it, he confirmed, it wrote a correct audit record and told him
 *"Removed 2 coach assignments and added 1 coach assignment."* All true. A few days later all
 three coaches were back on that session. Nobody was told.
 
-**Evidence.** `.probe/runs/2026-08-17-18-07-live` — turn 24 executed
+**Evidence.** `.probe/archive/runs/2026-08-17-18-07-live` — turn 24 executed
 `delete from session_coach where session_id='d727685e…'`, each returning 1 row; by turn 47
 (day 5) the same session read back three coaches again. Three of five independent judges found
 it without being told to look. Downstream: duplicate day-6 messages, and the owner's

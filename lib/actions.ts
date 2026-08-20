@@ -231,7 +231,7 @@ type ClaimedRow = { payload: unknown; message_id: string | null }
  * A mother cancelled a class, tapped Yes, and the next day the model was still being
  * told she had never answered. It re-asked; she tapped again; by then the session was
  * inside the notice window and the second tap wrote `absent` over `cancelled_timely`
- * and charged her (`.probe/runs/2026-08-17-18-07-live`, turns 14/15/28/30).
+ * and charged her (`.probe/archive/runs/2026-08-17-18-07-live`, turns 14/15/28/30).
  *
  * Since 0035 it also produces a *wrong* resolution rather than merely a missing one:
  * `expires_at` is now set from the button, so the sweep in `plan-ahead.ts` resolves an

@@ -2176,7 +2176,7 @@ const clientCancel: OperationDef = {
      * took a day to ask her the same question again. Her second tap landed 21.7h out,
      * so the operation rebuilt itself, decided "late", and wrote `absent` over the
      * `cancelled_timely` her first tap had earned, with a charge behind it
-     * (`.probe/runs/2026-08-17-18-07-live`, turns 15 and 30).
+     * (`.probe/archive/runs/2026-08-17-18-07-live`, turns 15 and 30).
      *
      * She did cancel in good time. That is a fact about HER, and it stopped being true
      * only because the product was slow. §2.2 already says everything a tap can run is
@@ -2270,7 +2270,7 @@ const clientCancel: OperationDef = {
              * while `SCHEMA_DOC` told the model this column holds `client_cancel`. The
              * model looked for exactly the documented value, got zero rows, and read
              * that as "no cancellation was ever asked about" — one of the three reads
-             * behind the double-charge in `.probe/runs/2026-08-17-18-07-live`.
+             * behind the double-charge in `.probe/archive/runs/2026-08-17-18-07-live`.
              *
              * The SUBJECT fell back to the contact id, because this step sets no
              * `subject_person_ids`. That makes every cancellation this family ever asks

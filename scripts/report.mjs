@@ -2,7 +2,7 @@
  * report — one reader for every run this repo produces.
  *
  *   node scripts/report.mjs                          # the newest run in .probe/runs
- *   node scripts/report.mjs --run .probe/runs/2026-08-17-13-09-arc
+ *   node scripts/report.mjs --run .probe/runs/<dir>
  *   node scripts/report.mjs --out .probe/reports/my-name.html
  *   node scripts/report.mjs --list                   # what runs exist
  *
@@ -20,7 +20,7 @@
  *
  * WHAT IT RENDERS
  * -----------------------------------------------------------------------------
- * The page `.probe/reports/2026-08-17-stress-month-analysis.html` is the model,
+ * The page `.probe/archive/reports/2026-08-17-stress-month-analysis.html` is the model,
  * because it is the only report in this repo that anybody read twice. Three
  * things made it work and all three are structural rather than decorative:
  *

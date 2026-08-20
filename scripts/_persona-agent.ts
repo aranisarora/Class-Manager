@@ -27,7 +27,7 @@
  *
  * That is where every good reading in this repo came from, and it costs a human
  * being an evening per week driven: the newest recorded live run,
- * `.probe/runs/2026-08-19-20-30-live`, is fifty-four turns, each one a person
+ * `.probe/archive/runs/2026-08-19-20-30-live`, is fifty-four turns, each one a person
  * reading a phone and typing. Two things follow, and both are worse than the
  * tedium. A week cannot be RE-driven, because the second week's sentences would
  * be different sentences typed by a differently tired person, so a prefix change

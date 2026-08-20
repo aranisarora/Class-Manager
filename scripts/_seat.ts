@@ -644,6 +644,58 @@ export async function drive(
  * from the sink rather than asking the database, because the database cannot
  * answer — see `TurnSink`.
  */
+/**
+ * The world this session drives is not in the database any more.
+ *
+ * Thrown rather than returned, because there is nothing a caller can do with it
+ * except stop. Every turn after this one fails the same way: no clock moves, no
+ * SQL runs, nothing is sent, nothing costs anything — and each of them is still
+ * a line in `turns.jsonl` with a number and a persona on it.
+ *
+ * The incident is the seven-day sim of 20 Aug 2026, cancelled from the keyboard
+ * part-way through day 2. Its academy went away at the same moment — by which
+ * hand is not recorded, and this file does not need to know — and the walk did
+ * not stop: it carried on to day 7 against a business that no longer existed.
+ * 43 of its 56 turns advanced no clock, ran no statement, sent
+ * no message and cost ₹0, while `record.json` still said fifty-six turns across
+ * seven days. That is the trap DRIVING.md names in its own words — a bad run
+ * that reads afterwards as a good one — and it is worse than a crash, because a
+ * crash says so.
+ *
+ * A world also disappears without anybody cancelling anything: `sim gc` reaps by
+ * age, a seed rebuilds the fixtures, another shell drops a business somebody
+ * thought was theirs. The stop is the same in every case.
+ */
+export class WorldGone extends Error {
+  constructor(readonly academyId: string) {
+    super(
+      `the academy this run drives (${academyId}) is not in the database any more.\n` +
+        `   Something dropped it while the run was walking — a cancelled run's teardown, a\n` +
+        `   \`sim gc\`, or a seed. Nothing measured after this point would mean anything, so\n` +
+        `   the run stops here and keeps the record it already has.`,
+    )
+    this.name = 'WorldGone'
+  }
+}
+
+/**
+ * Is this academy still a row?
+ *
+ * Asked of the database rather than of the error text. `sim_clock_academy_id_fkey`
+ * is what the cancelled run happened to throw, because the clock is the first
+ * thing a window touches — but a world removed between two hops can surface at a
+ * dozen different statements, and a harness that recognises one message resumes
+ * walking after all the others.
+ *
+ * A check that cannot itself run answers `true`. The alternative reads a database
+ * blip as a deleted business and stops a good run with a sentence that is false.
+ */
+async function academyAlive(academyId: string): Promise<boolean> {
+  return q(academyId, `select 1 from academy where id = '${academyId}'::uuid`)
+    .then((rows) => rows.length > 0)
+    .catch(() => true)
+}
+
 export async function queueTurn(
   s: Session,
   id: string,
@@ -668,5 +720,16 @@ export async function queueTurn(
       sink.jobs.push(...(await run()))
     },
   )
+  /**
+   * A failed turn is asked one question: is the world still there?
+   *
+   * Only after a failure, so the ordinary path pays nothing — a week is around a
+   * hundred queue turns, and this would otherwise be a hundred round-trips to
+   * learn "yes". `rec.turn` records a throw and returns normally, by design, so
+   * the error is here to be read rather than propagated; without this, a harness
+   * cannot tell a turn that failed from a turn that failed because there is
+   * nothing left to drive.
+   */
+  if (t.error && !(await academyAlive(s.academyId))) throw new WorldGone(s.academyId)
   return t.jobs
 }

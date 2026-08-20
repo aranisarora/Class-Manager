@@ -89,6 +89,7 @@ import {
   POINTER,
   SEAT_HOME,
   TZ,
+  WorldGone,
   die,
   drain,
   drive,
@@ -595,4 +596,16 @@ async function readJsonl(path: string): Promise<any[]> {
     })
 }
 
-await main()
+/**
+ * A seat whose world has been deleted says so in one sentence and stops.
+ *
+ * `live.ts` is one command per process, so there is no loop here to break out of:
+ * the person in the seat types `say`, and without this they get a stack trace
+ * about a foreign key. The likely cause is a `sim gc` or a seed between two
+ * commands of one session — the session on disk is intact, and the business it
+ * names is not.
+ */
+await main().catch((e) => {
+  if (e instanceof WorldGone) die(e.message)
+  throw e
+})

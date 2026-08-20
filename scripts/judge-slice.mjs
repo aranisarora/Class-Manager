@@ -7,7 +7,7 @@
  *   node scripts/judge-slice.mjs --notes
  *   node scripts/judge-slice.mjs --days
  *   node scripts/judge-slice.mjs --to "Divya Rao"
- *   node scripts/judge-slice.mjs --run .probe/runs/2026-08-17-18-07-live --turn 5
+ *   node scripts/judge-slice.mjs --run .probe/archive/runs/2026-08-17-18-07-live --turn 5
  *
  * WHY THIS EXISTS BESIDE `report.mjs`
  * -----------------------------------------------------------------------------

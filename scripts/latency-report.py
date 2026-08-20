@@ -1,12 +1,12 @@
-# Regenerates .probe/reports/2026-08-18-latency-analysis.html
+# Regenerates .probe/archive/reports/2026-08-18-latency-analysis.html
 #   python scripts/latency-report.py [path-to-a-report-to-borrow-CSS-from]
-# Figures are read from .probe/runs/2026-08-17-18-07-live by the analysis in the
+# Figures are read from .probe/archive/runs/2026-08-17-18-07-live by the analysis in the
 # report body; this file is the renderer, not the analysis.
 import io,sys,json
 sys.stdout=io.TextIOWrapper(sys.stdout.buffer,encoding='utf-8',errors='replace')
 import re as _re
 # House CSS lives in the week report; reuse it verbatim so every report looks the same.
-_src=sys.argv[1] if len(sys.argv)>1 else '.probe/reports/2026-08-18-live-week-analysis.html'
+_src=sys.argv[1] if len(sys.argv)>1 else '.probe/archive/reports/2026-08-18-live-week-analysis.html'
 css=_re.search(r'(?s)<style>.*?</style>',open(_src,encoding='utf-8').read()).group(0)
 
 def bars(data,w=760,bh=26,gap=8,pad_l=140,maxv=None,fmt=lambda v:'%.0f'%v,color='var(--s1)'):
@@ -65,7 +65,7 @@ A(css)
 A('</head>\n<body>\n<div class="wrap">')
 
 A('<h1>Why a turn takes thirty seconds</h1>')
-A('<p class="sub">Latency and round-count analysis of run <code>.probe/runs/2026-08-17-18-07-live</code> &mdash; '
+A('<p class="sub">Latency and round-count analysis of run <code>.probe/archive/runs/2026-08-17-18-07-live</code> &mdash; '
   '82 conversational turns, deepseek-v4-flash, thinking <code>low</code>. '
   'Read from <code>record.json</code> and <code>seat.jsonl</code> directly, not from the week report&rsquo;s summary tables. '
   'Written 18 Aug 2026.</p>')
@@ -224,13 +224,13 @@ A('<div class="f"><h4><span class="id">L4</span>Database and cache work &mdash; 
   '<p>7.6% of wall clock, 87% cache hit rate, 527ms mean statement. Raising <code>pool_size</code> above 15 is worth doing '
   'for the 23 Sunday <code>EMAXCONNSESSION</code> failures &mdash; those are correctness, not speed. As a latency lever it is noise.</p></div>')
 
-A('<div class="foot">Source: <code>.probe/runs/2026-08-17-18-07-live/record.json</code> (82 turns, per-entry <code>ms</code>) '
+A('<div class="foot">Source: <code>.probe/archive/runs/2026-08-17-18-07-live/record.json</code> (82 turns, per-entry <code>ms</code>) '
   'and <code>seat.jsonl</code> (119 timestamped seat actions). Token counts are the provider&rsquo;s, per turn. '
   'The reasoning share is a turn-level least-squares fit of billed output tokens on recorded reasoning characters '
   '(n=82, R&sup2;=0.985): 3.83 chars per reasoning token, with 254 non-reasoning output tokens per turn. '
   'Cross-run figures read from the five other <code>record.json</code> files carrying per-round timings.</div>')
 A('</div>\n</body>\n</html>')
 
-out='.probe/reports/2026-08-18-latency-analysis.html'
+out='.probe/archive/reports/2026-08-18-latency-analysis.html'
 open(out,'w',encoding='utf-8').write('\n'.join(H))
 print('wrote',out,len('\n'.join(H)),'chars')

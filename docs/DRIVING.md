@@ -106,7 +106,8 @@ by a domain-time cursor, so the messages, jobs and SQL of a turn that never flus
 whatever ran before it.
 
 Neither budget aborts anything, and both stay readable afterwards. `extra.run.stoppedBy` in
-`record.json` names which ceiling ended the run, or is `null` because neither did.
+`record.json` names what ended the run — `min`, `inr`, `world-gone` — or is `null` because
+nothing did.
 
 ```bash
 # seven simulated days, but I am leaving in forty minutes
@@ -134,6 +135,16 @@ npx tsx scripts/sim.ts gc --hours 6
 
 It only matches `Ace Tennis Academy <token>`. A hand-made academy, `_world.ts`'s, or a business
 somebody is using is never matched.
+
+**And a run whose world disappears underneath it stops.** A world goes away for several
+reasons — a `gc`, a seed, another shell dropping a business somebody thought was theirs, a
+cancelled drive — and until 20 Aug a walk carried on regardless. The seven-day sim of that day
+was cancelled part-way through day 2, lost its academy at the same moment, and walked to day 7
+against a business that no longer existed: 43 of its 56 turns moved no
+clock, ran no statement, sent nothing and cost ₹0, while `record.json` still said fifty-six
+turns over seven days. A failed turn now asks the database one question — is this academy still
+a row — and a `no` stops the run with `stoppedBy: 'world-gone'` and the record it already has.
+The check costs nothing on the ordinary path: it is only asked after a turn has already failed.
 
 ### Run off-peak. It is the cheapest optimisation available.
 

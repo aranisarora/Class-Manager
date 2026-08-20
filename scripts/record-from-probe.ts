@@ -2,7 +2,7 @@
  * record-from-probe — write `record.json` for a `probe-model` run that predates
  * the instrument writing one itself.
  *
- *   npx tsx scripts/record-from-probe.ts --run .probe/runs/2026-08-17-1439-stress-week
+ *   npx tsx scripts/record-from-probe.ts --run .probe/archive/runs/2026-08-17-1439-stress-week
  *   npx tsx scripts/record-from-probe.ts --run <dir> --arm deepseek-v4-flash
  *   npm run record:backfill                 # every run in .probe/runs that lacks one
  *

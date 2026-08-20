@@ -32,7 +32,7 @@ from. The design comparison in Part 9 notes the shape that would be idiomatic *"
 where `session_coach` had five readers; it has thirty."*
 
 **What to do instead of guessing.** Read Part 9's three candidate designs before touching this.
-The evidence — `.probe/runs/2026-08-17-18-07-live`, turn 24 deleting and turn 47 reading three
+The evidence — `.probe/archive/runs/2026-08-17-18-07-live`, turn 24 deleting and turn 47 reading three
 coaches back — is the reproduction, and three of five independent judges found it unprompted.
 
 ---
