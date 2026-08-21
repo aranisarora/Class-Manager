@@ -9,14 +9,24 @@
  * has to as well. The interesting test is a photographed timetable *you* chose, a voice note
  * in Kannada, a fee receipt as a PDF — none of which a hardcoded sample stands in for.
  *
+ * `📎 attach` is a MENU rather than a straight file picker, because the two things behind it
+ * are not the same kind of thing and the difference is the whole point. A file is bytes the
+ * model cannot open, answered by the runtime in words (`mediaRefusal`). A contact card is a
+ * name and a number — data, already text — and it reaches the model as itself. Hiding the
+ * card behind the same button that opens a file browser would have made the one readable
+ * attachment on this surface unreachable from the UI, which is `PREFIX-RULES.md`'s trap in
+ * the mirror: a capability nothing tells anyone exists is a capability nobody uses.
+ *
  * The one control here that is not WhatsApp's is the delivery-ladder button (§2.4). It is
  * genuinely the emulator talking rather than the handset, so it sits in the probe row under
  * the bar and disappears with the rest of the instrumentation, instead of being smuggled in
  * beside the send button where it would read as something a person can press.
  */
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { LIMITS } from '@/lib/messaging/types'
+import type { SharedContact } from '@/lib/messaging/contact-card'
+import { ContactSheet, type SavedContact } from './ContactSheet'
 import { Icon, Ticks } from './icons'
 import { Spinner, cx } from './ui'
 import { WaIconButton } from './wa-ui'
@@ -49,8 +59,11 @@ export function Composer({
   busy,
   optedOut,
   chrome = true,
+  academyId,
+  savedContacts,
   onSendText,
   onSendMedia,
+  onSendContacts,
   nextRung,
   onAdvanceStatus,
   advanceDisabled,
@@ -58,8 +71,13 @@ export function Composer({
   busy: boolean
   optedOut: boolean
   chrome?: boolean
+  /** Whose address book the contact picker draws — see `lib/phonebook.ts`. */
+  academyId: string | null
+  /** People this world already holds, offered for the deliberate duplicate case. */
+  savedContacts: SavedContact[]
   onSendText: (text: string) => void
   onSendMedia: (media: { url: string; mimeType: string; filename: string }, caption?: string) => void
+  onSendContacts: (contacts: SharedContact[], caption?: string) => void
   /** The rung the newest outbound message can reach next, or null when it is at the top. */
   nextRung: 'delivered' | 'read' | null
   onAdvanceStatus: () => void
@@ -69,9 +87,27 @@ export function Composer({
   const [attachError, setAttachError] = useState<string | null>(null)
   const [reading, setReading] = useState(false)
   const [dropping, setDropping] = useState(false)
+  const [menu, setMenu] = useState(false)
+  const [picking, setPicking] = useState(false)
   const ref = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const over = text.length > LIMITS.textChars
+
+  // WhatsApp's attach menu closes on Escape and on the next thing you touch. A menu that
+  // only closes by choosing something is a menu you cannot back out of.
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(false)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close()
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('pointerdown', close)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('pointerdown', close)
+    }
+  }, [menu])
 
   const submit = () => {
     const t = text.trim()
@@ -108,6 +144,23 @@ export function Composer({
     }
   }
 
+  /**
+   * The cards go with whatever is in the box, exactly as a file does.
+   *
+   * WhatsApp itself does not offer a caption on a shared contact — it sends the card
+   * and leaves the box alone. This does, and the divergence is deliberate: the caption
+   * is how an admin says *"this is the new Under-10 coach"*, which is the sentence that
+   * turns a name and a number into something the product can act on. Withholding it
+   * would make every share a guess about what the person meant by it.
+   */
+  const share = (contacts: SharedContact[]) => {
+    if (!contacts.length) return
+    const caption = text.trim() || undefined
+    setText('')
+    setPicking(false)
+    onSendContacts(contacts, caption)
+  }
+
   const canSend = !!text.trim() && !busy && !over
 
   return (
@@ -125,6 +178,14 @@ export function Composer({
         void attach(e.dataTransfer.files?.[0])
       }}
     >
+      {picking && academyId ? (
+        <ContactSheet
+          academyId={academyId}
+          saved={savedContacts}
+          onClose={() => setPicking(false)}
+          onShare={share}
+        />
+      ) : null}
       {optedOut ? (
         <div
           className="px-3 py-1.5 text-center text-[12.5px]"
@@ -148,13 +209,68 @@ export function Composer({
         <WaIconButton label="emoji — the composer takes them as ordinary text" disabled>
           <Icon name="emoji" size={22} />
         </WaIconButton>
-        <WaIconButton
-          label="attach any file — image, voice note, video or PDF reaches the model as itself (§14.5). Drag one in or paste a screenshot."
-          disabled={busy || reading}
-          onClick={() => fileRef.current?.click()}
-        >
-          {reading ? <Spinner /> : <Icon name="attach" size={21} />}
-        </WaIconButton>
+        {/* The window-level `pointerdown` that closes this menu would also fire on the
+            button that opens it — closing it a beat before the click reopened it, so the
+            control worked once and then toggled against itself. The subtree keeps its own
+            pointer events to itself; everywhere else still dismisses. */}
+        <span className="relative" onPointerDown={(e) => e.stopPropagation()}>
+          {menu ? (
+            <div
+              className="absolute bottom-full left-0 z-30 mb-2 w-56 overflow-hidden rounded-lg shadow-lg"
+              style={{ background: 'var(--wa-shell)', border: '1px solid var(--wa-rule)' }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setMenu(false)
+                  fileRef.current?.click()
+                }}
+                className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-white/5"
+                style={{ borderBottom: '1px solid var(--wa-rule)' }}
+              >
+                <Icon name="file" size={19} />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[14.5px]" style={{ color: 'var(--wa-ink)' }}>
+                    Document
+                  </span>
+                  <span className="block text-[11.5px]" style={{ color: 'var(--wa-ink-dim)' }}>
+                    anything on your disk — answered in words
+                  </span>
+                </span>
+              </button>
+              <button
+                type="button"
+                disabled={!academyId}
+                onClick={() => {
+                  setMenu(false)
+                  setPicking(true)
+                }}
+                className={cx(
+                  'flex w-full items-center gap-3 px-3 py-2.5 text-left',
+                  academyId ? 'hover:bg-white/5' : 'cursor-not-allowed opacity-40',
+                )}
+              >
+                <Icon name="person" size={19} />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[14.5px]" style={{ color: 'var(--wa-ink)' }}>
+                    Contact
+                  </span>
+                  <span className="block text-[11.5px]" style={{ color: 'var(--wa-ink-dim)' }}>
+                    a name and a number — the model reads this one
+                  </span>
+                </span>
+              </button>
+            </div>
+          ) : null}
+          <WaIconButton
+            label="attach — a document (which the model cannot open, and the runtime answers in words), or a contact card (a name and a number, which it can)"
+            disabled={busy || reading}
+            active={menu}
+            onClick={() => setMenu((v) => !v)}
+          >
+            {reading ? <Spinner /> : <Icon name="attach" size={21} />}
+          </WaIconButton>
+        </span>
 
         <textarea
           ref={ref}
@@ -202,7 +318,7 @@ export function Composer({
           className="probe-dim flex items-center gap-2 px-3 py-1"
           style={{ borderTop: '1px solid var(--wa-rule)' }}
         >
-          <span className="probe opacity-60">drop or paste a file</span>
+          <span className="probe opacity-60">drop or paste a file · 📎 for a contact card</span>
           {/* One rung, never the whole ladder. This control used to jump straight to `read`,
               which meant `delivered` — the state a message is in on the handset of someone
               who has not looked yet — could not be produced from the UI at all (§2.4). */}

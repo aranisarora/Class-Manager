@@ -610,7 +610,7 @@ Coaches leave often and new ones arrive. Routine operations, not exceptional one
 
 **Don't import — get invited.** Every path where the parent sends the first message is strictly better: free, no template, no block risk, no tier consumption, and the window opens itself.
 
-**Step 1 — the admin types the families in.** One line per family, children's names with them; several families in one message is normal and expected. (Shared contact cards and a photographed register were the intended route; neither reaches the model — §14.5.) The bot builds `person`, `contact`, `account`, `player`, `enrollment` — **while messaging nobody.**
+**Step 1 — the admin types the families in, or shares their contacts.** One line per family, children's names with them; several families in one message is normal and expected. **A shared contact card works too, and several at once** — it carries the name and the number, which are the two fields a typed line most often gets wrong, so what is left to type is the child and the class. (A photographed register was the other intended route and still does not reach the model — §14.5.) The bot builds `person`, `contact`, `account`, `player`, `enrollment` — **while messaging nobody.**
 
 **Step 2 — parents invite themselves.** The bot drafts the invite; the admin sends it from their own number. It carries a deep link; the parent taps, sends the prefilled text, and the bot introduces itself [`CL-INTRO`] — whose manager it is, the three things it does, then **proof instead of promises**: their child's actual schedule, with a useful next tap.
 
@@ -1007,6 +1007,8 @@ The model client is DeepSeek's API, which has no image, audio or document input 
 - **A GPay screenshot is not a payment record.** Rail 1 reconciliation stays attestation.
 
 **Media still arrives, and silence is not an acceptable answer to it.** An inbound photo, voice note or file gets a designed reply from the runtime — naming what cannot be done, and the road that still works ("type the classes in any rough form and I'll read them back") — before the model is asked anything. Going quiet is the one failure a person cannot tell apart from being ignored, and it must never be caused by a capability the product removed. That reply is a runtime send, not a line in the prompt: an instruction the model follows four times in five is not a guarantee.
+
+**A shared contact card is the exception, and it is not multimodal.** WhatsApp's `contacts` message is a name and a phone number in structured fields — data, not a file, already text before anybody touches it. It is not behind a media id, needs no rasteriser and no audio model, and it arrives on the same wire as a text body. So it reaches the model as itself, and it is the only attachment on this surface that does. `readSharedContacts` validates each card against `dialablePhone` — the same predicate `add_coach` and `add_family` refuse on — and drops any that would not reach anyone; the survivors are rendered into the message body, so a card with no caption typed beside it is still in the conversation two turns later rather than a gap where a message used to be. This is not a repeal of anything above: a photographed register is still pixels and still cannot be read.
 
 **What survives unchanged.** Parsed content is **read back before action** — recognition errors land on names, times and amounts, exactly where the damage is — and parsing produces a **proposal**, never a silent write. A week read out of one typed sentence is exactly as misreadable as one read off a photo was.
 

@@ -16,9 +16,10 @@ Run this first, every single time, and read all of it:
 npx tsx scripts/live.ts brief <you>
 ```
 
-It prints six things: who you are, **how you type**, what you want out of this week,
-what would make you complain or leave, what is happening in your life today, your own
-notebook from earlier days, and everything on your phone since you last looked.
+It prints who you are, **how you type**, what you want out of this week, what would make
+you complain or leave, what is happening in your life today, your own notebook from
+earlier days, everything on your phone since you last looked, and who is saved in your
+contacts.
 
 **The "how you type" section is not decoration and it is not optional.** It is the part
 of the test that has never been run. Real WhatsApp traffic is thumb-typed one-handed by
@@ -39,9 +40,16 @@ what you meant.
 ```
 npx tsx scripts/live.ts say <you> "what you want to say"
 npx tsx scripts/live.ts tap <you> "the exact words printed on the button"
+npx tsx scripts/live.ts share <you> "a name saved in your contacts" [--say "…"]
 npx tsx scripts/live.ts inbox <you>
 npx tsx scripts/live.ts clock
 ```
+
+`share` is the paperclip: it attaches somebody's contact card, the way you would on your
+own phone. Your brief lists who is saved in your contacts — those names and no others.
+Use it when handing somebody's details over is genuinely what you are doing, and type
+their number out instead if that is what you would really do. Most messages attach
+nobody.
 
 Send **one to four messages**. Fewer if you have nothing to say — a person with nothing
 to say sends nothing, and an empty window is a valid outcome. More only if the
@@ -90,8 +98,8 @@ This is how tomorrow-you remembers today. It is the only continuity you have.
 
 **You can see only what your phone shows you.**
 
-The one command you may ever run is `npx tsx scripts/live.ts <brief|say|tap|inbox|note|
-diary|clock> …`, and the one file you may ever read is this one.
+The one command you may ever run is `npx tsx scripts/live.ts <brief|say|tap|share|inbox|
+note|diary|clock> …`, and the one file you may ever read is this one.
 
 Do not read any other file. Do not look inside `.probe`. Do not run `node scripts/q.mjs`
 or any other script. Do not grep the repository. Do not inspect a database. Do not try

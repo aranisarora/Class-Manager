@@ -116,6 +116,8 @@ loadEnvFiles()
 process.env.TRANSPORT = 'emulator'
 
 const { dropAcademy, inboundFromContact } = await import('@/lib/seed')
+const { phonebookLookup, phonebookNames } = await import('@/lib/phonebook')
+const { bodyWithSharedContacts } = await import('@/lib/messaging/contact-card')
 const { reopenRun, saveRun, runDir } = await import('./_capture')
 const clock = await import('@/lib/clock')
 const { env } = await import('@/lib/env')
@@ -346,6 +348,13 @@ async function main(): Promise<void> {
       L.push('')
       L.push('ON YOUR PHONE, SINCE YOU LAST LOOKED')
       L.push(renderPhone(seen))
+      L.push('')
+      // Their handset's own address book. A fact about the phone rather than about
+      // the academy, so it passes the blindfold — and without it `share` is a
+      // command aimed at nobody. Names only: see `lib/phonebook.ts`.
+      L.push('SAVED IN YOUR CONTACTS  (npx tsx scripts/live.ts share <you> "<name>")')
+      const book = phonebookNames(s.academyId)
+      L.push(book.length ? book.map((n) => `  ${n}`).join('\n') : '  (nobody)')
       const text = L.join('\n')
       console.log(text)
       await logSeat(s, { persona: key, cmd: 'brief', shownMessages: seen.length })
@@ -365,6 +374,54 @@ async function main(): Promise<void> {
       console.log(`  you → Class Manager:  ${text}\n`)
       console.log(renderPhone(seen))
       await logSeat(s, { persona: key, cmd: 'say', said: text, shown: seen })
+      break
+    }
+
+    /* ----------------------------------------------------------- share */
+    /**
+     * Attach somebody out of your own contacts, the way you tap the paperclip and
+     * pick a person.
+     *
+     *   npx tsx scripts/live.ts share divya "Vandana Achar"
+     *   npx tsx scripts/live.ts share rahul "Feroz Mirza" --say "this is the new coach"
+     *
+     * BY NAME, and the name is the only handle — the same rule `tap` follows, and
+     * for the same reason: a seat that had to pass a phone number would be a seat
+     * with the harness in it. The number comes from `phonebookLookup`, which only
+     * ever answers with one derived from this academy's own id, so a human seat
+     * cannot hand the product a number another tenant already holds either.
+     *
+     * A name that is not in the book prints what the person would experience —
+     * they cannot find them — rather than an error, and logs it. That is a fact
+     * about the conversation, exactly as an unresolvable button title is.
+     */
+    case 'share': {
+      const s = await readSession()
+      const key = positionals()[0] as PersonaKey
+      const name = positionals().slice(1).join(' ').trim()
+      const caption = flag('say')
+      if (!PERSONAS[key]) die(`no such seat: ${key}`)
+      if (!name) die('share who? Give the name as it is saved in your contacts.')
+
+      const hit = phonebookLookup(s.academyId, name)
+      if (!hit) {
+        console.log(`  there is nobody called "${name}" in your contacts.`)
+        console.log(`  you have: ${phonebookNames(s.academyId).join(', ')}`)
+        await logSeat(s, { persona: key, cmd: 'share', name, resolved: false })
+        break
+      }
+
+      const wire = bodyWithSharedContacts(caption, [hit]) ?? ''
+      const seen = await drive(s, key, { say: wire, kind: 'say' }, async () => {
+        await inboundFromContact({
+          contactId: s.contacts[key]!,
+          contacts: [hit],
+          ...(caption ? { text: caption } : {}),
+        })
+      })
+      console.log(`  you → Class Manager:  ${wire}\n`)
+      console.log(renderPhone(seen))
+      await logSeat(s, { persona: key, cmd: 'share', name, resolved: true, shared: hit.name, shown: seen })
       break
     }
 
@@ -573,6 +630,8 @@ async function main(): Promise<void> {
     brief <who> [--day N]           who you are, what you want, and your phone
     say <who> "…"                   send a message, see the reply
     tap <who> "<the words on the button>"
+    share <who> "<a name in your contacts>" [--say "…"]
+                                    attach somebody's contact card
     inbox <who>                     anything that arrived on its own
     clock                           what day and time it is
     note <who> --kind <k> --text "…"   how that felt, in your words

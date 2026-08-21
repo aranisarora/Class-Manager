@@ -16,6 +16,7 @@ import { env } from '@/lib/env'
 import { resolveIdentity } from '@/lib/identity'
 import { consumeAction, type ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
+import { bodyWithSharedContacts, type SharedContact } from '@/lib/messaging/contact-card'
 import { LIMITS, type SendOutcome } from '@/lib/messaging/types'
 import type { Identity, Job, Role } from '@/lib/types'
 import { generate, type Msg } from './deepseek'
@@ -38,6 +39,16 @@ export type TurnInput = {
   contactId: string
   text?: string
   media?: { url: string; mimeType: string }[]
+  /**
+   * Contact cards shared in this message — the one attachment that reaches the model.
+   *
+   * Separate from `media` and not a `mimeType` on it, because the two take opposite
+   * paths through this function: media is answered by the runtime in words and never
+   * shown to the model, and a card is shown to the model and never answered by the
+   * runtime. Already through `readSharedContacts`, so every number here is one
+   * `add_coach` and `add_family` will accept.
+   */
+  contacts?: SharedContact[]
   actionId?: string
   source: 'inbound' | 'job' | 'sim'
   /** Runtime-internal: a self-scheduled task's instruction and its data (§13.1). */
@@ -155,6 +166,29 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
 
   try {
     let text = input.text
+    /**
+     * A shared contact card, folded into what this person said.
+     *
+     * The opposite treatment to `input.media` below, and deliberately so. Media is
+     * answered by the runtime and never shown to the model, because the model client
+     * is text-only and a photo cannot be made into text. A card already IS text — a
+     * name and a number, in structured fields, before anybody touches it — so the
+     * honest thing is to hand it over and let the turn decide what it is for. Nobody
+     * can tell from here whether it is a new family, a coach to invite, a parent
+     * correcting a wrong number, or somebody the academy already has.
+     *
+     * It goes into `text` rather than into the tail because a card is something the
+     * PERSON did, and the tail is where the runtime speaks. `bodyWithSharedContacts`
+     * is the SAME call `ingestInbound` made when it wrote `message.body`, not a
+     * second rendering beside it — so the sentence the model reads this turn is
+     * byte-identical to the one it re-reads out of the conversation next turn. Two
+     * authors of one string is the drift `isForwardableLink` in
+     * `lib/messaging/types.ts` was written after paying for.
+     *
+     * It also keeps the nothing-readable guard below from firing on a card, which is
+     * the branch a bare contact share used to fall through to.
+     */
+    if (input.contacts?.length) text = bodyWithSharedContacts(text, input.contacts)
     let goToModel = !input.actionId
 
     if (input.actionId) {
@@ -227,13 +261,15 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     /**
      * Something arrived carrying nothing anybody can read.
      *
-     * A shared contact card, a sticker, a location pin: the ingest path has no
-     * text and no media for those, so the turn used to fall through every branch
-     * below and end having sent nothing — the exact silence the rest of this
-     * function is built to prevent, reached by the one route with no guard on it.
-     * It was rare while the brain was telling people to share contact cards; it
-     * is rarer now that it does not. It is still a person who tapped send and
-     * heard nothing back.
+     * A sticker, a location pin, a poll: the ingest path has no text and no media
+     * for those, so the turn used to fall through every branch below and end having
+     * sent nothing — the exact silence the rest of this function is built to
+     * prevent, reached by the one route with no guard on it. It is still a person
+     * who tapped send and heard nothing back.
+     *
+     * A shared contact card used to be the commonest way in here, and is no longer
+     * one of these at all: it is folded into `text` above, because it is the one
+     * attachment that arrives already readable.
      */
     if (goToModel && !text && !input.task && !input.media?.length) {
       const said = "That came through as something I can't read. Could you type it instead?"
@@ -828,9 +864,11 @@ async function modelTurn(
   }
   // Beside the messages, never among them — see `historyGaps`.
   if (history.gaps) situation.push(history.gaps)
-  // Text only, and the attachment has already been answered by the runtime
+  // Text only, and a FILE attachment has already been answered by the runtime
   // (`mediaRefusal`) before this call is made. There is no media part on this
-  // wire to carry it with: the request schema rejects one outright.
+  // wire to carry it with: the request schema rejects one outright. A shared
+  // contact card is not one of those — it is inside `input.text` by now, put
+  // there by `sharedContactText`, because it was already text.
   const messages: Msg[] = [
     ...history.messages,
     { role: 'user', content: `${situation.join('\n\n')}\n\n---\n\n${input.text ?? ''}`.trim() },

@@ -21,9 +21,21 @@ const Body = z
      */
     mediaUrl: z.string().min(1).max(24_000_000).optional(),
     mediaMimeType: z.string().min(1).max(255).optional(),
+    /**
+     * Shared contact cards — `📎 attach › Contact` on the composer, and `type:
+     * "contacts"` on the real wire.
+     *
+     * Shaped only as far as "an array of objects", because the judgement about what
+     * is a usable card belongs to `readSharedContacts` and nowhere else. A zod schema
+     * here would be a second author of that rule, and the two would disagree the
+     * first time the Cloud API's nested `{name:{formatted_name}, phones:[{phone}]}`
+     * met a validator written against the emulator's flat pair. The cap is a body
+     * size, not a policy: `MAX_SHARED_CONTACTS` is what actually decides.
+     */
+    contacts: z.array(z.record(z.string(), z.unknown())).max(64).optional(),
   })
-  .refine((b) => Boolean(b.text || b.actionId || b.mediaUrl), {
-    message: 'one of text, actionId or mediaUrl is required',
+  .refine((b) => Boolean(b.text || b.actionId || b.mediaUrl || b.contacts?.length), {
+    message: 'one of text, actionId, mediaUrl or contacts is required',
   })
 
 /**

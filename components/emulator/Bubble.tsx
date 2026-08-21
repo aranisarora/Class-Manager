@@ -39,9 +39,11 @@ import {
   type EmuMessage,
   type MessageStatus,
 } from '@/lib/emulator/state'
+import { formatPhone } from '@/lib/format'
+import { renderSharedContacts, type SharedContact } from '@/lib/messaging/contact-card'
 import { Icon, Ticks } from './icons'
 import { Chip, cx } from './ui'
-import { BubbleTail } from './wa-ui'
+import { Avatar, BubbleTail } from './wa-ui'
 import { WaText } from './wa-text'
 
 const SUPPRESS_LABEL: Record<string, string> = {
@@ -180,6 +182,41 @@ function MediaBlock({
 }
 
 /**
+ * A shared contact, as WhatsApp draws one: a card inside the bubble carrying the photo,
+ * the name and the number — not a line of text, and not a file.
+ *
+ * The number is drawn in `formatPhone`'s readable spacing here and in E.164 everywhere the
+ * model reads it (`renderSharedContacts`). That split is on purpose: this is the handset
+ * layer, where a person reads `98450 12345` the way they would say it, and the prompt is
+ * where the country code has to survive being copied into an INSERT.
+ *
+ * There is no `[Message]` / `[Add to contacts]` row, because on this surface neither does
+ * anything: the emulator has no address book to add to, and the person the card is about
+ * is not on WhatsApp until the academy invites them. A button that looks tappable and is
+ * not is the same lie as a bracket-formatted button row typeset into a message body.
+ */
+function ContactBlock({ contacts }: { contacts: SharedContact[] }) {
+  return (
+    <div className="mb-1 flex flex-col gap-px overflow-hidden rounded-[7.5px]" style={{ background: 'var(--wa-pill)' }}>
+      {contacts.map((c) => (
+        <div key={c.phone} className="flex items-center gap-2.5 px-2.5 py-2">
+          <Avatar name={c.name} seed={c.phone} size={34} />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[14.5px] leading-[19px]" style={{ color: 'var(--wa-ink)' }}>
+              {c.name}
+            </span>
+            <span className="block truncate text-[12.5px] leading-[17px]" style={{ color: 'var(--wa-ink-dim)' }}>
+              {formatPhone(c.phone)}
+            </span>
+          </span>
+          <Icon name="person" size={15} className="shrink-0 opacity-40" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
  * A reply button, as WhatsApp draws one: a full-width card under the message, separated from
  * it, in the accent colour. The probe facts about it — which action id, how long it stays
  * tappable, why it is dead — ride along in the instrument idiom rather than in the label,
@@ -303,6 +340,24 @@ export function Bubble({
   // The contact's own messages sit right in green; the academy's arrive left in grey.
   const side: 'in' | 'out' = inbound ? 'out' : 'in'
 
+  /**
+   * What the person typed, once the shared cards have been taken out of the body.
+   *
+   * `ingestInbound` writes the card into `body` on purpose — `recentHistory` selects
+   * `where body is not null`, so a bare card with no caption would vanish from the
+   * conversation the model re-reads. On a handset that sentence is not what you see:
+   * you see a card. So the bubble draws the card and shows only the caption.
+   *
+   * This removes a string it REGENERATES from the same renderer rather than parsing
+   * one back out of prose — if the two ever disagree the caption falls back to the
+   * whole body, which is a duplicated line and not a lost message.
+   */
+  const caption = (() => {
+    if (!m.contacts?.length) return m.body
+    const rendered = renderSharedContacts(m.contacts)
+    return m.body.replace(rendered, '').trim()
+  })()
+
   const probeChips =
     chrome &&
     (templateName || inWindow === false || m.catalogId || violations.length || cost !== null)
@@ -334,6 +389,8 @@ export function Bubble({
 
           {m.media ? <MediaBlock media={m.media} dropped={dropped} onOpen={() => setLightbox(true)} /> : null}
 
+          {m.contacts?.length ? <ContactBlock contacts={m.contacts} /> : null}
+
           <span className="wa-meta">
             {fmtTime(m.at, tz)}
             {!inbound ? (
@@ -363,12 +420,12 @@ export function Bubble({
           {/* `wa-meta-gap` closes the text and reserves the clock's corner on whatever line
               the message happens to end on — see the rule in globals.css for why this is a
               spacer and not a float. */}
-          {m.body ? (
+          {caption ? (
             <span className="block text-[14.2px] leading-[19px] whitespace-pre-wrap">
-              <WaText text={m.body} />
+              <WaText text={caption} />
               <span className="wa-meta-gap" aria-hidden />
             </span>
-          ) : m.media ? null : (
+          ) : m.media || m.contacts?.length ? null : (
             <span className="block text-[14.2px] leading-[19px] italic" style={{ color: 'var(--wa-ink-faint)' }}>
               (no body — nothing for a handset to draw)
               <span className="wa-meta-gap" aria-hidden />
