@@ -40,8 +40,8 @@ import {
 } from './kinds'
 import { enqueueMany, type JobSpec } from './enqueue'
 import {
-  atTimeOn, deferPastQuietHours, isoDate, leadFor, loadAcademy, pullOutOfQuietHours, settingNumber,
-  withAcademy, withInfra, zoned, type AcademyRow,
+  admins, atTimeOn, deferPastQuietHours, isoDate, leadFor, loadAcademy, pullOutOfQuietHours,
+  settingNumber, withAcademy, withInfra, zoned, type AcademyRow,
 } from './util'
 
 /** A job planned more than this far into the past is a moment we missed. */
@@ -262,8 +262,13 @@ export async function planAheadFor(academyId: string): Promise<number> {
     }
 
     // §2.6 — building the roster messages nobody. Everything below this line
-    // talks to a human, so it waits for the admin to say go.
-    if (academy.onboarding_state !== 'live') return out
+    // talks to a human, so it waits for the admin to say go. The one thing that
+    // goes to the ADMIN before that is the proposal to say it — this is the only
+    // gate in the product that nothing else ever resolves.
+    if (academy.onboarding_state !== 'live') {
+      await proposeGoLive(tx, academy, nowAt, today, push)
+      return out
+    }
 
     // -- the 48-hour window -----------------------------------------------------
     const sessions = await tx<SessionRow[]>`
@@ -509,6 +514,137 @@ type Push = (
   kind: JobKind, runAt: Date, dedupeKey: string,
   payload: Record<string, unknown>, allowPast?: boolean,
 ) => void
+
+/**
+ * -- the gate nothing resolves -----------------------------------------------
+ *
+ * `pre_launch` suppresses every proactive path in the product, and for the whole
+ * life of the product nothing ever resolved the state it suppresses over. Six
+ * simulated weeks, six businesses, none live: the only job that ran in any of
+ * them was `materialize_sessions`. That is Layer 4's own "half a gate is worse
+ * than no gate", at the largest scale it occurs in this codebase.
+ *
+ * R8 (`lib/agent/context.ts`) states the fact, and states it as a CONSTANT — the
+ * same sentence on day 1 with an empty roster and on day 7 with a week of dead
+ * classes behind it. A line that does not move is a line a model mentions once
+ * and considers discharged: 28 admin turns, 5 mentions, none after day 2, every
+ * one of them with `buttons: []`. This is not a second sign. It is the moment.
+ *
+ * It composes nothing. The write is one statement the model already finds
+ * unaided, `needsPreview` already gates it because `academy` is a control table,
+ * and `pendingConfirmation` already mints the tap. What was missing was a turn in
+ * which any of that happens.
+ *
+ * @mechanism proposeGoLive — the planner opens the one turn allowed before an academy is
+ *   live: a proposal to go live, raised on the SIZE OF THE HOLE rather than on the calendar
+ *   — sessions that have already run to a roster nobody was told about — and re-raised only
+ *   when that number doubles, so it cannot become a daily nag. `app.guard_go_live()`'s own
+ *   precondition is checked first and this gate is strictly stronger, so the plan behind the
+ *   button cannot fail in the owner's hand. Six simulated weeks produced six businesses that
+ *   never went live, with every reminder, digest, coach nudge and fee request suppressed for
+ *   twenty-one days, because R8 put a sign on the door and nothing ever put the owner in
+ *   front of it. The ledger row stays OPEN until a drive shows a business reaching `live`
+ *   — this is built, not yet proven, and a `Closes` clause is a claim about evidence.
+ */
+async function proposeGoLive(
+  tx: Tx,
+  academy: AcademyRow,
+  nowAt: Date,
+  today: string,
+  push: Push,
+): Promise<void> {
+  const academyId = academy.id
+  const [dark] = await tx<
+    { classes: number; families: number; week_sessions: number; ran_dark: number }[]
+  >`
+    select
+      (select count(*)::int from class c
+        where c.academy_id = ${academyId} and c.active
+          and (c.ends_on is null or c.ends_on >= ${today}::date))                as classes,
+      (select count(distinct pl.account_id)::int
+         from enrollment e join player pl on pl.id = e.player_id and pl.active
+        where e.academy_id = ${academyId} and e.ended_on is null)                as families,
+      (select count(*)::int from session s
+        where s.academy_id = ${academyId} and s.status = 'scheduled'
+          and s.starts_at between app.now() and app.now() + interval '7 days')  as week_sessions,
+      (select count(*)::int from session s
+        where s.academy_id = ${academyId} and s.status <> 'cancelled'
+          and s.ends_at < app.now()
+          and exists (select 1 from enrollment e
+                       where e.academy_id = s.academy_id and e.class_id = s.class_id
+                         and e.ended_on is null))                               as ran_dark
+  `
+  if (!dark) return
+
+  /**
+   * `app.guard_go_live()`'s own precondition, first and by itself: a proposal the
+   * trigger would refuse is a button that fails in the owner's hand, which is
+   * strictly worse than no button. Then the two facts that make it cost anything
+   * — somebody on the books, and a week with classes in it. Below that there is
+   * nothing true to say, and this stays quiet, which is the right behaviour for a
+   * half-entered timetable.
+   */
+  if (dark.classes === 0 || dark.families === 0 || dark.week_sessions === 0) return
+
+  /**
+   * Fire on a change in state, never on the calendar restating a stuck one. The
+   * state is the SIZE OF THE HOLE — how many sessions have now run to a roster
+   * nobody was told about — and the key moves only when it doubles. A business
+   * standing still is asked once; a business teaching every day is asked about
+   * four times across a week, each time carrying a bigger true number. A day
+   * passing does not move the key, so it cannot become a daily nag.
+   */
+  const step = dark.ran_dark === 0 ? 0 : Math.floor(Math.log2(dark.ran_dark)) + 1
+  const slug = `go-live-${step}`
+
+  // `adminsIn`'s ordering puts a reachable admin first; an academy with no
+  // reachable admin has nobody to propose anything to.
+  const owner = (await admins(tx, academyId)).find((a) => a.contact_id)
+  if (!owner?.contact_id) return
+
+  push(
+    'agent_task',
+    // A proposal is not a reminder, so it waits for morning rather than being
+    // pulled back to last night.
+    deferPastQuietHours(nowAt, academy.timezone, academy.settings),
+    dedupe.agentTask(academyId, slug),
+    {
+      slug,
+      subject: `not live: ${dark.families} on the books, ${dark.ran_dark} session(s) already run dark`,
+      minted_by_contact_id: owner.contact_id,
+      minted_roles: ['admin'],
+      expires_at: new Date(nowAt.getTime() + 2 * 24 * 60 * 60 * 1000).toISOString(),
+      /**
+       * The numbers as ROWS rather than as a claim in the instruction — read
+       * under the owner's own RLS at run time, so they are the turn's own
+       * evidence and are current rather than frozen at plan time. `app.now()`
+       * only: WALL_CLOCK refuses a model-run statement that reads the host clock.
+       */
+      context:
+        "select " +
+        "(select count(*) from session where status <> 'cancelled' and ends_at < app.now()) " +
+        "as sessions_already_run_with_nobody_told, " +
+        "(select (app.now() at time zone timezone)::date - created_on from academy) " +
+        "as days_since_this_business_was_created",
+      instruction:
+        'This business is not live, and until it is nothing it does reaches anybody on its own: ' +
+        'no class reminder, no coach nudge, no morning brief or evening digest, no fee request and ' +
+        'no payment chase. The owner cannot see that absence — from where they stand the roster is ' +
+        'on the books and the timetable is on the board. ' +
+        'Say what it has cost so far, from the rows: how many sessions have already run with nobody ' +
+        'told, how many families are enrolled, how many sessions are in the next seven days, and ' +
+        'how long it has been. ' +
+        'Going live is one write and it is theirs to make, never yours: stage ' +
+        'a plan whose one step writes onboarding_state = live on this academy — it comes back as a ' +
+        "preview because it touches the business's own controls — and put it behind a button they " +
+        'tap. Say what the tap turns on BEFORE they tap it: the reminders, the two daily summaries, ' +
+        'the introduction that goes to every family who has never heard from this business, and the ' +
+        'billing. Nothing is switched on until they press it. ' +
+        'They may say no, and no is a real answer — if they have already said not yet, leave it.',
+    },
+    true,
+  )
+}
 
 /** How far back the month-boundary catch-up looks. */
 const BILLING_CATCHUP_MONTHS = 3
