@@ -69,14 +69,22 @@ harness everybody else drives. Two measured runs, either side of the world growi
 family and four fixtures to four families, five children and seven:
 
 ```
-2026-08-20-13-28-week-cu9z   6 turns · 23 jobs · ₹1.17 (₹1.11 product, ₹0.06 seats) · 6.4 min
-2026-08-20-14-20-week-nmrq   6 turns · 38 jobs · ₹1.28 (₹1.18 product, ₹0.10 seats) · 4.0 min
+2026-08-20-13-28-week-cu9z   6 turns · 23 jobs · ₹1.11 · 6.4 min
+2026-08-20-14-20-week-nmrq   6 turns · 38 jobs · ₹1.18 · 4.0 min
 ```
 
 The second is the world as it stands. Standing jobs scale with enrolments × sessions, so the
 queue work went up by two thirds while the money went up by a tenth — the jobs that grew are
 cheap ones, and the turn count is set by the window rather than by the world. Wall clock is the
 noisiest of the four and is not a per-run constant.
+
+**Every rupee printed anywhere is the PRODUCT's.** The seats are Claude playing the people and
+they are not what a run costs — they are what the harness pays to ask the question. They are
+measured, they are in the record as `extra.run.seatInr`, and they are printed dimmed beside the
+total so a seat that loops is still visible; they are never added to anything. A total that
+summed both moved when the *harness* changed: the persistent seat cut seat spend by a third
+while the product did exactly the same work, and a combined figure would have called that a
+cheaper run. `--budget-inr` measures the product for the same reason.
 
 Prove the plumbing on that before you spend a week. A week that dies on turn 3 because
 `TRANSPORT` was wrong, or because a worktree has no `.env.local`, costs the same seven minutes

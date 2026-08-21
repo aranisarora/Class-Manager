@@ -1305,7 +1305,26 @@ async function main(): Promise<void> {
   const seatTurns = run.turns.filter((t) => t.persona !== 'queue').length
   console.log(
     `\n  ${c.bold(`${turns} turns`)} — ${seatTurns} from a seat, ${turns - seatTurns} from the queue · ` +
-      `${c.bold(`₹${(counted + seatSpend.inr).toFixed(2)}`)} (₹${counted.toFixed(2)} product, ₹${seatSpend.inr.toFixed(2)} seats) · ` +
+      /**
+       * THE COST OF A RUN IS THE PRODUCT'S COST.
+       *
+       * This line used to headline `product + seats`, and the sum was a number
+       * about nothing: the two halves are not the same order of magnitude and
+       * only one of them is under test. A week that spent ₹7.55 on the bot and
+       * ₹170.07 on Claude playing its people closed with a bold ₹177.62, so the
+       * figure a reader carried away was 23× the thing they were measuring, and
+       * it moved when the HARNESS changed. The persistent seat alone would have
+       * "improved" it by a third while the product did exactly the same work.
+       *
+       * `--budget-inr` was corrected for this reason on 20 Aug; the printed total
+       * was left behind and is the same mistake one line further out.
+       *
+       * The seats stay measured, stay in the record (`extra.run.seatInr`) and
+       * stay on this line — dimmed, and never added to anything. Removing them
+       * from view would hide a seat that looped, which is the one seat fact worth
+       * a person's attention.
+       */
+      `${c.bold(`₹${counted.toFixed(2)}`)} ${c.dim(`(seats ₹${seatSpend.inr.toFixed(2)}, not counted)`)} · ` +
       `${budget.elapsedMin().toFixed(0)} min`,
   )
   if (departures.length) {
