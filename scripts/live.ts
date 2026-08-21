@@ -121,19 +121,24 @@ const { bodyWithSharedContacts } = await import('@/lib/messaging/contact-card')
 const { reopenRun, saveRun, runDir } = await import('./_capture')
 const clock = await import('@/lib/clock')
 const { env } = await import('@/lib/env')
-const { buildSettledAcademy } = await import('./_world')
-const { PERSONAS, SCHEDULE, WINDOW_AT, windowCounts, INPUT_REALISM } = await import('./_personas')
+const { WINDOW_AT, INPUT_REALISM, briefsFor } = await import('./_personas')
 /**
- * The five-tier ramp, as an overlay on `life` rather than a second persona file.
+ * The same world file `sim.ts` drives, because the seat is one implementation.
  *
- * `SIM_RAMP=1` swaps what happens TO each person on each day for `_ramp.ts`'s
- * version, and changes nothing else — same seats, same blindfold, same voices,
- * same record. Off by default so a plain `live` week is unaffected.
+ * A person sitting in `live` and a model sitting in `sim` must be sitting in the
+ * SAME seat, in the same world, or the human read and the recorded week are about
+ * two different products. That is why the blindfold lives in `_seat.ts` rather
+ * than in either instrument, and it is why this file no longer has an academy of
+ * its own: `buildSettledAcademy` in `_world.ts` was a second hand-built business
+ * beside the one `_world-spec.ts` built, with its own timetable, its own families
+ * and its own drift.
  */
-const { RAMP_LIFE, TIERS } = await import('./_ramp')
-const RAMP = process.env.SIM_RAMP === '1'
-type PersonaKey = import('./_personas').PersonaKey
+const { buildWorld, deriveSchedule, describeWorld, loadWorld, windowsPerSeat } =
+  await import('./_world-file')
+/** A seat key, derived from a name in the world file: `Rahul Menon` → `rahul-menon`. */
+type PersonaKey = string
 type WindowName = import('./_personas').Window
+type Brief = import('./_personas').Brief
 
 const argv = process.argv.slice(2)
 const cmd = argv[0] ?? 'help'
@@ -162,22 +167,64 @@ const positionals = (): string[] => {
 /* ------------------------------------------------------------- commands */
 
 async function main(): Promise<void> {
+  /**
+   * The seats of the OPEN run, read back out of its own record.
+   *
+   * They used to come from `PERSONAS` — four humans compiled into the binary — so
+   * every `live` session was about the same four people whatever world was open.
+   * Now a run writes its own `personas.json` when it opens, and every command
+   * below reads that: whoever is in the world file is who a tester can sit in.
+   */
+  const seatsOf = async (
+    sess: Session,
+  ): Promise<{ people: Record<string, Brief>; schedule: Record<number, Record<WindowName, string[]>> }> => {
+    const raw = await readFile(join(sess.dir, 'personas.json'), 'utf8').catch(() => '{}')
+    const parsed = JSON.parse(raw) as {
+      personas?: Record<string, Brief>
+      schedule?: Record<number, Record<WindowName, string[]>>
+    }
+    return { people: parsed.personas ?? {}, schedule: parsed.schedule ?? {} }
+  }
+
   switch (cmd) {
     /* ------------------------------------------------------------ open */
     case 'open': {
       const days = Number(flag('days') ?? 7)
-      const counts = windowCounts(days)
-      const spread = Object.values(counts)
-      if (Math.max(...spread) !== Math.min(...spread)) {
-        // Asserted rather than intended. A week claiming equal coverage while
-        // running eleven owner windows and two client ones reports the owner's
-        // experience as though it were the product's, and the imbalance is
-        // invisible in the report it writes.
-        die(`seats are not balanced over ${days} days: ${Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(', ')}`)
+      /**
+       * The same world file the agent week drives, defaulting to `blank`.
+       *
+       * A person sitting here and a model sitting in `sim` have to be in the same
+       * world or the human's read and the recorded week are about two different
+       * products. `live` used to build a settled academy of its own — a second
+       * hand-written business with its own timetable and its own drift — and it
+       * went with every other fixture.
+       */
+      let loaded
+      try {
+        loaded = loadWorld(flag('world') ?? 'blank')
+      } catch (e) {
+        die((e as Error).message)
       }
+      const spec = loaded.world
+      const windows = Object.keys(WINDOW_AT) as WindowName[]
+      const briefs = briefsFor({ people: spec.people, worldName: spec.name, days })
+      let schedule
+      try {
+        schedule = deriveSchedule(briefs.map((b) => b.key), days, windows)
+      } catch (e) {
+        die((e as Error).message)
+      }
+      const counts = windowsPerSeat(schedule, { days, windows })
+      const spread = Object.values(counts)
 
-      console.log(c.bold(`\n  live — ${days} days, ${spread.reduce((a, b) => a + b, 0)} seat windows, ${spread[0]} each\n`))
-      const world = await buildSettledAcademy({ log: (m) => console.log(c.dim(`  ${m}`)) })
+      console.log(
+        c.bold(
+          `\n  live — ${days} days, ${spread.reduce((a, b) => a + b, 0)} seat windows over ${briefs.length} seats\n`,
+        ),
+      )
+      console.log(c.dim(`  world: ${describeWorld(spec)}\n`))
+      const token = Math.random().toString(36).slice(2, 6)
+      const world = await buildWorld(spec, { token, log: (m) => console.log(c.dim(`  ${m}`)) })
       const dir = await runDir('live')
       await mkdir(SEAT_HOME, { recursive: true })
       await mkdir(join(dir, 'diary'), { recursive: true })
@@ -186,12 +233,12 @@ async function main(): Promise<void> {
         suite: 'live',
         model: env.MODEL_MAIN,
         startedAt: new Date().toISOString(),
-        academyId: world.academyId,
+        academyId: world.frontDeskId,
         note:
-          `One week at ${'Ace Tennis Academy'}, driven from four seats by readers who cannot see the ` +
-          `database. The owner coaches: Rahul holds an academy_admin row and a coach row over one ` +
-          `person. Four families on the books, last month settled, this month open. Nothing here is ` +
-          `scripted — the sentences were composed by somebody reading the reply.`,
+          `One week from ${loaded.ref}, driven from ${briefs.length} seats by readers who cannot see ` +
+          `the database. It opens at a front desk with nobody in a business: whatever gets built is ` +
+          `built by talking to it. Nothing here is scripted — the sentences were composed by ` +
+          `somebody reading the reply.`,
         turns: [],
       })
 
@@ -201,10 +248,10 @@ async function main(): Promise<void> {
        * no seat can write another's mark back to where it used to be. `_seat.ts`
        * says what that cost when they shared one blob.
        */
-      const startedAt = (await clock.now(world.academyId)).toISOString()
+      const startedAt = (await clock.now(world.frontDeskId)).toISOString()
       const session: Session = {
         dir,
-        academyId: world.academyId,
+        academyId: world.frontDeskId,
         days,
         day: 1,
         contacts: world.contacts,
@@ -215,7 +262,16 @@ async function main(): Promise<void> {
       await writeFile(POINTER, dir)
       await writeFile(
         join(dir, 'personas.json'),
-        JSON.stringify({ personas: PERSONAS, schedule: SCHEDULE, windowAt: WINDOW_AT, inputRealism: INPUT_REALISM }, null, 2),
+        JSON.stringify(
+          {
+            personas: Object.fromEntries(briefs.map((b) => [b.key, b])),
+            schedule,
+            windowAt: WINDOW_AT,
+            inputRealism: INPUT_REALISM,
+          },
+          null,
+          2,
+        ),
       )
 
       // Materialise the timetable before anybody speaks, so day 1 is a business
@@ -223,12 +279,13 @@ async function main(): Promise<void> {
       // Recorded as turn 1: it is the first thing the product does in this run,
       // it costs money, and a run whose opening move is missing from its own
       // record starts by understating itself.
-      const jobs = await queueTurn(session, 'd1-open-queue', () => drain(world.academyId))
-      console.log(`  academy  ${world.academyId}`)
+      const jobs = await queueTurn(session, 'd1-open-queue', () => drain(world.frontDeskId))
+      console.log(`  number   ${world.senderPhone}`)
+      console.log(`  desk     ${world.frontDeskId}`)
       console.log(`  record   ${dir}`)
-      console.log(`  clock    ${clock.inZone(await clock.now(world.academyId), TZ).label}`)
+      console.log(`  clock    ${clock.inZone(await clock.now(world.frontDeskId), TZ).label}`)
       console.log(`  jobs     ${jobs.length} ran`)
-      console.log(c.dim(`\n  seats: ${Object.values(PERSONAS).map((p) => `${p.key} (${p.seat})`).join(', ')}\n`))
+      console.log(c.dim(`\n  seats: ${briefs.map((p) => `${p.key} (${p.seat})`).join(', ')}\n`))
       break
     }
 
@@ -262,8 +319,7 @@ async function main(): Promise<void> {
         JSON.stringify({ day, window: w, at: here.label, jobs }) + '\n',
       )
       console.log(`  day ${day} ${w} — ${here.label}`)
-      if (RAMP && TIERS[day]) console.log(`  tier ${day} · ${TIERS[day]!.name} — ${TIERS[day]!.what}`)
-      console.log(`  seats: ${(SCHEDULE[day]?.[w] ?? []).join(', ') || '(none)'}`)
+      console.log(`  seats: ${((await seatsOf(s)).schedule[day]?.[w] ?? []).join(', ') || '(none)'}`)
       console.log(`  jobs: ${jobs.length ? [...new Set(jobs)].join(', ') : 'none'}`)
       break
     }
@@ -310,8 +366,9 @@ async function main(): Promise<void> {
     case 'brief': {
       const s = await readSession()
       const key = positionals()[0] as PersonaKey
-      if (!PERSONAS[key]) die(`no such seat: ${key}. One of ${Object.keys(PERSONAS).join(', ')}`)
-      const p = PERSONAS[key]
+      const { people } = await seatsOf(s)
+      if (!people[key]) die(`no such seat: ${key}. One of ${Object.keys(people).join(', ')}`)
+      const p = people[key]!
       const day = Number(flag('day') ?? s.day)
       const here = clock.inZone(await clock.now(s.academyId), TZ)
       const diaryPath = join(s.dir, 'diary', `${key}.md`)
@@ -340,7 +397,7 @@ async function main(): Promise<void> {
       L.push(`TODAY — day ${day}, ${here.label}`)
       // The tier is never named to the seat. A persona who has been told today is
       // "the hard one" stops being a persona and starts being a test case.
-      const today = (RAMP ? RAMP_LIFE[key]?.[day] : undefined) ?? p.life[day]
+      const today = p.life[day]
       L.push(`  ${(today ?? 'Nothing unusual is happening to you today.').trim()}`)
       L.push('')
       L.push('YOUR NOTEBOOK SO FAR')
@@ -366,9 +423,10 @@ async function main(): Promise<void> {
       const s = await readSession()
       const key = positionals()[0] as PersonaKey
       const text = positionals().slice(1).join(' ').trim()
-      if (!PERSONAS[key]) die(`no such seat: ${key}`)
+      const who = (await seatsOf(s)).people[key]
+      if (!who) die(`no such seat: ${key}`)
       if (!text) die('say what?')
-      const seen = await drive(s, key, { say: text, kind: 'say' }, async () => {
+      const seen = await drive(s, key, { say: text, kind: 'say', who: who.name, seat: who.seat }, async () => {
         await inboundFromContact({ contactId: s.contacts[key]!, text })
       })
       console.log(`  you → Class Manager:  ${text}\n`)
@@ -400,7 +458,8 @@ async function main(): Promise<void> {
       const key = positionals()[0] as PersonaKey
       const name = positionals().slice(1).join(' ').trim()
       const caption = flag('say')
-      if (!PERSONAS[key]) die(`no such seat: ${key}`)
+      const sharer = (await seatsOf(s)).people[key]
+      if (!sharer) die(`no such seat: ${key}`)
       if (!name) die('share who? Give the name as it is saved in your contacts.')
 
       const hit = phonebookLookup(s.academyId, name)
@@ -430,7 +489,8 @@ async function main(): Promise<void> {
       const s = await readSession()
       const key = positionals()[0] as PersonaKey
       const title = positionals().slice(1).join(' ').trim()
-      if (!PERSONAS[key]) die(`no such seat: ${key}`)
+      const me = (await seatsOf(s)).people[key]
+      if (!me) die(`no such seat: ${key}`)
       if (!title) die('tap what? Give the exact words on the button.')
 
       /**
@@ -468,7 +528,7 @@ async function main(): Promise<void> {
         break
       }
 
-      const seen = await drive(s, key, { say: title, kind: 'tap' }, async () => {
+      const seen = await drive(s, key, { say: title, kind: 'tap', who: me.name, seat: me.seat }, async () => {
         await inboundFromContact({ contactId: s.contacts[key]!, actionId: actionId! })
       })
       console.log(`  you tapped:  [ ${title} ]\n`)
@@ -481,7 +541,8 @@ async function main(): Promise<void> {
     case 'inbox': {
       const s = await readSession()
       const key = positionals()[0] as PersonaKey
-      if (!PERSONAS[key]) die(`no such seat: ${key}`)
+      const me = (await seatsOf(s)).people[key]
+      if (!me) die(`no such seat: ${key}`)
       const seen = await readPhone(s, key, true)
       console.log(renderPhone(seen))
       await logSeat(s, { persona: key, cmd: 'inbox', shown: seen })
@@ -500,7 +561,8 @@ async function main(): Promise<void> {
     case 'note': {
       const s = await readSession()
       const key = positionals()[0] as PersonaKey
-      if (!PERSONAS[key]) die(`no such seat: ${key}`)
+      const me = (await seatsOf(s)).people[key]
+      if (!me) die(`no such seat: ${key}`)
       const kind = flag('kind') ?? 'note'
       const text = flag('text') ?? positionals().slice(1).join(' ')
       if (!text.trim()) die('a note needs --text')
@@ -511,7 +573,7 @@ async function main(): Promise<void> {
           at: here.label,
           day: s.day,
           persona: key,
-          seat: PERSONAS[key].seat,
+          seat: me.seat,
           kind,
           text: text.trim(),
         }) + '\n',
@@ -524,7 +586,8 @@ async function main(): Promise<void> {
     case 'diary': {
       const s = await readSession()
       const key = positionals()[0] as PersonaKey
-      if (!PERSONAS[key]) die(`no such seat: ${key}`)
+      const me = (await seatsOf(s)).people[key]
+      if (!me) die(`no such seat: ${key}`)
       const text = flag('text') ?? positionals().slice(1).join(' ')
       if (!text.trim()) die('a diary entry needs --text')
       const here = clock.inZone(await clock.now(s.academyId), TZ)
@@ -559,8 +622,9 @@ async function main(): Promise<void> {
       const days = await readJsonl(join(s.dir, 'days.jsonl'))
       const notes = await readJsonl(join(s.dir, 'notes.jsonl'))
       const seat = await readJsonl(join(s.dir, 'seat.jsonl'))
+      const { people: closingSeats, schedule: closingSchedule } = await seatsOf(s)
       const diaries: Record<string, string> = {}
-      for (const k of Object.keys(PERSONAS)) {
+      for (const k of Object.keys(closingSeats)) {
         const p = join(s.dir, 'diary', `${k}.md`)
         if (existsSync(p)) diaries[k] = await readFile(p, 'utf8')
       }
@@ -574,9 +638,9 @@ async function main(): Promise<void> {
         world: world[0] as Record<string, unknown>,
         days,
         extra: {
-          personas: PERSONAS,
+          personas: closingSeats,
           inputRealism: INPUT_REALISM,
-          schedule: SCHEDULE,
+          schedule: closingSchedule,
           roster: s.roster,
           notes,
           diaries,

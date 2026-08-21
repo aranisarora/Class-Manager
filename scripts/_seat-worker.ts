@@ -97,14 +97,14 @@ if (!process.send) {
   process.exit(2)
 }
 
-const { PERSONAS } = await import('./_personas')
 const { openSeatModel } = await import('./_persona-agent')
 const { readTurns } = await import('./_derive')
 const { inboundFromContact } = await import('@/lib/seed')
 const { phonebookLookup, phonebookNames } = await import('@/lib/phonebook')
 const { bodyWithSharedContacts } = await import('@/lib/messaging/contact-card')
 
-type PersonaKey = import('./_personas').PersonaKey
+/** A seat key is derived from a name in the world file: `Rahul Menon` → `rahul-menon`. */
+type PersonaKey = string
 type Persona = import('./_personas').Persona
 type Window = import('./_personas').Window
 type SeatAction = import('./_persona-agent').SeatAction
@@ -188,28 +188,27 @@ const MODEL = arg('model')
 const SEED = arg('seed')
 
 /**
- * Who is sitting here — the four by name, and everybody else out of the run.
+ * Who is sitting here, out of the run's own `briefs.json`.
  *
- * `PERSONAS` holds the canonical four and can never hold anybody else: a spec
- * world's seats are composed at run time by `briefsFromWorld`, and their keys
- * (`admin-nisha-balakrishnan`) are derived from a JSON file that did not exist
- * when this module was written. `sim.ts` writes every seat of the run —
- * both worlds, one shape, keyed the same way `session.json.contacts` is — to
- * `briefs.json` BEFORE it spawns the first worker, precisely so this lookup has
- * somewhere to go. Without the fallback a `--world` run dies here, every seat at
- * once, with a message naming the four people who are not in it.
+ * One place, and there used to be two: a table of four hard-coded humans, then
+ * the file. The table is gone with the fixtures — every person now comes from a
+ * world file, so every seat is composed at run time and there is nothing a
+ * built-in list could usefully hold.
+ *
+ * `sim.ts` writes `briefs.json` BEFORE it spawns the first worker, keyed the same
+ * way `session.json.contacts` is, precisely so this lookup has somewhere to go.
+ * A worker started first exits here rather than mid-turn.
  */
-const persona: Persona =
-  PERSONAS[KEY] ??
-  (
-    JSON.parse(
-      await readFile(join(DIR, 'briefs.json'), 'utf8').catch(() => '{}'),
-    ) as Record<string, Persona>
-  )[KEY]
+const persona: Persona = (
+  JSON.parse(await readFile(join(DIR, 'briefs.json'), 'utf8').catch(() => '{}')) as Record<
+    string,
+    Persona
+  >
+)[KEY] as Persona
 if (!persona) {
   console.error(
-    `  _seat-worker: no such seat ${KEY}. One of ${Object.keys(PERSONAS).join(', ')}, ` +
-      `or a seat in ${join(DIR, 'briefs.json')}.`,
+    `  _seat-worker: no seat called "${KEY}" in ${join(DIR, 'briefs.json')}.\n` +
+      `  Seat keys are derived from the name in the world file — "Rahul Menon" is "rahul-menon".`,
   )
   process.exit(2)
 }

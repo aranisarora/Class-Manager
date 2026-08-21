@@ -8,17 +8,16 @@
  *   const budget = makeBudget(cfg)
  *
  *   … --preset smoke
- *   … --days 5 --windows morning --personas rahul,divya --ramp
- *   … --world blank                 # the owner, alone, the morning after onboarding
- *   … --world worlds/multi-coach.json
+ *   … --days 5 --windows morning --personas rahul-menon
+ *   … --world blank                 # one person, at a number, in no business
+ *   … --world worlds/ace-tennis.json
  *   … --config arms/b.json --arm B --budget-min 45 --budget-inr 250
  *
  * WHY THIS EXISTS
  * -----------------------------------------------------------------------------
  * Every drive in this repo already takes parameters, and every one of them takes
  * them differently. `live.ts` reads `--days` and asserts a balanced week from it.
- * `sim.ts` reads its own `--days` and its own `--keep`. The five-tier ramp
- * arrives as `SIM_RAMP=1` in the environment, which no record prints. The model
+ * `sim.ts` reads its own `--days` and its own `--keep`. The model
  * is whatever string `MODEL_MAIN` held when the process happened to start, which
  * is not the same fact as "which model this run was about". Three of those four
  * leave no mark in the run directory at all.
@@ -100,8 +99,7 @@ import { readFileSync } from 'node:fs'
 import { env } from '@/lib/env'
 
 import { c } from './_env'
-import { PERSONAS, SCHEDULE, WINDOW_AT, type PersonaKey, type Window } from './_personas'
-import { TIERS } from './_ramp'
+import { WINDOW_AT, type Window } from './_personas'
 
 /**
  * `_personas` calls it `Window`, which is a word the DOM also owns. Aliased here
@@ -109,7 +107,8 @@ import { TIERS } from './_ramp'
  * declaration is how a window gets added in one file and not the other.
  */
 export type WindowName = Window
-export type { PersonaKey }
+/** A seat key, derived from a name in the world file: `Rahul Menon` → `rahul-menon`. */
+export type PersonaKey = string
 
 export type DriveConfig = {
   /**
@@ -219,8 +218,6 @@ export type DriveConfig = {
   chaos: Record<string, number>
   /** Which side of an A/B this is. Set by the runner, carried into the record. */
   arm?: string
-  /** The five-tier ramp overlay from `_ramp.ts` — `SIM_RAMP` made visible. */
-  ramp: boolean
   /**
    * Leave the world in the database afterwards, to poke at. **Default true.**
    *
@@ -251,9 +248,6 @@ export type DriveConfig = {
  * put back into the order the clock can actually reach.
  */
 const ALL_WINDOWS = Object.keys(WINDOW_AT) as WindowName[]
-const ALL_PERSONAS = Object.keys(PERSONAS) as PersonaKey[]
-/** How many tiers the ramp actually defines. Five, read rather than assumed. */
-const RAMP_TIERS = Math.max(...Object.keys(TIERS).map(Number))
 
 /**
  * The two worlds that are words rather than files.
@@ -399,7 +393,6 @@ const FLAGS = {
   model: 'value',
   arm: 'value',
   config: 'value',
-  ramp: 'bare',
   keep: 'bare',
   drop: 'bare',
 } as const
@@ -621,9 +614,6 @@ function toLayer(raw: Record<string, unknown>, where: (key: string) => string): 
       case 'arm':
         L.arm = str(value, at)
         break
-      case 'ramp':
-        L.ramp = bool(value, at)
-        break
       case 'keep':
         L.keep = bool(value, at)
         break
@@ -818,14 +808,6 @@ export function resolveConfig(argv: string[]): DriveConfig {
     model: m.model ?? mainModel(),
     seatModel: m.seatModel ?? DEFAULT_SEAT_MODEL,
     /**
-     * `SIM_RAMP=1` still works exactly as it does today; this only makes it
-     * visible. Resolving does NOT write it back into `process.env` — a module
-     * that quietly set a global switch while parsing somebody else's arm is the
-     * precise leak this file exists to stop, so an A/B runner spawning two drives
-     * passes `SIM_RAMP` in each child's environment instead.
-     */
-    ramp: m.ramp ?? process.env.SIM_RAMP === '1',
-    /**
      * `--drop` wins over `--keep`, and over the default, because it is the more
      * specific thing to have asked for: nobody types both by accident, and a
      * person who typed the destructive one meant it.
@@ -928,72 +910,26 @@ function check(cfg: DriveConfig): void {
   }
 
   /**
-   * The ramp is a persona overlay, and the personas it overlays are the four.
+   * WHO IS IN THIS RUN CANNOT BE CHECKED HERE ANY MORE, AND THAT IS THE POINT.
    *
-   * `RAMP_LIFE` in `_ramp.ts` is keyed by `PersonaKey`, so against a spec world's
-   * own people every lookup misses and the day falls back to the ordinary brief.
-   * The run would then be identical to an unramped one and recorded as
-   * `ramp: true` — a difference that was never applied, wearing the name of the
-   * one that was asked for, which is the whole failure this file exists to stop.
-   */
-  if (cfg.ramp && !canonical) {
-    fail(
-      `--ramp and --world ${cfg.world} cannot both be true`,
-      'RAMP_LIFE in scripts/_ramp.ts is written for rahul, arjun, divya and farah by name.',
-      'Against another world every tier would miss, the week would be the ordinary one,',
-      'and the record would still say it was ramped.',
-    )
-  }
-
-  if (cfg.ramp && cfg.days > RAMP_TIERS) {
-    fail(
-      `--ramp defines ${RAMP_TIERS} tiers and you asked for ${cfg.days} days`,
-      `Days ${RAMP_TIERS + 1}–${cfg.days} would fall back to the ordinary week in _personas.ts, so the`,
-      'difficulty curve stops halfway and a ramped run is then compared against an',
-      `unramped one across days that were identical. Run --days ${RAMP_TIERS}, or drop --ramp.`,
-    )
-  }
-
-  /**
-   * Everything below reads `SCHEDULE`, and `SCHEDULE` is written for the four.
+   * There used to be sixty lines below this asserting `--personas` against
+   * `SCHEDULE` — a hand-written table in `_personas.ts` saying which of four
+   * named humans was at a phone in which window of which day. It could refuse an
+   * unknown seat for free, and it was the only reason this file imported
+   * `PERSONAS` at all.
    *
-   * A spec world's week is derived from its own seats by `sim.ts` and
-   * asserted balanced there, where the roster exists. Checking a spec world's seat
-   * names against this table would refuse every one of them.
+   * Both are gone with the fixtures. Every person now comes from a world file, so
+   * the legal seat names are whatever that file happens to hold, and this module
+   * has not read it — `sim.ts` refuses an unknown one against the roster it
+   * actually composed, which is the only place the answer exists.
+   *
+   * The `--ramp` flag went the same way. `RAMP_LIFE` was keyed by the four names,
+   * so against any other world every lookup missed, the week was the ordinary
+   * one, and the record still said `ramp: true` — a difference that was never
+   * applied wearing the name of the one that was asked for. Once every world is a
+   * file, "any other world" is all of them, and a flag that can only ever lie is
+   * a flag to delete rather than to guard.
    */
-  if (!canonical) return
-  if (!cfg.personas.length) fail(`no seats: give at least one of ${ALL_PERSONAS.join(', ')}`)
-
-  // Who actually gets a phone, once the day count, the windows and the seat
-  // filter have all been applied to SCHEDULE.
-  const seats: Record<string, number> = Object.fromEntries(cfg.personas.map((p) => [p, 0]))
-  for (let d = 1; d <= cfg.days; d++)
-    for (const w of cfg.windows)
-      for (const k of SCHEDULE[d]?.[w] ?? []) if (k in seats) seats[k] = (seats[k] ?? 0) + 1
-
-  const total = Object.values(seats).reduce((a, b) => a + b, 0)
-  if (total === 0) {
-    fail(
-      'nobody is ever at the phone in this run',
-      `${cfg.days} day(s) × ${cfg.windows.join(', ')} × ${cfg.personas.join(', ')} intersects SCHEDULE nowhere.`,
-      'It would advance the clock, fire the standing jobs, and record no seat turns at all.',
-    )
-  }
-
-  // Legal, and sometimes exactly what was wanted — `--preset day` is one day and
-  // one of the four is genuinely not on it. Said out loud rather than corrected,
-  // because a run reported as four seats and driven by three is the version of
-  // this that costs money.
-  const idle = Object.entries(seats)
-    .filter(([, n]) => n === 0)
-    .map(([k]) => k)
-  if (idle.length) {
-    warn(
-      `${idle.join(', ')} never gets a window in this run`,
-      `SCHEDULE puts nobody there across ${cfg.days} day(s) of ${cfg.windows.join(', ')}.`,
-      'The run is still valid; it is about the other seats.',
-    )
-  }
 }
 
 /* -------------------------------------------------------------- describe */
@@ -1033,7 +969,6 @@ export function describeConfig(cfg: DriveConfig): string {
   if (cfg.budgetMin !== undefined) limits.push(`${cfg.budgetMin}min`)
   if (cfg.budgetInr !== undefined) limits.push(`₹${cfg.budgetInr}`)
   if (limits.length) parts.push(`budget ${limits.join(' / ')}`)
-  if (cfg.ramp) parts.push('ramp')
   // The default is to keep, so `keep` on every line would be noise and `drop` is
   // the word worth reading: it is the one that ends with a business deleted.
   if (!cfg.keep) parts.push('drop')
