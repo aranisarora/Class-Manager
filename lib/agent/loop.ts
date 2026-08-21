@@ -1941,16 +1941,43 @@ async function modelTurn(
     const untraced = traceabilityNote(outgoing, toolCtx.evidence ?? [])
     if (untraced) toolCtx.untraced?.push({ body: outgoing, found: untraced })
 
+    /**
+     * @mechanism affordanceFits — the confirmation button on trailing prose is the
+     *   RUNTIME's addition, and attaching it drops the body cap from 4096 to 1024
+     *   (`validateOutbound`: an interactive message is the shorter shape). It is checked
+     *   against the body actually going out, because gate 5 in `send.ts` states that what
+     *   reaches it over the cap is a runtime compose bug — and this is the one composer in
+     *   the product that never checked. Over the cap the button is not minted, and the
+     *   answer goes as plain text rather than as nothing at all.
+     *
+     *   This is NOT the button-strip that was deleted from the send path. That one removed
+     *   controls the MODEL had authored, leaving prose written for buttons that were not
+     *   there. Nothing in trailing prose is written for these buttons: the recovery round is
+     *   told it has no tools left and is never told a button will be attached, so declining
+     *   to add an affordance the author never asked for is not an edit to their message.
+     */
+    const affordanceFits = !buttons || Array.from(outgoing).length <= LIMITS.bodyChars
+    if (!affordanceFits) {
+      trace.push({
+        round: rounds,
+        name: '(trailing confirmation button not minted: the answer will not fit an interactive message)',
+        ms: 0,
+        args: evidence({ chars: Array.from(outgoing).length, limit: LIMITS.bodyChars }, 400),
+      })
+      buttons = undefined
+    }
+
     const trailing = await composeAndSend(session, {
       toContactId: identity.contact.id,
       body: outgoing,
       buttons,
     })
     outcomes.push(trailing)
+    const landed = trailing.status === 'sent' || trailing.status === 'queued'
     // Recorded on the same condition as every other send: it counts as having been
     // said when it landed. A suppressed trailing message is a turn that said nothing,
     // and reflection should see that rather than a reply nobody received.
-    if (trailing.status === 'sent' || trailing.status === 'queued') {
+    if (landed) {
       toolCtx.saidToUser?.push(outgoing)
       // On the same condition, and for the reason `ToolCtx.spokeAsTrailingProse`
       // records: this is the send the model does not know it made. `saidToUser`
@@ -1964,7 +1991,61 @@ async function modelTurn(
       // reflection needs.
       if (!runtimeAuthored) toolCtx.spokeAsTrailingProse = true
     }
-    text = outgoing
+
+    /**
+     * @mechanism landed — the trailing send is the LAST send of a turn, and it was
+     *   the only one with nothing underneath it. `spoke()`, the `told` census and the whole
+     *   apology ladder run BEFORE it and are never asked again, so a trailing message the
+     *   send gates refuse ended the turn with every outbound suppressed and the person
+     *   holding nothing: on `adv-wall-of-text` that was 22 rounds and Rs 4.98 spent to
+     *   produce two suppressed rows and silence, with `error` null and nothing anywhere
+     *   saying so. Asked once more AFTER the send — `spoke()` plus this turn's own
+     *   unsuppressed rows, because a runtime send from `plan.ts` never enters `outcomes` —
+     *   and answered with one short sentence carrying no affordance, which is the one shape
+     *   that cannot fail the gate that has just fired.
+     */
+    if (!landed) {
+      const stillHeard = await withSession(
+        { role: 'service', academyId: identity.academyId },
+        async (tx) =>
+          (await tx.unsafe(
+            `select count(*)::int as n from message
+               where turn_id = '${turnId}' and contact_id = '${identity.contact.id}'
+                 and direction = 'outbound' and suppressed_reason is null`,
+          )) as unknown as { n: number }[],
+      ).catch(() => [] as { n: number }[])
+      const heard = Number(stillHeard[0]?.n ?? 0)
+      trace.push({
+        round: rounds,
+        name: '(trailing message not delivered — nothing reached them)',
+        ms: 0,
+        args: evidence({ outcome: trailing, heard, draft: outgoing }, 2000),
+      })
+      if (!spoke() && heard === 0) {
+        outcomes.push(
+          await composeAndSend(session, {
+            toContactId: identity.contact.id,
+            /*
+             * The tap's own receipt outranks this for F-CD's reason: after a committed
+             * write, any sentence saying nothing came of it is false. This sentence
+             * deliberately says nothing about state at all — it reports the send, which
+             * is the only thing it knows.
+             */
+            body: tap
+              ? tap.backstop
+              : "I worked that out but couldn't get the answer onto your screen in one message. "
+                + "Ask me for it a couple of things at a time and I'll go through them.",
+          }),
+        )
+      }
+    }
+
+    // What reached them, never what was attempted. This line is read by the
+    // reflection gate below and becomes `turn.output.reply`, and both were being
+    // told a suppressed message was this turn's answer — so reflection opened with
+    // "[The reply has gone and nobody is waiting]" over a person who had received
+    // nothing, and the turn row recorded a reply that does not exist.
+    if (landed) text = outgoing
   }
 
   /* ----------------------------------------------------------------------- *

@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-159 mechanisms · 22 findings closed by one · 15 findings still open
+161 mechanisms · 22 findings closed by one · 15 findings still open
 
 ## The scan
 
@@ -86,6 +86,8 @@ One line each. Find a candidate here, then read its entry below.
 `tapBlock` — a committed tap enters the turn as a stated fact in the variable tail, not as a fabricated tool call the mo…  
 `spoke` — the turn's test for "was this person answered" is what arrived at the ASKER's contact, not what left the bu…  
 `failedReasons` — refusals are counted by tool name plus the reason with ids, quoted literals and numbers stripped out, so th…  
+`affordanceFits` — the confirmation button on trailing prose is the RUNTIME's addition, and attaching it drops the body cap fr…  
+`landed` — the trailing send is the LAST send of a turn, and it was the only one with nothing underneath it.  
 `recentHistory` — a conversation prefetch that fails returns `why` beside the messages instead of an empty array, and the cal…  
 `recentToolTurns` — the last few turns' tool calls, read once and replayed into the tail as two labelled blocks.  
 `memory_fact` — the append-only record, kept separate from the bounded hot set (`academy.memory` / `person.memory`) the pro…  
@@ -308,9 +310,13 @@ One line each. Find a candidate here, then read its entry below.
   the turn's test for "was this person answered" is what arrived at the ASKER's contact, not what left the building: a proposal routed to the owner is a turn that sent something and told the person who asked nothing. When it is false and nothing was drafted either, the turn spends one toolless recovery round putting what it already learned into words, and apologises only if that fails too — one of three sentences, and a census of this turn's `message` rows suppresses even that if the runtime already said something true, because a second message reads as the first being withdrawn. Going quiet is the one failure a person cannot tell apart from being ignored.
 - **`failedReasons`** — `lib/agent/loop.ts:1338`  
   refusals are counted by tool name plus the reason with ids, quoted literals and numbers stripped out, so three attempts that differed only in which irrelevant argument was edited read as one refusal repeating: the second says so in the result the model reads, the third stalls the turn out of the loop and into the recovery round. With `failedCalls` beside it, which blocks a byte-identical repeat before `runTool` sees it, this is what stops a stuck turn spending every remaining round — 93 seconds and 165k tokens, measured — on a call the world will not let succeed, and ending in an apology that invents a cause.
-- **`recentHistory`** — `lib/agent/loop.ts:2305`  
+- **`affordanceFits`** — `lib/agent/loop.ts:1945`  
+  the confirmation button on trailing prose is the RUNTIME's addition, and attaching it drops the body cap from 4096 to 1024 (`validateOutbound`: an interactive message is the shorter shape). It is checked against the body actually going out, because gate 5 in `send.ts` states that what reaches it over the cap is a runtime compose bug — and this is the one composer in the product that never checked. Over the cap the button is not minted, and the answer goes as plain text rather than as nothing at all.
+- **`landed`** — `lib/agent/loop.ts:1996`  
+  the trailing send is the LAST send of a turn, and it was the only one with nothing underneath it. `spoke()`, the `told` census and the whole apology ladder run BEFORE it and are never asked again, so a trailing message the send gates refuse ended the turn with every outbound suppressed and the person holding nothing: on `adv-wall-of-text` that was 22 rounds and Rs 4.98 spent to produce two suppressed rows and silence, with `error` null and nothing anywhere saying so. Asked once more AFTER the send — `spoke()` plus this turn's own unsuppressed rows, because a runtime send from `plan.ts` never enters `outcomes` — and answered with one short sentence carrying no affordance, which is the one shape that cannot fail the gate that has just fired.
+- **`recentHistory`** — `lib/agent/loop.ts:2386`  
   a conversation prefetch that fails returns `why` beside the messages instead of an empty array, and the caller states it in the tail: an empty history is not a degraded turn but a DIFFERENT one, in which a family the business has served for months has never written before — so the model greets them, re-asks what they answered yesterday and re-offers what they already declined, all of it correctly derived from what it was given. The reason travels BESIDE the messages and never among them, because a runtime sentence in the message list arrives as something a person said; `historyGaps` rides the same channel with the thread's real time breaks.
-- **`recentToolTurns`** — `lib/agent/loop.ts:2372`  
+- **`recentToolTurns`** — `lib/agent/loop.ts:2453`  
   the last few turns' tool calls, read once and replayed into the tail as two labelled blocks. `recentLookups` keeps the reads, stamped with `ageOf`, because an unstamped two-day-old zero-row result reads as current data and is how an owner was reassured that every register was marked; `recentActions` keeps the writes, carrying their OUTCOME — `staged behind a confirmation button — NOT committed`, `failed … nothing was written` — so "did I actually do that" is answerable without the model thinking to query `audit_entry`, and a refusal cannot be replayed as a row to act on. A read that fails comes back with `why` rather than nothing, so a turn that could not see its own history stops looking exactly like a turn with no history to see.
 - **`memory_fact`** — `lib/agent/memory.ts:4`  
   the append-only record, kept separate from the bounded hot set (`academy.memory` / `person.memory`) the prompt actually carries. A fact is never edited and never deleted; a correction writes a superseding row, and the live set everywhere is "not retired and not superseded". Collapsing the two into one capped blob puts the pruning decision inside a model under context pressure, where what it drops is invisible — everything outside the hot set stays reachable with `read`, so forgetting is a context decision and never a storage one.
