@@ -427,7 +427,7 @@ export type BuiltWorld = {
   frontDeskId: string
   /** Seat key → the contact they hold AT THE FRONT DESK, to begin with. */
   contacts: Record<string, string>
-  roster: { name: string; role: SeatRole; contactId: string; phone: string }[]
+  roster: { name: string; role: SeatRole; contactId: string; phone: string; academyId: string }[]
 }
 
 /**
@@ -521,7 +521,16 @@ export async function buildWorld(
     frontDeskId = out.front_desk_id
     const key = keyOf(person.name)
     contacts[key] = out.contact_id
-    roster.push({ name: person.name, role: person.seat, contactId: out.contact_id, phone })
+    // Everybody starts at the desk, because that is the only tenant that exists
+    // yet. `academyOf` reads this per seat; only the people who actually move
+    // into a founded business get it rewritten (`follow` in sim.ts).
+    roster.push({
+      name: person.name,
+      role: person.seat,
+      contactId: out.contact_id,
+      phone,
+      academyId: out.front_desk_id,
+    })
   }
 
   /**

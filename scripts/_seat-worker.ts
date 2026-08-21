@@ -73,7 +73,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { drive, logSeat, q, readPhone, renderPhone, type Seen, type Session } from './_seat'
+import { academyOf, drive, logSeat, q, readPhone, renderPhone, type Seen, type Session } from './_seat'
 
 /**
  * Forced before anything is imported that can send, exactly as `_seat.ts` and
@@ -281,7 +281,10 @@ async function buttonAction(title: string): Promise<string | null> {
   const want = title.trim().replace(/^\[\s*/, '').replace(/\s*\]$/, '').trim().toLowerCase()
   if (!want) return null
   const rows = await q<any>(
-    session.academyId,
+    // This seat's own tenant. Under the wrong GUC this select returns zero rows
+    // with no error, and every tap silently downgrades to text — which is the
+    // fabricated defect described directly above.
+    academyOf(session, KEY),
     `select m.payload from message m
       where m.direction = 'outbound' and m.contact_id = '${contactId}'::uuid
         and m.suppressed_reason is null

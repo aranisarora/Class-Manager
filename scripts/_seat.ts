@@ -126,7 +126,20 @@ export type Session = {
   days: number
   day: number
   contacts: Record<string, string>
-  roster: { name: string; role: string; contactId: string; phone: string }[]
+  roster: {
+    name: string
+    role: string
+    contactId: string
+    phone: string
+    /**
+     * The tenant THIS person's contact lives in, which is not always the run's.
+     *
+     * Optional only because a `session.json` written before 21 Aug 2026 has no
+     * such field; `academyOf` falls back to `s.academyId`, which is exactly what
+     * those runs assumed.
+     */
+    academyId?: string
+  }[]
   /** Legacy: per persona, the `created_at` of the last message their phone showed. */
   cursor?: Record<string, string>
   startedAt: string
@@ -171,6 +184,26 @@ export type SeatMeta = {
 /** The database as the harness — service role, tenant GUC set. Evidence only. */
 export const q = async <T = any>(academyId: string, sql: string): Promise<T[]> =>
   withSession({ role: 'service', academyId }, async (tx) => (await tx.unsafe(sql)) as unknown as T[])
+
+/**
+ * The tenant THIS SEAT's own contact lives in, which is not always the run's.
+ *
+ * `cm_service` is not an RLS bypass: every service policy in `0003_rls.sql` is
+ * `academy_id = app.academy_id()`, so a statement run under the wrong tenant
+ * returns zero rows, with no error and no note. A run opens at a front desk and
+ * ONE person founds a business inside it — their contact moves and everybody
+ * else's does not. Reading a seat's phone under the business's GUC while they
+ * still hold a front-desk contact is not "a quiet week": it is a query that
+ * cannot match, and in the record the two are byte-identical.
+ *
+ * Resolved by contact id rather than by name, so it needs no second copy of
+ * `keyOf` and cannot disagree with `session.contacts` — both move together.
+ */
+export function academyOf(s: Session, key: string): string {
+  const contactId = s.contacts[key]
+  const seat = contactId ? s.roster.find((r) => r.contactId === contactId) : undefined
+  return seat?.academyId ?? s.academyId
+}
 
 export function die(msg: string): never {
   console.error(`  ${msg}`)
@@ -538,7 +571,9 @@ export async function readPhone(
    * does not have and would have gone into the write-up as one.
    */
   const rows = await q<any>(
-    s.academyId,
+    // This person's own tenant, not the run's: a seat still holding a
+    // front-desk contact cannot be read under the business's GUC (see academyOf).
+    academyOf(s, key),
     `select m.created_at, m.created_at::text as raw_at, m.body, m.payload, m.status
        from message m
       where m.direction = 'outbound'
@@ -645,11 +680,20 @@ export async function drive(
         `   Pass { who, seat } — they come from the world file, via briefs.json.`,
     )
   }
-  const at = clock.inZone(await clock.now(s.academyId), TZ)
+  /**
+   * This seat's tenant, not the run's. Everything below is evidence about one
+   * person: the clock their rows are stamped by, the statements that can see
+   * them, and the window the capture opens. One wrong pin empties all three.
+   */
+  const acad = academyOf(s, key)
+  const at = clock.inZone(await clock.now(acad), TZ)
   const rec = await reopenRun(s.dir, {
-    academyId: s.academyId,
-    q: (sql: string) => q(s.academyId, sql),
-    domainNow: () => clock.now(s.academyId),
+    // Deliberately no `academyId` here: `reopenRun` writes it into the record's
+    // HEAD, and the head names the RUN. `queueTurn` is the run's own turn and is
+    // the one place the head should follow the founding. This seat's tenant goes
+    // on the TURN instead — otherwise every desk seat would flap the head back.
+    q: (sql: string) => q(acad, sql),
+    domainNow: () => clock.now(acad),
   })
   await rec.turn(
     {
@@ -662,6 +706,9 @@ export async function drive(
       // the slower turn's time window swallowed the faster one's reply. See
       // `TurnMeta.contactId`.
       ...(s.contacts[key] === undefined ? {} : { contactId: s.contacts[key] }),
+      // The tenant this turn's evidence was read as, so a reader can tell a
+      // turn that said nothing from a turn read in the wrong academy.
+      academyId: acad,
       ...(meta.window === undefined ? {} : { window: meta.window }),
       ...(meta.intent === undefined ? {} : { intent: meta.intent }),
       ...(meta.personaReasoning === undefined ? {} : { personaReasoning: meta.personaReasoning }),
@@ -770,6 +817,9 @@ export async function queueTurn(
       persona: 'queue',
       say: '',
       day: s.day,
+      // The queue belongs to the BUSINESS, not to a person, so this one stays
+      // on the run's academy — and it is the only writer of the record head.
+      academyId: s.academyId,
       ...(meta.window === undefined ? {} : { window: meta.window }),
     },
     async (sink) => {

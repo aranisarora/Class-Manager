@@ -264,6 +264,18 @@ export type Turn = {
   id: string
   /** Domain time when the turn was posted, in the academy's own clock. */
   at: string
+  /**
+   * The tenant this turn's evidence was READ as, when the driver named one.
+   *
+   * Not a label — the reason a field is empty. `cm_service` is not an RLS
+   * bypass (`0003_rls.sql`: every service policy is `academy_id =
+   * app.academy_id()`), and a founding turn re-enters `runTurn` INSIDE the new
+   * tenant (`lib/agent/loop.ts`), so a capture still pinned to the front desk
+   * records `reply: null, messages: [], wrote: 0, changed: []` for a turn that
+   * in fact answered. Written down so a reader can tell that from a turn that
+   * genuinely said nothing.
+   */
+  academyId?: string | null
   /** Simulated day of the run, where the driver walks days. */
   day?: number
   /**
@@ -491,6 +503,14 @@ export type TurnMeta = {
    * time window unchanged.
    */
   contactId?: string | null
+  /**
+   * The tenant this turn's evidence must be read in, when it is not the run's.
+   *
+   * A seat's academy is its own contact's and not the run's (`_seat.academyOf`).
+   * Handed over rather than inferred, because this layer holds `opts.q` and has
+   * no way to ask what tenant it is pinned to.
+   */
+  academyId?: string | null
   /**
    * EXACTLY what this person's phone showed when they decided what to do.
    *
@@ -869,6 +889,32 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
         return [] as T[]
       })
 
+    /**
+     * Did this turn's work happen somewhere this record cannot see?
+     *
+     * Every statement the model composed carries the tenant it ran under
+     * (`SqlRecord.academyId`), and the evidence queries below run under exactly
+     * one. When they disagree, every count on this turn is a FLOOR rather than a
+     * fact: the rows are not missing from the run, they are missing from the
+     * record. The founding turn is the case this was written for and it is not
+     * the only one — a seat left holding a contact in another tenant is the
+     * whole rest of a bad week.
+     *
+     * A note, never a throw and never a flag. Nothing in an instrument scores
+     * anything: this names what happened and leaves the reading to a reader.
+     */
+    const scope = meta.academyId ?? opts.academyId ?? null
+    const strayed = [
+      ...new Set(sql.map((r) => r.academyId).filter((a): a is string => !!a && a !== scope)),
+    ]
+    if (scope && strayed.length) {
+      notes.push(
+        `this turn ran statements in ${strayed.join(', ')} but its evidence was read as ${scope}: ` +
+          'cm_service is not an RLS bypass, so any reply, turn row or audit row written in another ' +
+          'tenant is missing from this record rather than absent from the run.',
+      )
+    }
+
     const mine = meta.contactId ? `and contact_id = '${meta.contactId}'::uuid` : ''
     const turnRows = await ask<any>(
       'the turn rows',
@@ -1023,6 +1069,7 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
     const body: TurnBody = {
       id: meta.id,
       at: cursor,
+      ...(scope === null ? {} : { academyId: scope }),
       ...(meta.day === undefined ? {} : { day: meta.day }),
       ...(meta.window === undefined ? {} : { window: meta.window }),
       who: meta.who,

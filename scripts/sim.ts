@@ -1044,6 +1044,52 @@ async function main(): Promise<void> {
    * **The events.** `openEvents` binds to a tenant's rows, and until now there
    * were none. It is opened here, against the business that actually exists.
    */
+  /**
+   * Whoever moved into the business since the last window, and their seat with them.
+   *
+   * `adopt` did this once, for the founder, at the moment the business appeared —
+   * and once is not enough. A prospect the owner adds on Thursday gets a NEW
+   * contact inside the tenant; their front-desk contact stays where it is holding
+   * the arrival record, and `_arrivals.ts` will not re-admit a key it has already
+   * seated. So without this they hold a desk contact for the rest of the week,
+   * reading a phone nobody is writing to while the product talks to one nobody is
+   * answering — and every query about them returns zero rows, silently, because
+   * `cm_service` is not an RLS bypass.
+   *
+   * A seat that moved is RESTARTED, not patched: `_seat-worker.ts` reads
+   * `session.json` once at boot and rebuilds what its person has already said from
+   * the run's own log, which is what makes a restart cheap and lossless.
+   */
+  const follow = async (restart = true): Promise<number> => {
+    if (!founded) return 0
+    const moved = await q<{ id: string; full_name: string }>(
+      founded,
+      `select ct.id::text, p.full_name
+         from contact ct join person p on p.id = ct.person_id
+        where ct.opted_out_at is null`,
+    ).catch(() => [] as { id: string; full_name: string }[])
+    let followed = 0
+    for (const m of moved) {
+      const key = keyOf(m.full_name)
+      if (!session.contacts[key] || session.contacts[key] === m.id) continue
+      session.contacts[key] = m.id
+      const seat = session.roster.find((r) => keyOf(r.name) === key)
+      if (seat) {
+        seat.contactId = m.id
+        // The half that was missing: the tenant their evidence must be read in.
+        seat.academyId = founded
+      }
+      followed += 1
+      const worker = restart ? seats.get(key) : undefined
+      if (worker) {
+        worker.end()
+        seats.set(key, openSeat(key, dir, cfg))
+      }
+    }
+    if (followed && restart) await writeSession(session)
+    return followed
+  }
+
   const adopt = async (): Promise<void> => {
     /**
      * `app.businesses_on_sender`, and NOT a select on `academy`.
@@ -1075,21 +1121,9 @@ async function main(): Promise<void> {
     // The new tenant starts where the old one is standing, not at real time.
     await clock.setTo(await clock.now(world.frontDeskId), row.id)
 
-    const moved = await q<{ id: string; full_name: string; phone_e164: string }>(
-      row.id,
-      `select ct.id::text, p.full_name, ct.phone_e164
-         from contact ct join person p on p.id = ct.person_id
-        where ct.opted_out_at is null`,
-    ).catch(() => [] as { id: string; full_name: string; phone_e164: string }[])
-    let followed = 0
-    for (const m of moved) {
-      const key = keyOf(m.full_name)
-      if (!session.contacts[key] || session.contacts[key] === m.id) continue
-      session.contacts[key] = m.id
-      const seat = session.roster.find((r) => keyOf(r.name) === key)
-      if (seat) seat.contactId = m.id
-      followed += 1
-    }
+    // `false`: this path restarts EVERY worker a few lines below, so a per-seat
+    // restart here would be a second one for the same people.
+    const followed = await follow(false)
     await writeSession(session)
 
     console.log(
@@ -1129,6 +1163,28 @@ async function main(): Promise<void> {
     budget.spend(total - counted)
     counted = total
     return total
+  }
+
+  /**
+   * The front desk keeps the business's time.
+   *
+   * `walkTo` moves ONE tenant's clock, and after `adopt` that tenant is the
+   * business — so the desk freezes at the Monday morning `buildWorld` set it to.
+   * That is not cosmetic. 0027 made every `created_at` default to `app.now()`,
+   * which resolves per tenant, so a seat still holding a front-desk contact
+   * writes `turn`, `message` and `audit_entry` rows stamped days behind the week
+   * they happened in. `_capture.ts` opens its window on domain time: against the
+   * business clock those rows are already in the past and the turn records
+   * nothing; against a frozen desk clock the cursor never moves and one turn
+   * sweeps up everything that contact has ever produced. Both are wrong and
+   * neither says so.
+   *
+   * One number, one week, one wall clock. A single UPDATE per window, and it
+   * only ever moves the desk FORWARD, which is the monotonicity 0027 relies on.
+   */
+  const keepDeskInStep = async (): Promise<void> => {
+    if (!founded || academyId === world.frontDeskId) return
+    await clock.setTo(await clock.now(academyId), world.frontDeskId)
   }
 
   for (let day = 1; day <= cfg.days && !stoppedBy; day++) {
@@ -1171,9 +1227,18 @@ async function main(): Promise<void> {
        * a job stepped over is a morning brief, a T-60 prompt or a register that
        * never happened, and the day then reads as a quiet one.
        */
-      const walked = await queue(session, `d${day}-${w}-queue`, () => walkTo(academyId, WINDOW_AT[w]), {
-        window: w,
-      })
+      const walked = await queue(
+        session,
+        `d${day}-${w}-queue`,
+        async () => {
+          const ran = await walkTo(academyId, WINDOW_AT[w])
+          // The desk follows the business, or a seat still standing at it writes
+          // rows stamped in a week that has already gone past.
+          await keepDeskInStep()
+          return ran
+        },
+        { window: w },
+      )
       /**
        * Nobody is asked to speak into a business that is not there. A deleted
        * world surfaces at the window's clock walk, above, because the clock is
@@ -1327,6 +1392,16 @@ async function main(): Promise<void> {
        * round to it is a legitimate and very interesting week.
        */
       if (!founded) await adopt()
+      else {
+        // Somebody may have moved into the business since the last window — a
+        // family written down on Tuesday, a coach hired on Wednesday. Their seat
+        // has to move with them or it spends the rest of the run reading a phone
+        // in a tenant nobody is writing to.
+        const moved = await follow()
+        if (moved) {
+          console.log(c.dim(`      ${moved} seat${moved === 1 ? '' : 's'} moved into ${academyName}`))
+        }
+      }
 
       /**
        * Who the business gained in this window, given a phone and a person.
@@ -1366,6 +1441,8 @@ async function main(): Promise<void> {
             role: a.brief.seat,
             contactId: a.contactId,
             phone: a.phone,
+            // Arrivals are read OUT of the business, so their contact is in it.
+            academyId,
           })
           driven.add(a.key)
         }
