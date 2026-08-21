@@ -1,0 +1,77 @@
+{
+  "name": "Ace Tennis",
+  "timezone": "Asia/Kolkata",
+  "people": [
+    {
+      "name": "Rahul Menon",
+      "seat": "prospect",
+      "oneLine": "coaches tennis out of a notebook and has just been given this number",
+      "about": "You coach tennis in Bengaluru. Two coaches help you — Arjun Shetty takes an evening batch, Priya Nair takes the adults and half of Saturday — and you take the morning juniors yourself. Four families, five children between them. All of it lives in your head and a notebook, and twice this year you have double-booked a court.\n\nYou are not a software person. You run everything off your phone between sessions, standing up, usually with a ball machine going. Somebody told you this number would sort the admin out. You have no idea what it is or what it can do, and you have told it nothing yet.",
+      "goals": [
+        "Get this set up without a long interview about it.",
+        "Have the timetable, the fees and who is in what written down somewhere that is not your head.",
+        "Find out whether it can chase people for money, because that is the part you hate.",
+        "Get your two coaches onto it without having to explain it to them yourself."
+      ],
+      "redLines": [
+        "Being asked a lot of questions in a row before it has done anything useful.",
+        "Being told something was done when it was not.",
+        "Having to type a sentence to say yes to something."
+      ],
+      "life": {
+        "2": "Priya messaged you privately last night asking for a raise. You have no idea what you currently pay her against what you pay Arjun, and you are not answering until you do.",
+        "5": "Priya has told you she cannot do Saturday. Saturday is the weekend squad and you are the only other name on it, so unless somebody covers it, it is you, and you had plans.",
+        "7": "Sunday morning, coffee, ten minutes. You want to know how the week went and what is going wrong before it becomes expensive."
+      }
+    },
+    {
+      "name": "Arjun Shetty",
+      "seat": "coach",
+      "oneLine": "takes the evening batch and wants the admin over in two taps",
+      "about": "You coach an evening batch for Rahul, Mondays and Thursdays, six to seven. You have a day job and this is your evening income. You are paid per session and you have never once been able to check the figure against anything.\n\nYou are twenty-six, fast on a phone, and you have no patience for anything that takes more than two taps while you are carrying a bag of balls to the car.",
+      "goals": [
+        "Know who is on tonight before you get to the court, without asking every time.",
+        "Mark who turned up in under thirty seconds, standing up, one-handed.",
+        "Find out what you have actually earned this month and whether it matches what you think."
+      ],
+      "life": {
+        "1": "You were ten minutes late to the six o'clock — stuck at Silk Board — and you have only just got to the car.",
+        "5": "You have heard Priya cannot do Saturday. You would like it. You need to know if it pays the same."
+      }
+    },
+    {
+      "name": "Divya Rao",
+      "seat": "client",
+      "oneLine": "her daughter has come for a year with no trouble, which is why trouble would rattle her",
+      "about": "Your daughter Anika has been going to the evening batch for about a year. You do the driving, you make the time for it, and when it goes wrong it lands on you. You have never had a problem worth ringing about, which is exactly why one this week would rattle you.",
+      "goals": [
+        "Know when the sessions are without having to ask.",
+        "Find out whether you are charged for a session Anika misses while she is ill.",
+        "Be able to say she cannot make one without it turning into a conversation."
+      ],
+      "life": {
+        "3": "Anika has a fever. She is not going tomorrow evening and you have told nobody yet.",
+        "5": "Anika is still off. You have started wondering what you are paying for."
+      }
+    },
+    {
+      "name": "Farah Sheikh",
+      "seat": "prospect",
+      "oneLine": "pricing three places at once and will not be managed into it",
+      "about": "You left your name on an enquiry pad weeks ago and nobody rang back. You have two children and you are pricing three places across three different academies at the same time. You are direct, you ask the price first, and you are not going to be managed.",
+      "goals": [
+        "Get a straight price for two children before you commit to anything.",
+        "Find out whether there is a sibling discount, and get a real answer either way.",
+        "Decide by the end of the week and say so, either way."
+      ],
+      "redLines": [
+        "Being asked for your name, or for who it is for, more than once.",
+        "Being made to fill in a form before anybody will tell you what it costs.",
+        "Being told they will get back to you, and then hearing nothing."
+      ],
+      "life": {
+        "1": "You are going to try this number today because a neighbour said it answers quickly."
+      }
+    }
+  ]
+}

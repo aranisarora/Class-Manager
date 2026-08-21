@@ -104,11 +104,7 @@ const { withSession } = await import('@/lib/db')
 const clock = await import('@/lib/clock')
 const { HANDLERS, JobSkip, planAheadFor } = await import('@/lib/jobs')
 const { msOf } = await import('@/lib/jobs/util')
-const { PERSONAS } = await import('./_personas')
 const { reopenRun } = await import('./_capture')
-
-type PersonaKey = import('./_personas').PersonaKey
-export type { PersonaKey }
 
 export const TZ = 'Asia/Kolkata'
 /** Where a live run's pointer and lock live. One per checkout, not one per run. */
@@ -600,22 +596,26 @@ export async function drive(
   fn: () => Promise<void>,
 ): Promise<Seen[]> {
   /**
-   * Who the record says this was — from the caller when it has them, and from
-   * `PERSONAS` only for the four.
+   * Who the record says this was, named by the caller and by nobody else.
    *
-   * `PERSONAS` holds the canonical four and cannot hold anybody else: a spec
-   * world's seats are composed at run time out of a JSON file. `PERSONAS[key].name`
-   * therefore threw `Cannot read properties of undefined` INSIDE the turn, once
-   * per seat, on every `--world` run — thirteen seats failed at 20:15 and the run
-   * finished with four queue turns and a record that reads as a product nobody
-   * talked to. A caller holding the persona names it; a caller that does not is
-   * driving one of the four.
+   * There used to be a fallback here into `PERSONAS` — four humans hard-coded in
+   * `_personas.ts` — for callers that did not say. It was already the wrong shape
+   * before the fixtures went: `PERSONAS[key]` was `undefined` for anybody composed
+   * out of a world file, and `.name` on it threw INSIDE the turn, once per seat,
+   * so thirteen seats failed at 20:15 and the run finished with four queue turns
+   * and a record that reads as a product nobody talked to.
+   *
+   * Now every person comes from a world file, so there is no table to fall back
+   * to and the caller always holds the answer. Refused rather than guessed: a
+   * turn attributed to the wrong person is worse than a turn that did not run.
    */
-  const known = PERSONAS[key as PersonaKey]
-  const who = meta.who ?? known?.name
-  const seat = meta.seat ?? known?.seat
+  const who = meta.who
+  const seat = meta.seat
   if (!who || !seat) {
-    die(`no seat named ${key}, and the caller named neither who is sitting in it nor their role`)
+    die(
+      `seat "${key}" was driven without saying who is in it.\n` +
+        `   Pass { who, seat } — they come from the world file, via briefs.json.`,
+    )
   }
   const at = clock.inZone(await clock.now(s.academyId), TZ)
   const rec = await reopenRun(s.dir, {
