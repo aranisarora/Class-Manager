@@ -1,6 +1,6 @@
 # What is open
 
-14 findings. This file is the source of truth for what is broken — hand-written, and short on
+15 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -31,6 +31,7 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-BY** | The context budget drops whole lookups from the model's prompt and leaves no mark | [detail](#f-by--the-context-budget-drops-whole-lookups-from-the-models-prompt-and-leaves-no-mark) |
 | **F-BZ** | A statement cannot say which turn sent it, so a drain cannot be recorded as the several turns it is | [detail](#f-bz--a-statement-cannot-say-which-turn-sent-it-so-a-drain-cannot-be-recorded-as-the-several-turns-it-is) |
 | **F-CA** | A staged plan is described in the past tense, so the owner is told a change was made while the buttons still ask whether to make it | [detail](#f-ca--a-staged-plan-is-described-in-the-past-tense-so-the-owner-is-told-a-change-was-made-while-the-buttons-still-ask-whether-to-make-it) |
+| **F-CB** | R8 puts a sign on the go-live door and nothing puts a handle on it, so three businesses ran a week with every proactive path suppressed | [detail](#f-cb--r8-puts-a-sign-on-the-go-live-door-and-nothing-puts-a-handle-on-it-so-three-businesses-ran-a-week-with-every-proactive-path-suppressed) |
 
 ---
 
@@ -516,4 +517,65 @@ draws it as `[ Make the change ]`, so the press resolved to nothing and went as 
 presses were lost that way across the three weeks of 21 Aug, and the brackets are now stripped
 before matching. **The product half above is untouched by that fix**: the day-5 overclaim
 happened on a turn where nothing was tapped at all.
+
+### F-CB · R8 puts a sign on the go-live door and nothing puts a handle on it, so three businesses ran a week with every proactive path suppressed
+
+Three blank worlds, three owners, seven days each — `2026-08-21-04-38-sim-{td2w,anz5,laq3}`. All
+three built a timetable. Two put families on the books. **None went live, and every reminder,
+digest, coach nudge, fee request and dunning stayed switched off for twenty-one simulated days.**
+The only job that ever ran in any of the three weeks was `materialize_sessions`.
+
+This is the exact failure `R8` (`lib/agent/context.ts`) was built to prevent, in its own words:
+
+> an academy with a full roster could sit in `setup` indefinitely while every proactive path
+> silently suppressed — no error on either side, just a business that never started.
+
+**It is not the guard.** `app.guard_go_live()` (0033) requires one active class and nothing else.
+All three had classes with sessions materialised. The door was open the whole time.
+
+**It is not ignorance.** R8 puts a line at the TOP of every admin context: `NOT LIVE (setup) — no
+reminder, digest or announcement reaches anybody yet … There is a timetable in, so going live is
+now a real next step to offer.` The model was told, every turn, in all three runs.
+
+**What actually happened is that the sign was read aloud five times and never became a decision.**
+Across **28 admin turns**, going live was mentioned **5 times**, and **never after day 2 in any
+run**:
+
+| | admin turns | mentions | last mention |
+| --- | --- | --- | --- |
+| swim | 9 | 2 | day 2 |
+| cricket | 11 | 1 | day 2 |
+| dance | 8 | 2 | day 5, as an explanation |
+
+Every one of the five was either **deferred to a future condition** — *"once you've got students
+in"*, *"when you've got the students in and the classes looking how you want"*, *"when you're
+ready to bring families in, just say the word"* — or a **passive explanation of an empty answer**:
+*"the business isn't live, so no bill has gone to a single family."*
+
+**And all five carried `buttons: []`.** Not one offered a way to do it. The same three runs
+produced affordances for far smaller things — `[ Make the change ]`, `[ Add Deepa ]`,
+`[ Put me on it ]` — because those were staged plans. Going live never became a plan, so
+`needsPreview` never ran on it, so nothing generated an affordance. The owner was never presented
+with a decision; only ever with a remark.
+
+The swim run shows the deferral eating itself. The condition offered on day 1 was *"once you've
+got students in"*. Three enrolments were written on **day 2 morning**. The day 2 evening reply
+repeated the same condition as though it were still unmet, and the subject never came up again on
+days 3, 4, 5 or 6.
+
+**The moments it should have been unmissable are the ones where it was the answer.** Imran on day
+5: *"fees this month. paid and pending. every boy"*. Ananya on day 5: *"who hasnt paid since
+june"*. Both were correctly told the books were empty. Neither was told that the reason is a state
+they can change, still less offered the change. An owner whose stated goal is to stop chasing fees
+asked directly about fees and was not shown the switch.
+
+**The structural shape.** R8 states a CONSTANT — it reads identically on day 1 with nothing in the
+business and on day 7 with a full roster and a week of suppressed sends behind it. Nothing
+accumulates, so nothing escalates, and a line that says the same thing every turn is a line a
+model may reasonably mention once and consider discharged. What is missing is not more doctrine
+about going live — see this file's header — but something that turns the accumulating cost (N
+families on the books, M sessions scheduled ahead, zero sends, K days in `setup`) into a *staged
+plan the owner can accept or decline*. `needsPreview` already classifies "touches the business's
+own settings or controls" as preview-worthy, so the affordance exists the moment the write is ever
+proposed. Nothing proposes it.
 
