@@ -2578,14 +2578,40 @@ async function recentActions(
       // rendered "done — wrote N row(s)" in the next turn's context, under a
       // heading that forbids redoing done work — the model would truthfully
       // report a payment request as sent that nobody ever tapped (review find).
-      if (r.needs_confirmation || r.needs_preview === true || r.executed === false) {
+      // `asked` is the FOURTH spelling, and it is the one an OPERATION uses. The
+      // three above are the plan/act/commit shapes; an operation that puts a
+      // confirmation on somebody's screen returns `executed: true` — truthfully,
+      // because the operation ran — with `changes: []` and
+      // `asked: "A confirmation question is on their screen now"`. None of the
+      // three matched it, so it fell through to `ok === true`, summed zero
+      // changes, and rendered as bare "done".
+      //
+      // Driven, and it is the worst turn of `2026-08-21-16-30-holistic-bw18`.
+      // A parent asked to cancel a session; the operation staged the question and
+      // she never tapped it. Two turns later this block told the model
+      // `client_cancel … → done` twice. The model read the session, saw
+      // `status: 'scheduled'` and `cancel_reason: null`, wrote "That's odd" in
+      // its own reasoning — and then believed the context over the row, and told
+      // a customer mid-refund-dispute that the cancellation was "done and
+      // recorded". The row said otherwise the whole time.
+      if (
+        r.needs_confirmation ||
+        r.needs_preview === true ||
+        r.executed === false ||
+        typeof r.asked === 'string'
+      ) {
         return 'staged behind a confirmation button — NOT committed'
       }
       if (r.ok === true) {
         const changes = Array.isArray(r.changes)
           ? (r.changes as { count?: unknown }[]).reduce((a, c) => a + Number(c?.count ?? 0), 0)
           : 0
-        return changes ? `done — wrote ${changes} row(s)` : 'done'
+        if (changes) return `done — wrote ${changes} row(s)`
+        // Zero rows is not "done" under a heading that says done means it already
+        // happened. Whether a message went is the other half of what happened, and
+        // it is the half that decides whether doing it again messages somebody twice.
+        const sent = Array.isArray(r.sent) ? (r.sent as unknown[]).length : 0
+        return sent ? `sent — but wrote no rows` : 'ran — nothing was written'
       }
     }
     return 'ran'
