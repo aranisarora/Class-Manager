@@ -78,8 +78,18 @@ export async function listAcademyIds(): Promise<string[]> {
   const found = new Set<string>()
 
   try {
+    /**
+     * `not is_front_desk` (0039). A front desk is the arrivals hall of a number, not a
+     * business: it has no class, no session and no roster, so every job planned for it
+     * is a no-op, and the two that are not — the morning brief and the evening digest —
+     * are proactive sends to a stranger. The send path would suppress them (its
+     * pre-launch gate refuses anything that is not a solicited reply from an academy
+     * that is not `live`), but a standing surface that fires daily at something it can
+     * never reach is exactly the "fire on the calendar restating stuck state" failure
+     * Layer 4 exists to prevent, and it would grow one more of them per WhatsApp number.
+     */
     const rows = await withInfra((tx) => tx<{ id: string }[]>`
-      select id from academy order by created_at asc
+      select id from academy where not is_front_desk order by created_at asc
     `)
     for (const r of rows) found.add(r.id)
   } catch {

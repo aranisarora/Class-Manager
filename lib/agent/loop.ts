@@ -14,6 +14,7 @@ import { now, inZone } from '@/lib/clock'
 import { newId } from '@/lib/ids'
 import { env } from '@/lib/env'
 import { resolveIdentity } from '@/lib/identity'
+import { runFrontDeskTurn, type Handover } from '@/lib/frontdesk'
 import { consumeAction, type ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { LIMITS, type SendOutcome } from '@/lib/messaging/types'
@@ -144,6 +145,8 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
   let replyText = ''
   let trace: ToolTrace[] = []
   let rounds = 0
+  /** Set when a front-desk turn decided which business this conversation belongs to. */
+  let handover: Handover | undefined
 
   const identity = await resolveIdentity(input.contactId)
   if (!identity) {
@@ -241,7 +244,34 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       replyText = said
     }
 
-    if (goToModel && (text || input.task)) {
+    /**
+     * A visitor: somebody at the front desk of this number, who has not said whether
+     * they are looking for classes or run them (0039). `resolveInbound` no longer
+     * guesses that, so this is the branch where the product asks.
+     *
+     * It is a *different turn*, not a flag on this one. The tenant path's whole context
+     * — `SCHEMA_DOC`, the operation registry, the catalog, the census of a business's
+     * classes and money — is about a business this person does not have, and offering it
+     * would spend tens of thousands of characters describing an empty tenant to a
+     * stranger. `runFrontDeskTurn` runs a second, much smaller stable prefix over five
+     * verbs and hands back the same numbers `modelTurn` does, so `writeTurn` below
+     * records a front-desk turn exactly as it records a parent's — same table, same
+     * report, same drive.
+     */
+    if (goToModel && text && identity.roles.includes('visitor')) {
+      const fd = await runFrontDeskTurn({ session, identity, turnId, text })
+      outcomes.push(...fd.outcomes)
+      toolCalls = fd.toolCalls
+      modelName = fd.model
+      promptTokens = fd.promptTokens
+      outputTokens = fd.outputTokens
+      cachedTokens = fd.cachedTokens
+      replyText = [replyText, fd.replyText].filter((s) => s.trim()).join('\n\n')
+      trace = [...trace, ...fd.trace]
+      rounds = fd.rounds
+      if (fd.error) error = fd.error
+      handover = fd.handover
+    } else if (goToModel && (text || input.task)) {
       const m = await modelTurn(session, identity, turnId, { ...input, text })
       outcomes.push(...m.outcomes)
       toolCalls = m.toolCalls
@@ -333,6 +363,37 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
   if (error) {
     const escalated = await handoffOnRepeatedFailure(session, identity, turnId)
     if (escalated) outcomes.push(...escalated)
+  }
+
+  /**
+   * The hand-over (0039). A front-desk turn has just decided which business this
+   * conversation belongs in, so the same message is answered again — from inside that
+   * business, by an ordinary turn with its schema, its tools, its census and its voice.
+   *
+   * @mechanism handover — performed HERE rather than inside the tool that decided it, and
+   *   that inversion is the whole reason `lib/frontdesk/` can exist without a cycle back
+   *   into this file. It is the shape `executeAction` already uses for a button whose
+   *   payload was a reply: the text "re-enters as if it had been typed". Two turn rows are
+   *   written, in two academies, and that is the honest record — the front desk answered a
+   *   stranger, and a business answered its first customer, and neither is the other.
+   *
+   *   It cannot recurse. Both destinations are real tenants by construction —
+   *   `businessesOnThisNumber` filters `not is_front_desk`, and `app.found_business`
+   *   inserts `is_front_desk = false` — so the re-entered turn never carries the `visitor`
+   *   role and never reaches the branch above.
+   */
+  if (handover) {
+    const onward = await runTurn({
+      contactId: handover.contactId,
+      text: input.text,
+      source: input.source,
+    })
+    return {
+      turnId,
+      sent: [...outcomes, ...onward.sent],
+      toolCalls: toolCalls + onward.toolCalls,
+      error: error ?? onward.error,
+    }
   }
 
   return { turnId, sent: outcomes, toolCalls, error }

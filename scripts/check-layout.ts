@@ -55,7 +55,13 @@ const read = (p: string): string => (existsSync(p) ? readFileSync(p, 'utf8') : '
  * description and is not this program's business.
  */
 function layoutPaths(md: string): string[] {
-  const m = md.match(/## Layout\s*\n+```\n([\s\S]*?)\n```/)
+  // `\r?\n` throughout, not `\n`. This repo stores LF and `core.autocrlf` is on for the
+  // machine it is written on, so every working copy of README.md has CRLF endings — and
+  // the fence test, which required a bare `\n` immediately after the backticks, matched
+  // nothing there. The check then reported "the map is gone" against a README whose map
+  // is intact, on the developer's own box, every time. A check that fails for a reason
+  // that has nothing to do with what it checks is a check people learn to ignore.
+  const m = md.match(/## Layout\s*\r?\n+```\r?\n([\s\S]*?)\r?\n```/)
   if (!m) return []
   return (m[1] as string)
     .split('\n')

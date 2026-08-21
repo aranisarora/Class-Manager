@@ -122,6 +122,24 @@ query and a person's own hand see exactly the same world.
   the product acts unsupervised. The instrument can never know what the product does not
   record.
 
+**One `academy` row per number is not a tenant, and the discipline is the price.**
+`is_front_desk` (0039) marks the arrivals hall of a WhatsApp number — where a person who
+has not said whether they want classes or run them gets a person, a contact, a transcript,
+buttons, a turn row and the one send path, with no parallel machinery at all. The honest
+alternative was a tenant-less `visitor` table, and following it through gives
+`visitor_message`, `visitor_action`, `visitor_turn` and a second path to the wire, which is
+this file's own rule about a thing getting *its own corner and its own renderer* applied to
+the load-bearing half of the system.
+
+What the shortcut costs is an exclusion that has to hold in every enumeration, so every one
+of them says `is_front_desk` out loud rather than relying on a reader to remember:
+`app.inbound_candidates` (matching), `listAcademyIds` (the job beat), `businessesOnThisNumber`
+(what the desk may route to). Two properties keep the fiction safe rather than merely
+convenient: RLS still confines a visitor, to a tenant that owns nothing; and the row's
+`onboarding_state` is never `live`, so Layer 4's pre-launch gate makes it structurally
+incapable of initiating a message. **A front desk that could message strangers is a spam
+engine on a pooled number**, and that gate is the sentence saying it cannot.
+
 **Invariants live in the schema where the schema can say them.** Unique keys, dedupe keys
 (`tally_line.dedupe_key` is the exemplar — billing identity normalised so a retry cannot
 double-charge), foreign keys. A watch has a normalised subject key, so a second watch on
@@ -486,6 +504,18 @@ Each has an incident behind it. They are the shapes to check any new design agai
   the dearer one: `MODEL_SYNTH` at 3.5× the human conversation, and the reflection round's
   two-tool filter at 64% of a run's cache misses for a constraint its own dispatcher was
   already applying. Cheapness here is a property of *sameness*, not of size.
+
+  **The one legitimate second prefix, and the test it had to pass.** The front desk
+  (`lib/frontdesk/`, §10.0) runs on a prefix of its own, and the trap above is the first
+  objection to it. It survives because the trap is about *bespokeness*, not smallness: a
+  block is cheap when it is the same bytes as last time, and this one is byte-identical for
+  every stranger on every number forever — one more cached entry for the whole deployment,
+  never one per tenant. The arithmetic then goes the other way. Reusing the tenant prefix
+  would cost a cached hit on ~50k tokens for a conversation that needs none of it; its own
+  block is ~2% of that, so it is cheaper cached *and* cheaper cold. The test for any future
+  second prefix is those two questions in that order: **is it the same bytes every time, and
+  is the rest of the request small enough that a miss would still be cheaper?** `MODEL_SYNTH`
+  failed the first and the reflection filter failed the second.
 
 ---
 

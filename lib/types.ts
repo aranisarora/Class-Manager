@@ -18,7 +18,13 @@
 // Unions (CONTRACTS §4)
 // -----------------------------------------------------------------------------
 
-export type Role = 'admin' | 'coach' | 'account_holder' | 'player' | 'prospect'
+/**
+ * §6.2 — hats, and they compose. `visitor` is the one that cannot compose with a
+ * business, because it means there is not one yet: 0039 returns it for any contact
+ * sitting in a front desk, and it is what narrows the whole surface to the single
+ * question the front desk exists to ask.
+ */
+export type Role = 'admin' | 'coach' | 'account_holder' | 'player' | 'prospect' | 'visitor'
 export type RateUnit = 'per_session' | 'per_month' | 'per_term' | 'per_package'
 export type SessionStatus = 'scheduled' | 'cancelled' | 'completed'
 export type AttendanceStatus = 'present' | 'late' | 'absent' | 'cancelled_timely'
@@ -70,6 +76,17 @@ export type Academy = {
   settings: Json
   created_on: DateString
   onboarding_state: OnboardingState
+  /**
+   * 0030 — a scratch tenant the emulator may fabricate against in production.
+   * Grants nothing inside the product; read by `lib/ops-guard.ts` and the console.
+   */
+  is_sandbox: boolean
+  /**
+   * 0039 — this row is the arrivals hall of one WhatsApp number, not a business.
+   * Excluded from every tenant enumeration; carries no roster, no class and no
+   * money; cannot initiate a message. See `lib/frontdesk/`.
+   */
+  is_front_desk: boolean
 }
 
 export type Venue = {

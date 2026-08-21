@@ -47,7 +47,10 @@ sequence, so it does not have to be re-derived from the source every time.
 ```
 inbound (Meta webhook · emulator · job)
  └ resolveInbound → resolveIdentity            no identity → not our turn
+    │                └ no business owns this number? → the front desk (0039)
     └ runTurn
+       0 the desk    a `visitor` runs runFrontDeskTurn instead of the tenant loop:
+                     its own stable prefix, five verbs, and it ends by handing over
        1 arrival     consumeAction → executeAction (a tap runs no model)
                      mediaRefusal (the runtime speaks, not the prompt)
        2 context     now → recentToolTurns → variableTail → recentHistory → stablePrefix
@@ -57,6 +60,8 @@ inbound (Meta webhook · emulator · job)
        4 exits       spoke? → recovery round → apology ladder → trailing prose
        5 reflection  the last round: remember / schedule
        6 record      writeTurn — always, whatever happened
+       7 handover     a front-desk turn that chose a business re-enters runTurn there,
+                      with the same text — two turn rows, in two academies
 ```
 
 ---
@@ -65,13 +70,45 @@ inbound (Meta webhook · emulator · job)
 
 | What happens | Where |
 | --- | --- |
-| A shared number routes to a person, and asks rather than guesses | `resolveInbound` · `lib/identity.ts` |
+| A shared number routes to a person by answering only what rows can answer — *does this number already belong to a business?* | `resolveInbound` · `lib/identity.ts` |
+| It belongs to none: the person is a `visitor` at the front desk of the number they messaged, with a person, a contact and a transcript | `frontDeskContact` · `lib/identity.ts` · `app.front_desk_contact` · `0039` |
+| The arrival is recorded **before** anything is asked, so a stranger who writes once and never answers is a row rather than an absence | `openArrival` · `lib/frontdesk/arrival.ts` |
 | One contact resolves to a person and to **all** of their roles at once | `resolveIdentity` · `lib/identity.ts` |
 | A tap claims its button in one conditional UPDATE, then runs the stored payload — no model call, and `origin` records that | `consumeAction` · `lib/actions.ts` · `executeAction` · `lib/agent/loop.ts` |
 | A button whose payload was a reply re-enters as if it had been typed | `executeAction` · `lib/agent/loop.ts` |
 | An image, voice note or file is answered in words by the runtime; anything typed alongside still goes to the model | `mediaRefusal` · `lib/agent/loop.ts` |
 
 Only a turn carrying text or a task reaches stage 2.
+
+## 1a · The front desk — and why it forks here rather than later
+
+A `visitor` never reaches stage 2. `runTurn` branches immediately after arrival into
+`runFrontDeskTurn`, and everything below — the census, `SCHEMA_DOC`, the operations, the
+catalog, the five tool rounds, reflection — is about a business this person does not have.
+
+**The stage is the point.** A fork one stage later would already have paid for the tenant
+context before discovering there is no tenant, which is the commonest wrong answer this
+document exists to prevent: a mechanism that is right in the abstract, landed where it is
+already too late. It also could not have been a filter *inside* the tenant loop, because
+the tool block serialises above the messages — a narrowed list edits the cached prefix and
+re-bills the whole conversation (stage 3, and `verify:static`'s fifth absolute).
+
+| Order | What | Where |
+| --- | --- | --- |
+| 1 | A second stable prefix — byte-identical for every stranger on every number, ~2% the size of the tenant one | `FRONT_DESK_PREFIX` · `lib/frontdesk/context.ts` |
+| 2 | The tail: whether the question has already been on their screen, and whether their own words name a business | `frontDeskTail` · `lib/frontdesk/context.ts` |
+| 3 | Five verbs, and no sixth at any privilege: `reply`, `find_business`, `join_business`, `start_business`, `stop_messaging` | `frontDeskToolDecls` · `lib/frontdesk/tools.ts` |
+| 4 | Up to three rounds over them. A round that calls nothing is the desk speaking, exactly as in stage 3 | `runFrontDeskTurn` · `lib/frontdesk/turn.ts` |
+| 5 | The name matcher is evidence now, not a routing decision — it decides nothing on its own | `matchAcademiesByName` · `lib/identity.ts` |
+| 6 | A destination: a prospect contact in an existing business, or a business that did not exist a second ago | `joinBusiness` · `foundBusiness` · `lib/frontdesk/route.ts` |
+| 7 | The words that brought them here are written into that business as the first row of its thread | `carryOpeningMessage` · `lib/frontdesk/route.ts` |
+
+**A hand-over ends the desk's turn immediately** — before it can add a parting sentence,
+because the business is about to answer the same message from inside itself, and two
+answers to one question is what that shape produces if nothing stops it.
+
+The turn row is written by `writeTurn` at stage 6 like every other, and only then does the
+hand-over run (stage 7). The desk owns no recorder of its own.
 
 ## 2 · Context
 
