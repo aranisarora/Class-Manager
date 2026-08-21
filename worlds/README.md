@@ -156,6 +156,7 @@ numbers cannot be a free choice.
 | `new-swim-school.json` | Blank but for its owner: Kavitha Reddy, 34, ex-state swimmer, has just rented two lanes and has twenty-two children waiting. Seven days of life events set up a timetable, three families, a coach and a walk-in — the business is built during the week rather than before it. |
 | `new-cricket-academy.json` | Blank but for its owner: Imran Qureshi, 48, twenty-one years of a paper register, did not ask for this and checks every number twice. |
 | `new-dance-school.json` | Blank but for its owner: Ananya Ghosh, 29, running thirty-one families out of one WhatsApp group and a sheet she has not opened since March. |
+| `sketch-dance.json` | The same idea with the facts taken OUT. Ananya Ghosh, 50, told this number would make managing her classes easier — and nothing about what her classes are. She invents her own business as she goes and stays consistent with it. See the note below. |
 
 ## A world with numbers in it cannot be run twice at once
 
@@ -168,3 +169,30 @@ It also means **one of these files cannot be driven twice simultaneously**: `con
 academy, not globally, so the same number under two academies on one shared sender resolves to *neither* and the
 message is silently never delivered. Two runs of one `new-*` world are two runs whose customers cannot be reached.
 Change the block, or drive a different world.
+
+## A world may state the SHAPE and let the person invent the values
+
+`sketch-dance.json` is the argument. Every other world here writes a `life` event that hands the
+owner their own timetable — days, times, prices — and the seat then reads it out. Measured on
+`2026-08-21-05-08-sim-5bfa`, the owner's first message was that paragraph compressed: every age
+band, every day, every price, nothing added and nothing forgotten. That is a **dictation**, and
+onboarding is the one conversation where the fumbling is the thing being tested.
+
+Taking the facts out costs less than it looks like it should, because of an asymmetry. Facts the
+owner *creates* — class names, days, prices — become rows the moment the product writes them, and
+from then on the rows are the ground truth a judge reads against. Facts that must *pre-exist* —
+arrears, who has been attending, what was agreed last month — cannot be improvised without
+contradicting rows that already exist. **A blank world is almost entirely the first kind**, which
+is why this works here and would be dangerous against `settled-tennis`: a coach who invents his
+own batch days is the harness failure that cost twenty-four corrections on 20 Aug.
+
+What it bought, in four turns and ₹1.04: a realistic opener (*"hi need to set up my classes on
+here"*) with the details arriving only after the product asked for them, and **F-CC** — a
+commercial term the product invented, which three full scripted weeks and 170 turns had not
+surfaced. A persona executing a written errand does not audit what the product volunteers. A
+persona who owns the business does.
+
+**It is not free.** Two runs of a sketch world build two different academies, so the arms of an
+`npm run ab` would differ by the business itself and the comparison would be void. Hold the facts
+still for an A/B; let them go when the question is what a week is actually like.
+

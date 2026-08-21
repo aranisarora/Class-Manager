@@ -1,6 +1,6 @@
 # What is open
 
-15 findings. This file is the source of truth for what is broken — hand-written, and short on
+16 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -32,6 +32,7 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-BZ** | A statement cannot say which turn sent it, so a drain cannot be recorded as the several turns it is | [detail](#f-bz--a-statement-cannot-say-which-turn-sent-it-so-a-drain-cannot-be-recorded-as-the-several-turns-it-is) |
 | **F-CA** | A staged plan is described in the past tense, so the owner is told a change was made while the buttons still ask whether to make it | [detail](#f-ca--a-staged-plan-is-described-in-the-past-tense-so-the-owner-is-told-a-change-was-made-while-the-buttons-still-ask-whether-to-make-it) |
 | **F-CB** | R8 puts a sign on the go-live door and nothing puts a handle on it, so three businesses ran a week with every proactive path suppressed | [detail](#f-cb--r8-puts-a-sign-on-the-go-live-door-and-nothing-puts-a-handle-on-it-so-three-businesses-ran-a-week-with-every-proactive-path-suppressed) |
+| **F-CC** | A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule | [detail](#f-cc--a-commercial-term-nobody-agreed-to--first-class-is-free--volunteered-in-a-parenthetical-and-stated-as-the-businesss-own-rule) |
 
 ---
 
@@ -578,4 +579,54 @@ families on the books, M sessions scheduled ahead, zero sends, K days in `setup`
 plan the owner can accept or decline*. `needsPreview` already classifies "touches the business's
 own settings or controls" as preview-worthy, so the affordance exists the moment the write is ever
 proposed. Nothing proposes it.
+
+### F-CC · A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule
+
+`2026-08-21-05-59-sim-dcvo`, day 1. Ananya Ghosh has just given her three classes and their
+monthly fees, and nothing else. The confirmation comes back correct — all three on the board,
+right days, right prices — and then, in item 2 of a two-item "worth deciding" list:
+
+> *Enrolments* — the roster is empty until you add families. When a new student joins, say the
+> name and which class, and I'll set them up **(first class is free)**.
+
+She never said it. She had said 2000, 2800 and 1500 a month and had not mentioned trials at all.
+
+**There is no such behaviour to describe.** `enrollment.is_trial` is `boolean not null default
+false` (`0002_schema.sql:206`), and nothing anywhere gives a first class away. So this is not an
+undisclosed default being surfaced — which would be its own finding and a milder one. It is a
+**pricing term invented and asserted as operational fact**, about what the product will do to
+this owner's customers.
+
+Three things make it worse than a stray sentence:
+
+- **It is about money, and it is the owner's money.** A term that gives away the first class of a
+  ₹2000-a-month batch is a discount policy. Had a family been added that week, the rule the bot
+  had stated is the rule the bot had told the owner it would apply.
+- **It is in a parenthetical, at the end of the second item of a list, in the tail of a
+  confirmation.** That is the least-read position in the message. The owner this product is
+  built for reads the first line and acts on it — every persona brief in this repo says so — and
+  this is as far from the first line as a sentence can get.
+- **Nothing in the turn was asked to justify it.** The rest of the message is read back off rows
+  that had just been written. This clause is sourced from nothing, and reads identically to the
+  clauses that are.
+
+**Found by a persona with no script, in four turns and ₹1.04.** Three full scripted weeks — 170
+turns — did not surface it, and the reason is structural rather than luck: a persona executing a
+written `life` event pursues its own errand and does not audit what the product volunteers. A
+persona improvising her own business reads the reply as the owner of it, and the next thing she
+sent was *"wait who said first class is free? i didnt say that"*. This is an argument about the
+instrument as much as about the product; see `worlds/sketch-dance.json`.
+
+**The recovery was exemplary and is not what this finding is about.** Asked, the product
+answered: *"You're right — that was me, not you. I stated it as if it were your rule, and it
+wasn't. Nothing was charged or promised off it (there are no enrolments yet), so no harm done
+beyond me telling you something you never decided."* It scoped the blast radius correctly, did
+not hedge, and asked for the real policy. The defect is the assertion, not the handling of it.
+
+**The structural shape.** `business_rule` is where a stated rule lives, and F-BW is already the
+finding that it had no reader. A rule the business has not stated has no row, and the tail of a
+confirmation is exactly where the model is composing "what happens next" out of its own sense of
+how a coaching business works. Whatever holds that tail has to be able to tell a rule read from a
+row from a rule the model finds plausible — and to say which it is. Volunteering commercial terms
+is not a thing to instruct against; it is a thing to source.
 
