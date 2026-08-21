@@ -48,6 +48,7 @@ checks were negative and a model that does nothing satisfies them.
 | whether the model handles a case that has broken before | `npm run probe -- --suite …` |
 | whether the context makes the answer derivable at all | `npm run ask` |
 | whether the model can write the SQL | `npm run probe:sql` |
+| whether what the product believes matches what the world did | `npm run truth` |
 
 Answering *"did my change help?"* is not a seventh instrument. It is two runs of one of the
 above, held still by `--seed` and labelled by `--arm` — see below.
@@ -288,10 +289,47 @@ Saturday is a real fixture. Two coaches paid in two different units (₹600 per 
 per month) deliberately, so *"what am I paying everyone"* cannot be answered by summing one
 column.
 
+**And the week now happens in a physical world.** `worlds/` says what the business IS;
+[`events/`](../events/README.md) says what the week DOES to it — and until it existed, nothing
+did. Every week ran in a business where it never rained, nobody was ill, nobody went away and
+everybody enrolled turned up.
+
+The sharpest version of that hole was the register. `post_class_register` fires at
+`session.ends_at` and asks the coach who was there, and **the coach seat had no way of
+knowing**, so it invented one. `_personas.ts` carries the answer as prose in one persona's
+`life`, hand-matched against another persona's `life` on another day, for four people, in one
+world; every spec world has no `life` at all, deliberately. So in every world but the canonical
+one the registers were the seat model's imagination — and §6.4 bills off attendance, which
+makes it a week whose money was invented too.
+
+```bash
+npm run sim -- --world settled-tennis --events tennis-hard-week
+npm run sim -- --world multi-coach --events monsoon      # one scenario, any business
+npm run sim -- --chaos 0.15                              # a messy week, no file at all
+npm run truth                                            # the world, beside what the product believes
+```
+
+Six verbs — `absent`, `present`, `washout`, `away`, `lag`, `note` — and a seeded `chaos` block
+that rolls the first four for you. A verb exists only when the harness has to do something the
+seat cannot do for itself; everything else is a `note`. **Nothing writes to the database**: the
+product has to learn a fact from a person who types it, or there is nothing to measure.
+`events/README.md` is the format and it is short.
+
+Two of them are properties of the phone rather than of the business, and they are the two no
+seat could produce on its own. `away` **skips** the turn and records it as a skip — a customer
+on holiday and a customer who read your message and put the phone down are different findings,
+and dressing the first as `quiet` would put a decision nobody made into the record as though a
+model had made it. `lag` holds back anything newer than *N* hours from that one look and leaves
+it at the top of their next one, which is a **late** reply rather than one that never comes.
+
 Windows drive the week and the order is load-bearing: the clock is walked **once**, then every
 active seat speaks concurrently, then the queue is drained. A clock that moves while a turn is
 in flight is a harness artifact, and the turn it lands in reads as the product answering a
-question about a time that had not happened when it was asked.
+question about a time that had not happened when it was asked. The world's own facts are fixed
+at the **top of the day** and revealed **per window**: who was on court at seven has to be the
+same fact when their parent's evening window comes round, but a coach is told about a class
+after it has ended and not before — and a class that finishes after the last window of its day
+reaches them the next morning, which is when they would really have looked.
 
 **The queue is a turn.** Every clock walk and every drain is recorded through `queueTurn`, with
 its own tokens, seconds, SQL and rupees. The old version folded job names into a list and left
@@ -308,6 +346,8 @@ npm run sim -- --days 3 --windows morning      # SIMULATED length
 npm run sim -- --days 7 --budget-min 20        # REAL stop, at a window boundary
 npm run sim -- --seats 2                       # only the first two people take part
 npm run sim -- --seat-model claude:haiku       # cheaper people; sonnet is the default
+npm run sim -- --events monsoon                # what HAPPENS to the business this week
+npm run sim -- --chaos absent=0.2,lag=0.1      # or roll it, off --seed
 npm run sim -- --drop                          # delete the academy at teardown; the default is to KEEP it
 npx tsx scripts/sim.ts gc --hours 6            # reap this driver's stale worlds
 ```

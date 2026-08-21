@@ -285,6 +285,23 @@ export type WorldSpec = {
   clients?: number | ClientSpec[]
   prospects?: number | ProspectSpec[]
   classes?: ClassSpec[]
+  /**
+   * What happens to this business during the week — absences, washouts, people
+   * away from their phone. `scripts/_events.ts` owns the shape and every rule
+   * about it; this file carries it through untouched.
+   *
+   * It lives here, optionally, for a world whose weather is part of its identity:
+   * a monsoon academy, a school-term one, a business whose whole point is that
+   * half the roster is away in December. `--events` is the other half of the same
+   * idea — a scenario you can point at ANY world — and the two compose, the
+   * world's own being the base.
+   *
+   * Deliberately NOT validated here. `validateEventSpec` is one function and one
+   * set of rules, and a second copy in this file is how the flag and the block
+   * come to disagree about what a `lag` needs. `sim.ts` validates the composed
+   * result before it builds anything.
+   */
+  week?: unknown
 }
 
 /**
@@ -319,6 +336,8 @@ export type NormalSpec = {
     unit?: RateUnit
     coaches: string[]
   }[]
+  /** Carried through untouched — `_events.ts` owns every rule about it. */
+  week?: unknown
 }
 
 /**
@@ -388,7 +407,7 @@ const MAX_SEATS = 100
  * VALIDATION
  * ========================================================================== */
 
-const TOP_KEYS = ['name', 'category', 'timezone', 'admin', 'coaches', 'clients', 'prospects', 'classes']
+const TOP_KEYS = ['name', 'category', 'timezone', 'admin', 'coaches', 'clients', 'prospects', 'classes', 'week']
 const ADMIN_KEYS = ['name', 'coaches', 'seat']
 const COACH_KEYS = ['name', 'pay', 'unit', 'seat']
 const CLIENT_KEYS = ['name', 'children', 'class', 'owes', 'seat']
@@ -951,7 +970,17 @@ export function validateSpec(s: unknown, where = 'this spec'): NormalSpec {
   })
 
   p.throwIfAny(where)
-  return { name, category, timezone, admin, coaches, clients, prospects, classes }
+  return {
+    name,
+    category,
+    timezone,
+    admin,
+    coaches,
+    clients,
+    prospects,
+    classes,
+    ...(s.week !== undefined ? { week: s.week } : {}),
+  }
 }
 
 /**

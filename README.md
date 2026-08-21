@@ -207,6 +207,7 @@ app/api/                  the Meta webhook, the emulator API, the ops gate, the 
 components/emulator/      the phone, rendered
 supabase/migrations/      the schema — RLS on every table
 worlds/                   hand-written academies to drive — `worlds/README.md` is the format
+events/                   what happens to one during a week — `events/README.md` is the format
 scripts/                  the instruments and the checks — `scripts/README.md` indexes them
 scripts/drive.ts          the harness — talk to it, then read the tables back
 ```

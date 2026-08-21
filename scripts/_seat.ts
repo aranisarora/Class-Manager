@@ -475,9 +475,33 @@ async function writeCursor(s: Session, key: string, at: string): Promise<void> {
  * the seat would hand the reader a fact the real recipient does not have. Failed
  * rows go for the same reason.
  */
-export async function readPhone(s: Session, key: string, advance: boolean): Promise<Seen[]> {
+export async function readPhone(
+  s: Session,
+  key: string,
+  advance: boolean,
+  /**
+   * How many hours behind this phone is, this once.
+   *
+   * A person on a train, on bad signal, or with their phone in a bag does not
+   * MISS a message — they get it late. So a lagged look holds back everything
+   * newer than `app.now() - hours` and leaves the cursor short of it, which puts
+   * those messages at the top of their next look instead. That is the difference
+   * between a late reply and a reply that never comes, and the two are different
+   * findings: one is a product whose timing assumptions are wrong, the other is a
+   * customer who left.
+   *
+   * Deliberately a bound on the READ and not a delay on the send. Holding the
+   * message back in the database would change what the product did — the
+   * dunning ladder, the register expiry and every cap are computed off
+   * `message`, so a harness that moved rows would be measuring a different
+   * product. Nothing here writes anything; the row is sent when the product sent
+   * it, and this person simply had not looked yet.
+   */
+  lagHours = 0,
+): Promise<Seen[]> {
   const contactId = s.contacts[key]!
   const since = await readCursor(s, key)
+  const behind = lagHours > 0 ? `and m.created_at <= app.now() - interval '${Number(lagHours)} hours'` : ''
   /**
    * `created_at::text`, not `created_at`.
    *
@@ -498,6 +522,7 @@ export async function readPhone(s: Session, key: string, advance: boolean): Prom
         and m.created_at > '${since}'::timestamptz
         and m.suppressed_reason is null
         and m.status <> 'failed'
+        ${behind}
       order by m.created_at asc`,
   )
   const seen: Seen[] = rows.map((m: any) => {

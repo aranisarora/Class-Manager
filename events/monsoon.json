@@ -1,0 +1,10 @@
+{
+  "about": "Two days of rain in the middle of the week. Nobody tells the bot anything.",
+  "events": [
+    {
+      "what": "washout",
+      "day": [3, 4],
+      "why": "heavy rain since before dawn — the courts are under water and the gate is locked"
+    }
+  ]
+}

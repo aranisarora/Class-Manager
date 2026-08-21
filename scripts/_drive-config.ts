@@ -183,6 +183,28 @@ export type DriveConfig = {
    * confusion, and confusion is most of what a week is for.
    */
   seatModel: string
+  /**
+   * What happens to the business during the week — a name, a path or inline JSON
+   * that `scripts/_events.ts` resolves. Empty means nothing happens, which is
+   * what every run before this flag existed was measuring.
+   *
+   * Separate from `world` on purpose, and the separation is the whole point of
+   * the flag: `worlds/` says what the business IS and `events/` says what the
+   * week DOES to it, so one scenario runs against six businesses and one business
+   * runs through six scenarios without either file being edited. A `week` block
+   * inside a world file says the same thing for a world whose weather is part of
+   * its identity, and the two compose.
+   */
+  events: string
+  /**
+   * Rates for the things nobody wrote down — `absent`, `quiet`, `lag`, `washout`.
+   *
+   * Rolled off `seed`, so a chaotic week is reproducible and an A/B's two arms
+   * get the SAME weather. Every roll is materialised into the record exactly as
+   * though somebody had typed it: a harness whose randomness is invisible in its
+   * own record produces runs nobody can explain afterwards.
+   */
+  chaos: Record<string, number>
   /** Which side of an A/B this is. Set by the runner, carried into the record. */
   arm?: string
   /** The five-tier ramp overlay from `_ramp.ts` — `SIM_RAMP` made visible. */
@@ -361,6 +383,8 @@ const FLAGS = {
   concurrency: 'value',
   'budget-min': 'value',
   'budget-inr': 'value',
+  events: 'value',
+  chaos: 'value',
   seed: 'value',
   model: 'value',
   arm: 'value',
@@ -386,6 +410,65 @@ function num(value: unknown, at: string, o: { int?: boolean; min: number }): num
   if (o.int && !Number.isInteger(n)) fail(`${at} must be a whole number, not ${n}`)
   if (n < o.min) fail(`${at} must be at least ${o.min}, not ${n}`)
   return n
+}
+
+/** The four things `chaos` can turn up. Named here so a typo is refused by name. */
+const CHAOS_RATES = ['absent', 'quiet', 'lag', 'washout'] as const
+
+/**
+ * `--chaos 0.15` or `--chaos absent=0.2,lag=0.1` — one dial, or four.
+ *
+ * The bare number is the fast path and the reason this flag is worth having: a
+ * messy week without authoring one, in eleven characters. The `k=v` form is for
+ * when only one thing should be messy, which is most of the time you are chasing
+ * something specific.
+ *
+ * A rate outside 0..1 and an unknown name are both refused rather than clamped or
+ * dropped. This is `--budgetinr 250` again: a knob nothing reads is a knob that
+ * did nothing, and the run then looks exactly like the run it was meant to be.
+ */
+function rates(value: unknown, at: string): Record<string, number> {
+  const raw = value
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const out: Record<string, number> = {}
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (!CHAOS_RATES.includes(k as (typeof CHAOS_RATES)[number])) {
+        fail(`${at}: unknown chaos rate "${k}"`, `rates: ${CHAOS_RATES.join(', ')}`)
+      }
+      out[k] = num(v, `${at}.${k}`, { min: 0 })
+      if (out[k]! > 1) fail(`${at}.${k} is a probability and must be between 0 and 1, not ${out[k]}`)
+    }
+    return out
+  }
+
+  const text = str(raw, at)
+  if (!text.includes('=')) {
+    // A value with a separator in it but no `=` is somebody reaching for the
+    // named form and missing, not somebody typing one dial. Saying "is not a
+    // number" there is true and useless.
+    if (/[,:]/.test(text)) {
+      fail(
+        `${at}: "${text}" is neither one rate nor name=rate pairs`,
+        `--chaos 0.15 turns all four up; --chaos absent=0.2,lag=0.1 names them.`,
+      )
+    }
+    const n = num(text, at, { min: 0 })
+    if (n > 1) fail(`${at} is a probability and must be between 0 and 1, not ${n}`)
+    return Object.fromEntries(CHAOS_RATES.map((k) => [k, n]))
+  }
+
+  const out: Record<string, number> = {}
+  for (const part of text.split(',')) {
+    const [k, v] = part.split('=').map((s) => s.trim())
+    if (!k || v === undefined) fail(`${at}: "${part.trim()}" is not name=rate`)
+    if (!CHAOS_RATES.includes(k as (typeof CHAOS_RATES)[number])) {
+      fail(`${at}: unknown chaos rate "${k}"`, `rates: ${CHAOS_RATES.join(', ')}`)
+    }
+    const n = num(v, `${at}.${k}`, { min: 0 })
+    if (n > 1) fail(`${at}.${k} is a probability and must be between 0 and 1, not ${n}`)
+    out[k!] = n
+  }
+  return out
 }
 
 function bool(value: unknown, at: string): boolean {
@@ -500,6 +583,15 @@ function toLayer(raw: Record<string, unknown>, where: (key: string) => string): 
         break
       case 'world':
         L.world = worldRef(value, at)
+        break
+      case 'events':
+        // Not resolved here. A reference is a name, a path or inline JSON and
+        // only `_events.ts` knows which; resolving it in two places is how the
+        // two come to disagree about what `monsoon` means.
+        L.events = str(value, at)
+        break
+      case 'chaos':
+        L.chaos = rates(value, at)
         break
       case 'concurrency':
         L.concurrency = num(value, at, { int: true, min: 1 })
@@ -710,6 +802,8 @@ export function resolveConfig(argv: string[]): DriveConfig {
      * them" — see `DriveConfig.concurrency`.
      */
     concurrency: m.concurrency ?? personas.length,
+    events: m.events ?? '',
+    chaos: m.chaos ?? {},
     seed: m.seed ?? stampSeed(),
     model: m.model ?? mainModel(),
     seatModel: m.seatModel ?? DEFAULT_SEAT_MODEL,
@@ -889,6 +983,17 @@ export function describeConfig(cfg: DriveConfig): string {
   // Named only when it is not the default, because a line that says `canonical`
   // on every run is a line nobody reads on the one run it matters.
   parts.push(`world ${cfg.world}`)
+  /**
+   * Printed only when there is something to print, and always when there is.
+   *
+   * A week in which it rained and a week in which it did not are different runs
+   * and cost different money, and the top line is where somebody comparing two
+   * records looks first. Silence here on a run that had weather is how two
+   * incomparable records come to look like a repeat.
+   */
+  if (cfg.events) parts.push(`events ${cfg.events}`)
+  const chaos = Object.entries(cfg.chaos).filter(([, v]) => v > 0)
+  if (chaos.length) parts.push(`chaos ${chaos.map(([k, v]) => `${k}=${v}`).join(',')}`)
   if (cfg.arm) parts.push(`arm ${cfg.arm}`)
   const limits: string[] = []
   if (cfg.budgetMin !== undefined) limits.push(`${cfg.budgetMin}min`)

@@ -119,6 +119,14 @@ export type Ask = {
   window: Window
   /** What happened to this person today, resolved by the driver's calendar. */
   today?: string
+  /**
+   * How many hours behind this phone is for this look — `_events.ts`'s `lag`.
+   *
+   * On the ask rather than on the seat, because it is a property of this window
+   * and not of this person: somebody with no signal at the courts on Friday
+   * evening has an ordinary phone on Saturday morning.
+   */
+  lag?: number
 }
 
 /**
@@ -299,7 +307,17 @@ async function move(ask: Ask): Promise<Told> {
 
   // What the last reply left in their hand, oldest first, and then everything
   // that has arrived on the phone since.
-  const seen = [...pending, ...(await readPhone(s, KEY, true))]
+  /**
+   * The lag applies to what ARRIVED since, never to `pending`.
+   *
+   * `pending` is what the product said back to this person's own last message,
+   * already handed over by `drive` — its cursor has moved past those rows, so a
+   * lag that dropped them would lose them for good rather than delay them. It is
+   * also the truer model: somebody on bad signal still sees the answer they were
+   * waiting for, and it is the unasked-for traffic — the reminder, the digest,
+   * the dunning nudge — that lands late.
+   */
+  const seen = [...pending, ...(await readPhone(s, KEY, true, ask.lag ?? 0))]
   pending = []
 
   // The one rendering, kept: the seat decides from these bytes and the record
@@ -329,6 +347,12 @@ async function move(ask: Ask): Promise<Told> {
     persona: KEY,
     cmd: 'agent',
     window: ask.window,
+    // Why the phone looked emptier than the database. Without it, a lagged look
+    // is indistinguishable in the audit from a window in which the product sent
+    // nothing — and "she was told and did not answer" would be read off a turn
+    // where she had not been told yet.
+    ...(ask.lag ? { lagHours: ask.lag } : {}),
+    ...(ask.today ? { today: ask.today } : {}),
     shown: seen,
     move: turn.move,
     ...(turn.error ? { error: turn.error } : {}),
