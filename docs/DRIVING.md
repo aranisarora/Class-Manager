@@ -274,9 +274,12 @@ else: every customer the owner created was a person nobody was playing, so the p
 twelve phones and the record showed twelve outbound messages and no replies — which cannot be
 told, in the record or in any judgement made off it, from a product everybody ignored.
 
-The three `new-*` worlds in `worlds/` are built for exactly this: an owner, a phone, nothing
-else, and seven days of things happening to them that put a business on the books. What the
-week measures is a product meeting people who have never seen it — including the owner.
+The three `new-*` worlds in `worlds/` are built for exactly this: an owner, a phone, and nothing
+else — **including no facts**. They do not say what the classes are, what they cost, who is in
+them, or what goes wrong on Thursday. The owner knows their own business and invents it as they
+go, and it becomes real the moment the product writes it down. `worlds/README.md` has the
+argument and the one thing it costs. What the week measures is a product meeting people who have
+never seen it — including the owner.
 
 `settled-tennis.json` is the academy this repo has always driven — **the owner also coaches**,
 an `academy_admin` row and a `coach` row over one `person`, which is the business this product

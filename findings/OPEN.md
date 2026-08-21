@@ -615,7 +615,8 @@ turns — did not surface it, and the reason is structural rather than luck: a p
 written `life` event pursues its own errand and does not audit what the product volunteers. A
 persona improvising her own business reads the reply as the owner of it, and the next thing she
 sent was *"wait who said first class is free? i didnt say that"*. This is an argument about the
-instrument as much as about the product; see `worlds/sketch-dance.json`.
+instrument as much as about the product, and it is why the three `new-*` worlds are now written
+without facts at all — see `worlds/README.md`.
 
 **The recovery was exemplary and is not what this finding is about.** Asked, the product
 answered: *"You're right — that was me, not you. I stated it as if it were your rule, and it

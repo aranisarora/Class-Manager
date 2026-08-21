@@ -153,26 +153,29 @@ numbers cannot be a free choice.
 | `settled-tennis.json` | Ace Tennis Academy: the owner also coaches, two coaches, four classes, four families, five children, one account in arrears. |
 | `multi-coach.json` | Four coaches, six clients, the admin also coaching, an adult learner, and a coach nobody has given a class to. |
 | `solo-coach-group.json` | Kamath Badminton: one man running the whole thing. He coaches all four group classes himself, twelve families, fourteen teenagers between 13 and 16, two accounts in arrears and three prospects. Every seat carries a `voice`, and they are written for the input this product will actually meet — a coach who is not a technical person, parents typing between meetings, and requests for things nobody built: message my son directly, send it to all the parents, email me a receipt, make a group. |
-| `new-swim-school.json` | Blank but for its owner: Kavitha Reddy, 34, ex-state swimmer, has just rented two lanes and has twenty-two children waiting. Seven days of life events set up a timetable, three families, a coach and a walk-in — the business is built during the week rather than before it. |
-| `new-cricket-academy.json` | Blank but for its owner: Imran Qureshi, 48, twenty-one years of a paper register, did not ask for this and checks every number twice. |
-| `new-dance-school.json` | Blank but for its owner: Ananya Ghosh, 29, running thirty-one families out of one WhatsApp group and a sheet she has not opened since March. |
-| `sketch-dance.json` | The same idea with the facts taken OUT. Ananya Ghosh, 50, told this number would make managing her classes easier — and nothing about what her classes are. She invents her own business as she goes and stays consistent with it. See the note below. |
+| `new-swim-school.json` | Blank but for its owner, and the owner has no script. Kavitha Reddy, 34, ex-competitive swimmer who has just started her own school and has never used software for any of it. What her classes are, what they cost, who is in them and what goes wrong this week are all hers to invent. |
+| `new-cricket-academy.json` | Blank but for its owner. Imran Qureshi, 48, twenty years of a paper register, did not ask for this and checks every number twice. |
+| `new-dance-school.json` | Blank but for its owner. Ananya Ghosh, 50, running her classes out of her head, a notebook and one enormous WhatsApp group. |
 
-## A world with numbers in it cannot be run twice at once
+## Invented numbers still cannot collide
 
-The three `new-*` worlds above hand the owner real phone numbers in their `life` events — a mother's number
-written on the back of a receipt is how a coaching business actually gains a customer, and leaving the model to
-invent one gets `+91 98765 43210` in two academies at once. Every number in a shipped world is therefore in a
-block of its own, which is what makes the three safe to drive in parallel.
+A person who improvises their business improvises phone numbers too, and models reach for
+`9876543210` with striking consistency. That matters here: `inboundFromContact` resolves a
+contact and then hands `(fromPhone, senderPhone)` to the ordinary ingest path, so a number held by
+two academies on one shared sender resolves to **neither** — the message is never delivered and
+nothing raises an error.
 
-It also means **one of these files cannot be driven twice simultaneously**: `contact.phone_e164` is unique per
-academy, not globally, so the same number under two academies on one shared sender resolves to *neither* and the
-message is silently never delivered. Two runs of one `new-*` world are two runs whose customers cannot be reached.
-Change the block, or drive a different world.
+So each `new-*` world tells its owner which block their people's numbers fall in — `+91 88010 1…`,
+`+91 88020 2…`, `+91 88030 3…` — and that is the only fact about the outside world any of them is
+given. It is a fact about *phones*, which this harness has always owned ("Phone numbers are not
+yours to choose", below), and not a fact about the business, which is the whole point of a sketch.
+
+It still means **one of these files cannot be driven twice simultaneously**: two runs of the same
+world draw from one block. Change the block, or drive a different world.
 
 ## A world may state the SHAPE and let the person invent the values
 
-`sketch-dance.json` is the argument. Every other world here writes a `life` event that hands the
+The three `new-*` worlds are written this way, and the argument for it is measured. Every other world here writes a `life` event that hands the
 owner their own timetable — days, times, prices — and the seat then reads it out. Measured on
 `2026-08-21-05-08-sim-5bfa`, the owner's first message was that paragraph compressed: every age
 band, every day, every price, nothing added and nothing forgotten. That is a **dictation**, and
@@ -190,7 +193,8 @@ What it bought, in four turns and ₹1.04: a realistic opener (*"hi need to set 
 here"*) with the details arriving only after the product asked for them, and **F-CC** — a
 commercial term the product invented, which three full scripted weeks and 170 turns had not
 surfaced. A persona executing a written errand does not audit what the product volunteers. A
-persona who owns the business does.
+persona who owns the business does. (That run, `2026-08-21-05-59-sim-dcvo`, drove an earlier
+`sketch-dance.json`; the three worlds above are now written the same way and it is gone.)
 
 **It is not free.** Two runs of a sketch world build two different academies, so the arms of an
 `npm run ab` would differ by the business itself and the comparison would be void. Hold the facts
