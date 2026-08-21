@@ -27,8 +27,10 @@ import { hotSet } from './memory'
 import { audienceFor, executePlan, type PlanStep } from './plan'
 import { jsonLit, lit, uid, type OperationName } from './operations'
 import {
+  committedResult,
   pendingConfirmation,
   runTool,
+  seedFromCommitted,
   toolDecls,
   turnState,
   type ToolCtx,
@@ -152,6 +154,14 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     return { turnId, sent: [], toolCalls: 0, error: 'unresolved_contact' }
   }
   const session = sessionOf(identity, turnId)
+  /**
+   * What a tap already ran, when the model still owes the person an account of it.
+   *
+   * Declared out here rather than in the `try` because the catch needs it: a tap
+   * commits before the model is called, so the apology down there is the one place
+   * in this function that can be wrong about whether anything happened.
+   */
+  let tap: TapNarration | undefined
 
   try {
     let text = input.text
@@ -172,23 +182,45 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         text = consumed.payload.text
         goToModel = true
       } else {
-        // A tap makes no model call, so without this the turn row for the most
-        // consequential thing a person can do — committing a plan — was blank.
+        // A tap makes no model call *before the write*, so without this the turn row
+        // for the most consequential thing a person can do — committing a plan —
+        // was blank.
         const tappedAt = Date.now()
-        // A tap is not a turn: no model is in the room and the payload executes
-        // as stored, which is exactly the distinction `message.origin` exists to
-        // record. Same person, same turn id, different act.
+        /**
+         * The WRITE is a tap; the MESSAGE that follows is a turn.
+         *
+         * Two sessions, deliberately, and `message.origin` is why (0032): the rows
+         * this plan changes were decided by a payload minted earlier and are
+         * attributed to the tap, while anything the model composes below is
+         * attributed to the turn it composed it in. "Did a person ask for this" stays
+         * a query rather than a guess, and it keeps its answer now that both acts
+         * happen inside one turn id.
+         */
         const tapSession = sessionOf(identity, turnId, 'tap', consumed.payload.kind)
-        const res = await executeAction(tapSession, identity, consumed.payload, turnId)
-        outcomes.push(...res.outcomes)
-        replyText = res.summary
+        const ran = await executeAction(tapSession, identity, consumed.payload, turnId)
+        outcomes.push(...ran.outcomes)
+        replyText = ran.said
         trace.push({
           round: 0,
           name: `tap:${consumed.payload.kind}`,
           ms: Date.now() - tappedAt,
           args: evidence(consumed.payload, 4000),
-          result: evidence({ summary: res.summary, sent: res.outcomes.map((o) => o.status) }, 2000),
+          // The whole account, not a summary of it. `recentActions` reads `ok` and
+          // `changes` off this entry to tell the NEXT turn whether the tap wrote
+          // anything — it used to find neither and render every tap as "ran".
+          result: evidence(
+            {
+              ...ran.account,
+              sent: ran.outcomes.map((o) => o.status),
+              narrated: Boolean(ran.narrate),
+            },
+            4000,
+          ),
         })
+        if (ran.narrate) {
+          tap = ran.narrate
+          goToModel = true
+        }
       }
     }
 
@@ -235,15 +267,25 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
      * is rarer now that it does not. It is still a person who tapped send and
      * heard nothing back.
      */
-    if (goToModel && !text && !input.task && !input.media?.length) {
+    if (goToModel && !text && !input.task && !input.media?.length && !tap) {
       const said = "That came through as something I can't read. Could you type it instead?"
       outcomes.push(await composeAndSend(session, { toContactId: identity.contact.id, body: said }))
       replyText = said
     }
 
-    if (goToModel && (text || input.task)) {
-      const m = await modelTurn(session, identity, turnId, { ...input, text })
-      outcomes.push(...m.outcomes)
+    if (goToModel && (text || input.task || tap)) {
+      /**
+       * `outcomes` goes IN rather than coming back out, and on the tap path that is
+       * load-bearing rather than tidy.
+       *
+       * The turn's outbox has to be one array. `spoke()` asks whether this person has
+       * heard anything — with two arrays it would answer "no" about the message the
+       * plan put on their phone a moment ago, and the recovery ladder would compose a
+       * second one on top of it. `messagesThisTurn` would undercount the same way. And
+       * on a throw inside `modelTurn` the tap's own sends would be lost, so the catch
+       * below would apologise for a turn that had already messaged three people.
+       */
+      const m = await modelTurn(session, identity, turnId, { ...input, text }, outcomes, tap)
       toolCalls = m.toolCalls
       modelName = m.model
       promptTokens = m.promptTokens
@@ -299,9 +341,22 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         outcomes.push(
           await composeAndSend(session, {
             toContactId: identity.contact.id,
-            body:
-              "Something broke on my side just then — it isn't you, and nothing was changed. "
-              + "I've flagged it. Try me again in a moment.",
+            /**
+             * *"Nothing was changed"* is true of every path into this catch except
+             * one, and that one is now reachable.
+             *
+             * A tap commits its plan BEFORE the model is called. If the call then
+             * throws — the provider is down, the doctrine file is missing, the clock
+             * read fails — the rows are already written and this sentence would deny
+             * them, which is exactly F-CD's defect arriving through the error path
+             * instead of the happy one. The tap's own receipt is what is true here,
+             * and it is the reason `TapNarration` carries one.
+             */
+            body: tap
+              ? `${tap.backstop} I couldn't get any further than that just now — it isn't you. `
+                + 'Ask me and I\'ll tell you exactly what changed.'
+              : "Something broke on my side just then — it isn't you, and nothing was changed. "
+                + "I've flagged it. Try me again in a moment.",
           }),
         )
       } catch {
@@ -386,17 +441,23 @@ const TAP_REFUSAL: Record<'expired' | 'already_used' | 'wrong_contact' | 'missin
 }
 
 /**
- * What a person is told when their tap could not be carried out.
+ * The last thing a person is told when their tap could not be carried out — and
+ * only if nothing else could tell them.
  *
- * A tap is the one path with no model in it, so whatever the runtime produces
- * here goes to a phone exactly as written. It was written as
- * `I couldn't do that: ${res.error}` — and an admin who tapped `[Add families]`
- * received a pretty-printed zod error, braces and all, ending in
- * `"message": "Required"`. Correct, and not English: the same class as a uuid or
- * a table name in a sentence, at the worst possible moment.
+ * This used to be the FIRST thing, because a tap was the one path with no model in
+ * it and whatever the runtime produced here went to a phone exactly as written. It
+ * was `I couldn't do that: ${res.error}`, and an admin who tapped `[Add families]`
+ * received a pretty-printed zod error, braces and all, ending in `"message":
+ * "Required"`. Correct, and not English: the same class as a uuid or a table name
+ * in a sentence, at the worst possible moment. The two sentences below were the
+ * repair, and they are as far as a fixed string can get — they can say *it did not
+ * happen and nothing changed*, and nothing else, because a constant cannot read the
+ * refusal it is standing in for.
  *
- * Machine detail belongs in the trace, which already has it. What belongs here
- * is the two things the person needs: it did not happen, and nothing changed.
+ * A refused tap now opens an ordinary turn instead (`TapNarration`), where the
+ * model reads the actual refusal, can take another route, and answers in this
+ * conversation's own terms. This is the backstop under that: reached when the model
+ * produced nothing at all, twice. The machine detail is in the trace either way.
  */
 function humanError(raw: string | undefined): string {
   const first = String(raw ?? '')
@@ -410,15 +471,59 @@ function humanError(raw: string | undefined): string {
 }
 
 /* ------------------------------------------------------------------------- *
- * Button taps — no model call, no re-resolution, no string parsing (§6.5)
+ * Button taps — the payload runs with no model in the room (§6.5, §2.2), and
+ * then the model is told what it did.
  * ------------------------------------------------------------------------- */
+
+/**
+ * What a tap owes the model, once the plan behind it has already committed.
+ *
+ * Carried rather than acted on, because the two halves of a tap belong to
+ * different authors and always did: the DECISION is the stored payload's, replayed
+ * verbatim with nothing inferred, and the SENTENCE is the model's. Splitting them
+ * is the whole of this change — see `tapBlock`, which is where the second half
+ * enters the turn.
+ */
+type TapNarration = {
+  /** The operation this button carried, or `steps` for a plan minted by the runtime. */
+  op: string
+  /** What the plan said it was for, as minted. Not shown to the person. */
+  intent: string
+  ok: boolean
+  /** The plan's result in the shape the model reads after its own `act`. */
+  account: Record<string, unknown>
+  /**
+   * The one sentence the runtime sends if the model produces nothing at all —
+   * after a round, after the toolless recovery round, after everything.
+   *
+   * This is `buildSummary`'s receipt, which used to be the FIRST author on this
+   * path and is now the last. Keeping it is not a hedge: a tap that committed and
+   * then went quiet is the one failure a person cannot tell apart from being
+   * ignored, and the apology ladder's own three sentences all say some version of
+   * "nothing happened", which after a committed write is a lie.
+   */
+  backstop: string
+  /** The plan itself, for seeding the turn's tool context with what it already did. */
+  res: Awaited<ReturnType<typeof executePlan>>
+}
+
+/** What running a tapped payload produced, for the caller that has to record it. */
+type TapRun = {
+  outcomes: SendOutcome[]
+  /** What reached the tapper from the tap itself, verbatim. Empty if nothing did. */
+  said: string
+  /** The machine account, for the flight recorder. */
+  account: Record<string, unknown>
+  /** Present when a model round is owed — see `TapNarration`. */
+  narrate?: TapNarration
+}
 
 async function executeAction(
   session: SessionCtx,
   identity: Identity,
   payload: ActionPayload,
   turnId: string,
-): Promise<{ outcomes: SendOutcome[]; summary: string }> {
+): Promise<TapRun> {
   const outcomes: SendOutcome[] = []
 
   /**
@@ -438,9 +543,29 @@ async function executeAction(
    * because the ladder is just the model reading a sentence.
    */
 
+  /**
+   * THE THREE KINDS THAT ARE NOT NARRATED, AND WHY EACH ONE IS NOT.
+   *
+   * The rule this file now follows is *the runtime may replay what the model
+   * wrote; it may not author what the person reads*. Everything below satisfies
+   * it already, which is why none of them pays for a model round:
+   *
+   *   `noop` — the ack is a string the AUTHOR of the button wrote, at compose
+   *   time, with the conversation in front of them. Replaying it is not a second
+   *   author. It is also the tap that means *stop*: spinning up a five-round turn
+   *   with the whole write surface declared, moments after somebody pressed
+   *   Cancel, is the wrong shape whatever it costs.
+   *
+   *   `menu` — a nav surface, not a narration. There is no execution to account
+   *   for and nothing that could have gone wrong with it.
+   *
+   *   `handoff` — the escalation has already reached the admins by the time `say`
+   *   comes back, and `say` is the tool's own sentence about a thing that cannot
+   *   partially succeed. Nothing in it is composed from a diff.
+   */
   if (payload.kind === 'noop') {
     outcomes.push(await composeAndSend(session, { toContactId: identity.contact.id, body: payload.ack }))
-    return { outcomes, summary: payload.ack }
+    return { outcomes, said: payload.ack, account: { kind: 'noop', ack: payload.ack } }
   }
 
   if (payload.kind === 'handoff') {
@@ -451,19 +576,23 @@ async function executeAction(
     )
     const say = (out.result as { say?: string })?.say
     if (say) outcomes.push(await composeAndSend(session, { toContactId: identity.contact.id, body: say }))
-    return { outcomes, summary: `handoff: ${payload.reason}` }
+    return {
+      outcomes,
+      said: say ?? '',
+      account: { kind: 'handoff', reason: payload.reason, result: out.result },
+    }
   }
 
   if (payload.kind === 'menu') {
     outcomes.push(...(await sendMenu(session, identity, payload.menu)))
-    return { outcomes, summary: `menu:${payload.menu}` }
+    return { outcomes, said: '', account: { kind: 'menu', menu: payload.menu } }
   }
 
   if (payload.kind === 'reply') {
     // Intercepted by runTurn above (a `reply` action replays as if the user typed it,
     // so it goes back through the model rather than executing here). This guard exists
     // so the union below is exhaustive and no future caller can fall through it.
-    return { outcomes, summary: `reply: ${payload.text}` }
+    return { outcomes, said: '', account: { kind: 'reply', text: payload.text } }
   }
 
   const steps: PlanStep[] =
@@ -471,54 +600,111 @@ async function executeAction(
       ? [{ operation: { name: payload.op as OperationName, args: payload.args } }]
       : payload.steps
   const intent = payload.kind === 'operation' ? `button: ${payload.op}` : payload.summary
-  // The tap path is where F8 landed: this receipt goes straight to whoever tapped,
-  // with no model between the commit and their phone.
+  const op = payload.kind === 'operation' ? payload.op : 'steps'
+  /**
+   * The write still happens here, first, with nothing inferred.
+   *
+   * §2.2 is unchanged and this line is where it lives: the payload was authored at
+   * compose time, validated then, and executes now exactly as stored. No model has
+   * read it, no model may edit it, and a misread cannot commit anybody to being
+   * anywhere. What follows the commit is a different question with a different
+   * answer — see the return below.
+   */
   const res = await executePlan(session, steps, intent, audienceFor(identity))
   outcomes.push(...res.outcomes)
 
-  if (!res.ok) {
-    // §8.2 — first tap wins. The loser's plan aborted before it could message
-    // anyone, so this is where they are told, once, plainly.
-    const lost = payload.kind === 'operation' && payload.op === 'claim_cover' && /PRECONDITION_FAILED/.test(res.error ?? '')
+  /**
+   * §8.2 — first tap wins, and the loser is told by the runtime.
+   *
+   * The one refusal that stays deterministic, for three reasons that do not
+   * generalise to the others. It is not a fault: the world moved between the mint
+   * and the tap and there is nothing here to diagnose, fix or route. It carries a
+   * catalog id, which is what puts it inside `MUTE_SCOPE` and the repeat gate —
+   * semantics a composed reply cannot be relied on to reproduce. And it is one
+   * plain sentence with no diff, no row count and no table noun in it, so it is
+   * not the class of message this path was rewritten to stop sending.
+   */
+  if (!res.ok && payload.kind === 'operation' && payload.op === 'claim_cover'
+      && /PRECONDITION_FAILED/.test(res.error ?? '')) {
+    const lost = 'Someone else got that session first — nothing needed from you.'
     outcomes.push(
       await composeAndSend(session, {
         toContactId: identity.contact.id,
-        catalogId: lost ? 'CO-COVER-TAKEN' : null,
+        catalogId: 'CO-COVER-TAKEN',
         subjectPersonIds: [identity.person.id],
-        body: lost
-          ? 'Someone else got that session first — nothing needed from you.'
-          : humanError(res.error),
+        body: lost,
       }),
     )
-    return { outcomes, summary: res.error ?? 'failed' }
+    return { outcomes, said: lost, account: { ok: false, executed: false, op, error: res.error } }
   }
 
+  const account: Record<string, unknown> = res.ok
+    ? committedResult(res)
+    : {
+        ok: false,
+        executed: false,
+        error: res.error,
+        rolled_back:
+          'The whole plan rolled back inside its transaction. No row changed and nobody was messaged, '
+          + 'including anybody this plan would have staged a message to.',
+        ...(res.emptyWrites.length ? { matched_no_rows: res.emptyWrites } : {}),
+      }
+
   /**
-   * If the plan already spoke to this person, adding an ack on top is noise.
+   * WHAT THE PERSON READS IS NOT WRITTEN HERE ANY MORE.
    *
-   * What is left of this receipt is the runtime's OWN sentence, written by
-   * `buildSummary` from the diff, on the one path with no model in it — so it is
-   * a first author rather than a second. The follow-up button and the backstop
-   * menu that used to ride under it are gone with the rest of the composer: a tap
-   * receipt offering `[What can you do?]` is the same dead end it was everywhere
-   * else, and the operation-specific next steps were the runtime guessing at a
-   * moment only the model can read.
+   * Two sends used to leave this function. On success, `buildSummary`'s receipt —
+   * a sentence assembled from row counts, `plural()`'s vocabulary and a snapshot
+   * of the business taken *before* the transaction. On failure, `humanError` —
+   * one of two fixed sentences, picked by whether the database's complaint looked
+   * machine-shaped. Both went straight to a phone with no model between the commit
+   * and the person, and F-CD is what that costs: *"Changed 1 setting for this
+   * business — setting the business up: Saved — Qureshi Cricket Coaching is set up.
+   * no UPI handle yet."* — one message, in two voices, denying the write it was
+   * announcing, because half of it was composed before the write and half after.
    *
-   * The lint pass is gone from here too. The receipt is built from the plan's own
-   * notes and `plural()`'s vocabulary, which is where a table noun leaking into
-   * it has to be fixed — a rewrite on the way out was covering for `SINGULARS`
-   * and `PLURALS` rather than completing them.
+   * The fix is not a better sentence. There is a component in this system whose
+   * whole job is composing sentences from what a plan did, it is already correct
+   * on the route where the model runs the plan itself (`act` → `compactDiff` →
+   * `reply`), and the tap path was the one route that bypassed it. So the tap
+   * hands back an account and stops talking. `runTurn` opens an ordinary turn on
+   * it: same prefix, same tools, same flight recorder, same lint — and, because it
+   * is an ordinary turn, the model can also *repair* what the account reports
+   * rather than the runtime narrating a defect it cannot act on. An `emptyWrites`
+   * entry reaching a phone as "3 steps matched no rows" was the old shape of that.
+   *
+   * The gate below is the cost control and it is also the principle. A plan that
+   * staged its own message to this person has already answered them **in words the
+   * model wrote at compose time** — that is a replay, not a second author — so
+   * when nothing else in the account needs a judgement, the tap is finished and
+   * costs exactly what it always did.
    */
-  const alreadyTold = res.stagedMessages.some((m) => m.toContactId === identity.contact.id)
-  if (!alreadyTold) {
-    outcomes.push(
-      await composeAndSend(session, {
-        toContactId: identity.contact.id,
-        body: res.summary,
-      }),
-    )
+  const told = res.stagedMessages.filter((m) => m.toContactId === identity.contact.id)
+  const nothingLeftToSay =
+    res.ok
+    && told.length > 0
+    && !res.clashes.length
+    && !res.untold.length
+    && !res.emptyWrites.length
+    && !res.unaddressed
+
+  return {
+    outcomes,
+    said: told.map((m) => m.body).join('\n\n'),
+    account,
+    ...(nothingLeftToSay
+      ? {}
+      : {
+          narrate: {
+            op,
+            intent,
+            ok: res.ok,
+            account,
+            backstop: res.ok ? res.summary : humanError(res.error),
+            res,
+          },
+        }),
   }
-  return { outcomes, summary: res.summary }
 }
 
 /* ------------------------------------------------------------------------- *
@@ -728,13 +914,73 @@ function evidence(v: unknown, limit: number): unknown {
   return traceValue(v, fullTraceOn() ? Number.POSITIVE_INFINITY : limit)
 }
 
+/**
+ * What the model is told about a tap that has already run.
+ *
+ * @mechanism tapBlock — a committed tap enters the turn as a stated fact in the
+ *   variable tail, not as a fabricated tool call the model never made. The
+ *   distinction is the same one `spokeAsTrailingProse` exists for: this runtime does
+ *   not let the model hold a false picture of its own turn, and inventing an
+ *   assistant `act` call to carry the tap would have done exactly that. So the block
+ *   says who tapped what, that it ran before this round with nothing inferred, and
+ *   hands over the plan's result in `committedResult`'s shape — the same object
+ *   `act` returns — with `seedFromCommitted` making `turnState` agree with it.
+ *
+ * It states facts and names the decision, and stops there. Three things it must not
+ * do, each a shape this repo has already paid for:
+ *
+ *   It does not say what to write. The composer is the model's; a runtime paragraph
+ *   telling it how to phrase a receipt is the second author this whole path was
+ *   rewritten to remove.
+ *
+ *   It does not translate the plan's internals. `emptyWrites` and `unaddressed` ride
+ *   the account as named facts for the author to act on — the version that folded
+ *   them into a sentence put *"3 steps matched no rows"* on an admin's phone three
+ *   times in one drive.
+ *
+ *   It does not hedge about whether the write happened. Everything in the account is
+ *   read back from the transaction's own before/after images after it committed,
+ *   which is precisely what F-CD's stale blurb was not.
+ */
+function tapBlock(tap: TapNarration, label: string | undefined): string {
+  const tapped = label?.trim() ? `**${label.trim()}**` : `a button carrying \`${tap.op}\``
+  const head = tap.ok
+    ? `# They tapped ${tapped}, and it has already run\n\n`
+      + `That button carried ${tap.op === 'steps' ? 'a plan' : `\`${tap.op}\``} minted earlier in this `
+      + `conversation (${tap.intent}). It executed exactly as it was stored, before this round, with no `
+      + `model reading it — that is how buttons work here and it has not changed. What is left is the half `
+      + `only you can do.\n\n`
+      + `Nothing below is a proposal. It is committed, and the rows in it were read back out of the `
+      + `transaction after it closed.`
+    : `# They tapped ${tapped}, and the plan behind it was refused\n\n`
+      + `That button carried ${tap.op === 'steps' ? 'a plan' : `\`${tap.op}\``} minted earlier in this `
+      + `conversation (${tap.intent}). It ran, the database refused it, and the whole transaction rolled `
+      + `back — so nothing changed and nobody was messaged. They tapped, and so far they have heard nothing.`
+
+  const tail = tap.ok
+    ? `They are waiting on an answer about this and nothing else has told them. Do not run it again — it `
+      + `has run. If the result names statements that matched no rows, a clash, or people whose `
+      + `arrangements this changed while nothing here reaches them, this turn is when those get dealt `
+      + `with: you have the tools and the rounds.`
+    : `You can see the refusal. Take a different route if there is one, or tell them plainly what did not `
+      + `happen and what you need — but do not re-run the same plan, and do not describe any of it as done.`
+
+  return `${head}\n\n${toolContent(tap.account)}\n\n${tail}`
+}
+
 async function modelTurn(
   session: SessionCtx,
   identity: Identity,
   turnId: string,
   input: TurnInput,
+  /**
+   * The turn's outbox, owned by `runTurn` and shared rather than returned. See the
+   * call site for why one array is load-bearing on the tap path.
+   */
+  outcomes: SendOutcome[],
+  /** A tap whose plan has already committed, and which the model must now account for. */
+  tap?: TapNarration,
 ): Promise<{
-  outcomes: SendOutcome[]
   toolCalls: number
   text: string
   /**
@@ -752,7 +998,6 @@ async function modelTurn(
   rounds: number
   error?: string
 }> {
-  const outcomes: SendOutcome[] = []
   const toolCtx: ToolCtx = {
     session,
     identity,
@@ -769,6 +1014,40 @@ async function modelTurn(
     evidence: [],
     untraced: [],
   }
+
+  /**
+   * A turn that starts with work already behind it says so, from round one.
+   *
+   * `turnState` is read on every round and answers from these fields alone. Left
+   * unseeded, the first thing a tap turn would be told about itself is *"written
+   * nothing — no row in this database has changed"*, moments after committing a
+   * plan — F-AM's sentence with the sign flipped, and the one statement most likely
+   * to talk the model out of a correct receipt. `repliedTo` matters just as much in
+   * the other direction: an operation that staged its own message to this person
+   * has already spoken, and a second reply on top of it is F-F.
+   *
+   * The account itself joins the R10 evidence set for the same reason a tool result
+   * does — every figure the reply states about this tap traces to something the
+   * turn actually holds, rather than reading as invented.
+   */
+  if (tap) {
+    seedFromCommitted(toolCtx, tap.op, tap.res)
+    toolCtx.evidence?.push(toolContent(tap.account))
+  }
+  /**
+   * Who had already heard from this turn before the loop opened.
+   *
+   * `repliedTo` answers two different questions and they stopped having the same
+   * answer the moment a tap could seed it. As the *one message per person* guard it
+   * has to include the plan's own sends — otherwise the model composes a second
+   * message on top of one this person is already reading. As the loop's exit test
+   * it must NOT: a tap that staged its receipt and left an `untold` audience behind
+   * would be cut off after a single round, having replied to nobody, because
+   * somebody else's send had already ticked the box. So the exit test subtracts
+   * this set and asks the narrower question it always meant — *has this loop
+   * answered the asker*.
+   */
+  const heardBeforeTheLoop = new Set(toolCtx.repliedTo ?? [])
 
   // The tenant's clock, not the world's. This line is the model's entire sense of
   // "now" — driven with a moved tenant clock, the bare call told a coach "It is
@@ -792,6 +1071,7 @@ async function modelTurn(
   })
 
   const situation: string[] = [tail]
+  if (tap) situation.push(tapBlock(tap, input.text))
   if (input.source === 'job' && input.task) {
     situation.push(
       'This is a task you scheduled for yourself. Deciding to do nothing is the common and correct outcome — ' +
@@ -931,6 +1211,18 @@ async function modelTurn(
 
   let rounds = 0
   let forcedError: string | undefined
+  /**
+   * Whether the trailing text is the RUNTIME's sentence rather than the model's.
+   *
+   * True only on the apology ladder below — the three fixed sentences and the tap
+   * backstop. Two things downstream have to know, and both used to be told wrong:
+   * the lint repair round must not spend a fourth model call rewriting copy this
+   * file authored, and `spokeAsTrailingProse` must not tell reflection *"you
+   * answered them with the plain text you wrote at the end of a round"* about a
+   * sentence the model did not write. That flag exists precisely so the model's
+   * picture of its own turn is true; setting it here would have made it false.
+   */
+  let runtimeAuthored = false
   /** Calls that failed once already this turn, by name+args. */
   const failedCalls = new Map<string, number>()
   /**
@@ -1186,7 +1478,13 @@ async function modelTurn(
      * shape, and cutting it after the reply would be the "describes it and does not do
      * it" failure introduced by the fix meant to save money.
      */
-    if (toolCtx.repliedTo?.has(identity.contact.id) && toolCtx.pendingPlans.size === 0) break
+    if (
+      toolCtx.repliedTo?.has(identity.contact.id) &&
+      // …and it was THIS loop that answered them. See `heardBeforeTheLoop`.
+      !heardBeforeTheLoop.has(identity.contact.id) &&
+      toolCtx.pendingPlans.size === 0
+    )
+      break
 
     /**
      * F-AI — the budget is declared on `read`; the position only the loop knows,
@@ -1373,15 +1671,33 @@ async function modelTurn(
    * first being withdrawn.
    */
   if (silent() && told === 0 && input.source !== 'job') {
-    text = raised > 0
-      ? "That's not something I can change from here. I've passed it to whoever runs the academy "
-        + "and they'll come back to you."
-      : rounds >= MAX_TOOL_ROUNDS
-        ? "I went round in circles on that one and didn't get to an answer. Can you tell me the short version of what you need?"
-        : // "I've flagged it" used to end this sentence, and nothing here flags
-          // anything — the runtime's own fixed copy making exactly the unbacked
-          // claim the whole F-K campaign is against. Say what is true instead.
-          "Something broke on my side working that out — it isn't you, and repeating it won't help. Try me again in a moment."
+    /**
+     * A FOURTH CASE, and it outranks the other three: their tap already ran.
+     *
+     * All three sentences below say some version of *nothing came of it* — try
+     * again, I went round in circles, something broke. After a committed write every
+     * one of them is false, and false in the direction that costs the most: F-CD's
+     * two owners both stopped everything to ask whether their payment details had
+     * really been saved, and both had been told a change had NOT happened while the
+     * row held it. So the runtime's own receipt is what goes out here, which is the
+     * whole reason a tap still builds one.
+     *
+     * Reached only when the plan did not speak for itself AND a full round AND the
+     * toolless recovery round both produced nothing — which is to say, when the
+     * model is effectively down. It is the floor of this path, not its voice.
+     */
+    text = tap
+      ? tap.backstop
+      : raised > 0
+        ? "That's not something I can change from here. I've passed it to whoever runs the academy "
+          + "and they'll come back to you."
+        : rounds >= MAX_TOOL_ROUNDS
+          ? "I went round in circles on that one and didn't get to an answer. Can you tell me the short version of what you need?"
+          : // "I've flagged it" used to end this sentence, and nothing here flags
+            // anything — the runtime's own fixed copy making exactly the unbacked
+            // claim the whole F-K campaign is against. Say what is true instead.
+            "Something broke on my side working that out — it isn't you, and repeating it won't help. Try me again in a moment."
+    runtimeAuthored = true
   }
 
   /**
@@ -1465,7 +1781,12 @@ async function modelTurn(
      * is the one failure a person cannot tell apart from being ignored.
      */
     let outgoing = text.trim()
-    const violations = proseViolations(outgoing, identity)
+    // Not on the runtime's own copy. The repair round asks the MODEL to rewrite a
+    // draft, and by the time the ladder has authored one the model has already
+    // failed to produce anything twice — a third call to fix this file's wording is
+    // a call spent on the wrong author. A violation here is a bug in the constant,
+    // and the trace entry below is where it gets found.
+    const violations = runtimeAuthored ? [] : proseViolations(outgoing, identity)
     if (violations.length) {
       trace.push({
         round: rounds,
@@ -1534,7 +1855,12 @@ async function modelTurn(
       // keeps the words; this keeps the fact that the runtime, not a `reply`
       // call, put them on the phone — which is what reflection was arguing with
       // `turnState` about on three turns of the 19 Aug run.
-      toolCtx.spokeAsTrailingProse = true
+      //
+      // Not when the ladder authored the sentence: that flag says "the plain text
+      // YOU wrote went out as your reply", and about the runtime's own copy it is
+      // simply untrue. `messagesThisTurn` still reports the send, which is the part
+      // reflection needs.
+      if (!runtimeAuthored) toolCtx.spokeAsTrailingProse = true
     }
     text = outgoing
   }
@@ -1738,7 +2064,6 @@ async function modelTurn(
   }
 
   return {
-    outcomes,
     toolCalls,
     text,
     said: [...(toolCtx.saidToUser ?? [])],

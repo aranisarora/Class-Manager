@@ -136,9 +136,11 @@ timeout, 10 000-row cap.
 
 **Mint once, replay verbatim (§2.2).** Every button carries an `action` row authored at compose
 time and fully resolved. A tap loads it, checks expiry, consumption and that the tapping contact
-is the one it was minted for, then executes the stored payload — **no model call**. Confirmations
-for destructive plans are minted by the runtime, not left to the model, so the plan itself rides
-the button rather than a re-prompt.
+is the one it was minted for, then executes the stored payload — **no model decides what runs**.
+Confirmations for destructive plans are minted by the runtime, not left to the model, so the plan
+itself rides the button rather than a re-prompt. Once the transaction has closed the tap becomes
+an ordinary turn: the model reads what the plan actually wrote and composes the reply, so a
+receipt is written by something that can see the rows rather than assembled from counts.
 
 **Compute the effect before committing it (§2.3, §14.2.1).** `transaction(steps[])` runs the whole
 plan, captures before/after images through a snapshot trigger, and rolls back. The bot knows its

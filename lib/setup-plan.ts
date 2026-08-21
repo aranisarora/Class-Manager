@@ -119,14 +119,33 @@ export function buildSetupSteps(academyId: string, v: SetupValues): PlanStep[] {
   return steps
 }
 
-/** What to say afterwards. Kept beside the builder so the two surfaces agree. */
+/**
+ * What this call is SETTING. Kept beside the builder so the two cannot disagree.
+ *
+ * @mechanism summariseSetup — the note describes the fields this statement carries
+ *   and is silent about every field it does not, because in this builder an omitted
+ *   field means *left exactly as it is* — never *absent*. It used to end with `no UPI
+ *   handle yet` whenever `upiHandle` was falsy, and its one caller passed `{name}`
+ *   alone, so the sentence reported the absence of all eight other fields on every
+ *   call including the ones that wrote them. Both halves of F-CD's message came from
+ *   that: *"Saved — Qureshi Cricket Coaching is set up. no UPI handle yet."*, over a
+ *   diff reading `upi_handle: null -> "imranqureshi48@okhdfcbank"`, and the doubled
+ *   full stop that gave the splice away.
+ *
+ * A note is not a receipt. It rides `PlanResult.summary` to whoever composes the
+ * message and is the plan's account of its own intent — so it says what was written,
+ * and what is now TRUE is read back out of the transaction by `compactDiff`.
+ */
 export function summariseSetup(v: SetupValues): string {
-  const bits = [`Saved — ${v.name.trim()} is set up.`]
+  const name = v.name.trim()
   const venues = (v.venues ?? []).filter((x) => x.name.trim())
   const parts: string[] = []
   if (venues.length) parts.push(venues.length === 1 ? venues[0].name.trim() : `${venues.length} places`)
   if (v.cancellationWindowHours) parts.push(`${v.cancellationWindowHours}h cancellation notice`)
-  parts.push(clean(v.upiHandle) ? `payments to ${clean(v.upiHandle)}` : 'no UPI handle yet')
-  bits.push(`${parts.join(', ')}.`)
-  return bits.join(' ')
+  // Only when this call carries one. `null` is a clearing, which is a thing that
+  // happened and is worth naming; `undefined` is silence and gets silence back.
+  if (clean(v.upiHandle)) parts.push(`payments to ${clean(v.upiHandle)}`)
+  else if (v.upiHandle === null) parts.push('the UPI handle cleared')
+  if (clean(v.timezone)) parts.push(`the clock on ${clean(v.timezone)}`)
+  return parts.length ? `${name} set up — ${parts.join(', ')}` : `${name} set up`
 }

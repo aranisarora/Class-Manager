@@ -48,9 +48,11 @@ sequence, so it does not have to be re-derived from the source every time.
 inbound (Meta webhook · emulator · job)
  └ resolveInbound → resolveIdentity            no identity → not our turn
     └ runTurn
-       1 arrival     consumeAction → executeAction (a tap runs no model)
+       1 arrival     consumeAction → executeAction (the WRITE runs before any model)
+                     …and then falls through to 2, so the model composes the receipt
                      mediaRefusal (the runtime speaks, not the prompt)
-       2 context     now → recentToolTurns → variableTail → recentHistory → stablePrefix
+       2 context     now → recentToolTurns → variableTail → tapBlock → recentHistory
+                     → stablePrefix
        3 rounds      generate → runTool → turnState → exit test
                       ├ a write → checkSteps → [tx: audit → steps → diff → guards] → commit
                       └ a send  → composeAndSend → validateOutbound → the send ladder
@@ -67,11 +69,23 @@ inbound (Meta webhook · emulator · job)
 | --- | --- |
 | A shared number routes to a person, and asks rather than guesses | `resolveInbound` · `lib/identity.ts` |
 | One contact resolves to a person and to **all** of their roles at once | `resolveIdentity` · `lib/identity.ts` |
-| A tap claims its button in one conditional UPDATE, then runs the stored payload — no model call, and `origin` records that | `consumeAction` · `lib/actions.ts` · `executeAction` · `lib/agent/loop.ts` |
+| A tap claims its button in one conditional UPDATE, then runs the stored payload — **no model call before the write**, and `origin` records that | `consumeAction` · `lib/actions.ts` · `executeAction` · `lib/agent/loop.ts` |
+| …and then hands the plan's result to the turn, which composes what the person reads. The write is a tap; the sentence is a turn | `TapNarration` · `committedResult` · `tapBlock` · `seedFromCommitted` |
+| A tap that has already answered this person — its plan staged their message at compose time — and has nothing left needing a judgement stops here, at the cost it always had | `nothingLeftToSay` · `lib/agent/loop.ts` |
 | A button whose payload was a reply re-enters as if it had been typed | `executeAction` · `lib/agent/loop.ts` |
 | An image, voice note or file is answered in words by the runtime; anything typed alongside still goes to the model | `mediaRefusal` · `lib/agent/loop.ts` |
 
-Only a turn carrying text or a task reaches stage 2.
+A turn carrying text, a task, **or a tap the model still owes an account of** reaches stage 2.
+
+**Where the tap's two halves split, and why it is here rather than anywhere else.** §2.2 —
+*no model inference at tap time* — is about the DECISION, and the decision is made above this
+line: the payload was authored at compose time, validated then, and executes verbatim now. A
+misread still cannot commit anyone to being anywhere. What used to happen below it was a
+second thing wearing the same name: the runtime also *composed the message*, from row counts
+and a business snapshot taken before the transaction, and sent it. That is what F-CD cost —
+one message announcing a write and denying it in the same breath. `noop`, `menu` and
+`handoff` do not go on to stage 2, and the test for that is on `executeAction`: the runtime
+may **replay what the model wrote**; it may not **author what the person reads**.
 
 ## 2 · Context
 
@@ -82,8 +96,9 @@ Assembled in this order, all of it before the first round.
 | 1 | The **tenant's** clock, awaited first — everything below is stamped against it | `now` · `lib/clock.ts` |
 | 2 | One read of recent turns, two filters over it: what was looked up, and what was done | `recentToolTurns` · `lib/agent/loop.ts` |
 | 3 | The tail — who this is, the hot memory sets, what exists, and the standing states | `variableTail` · `census` · `standing` · `lib/agent/context.ts` · `hotSet` · `lib/agent/memory.ts` |
-| 4 | The conversation so far, with gaps noted beside the messages rather than among them | `recentHistory` · `lib/agent/loop.ts` |
-| 5 | The cached half — preamble, schema, operations, catalog, platform, doctrine | `stablePrefix` · `SCHEMA_DOC` · `lib/agent/context.ts` · `lib/agent/schema-doc.ts` |
+| 4 | On a tap: what the button already ran, and its result in `act`'s own shape. The tool context is seeded to match, so `turnState` agrees with it from round one | `tapBlock` · `lib/agent/loop.ts` · `seedFromCommitted` · `lib/agent/tools.ts` |
+| 5 | The conversation so far, with gaps noted beside the messages rather than among them | `recentHistory` · `lib/agent/loop.ts` |
+| 6 | The cached half — preamble, schema, operations, catalog, platform, doctrine | `stablePrefix` · `SCHEMA_DOC` · `lib/agent/context.ts` · `lib/agent/schema-doc.ts` |
 
 A prefetch that **fails** is not an absent block: it renders as a stated gap carrying its
 reason, because a paragraph that was never there is invisible to everything downstream.
@@ -171,10 +186,11 @@ Reached when the loop is over. Here the order **is** the mechanism.
 | --- | --- | --- |
 | 1 | Did anything reach the **asker's** phone — not "did the model call reply", not "did something leave the building" | `spoke` · `lib/agent/loop.ts` |
 | 2 | If nothing did: one toolless round, history flattened, to put what the turn already learned into words | `flattenToolTurns` · `lib/agent/loop.ts` |
-| 3 | Only if that failed too: one of three sentences, picked by what actually happened — and none at all if the runtime already said something true | `lib/agent/loop.ts` |
+| 3 | Only if that failed too: one of **four** sentences, picked by what actually happened — and none at all if the runtime already said something true | `lib/agent/loop.ts` |
+| 3a | The fourth outranks the other three and is the tap's: all three of them say some version of *nothing came of it*, and after a committed write every one is false. The `backstop` on `TapNarration` — the receipt this path stopped sending — is what goes out instead | `TapNarration` · `runtimeAuthored` · `lib/agent/loop.ts` |
 | 4 | On a job turn, trailing prose is discarded and traced: a reply is how a job speaks | `lib/agent/loop.ts` |
 | 5 | Trailing prose gets the confirmation button minted by the runtime, since only it holds the validated steps | `pendingConfirmation` · `lib/agent/tools.ts` |
-| 6 | The message is **validated, not edited**. A violation buys one repair round; a second failure sends the draft as written | `proseViolations` · `lib/agent/lint.ts` |
+| 6 | The message is **validated, not edited**. A violation buys one repair round; a second failure sends the draft as written — and the ladder's own copy is exempt, because a repair round asks the MODEL to rewrite a draft this file wrote | `proseViolations` · `lib/agent/lint.ts` |
 | 7 | Every figure in what was said is compared against what this turn's tools returned — recorded, gating nothing | `traceabilityNote` · `lib/agent/traceability.ts` |
 
 ## 5 · Reflection
@@ -221,7 +237,7 @@ tick (Vercel Cron · pg_cron)   app/api/cron/tick/route.ts
 
 ## What the order encodes
 
-Ten facts that are only true because of *when* something runs.
+Eleven facts that are only true because of *when* something runs.
 
 1. **The clock is read first.** Every replayed lookup is stamped against it; an unstamped past reads as the present, and the model will argue itself out of a correct doubt with it.
 2. **A failed prefetch is a stated gap, never an empty block.** The model repairs what it is told about and mis-narrates what it is not.
@@ -233,6 +249,7 @@ Ten facts that are only true because of *when* something runs.
 8. **Validation refuses; it never rewrites.** A refusal buys one round of grace, which is the same deal the reply tool gives.
 9. **Reflection is the last round, not a second call.** A separate call has no schema, no tools and no trace — it invents table names and cannot be corrected.
 10. **The turn is recorded whatever happened.** The record is written outside the error path, because the turns worth reading are the ones that went wrong.
+11. **A tap writes before the model and speaks after it.** Those are two different acts and they were fused for the product's whole life — so the one route where a write is *certain* was also the one route where the sentence about it was assembled from row counts, by something that could not read the rows back. Reversed or fused, you get F-CD either way: fuse them and the receipt is composed before the transaction it describes; reverse them and a model gets to edit a payload a person already approved.
 
 ## Where a fix goes
 
@@ -245,6 +262,7 @@ Ten facts that are only true because of *when* something runs.
 | It went round in circles | 3 · `failedReasons`, `stalled` | a longer prompt |
 | It said nothing at all | 4 · the recovery ladder | |
 | It said "done" about work that did not happen | 3 · `turnState`, every round | a claims regex on the way out |
+| A receipt reads like a database | 1 → 2 · the tap carries an account and the turn composes | a better sentence in `buildSummary` |
 | A state cannot be reported at all | layer 0 — it is a row | a memory fact |
 
 `MECHANISMS.md` then tells you whether the thing you are about to build is already there.

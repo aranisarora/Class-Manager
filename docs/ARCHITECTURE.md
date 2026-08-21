@@ -269,6 +269,20 @@ died, so a woman asking to opt out was sent prose naming a button not on her scr
   is told at the decode point what a buttonless reply costs the person, and decides —
   because a runtime that decorates messages is a second author, and the injury
   acknowledgement is what second authors do.
+- **And no backstop *author*, which is the stronger form of the same rule.** Not
+  decorating the model's message is half of it; the other half is that there must be no
+  path where the runtime writes one instead. The tap was that path for the product's whole
+  life — `buildSummary` assembling a sentence out of row counts, `plural()`'s vocabulary
+  and a business snapshot read before the transaction, then sending it with no model in
+  the room. F-CD is one such message announcing a write and denying it in the same breath,
+  from two owners in two languages on the same field. A tap now hands its committed result
+  to an ordinary turn (`TapNarration` → `tapBlock` → the model), which is also what lets
+  the *defects* in that result be repaired rather than narrated: `emptyWrites` reaching a
+  phone as "3 steps matched no rows" is what a runtime author does with a diagnostic it
+  cannot act on. **The runtime may replay what the model wrote — a minted `noop` ack, a
+  staged message step — and may not author what the person reads.** What survives is a
+  last-resort backstop when the model produces nothing at all, twice, because going quiet
+  is still the one failure a person cannot tell apart from being ignored.
 
 **Declarations carry every hard constraint.** A declared schema constrains generation; a
 paragraph upstream of the decode point constrains nothing — measured twice (the untyped
@@ -276,11 +290,19 @@ paragraph upstream of the decode point constrains nothing — measured twice (th
 disappeared). Every column RLS demands, every required argument, every cap is in the
 shown signature (F-AG).
 
-**Everything a tap can run is validated when minted.** Tap-time has no model present —
-a button's payload executes as stored. So the payload is checked at compose time, while
-the model can still fix it, and refused with a reason. A button that fails politely at
-the tap is a promise already broken (F-AW: an admin was told his prices would rise; they
-did not).
+**Everything a tap can run is validated when minted.** No model reads a payload at tap
+time — it executes as stored. So the payload is checked at compose time, while the model
+can still fix it, and refused with a reason. A button that fails politely at the tap is a
+promise already broken (F-AW: an admin was told his prices would rise; they did not).
+
+**A tap has two halves and only the first is model-free.** *What runs* is the stored
+payload, replayed verbatim, decided by nobody in the moment — that is §2.2 and the reason
+mint-time validation has to be exhaustive. *What is said about it afterwards* is an
+ordinary composition problem, and it was treated as part of the same rule for years
+because both live behind one button press. They are not the same: a model editing a
+payload a person already approved is the danger §2.2 names, and a model reading a diff
+that has already committed is the thing this system does best. The write happens first,
+with nothing inferred; the account of it goes to the turn.
 
 ---
 
@@ -472,9 +494,12 @@ Each has an incident behind it. They are the shapes to check any new design agai
   detectors, claims lists, leak checks, invention checks — misfired silently, in both
   directions, in the product and in the instrument alike. Meaning is judged by a model or
   a human, or checked against the world; it is never matched.
-- **The model-free path.** Taps and forms execute with no judgement present; whatever
+- **The model-free path.** A tap's payload executes with no judgement present; whatever
   runs there is prevalidated and guarded by the transaction, because nothing else will
-  ever notice.
+  ever notice. The trap grew a second head, and it took longer to see: the runtime also
+  *spoke* on that path, so the one route with no reader was also the one route that
+  narrated a diff it could not read back (F-CD). The write stays model-free by design;
+  everything downstream of the commit is an ordinary turn.
 - **The answered vacuum.** A question with no row behind it gets a plausible answer, and
   a plausible answer restated by memory becomes policy.
 - **Circular evidence.** A check, a fact, or a claim validated against something the same

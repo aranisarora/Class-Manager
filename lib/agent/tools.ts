@@ -593,9 +593,11 @@ const SUPPRESSION_HELP: Record<SuppressReason, string> = {
  *   before it is minted: a `commit` handle is resolved into the steps it refers to,
  *   the shapes the model reaches for out of habit (`form`, `replyOption`, a bare `op`
  *   with no `kind`) are meant rather than refused, and a payload carrying a parameter
- *   only a person's own tap may set is rejected here. A tap replays with no model in
- *   the loop, so an action that is wrong at mint time is wrong on somebody's phone
- *   with nothing left in the turn to repair it.
+ *   only a person's own tap may set is rejected here. A tap replays the payload with
+ *   nothing reading it, so an action that is wrong at mint time is wrong on somebody's
+ *   phone: the turn that follows the tap can now explain a refusal and offer another
+ *   route, but it cannot make the button they pressed have worked, and a promise
+ *   apologised for is still a promise broken.
  *
  * The model's most frequent instinct after previewing a plan is to offer a
  * button that commits it — and it reaches for the handle, because the handle is
@@ -1452,6 +1454,66 @@ function compactDiff(r: Awaited<ReturnType<typeof previewPlan>>, executed = true
   }
 }
 
+/**
+ * What a committed plan looks like to the model — **one shape, two callers**.
+ *
+ * @mechanism committedResult — the account of a plan that has already run is built
+ *   in one place and read identically whether the model ran it itself (`act`) or a
+ *   person's tap did (`tapBlock` · lib/agent/loop.ts). Before this the tap path
+ *   had no account at all: it went to `buildSummary`, whose sentence is composed
+ *   from row counts and a snapshot taken *before* the transaction, and straight to a
+ *   phone with no model in between. Two callers sharing one builder is what stops
+ *   the tap path quietly acquiring a thinner picture than the tool path — the
+ *   asymmetry that let `emptyWrites`, `clashes` and `untold` be reported to the
+ *   model on one route and to nobody on the other.
+ *   Closes F-CD.
+ *
+ * `ignored` (the human-assertion note) is spread in by `act` rather than built here:
+ * it is a fact about the ARGUMENTS the model sent, and a tap sends none.
+ */
+export function committedResult(res: Awaited<ReturnType<typeof executePlan>>) {
+  return {
+    ok: true as const,
+    executed: true as const,
+    audit_id: res.auditId,
+    ...compactDiff(res),
+    sent: res.outcomes.map((o) => o.status),
+    // Said at the moment it becomes true, not discovered at the refusal:
+    // the operation's own confirmation is the whole conversation now.
+    ...(res.outcomes.some((o) => (o.status === 'sent' || o.status === 'queued') && o.confirmationRequest)
+      ? { asked: 'A confirmation question is on their screen now — their tap answers it. Nothing further from you this turn.' }
+      : {}),
+  }
+}
+
+/**
+ * Everything a turn already knows before its first round, written onto the context
+ * the tools read.
+ *
+ * The tap path executes its plan *before* the model is called, so by the time
+ * `modelTurn` builds a `ToolCtx` the turn has already written rows, put messages on
+ * the wire and possibly asked somebody a question. `turnState` reads exactly these
+ * fields to tell the model what the turn has done — so a context that starts empty
+ * would open the most consequential turn in the product with *"written nothing — no
+ * row in this database has changed"*, which is the F-AM sentence pointed the other
+ * way. Seeded here rather than at each call site, because the set is `turnState`'s
+ * and it will grow.
+ */
+export function seedFromCommitted(
+  ctx: ToolCtx,
+  op: string,
+  res: Awaited<ReturnType<typeof executePlan>>,
+): void {
+  noteConfirmations(ctx, res.outcomes)
+  for (const o of res.outcomes) {
+    if ((o.status === 'sent' || o.status === 'queued') && o.toContactId) ctx.repliedTo?.add(o.toContactId)
+  }
+  if (!res.ok) return
+  ctx.worked = true
+  ctx.committed = res.diffs.some((d) => d.count > 0)
+  recordExecuted(ctx, op, res.diffs)
+}
+
 export async function runTool(
   name: string,
   args: any,
@@ -1793,22 +1855,7 @@ export async function runTool(
       })
       ctx.worked = true
       ctx.committed = true
-      return {
-        result: {
-          ok: true,
-          executed: true,
-          audit_id: res.auditId,
-          ...compactDiff(res),
-          sent: res.outcomes.map((o) => o.status),
-          // Said at the moment it becomes true, not discovered at the refusal:
-          // the operation's own confirmation is the whole conversation now.
-          ...(res.outcomes.some((o) => (o.status === 'sent' || o.status === 'queued') && o.confirmationRequest)
-            ? { asked: 'A confirmation question is on their screen now — their tap answers it. Nothing further from you this turn.' }
-            : {}),
-          ...ignored,
-        },
-        note: res.summary,
-      }
+      return { result: { ...committedResult(res), ...ignored }, note: res.summary }
     }
 
     /* --------------------------------------------------------------- reply */

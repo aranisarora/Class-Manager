@@ -1,6 +1,6 @@
 # Closed
 
-36 findings, retired. Kept as one line each for two reasons and no others:
+37 findings, retired. Kept as one line each for two reasons and no others:
 
 **A closed finding is a regression test.** `npm run findings` cross-references these codes against
 the instruments to answer the one question nothing else could — *which of the things that have
@@ -52,3 +52,4 @@ this is only the receipt. The full narrative for everything before 20 Aug 2026 i
 | **F-BS** | The conversation was the only thing shown to the model with no stamp | 20 Aug 2026, mechanism verified in code |
 | **F-BT** | Every client message went to the account holder, with no override | 20 Aug 2026, mechanism verified in code |
 | **F-BX** | Inbound arrival was stamped from the world clock, so every reply sorted to the top of its thread | 21 Aug 2026, mechanism verified in code |
+| **F-CD** | A confirmation denied the write it was confirming, because the tap path composed its own receipt | 21 Aug 2026, by wiring the tap into the turn |

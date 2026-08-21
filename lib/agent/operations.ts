@@ -3035,7 +3035,13 @@ const setUpBusiness: OperationDef = {
     if (!id.roles.includes('admin')) {
       throw new Error('the shape of the business is the owner’s to set — pass anything they told you on to the admin instead')
     }
-    const steps = buildSetupSteps(ctx.academyId, {
+    // ONE values object, built once and given to both.
+    //
+    // `summariseSetup` used to be handed `{ name }` — every other field dropped on
+    // the way in — so the note it produced was a report on the absence of the eight
+    // fields this very call was writing (F-CD). Two callers of one shape is the
+    // whole guarantee that a plan's note describes the plan.
+    const values = {
       name: String(args.name),
       category: args.category,
       timezone: args.timezone,
@@ -3044,8 +3050,8 @@ const setUpBusiness: OperationDef = {
       eveningDigestAt: args.evening_digest_at,
       upiHandle: args.upi_handle,
       venues: args.venues ?? undefined,
-    })
-    return [{ note: `setting the business up: ${summariseSetup({ name: String(args.name) })}` }, ...steps]
+    }
+    return [{ note: summariseSetup(values) }, ...buildSetupSteps(ctx.academyId, values)]
   },
 }
 

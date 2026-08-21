@@ -37,10 +37,11 @@ import { OPERATIONS } from './operations'
  * @mechanism ActionPayloadSchema — a button's action validated for MEANING at mint time, not
  *   merely for shape: the operation name must exist in the registry and its arguments must
  *   parse against that operation's own schema, and a nested plan is checked the same way. A
- *   tap replays the stored payload with no model in the loop and nothing to fall back on, so
- *   anything wrong at mint is a dead button in front of somebody who has just said yes — a
- *   coach tapped `[Looks right]` on `confirm_coach` with no `session_id`, was told "that
- *   didn't go through", and nothing would ever have made her active.
+ *   tap replays the stored payload with nothing reading it first, so anything wrong at mint
+ *   is a dead button in front of somebody who has just said yes — a coach tapped
+ *   `[Looks right]` on `confirm_coach` with no `session_id`, was told "that didn't go
+ *   through", and nothing would ever have made her active. The turn that follows a tap can
+ *   explain the refusal now, and a coach who is still not active has still not been hired.
  */
 export const ActionPayloadSchema: z.ZodTypeAny = z.lazy(() =>
   z.union([
