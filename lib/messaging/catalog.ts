@@ -39,6 +39,7 @@ export type CatalogId =
   | 'CL-SESSION-MOVED'
   | 'PR-WELCOME'
   | 'PR-TRIAL-CONFIRMED'
+  | 'CO-INVITE'
   | 'CO-INVITE-CONFIRM'
   | 'CO-DAY'
   | 'CO-COMING'
@@ -125,6 +126,10 @@ export const MUTE_SCOPE: Record<CatalogId, MuteScope | null> = {
   'CL-SESSION-MOVED': null,
   'PR-WELCOME': 'announcements',
   'PR-TRIAL-CONFIRMED': null,
+  // A coach who muted announcements has not resigned, and the invite is the one
+  // message that says this business runs here at all. Someone who never receives
+  // it cannot mute anything either, so only a full stop reaches it.
+  'CO-INVITE': null,
   'CO-INVITE-CONFIRM': null,
   'CO-DAY': 'reminders',
   'CO-COMING': 'reminders',
@@ -158,7 +163,8 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
     id: 'CL-INTRO',
     audience: 'client',
     trigger:
-      'First inbound after the parent taps the invite deep link (§9.1 step 2). Introduce whose manager this is and the three things it does, then prove it with the child\'s actual schedule.',
+      "A parent's first inbound — their reply to the invite, or a number Step 1 registered writing in cold (§9.1). Introduce "
+      + "whose manager this is and the three things it does, then prove it with the child's actual schedule.",
     defaultButtons: ["See <player>'s schedule"],
     onSilence: 'Nothing further — they are already in the conversation.',
     fixed: false,
@@ -170,7 +176,10 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
     id: 'CL-FIRST-CONTACT',
     audience: 'client',
     trigger:
-      'A registered contact who never tapped the invite has a session within 48h (§9.1 step 3). No waiting period, no nag: contacted the first time there is a real reason. Staged in batches, halting on a bad delivery signal.',
+      'The family invite (§9.1 step 2), and **the bot sends it** — every registered contact this academy has never messaged, '
+      + 'soonest session first. No admin forward, no link to mint, no waiting for a session to be near. One message per '
+      + 'family, ever: staged ten at a time and HALTING on the first bad delivery signal, because on a shared number that is '
+      + 'what the reputation is worth (§16.1).',
     defaultButtons: ['See schedule', 'Stop these'],
     onSilence: 'Nothing. No nag.',
     fixed: false,
@@ -310,11 +319,34 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
   },
 
   // ----------------------------------------------------------------- §12.3 Coach
+  'CO-INVITE': {
+    id: 'CO-INVITE',
+    audience: 'coach',
+    trigger:
+      'The invite itself (§8.1 step 2), and **the bot sends it** — from the academy\'s own number, to the coach, the moment '
+      + 'the admin asks. The admin forwards nothing. Out of window it is a window-opener carried by `coach_prompt`, so the '
+      + "detail it cannot hold is not lost: the coach's tap IS their first inbound, and CO-INVITE-CONFIRM answers it with "
+      + 'their actual schedule. Name the admin who added them — a coach recognises "Sharwin added you as a coach" and does '
+      + 'not recognise a number.',
+    defaultButtons: ['See my classes'],
+    onSilence:
+      'Nothing further to the coach. `coach_not_onboarded` tells the ADMIN when a session is coming and they still have not '
+      + 'tapped — the chase belongs to the person who employs them.',
+    // The one message that tells a coach this business runs here at all. A bot
+    // that decides to stay quiet on it leaves somebody expected at a court they
+    // were never told about.
+    fixed: true,
+    template: 'coach_prompt',
+    templateEvent: 'confirm your classes',
+    actionTtlMinutes: DAY * 7,
+  },
   'CO-INVITE-CONFIRM': {
     id: 'CO-INVITE-CONFIRM',
     audience: 'coach',
     trigger:
-      "A coach's first inbound after being invited (§8.1): read their schedule and their pay back to them before anything goes live.",
+      "A coach's first inbound after CO-INVITE reached them (§8.1 step 3): read their schedule and their pay back to them "
+      + 'before anything goes live. Out of window the invite was a window-opener, so this is where the detail it could not '
+      + 'carry actually arrives — a second message by design, not a repetition.',
     defaultButtons: ['Looks right', "Something's wrong"],
     onSilence: 'Stays `invited`.',
     fixed: false,

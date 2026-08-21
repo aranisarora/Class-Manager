@@ -457,12 +457,30 @@ export async function firstContactBatch(job: Job): Promise<void> {
             join person pp on pp.id = pl.person_id
             join enrollment e on e.player_id = pl.id
              and (e.ended_on is null or e.ended_on >= (app.now() at time zone ${academy.timezone})::date)
-            join session s on s.class_id = e.class_id and s.status = 'scheduled'
-            join class cl on cl.id = s.class_id
+            join class cl on cl.id = e.class_id
+            /**
+             * LEFT, and no 48-hour bound. This used to be an inner join on a session
+             * `between app.now() and app.now() + interval '48 hours'`, because this
+             * message was the FALLBACK for families who never tapped the admin's
+             * forwarded link — "contacted the first time there is a real reason".
+             *
+             * It is the invite now, so waiting for a near session is waiting for
+             * nothing: the reason is that the academy went live. A family whose class
+             * is next Tuesday would have sat unreachable for six days, and a family
+             * enrolled in a class with no session on the books yet would have sat
+             * unreachable forever — silently, which §9.1 names as the worst failure
+             * the product has, because it looks like success.
+             *
+             * The enrolment joins stay INNER on purpose. A contact with no active
+             * enrolment is somebody the academy has nothing true to say to, and rule 2
+             * ("say something only the real academy could know") is not satisfiable
+             * without one.
+             */
+            left join session s on s.class_id = e.class_id and s.status = 'scheduled'
+             and s.starts_at >= app.now()
             left join venue v on v.id = coalesce(s.venue_id, cl.venue_id)
            where a.academy_id = ct.academy_id and a.holder_person_id = ct.person_id
-             and s.starts_at between app.now() and app.now() + interval '48 hours'
-           order by s.starts_at asc
+           order by s.starts_at asc nulls last
            limit 1
         ) nx on true
        where ct.academy_id = ${academyId}
@@ -472,7 +490,9 @@ export async function firstContactBatch(job: Job): Promise<void> {
            select 1 from message m
             where m.contact_id = ct.id and m.direction = 'outbound'
          )
-       order by nx.starts_at asc, ct.created_at asc
+       -- Soonest session first: whoever has a class coming gets the most useful
+       -- version of this message, and gets it in the first batch.
+       order by nx.starts_at asc nulls last, ct.created_at asc
        limit ${FIRST_CONTACT_BATCH_SIZE + 1}
     `
 
@@ -510,6 +530,13 @@ export async function firstContactBatch(job: Job): Promise<void> {
   let sent = 0
   for (const t of batch) {
     const venue = t.venue_name ? ` at ${t.venue_name}` : ''
+    // `starts_at` is nullable since the lateral went LEFT — a family enrolled in a
+    // class with nothing on the books yet is still invited, and rule 2 is still met
+    // by the class they are actually in. What is NOT allowed is inventing a time:
+    // `whenLabel(null)` would read as a real one.
+    const enrolled = t.starts_at
+      ? `${firstName(t.player_name)} has ${t.class_name} ${whenLabel(t.starts_at, tz, nowAt)}${venue}.`
+      : `${firstName(t.player_name)} is with us for ${t.class_name}.`
     const outcome = await composeAndSend(serviceCtx(academy.id), {
       toContactId: t.contact_id,
       header: clamp(academy.name, LIMITS.headerChars),
@@ -517,7 +544,7 @@ export async function firstContactBatch(job: Job): Promise<void> {
         // Rule 1: the recognised names do the trust work. Rule 2: say something
         // only the real place could know. Rule 4: continuity, never launch.
         `Hi ${firstName(t.holder_name)} — I'm the class manager for ${academy.name}.`,
-        `${firstName(t.player_name)} has ${t.class_name} ${whenLabel(t.starts_at, tz, nowAt)}${venue}.`,
+        enrolled,
         `Class updates and cancellations come through here from now on.`,
       ]), LIMITS.bodyChars),
       buttons: [
@@ -564,6 +591,7 @@ type ContactTarget = {
   holder_name: string
   player_name: string
   class_name: string
-  starts_at: Date
+  /** Null once the lateral went LEFT: enrolled, but nothing scheduled yet. */
+  starts_at: Date | null
   venue_name: string | null
 }

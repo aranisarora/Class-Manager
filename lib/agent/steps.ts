@@ -367,17 +367,26 @@ function notAnOperation(name: string): string {
  *
  * Every value of these in the codebase is written by the runtime into a button that
  * the operation itself mints — `cancel_session` mints `{confirmed:true}`,
- * `client_cancel` mints `{confirmed:true}`, `opt_out` and `undo` the same, and
- * `send_invite_draft` mints `{mark_sent:true}` behind `[Sent it]`. That is what they
- * mean: *this call is a replay of a button somebody tapped.* Nothing else produces
- * one, so a model that sets one is claiming a tap that never happened.
+ * `client_cancel` mints `{confirmed:true}`, `opt_out` and `undo` the same. That is
+ * what they mean: *this call is a replay of a button somebody tapped.* Nothing else
+ * produces one, so a model that sets one is claiming a tap that never happened.
  *
- * Watched live, twice: asked to add a coach and send the invite, the model set
- * `mark_sent` on its own initiative on the FIRST request. `send_invite_draft` with
- * `mark_sent` does not draft anything — so no invite message existed at all, the
- * coach was written to `invited` (making every "chase the uninvited" path skip her
- * forever), and the admin was told *"Noted — Nisha Rao's invite is out."* The tool
- * returned `ok: true`. Nothing anywhere disagreed.
+ * **`mark_sent` was the fourth, and it is gone because the claim it made is gone.**
+ * `send_invite_draft` handed the admin a link to forward and took `{mark_sent:true}`
+ * behind a `[Sent it]` button — a report, by a human, about an act the runtime could
+ * not see. Watched live, twice: asked to add a coach and send the invite, the model
+ * set `mark_sent` on its own initiative on the FIRST request. That call drafted
+ * nothing, so no invite message existed at all, the coach was written to `invited`
+ * (making every "chase the uninvited" path skip her forever), and the admin was told
+ * *"Noted — Nisha Rao's invite is out."* The tool returned `ok: true`. Nothing
+ * anywhere disagreed.
+ *
+ * `send_invite` sends the invite itself, so there is no longer an unwitnessed act to
+ * report: the runtime knows whether it sent, and `as_draft` — the surviving forward
+ * path — deliberately records nothing at all rather than accepting a claim about
+ * one. **The cleanest way to keep a human assertion honest turned out to be not
+ * needing it.** The name is dropped from the list rather than kept as a dead guard,
+ * because a guard over a parameter that no operation declares is drift, not safety.
  *
  * This is the same idea as stripping `requireRows` and `write.service` from
  * model-authored plans, applied to a claim about the world rather than a privilege:
@@ -399,19 +408,18 @@ function notAnOperation(name: string): string {
  */
 /**
  * `decided_timely` and `decided_window_hours` are here for a slightly different
- * reason than the other two, and it is worth saying which.
+ * reason than `confirmed`, and it is worth saying which.
  *
- * `confirmed` and `mark_sent` are claims about what a HUMAN did. These are claims
- * about what the RUNTIME decided when it minted a button — whether a cancellation
- * was inside the notice period, and what that period was at the time. Both belong
- * to the same class in the only way that matters here: the model must not be able
- * to assert either, because between them they decide whether a family is charged.
- * Minted by `client_cancel`, replayed on the tap path (where nothing is stripped,
- * by design), and removed from anything the model writes.
+ * `confirmed` is a claim about what a HUMAN did. These are claims about what the
+ * RUNTIME decided when it minted a button — whether a cancellation was inside the
+ * notice period, and what that period was at the time. Both belong to the same class
+ * in the only way that matters here: the model must not be able to assert either,
+ * because between them they decide whether a family is charged. Minted by
+ * `client_cancel`, replayed on the tap path (where nothing is stripped, by design),
+ * and removed from anything the model writes.
  */
 export const HUMAN_ASSERTION_PARAMS = [
   'confirmed',
-  'mark_sent',
   'decided_timely',
   'decided_window_hours',
 ] as const
@@ -419,8 +427,8 @@ export const HUMAN_ASSERTION_PARAMS = [
 /**
  * The params where FALSE is a claim too, so presence is what gets stripped.
  *
- * For `confirmed` and `mark_sent` the falsy value is the honest default — nobody
- * tapped, nothing was sent — so removing it would be noise. `decided_timely` is the
+ * For `confirmed` the falsy value is the honest default — nobody tapped — so removing
+ * it would be noise. `decided_timely` is the
  * other way round and the asymmetry bites: absent means "work it out from the
  * clock", `true` means free, and **`false` means charge them**. Stripping only
  * truthy values would leave the model unable to make a cancellation free and
@@ -467,8 +475,8 @@ function stripPayload(payload: unknown, stripped: string[]): unknown {
  *
  * @mechanism stripHumanAssertions — the runtime keeps the fields the model must not set. Every
  *   legitimate value of HUMAN_ASSERTION_PARAMS is minted by the runtime into a button somebody
- *   taps, so a model that sets one is claiming a tap that never happened: `send_invite_draft`
- *   with `mark_sent` drafted nothing, wrote the coach to `invited` — making every "chase the
+ *   taps, so a model that sets one is claiming a tap that never happened: the retired
+ *   `mark_sent` drafted nothing, wrote the coach to `invited` — making every "chase the
  *   uninvited" path skip her forever — and told the admin her invite was out, with `ok: true`
  *   and nothing anywhere disagreeing. Stripped only where "the model wrote this" is known,
  *   never on the tap path, and the names removed are returned so the model is told rather than

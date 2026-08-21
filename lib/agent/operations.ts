@@ -426,7 +426,7 @@ export type OperationName =
   | 'client_cancel'
   | 'convert_trial'
   | 'opt_out'
-  | 'send_invite_draft'
+  | 'send_invite'
   | 'undo'
   | 'remember'
   | 'forget'
@@ -2671,34 +2671,55 @@ const onboardCoach: OperationDef = {
 }
 
 /* =========================================================================== *
- * send_invite_draft — §8.1 step 2 / §9.1 step 2. Self-initiated invites.
+ * send_invite — §8.1 step 2 / §9.1 step 2. The bot sends it.
  * =========================================================================== */
 
-const sendInviteDraft: OperationDef = {
-  name: 'send_invite_draft',
+const sendInvite: OperationDef = {
+  name: 'send_invite',
   ownScope: true,
   /**
-   * **This is the family invite as well as the coach one, and nothing said so.**
+   * **The bot sends the invite. It used to hand the admin a link to forward.**
    *
-   * The operation has always served §9.1 step 2 — it takes `person_id`, resolves
-   * the name and mints the same `wa.me` deep link — but the declaration named
-   * neither id and the description implied a coach. The catalog, meanwhile,
-   * asserts the parent deep link twice as a trigger (CL-INTRO, CL-FIRST-CONTACT)
-   * without naming the tool that mints it. So the model was told the mechanism
-   * exists, given no way to reach it, and did the only thing left: it described
-   * the link in prose. Driven, `st-solo-setup`: *"share an invite link with them
-   * — a parent taps it, books a trial"*, and one message later its own reasoning
-   * worked out that *"there isn't an explicit operation for family invites in the
-   * tools besides send_invite_draft (coach)"* — a correct reading of what it had
-   * been shown.
+   * The old shape was `send_invite_draft`: mint a `wa.me` deep link with prefilled
+   * text, hand it to the ADMIN, and have them forward it from their own number to
+   * every coach and every parent one at a time. It existed for one reason — the
+   * recipient sends the first message, so the 24h window opens from THEIR side and
+   * the business-initiated send is never paid for (§14.7).
    *
-   * The general lesson is PREFIX-RULES.md's trap in the mirror: that document warns to
-   * look for capabilities the runtime built that the prompt never mentions, and
-   * this one was hiding behind a tool the model could already see. A parameter
-   * with no description is a capability with no advertisement.
+   * That saving was real and it was tiny, and it was bought with the most expensive
+   * thing in the product. Adoption is the whole game for a coaching business moving
+   * onto WhatsApp, and this made the admin the transport: forty families is forty
+   * forwards, each one a place the go-live stalls, and the failure mode is silent —
+   * a parent who never taps looks exactly like a parent who was never sent anything.
+   * §7.1 calls data entry "the unavoidable cost of adoption" and says reducing it is
+   * the highest-leverage work here. A per-person manual forward is data entry with a
+   * stranger's attention span in the loop.
+   *
+   * **What replaces it is not a new capability, it is an existing one pointed at the
+   * front door.** Every piece was already built and already load-bearing:
+   *
+   *   - The eight §16.2 templates are approvals per CATEGORY of unsolicited contact,
+   *     and `coach_prompt` / `session_reminder` already listed the invite rows in
+   *     their `covers`. **No ninth template, no new Meta approval.**
+   *   - `send`'s window gate (§14.7) already turns a cold send into a rendered
+   *     template automatically, so an invite to somebody who has never written in
+   *     needs no special path.
+   *   - `firstContactBatch` already stages the family fan-out ten at a time and halts
+   *     on the first bad delivery signal — the §16.1 protection that makes
+   *     bot-initiated contact safe on a shared number.
+   *
+   * So the deep link is not deleted, it is DEMOTED to what it is actually good for:
+   * a repair. When the bot's own send fails — a number that is not on WhatsApp, a
+   * block — forwarding from a number the person already knows is the only route left,
+   * and `as_draft` is how the admin asks for it.
+   *
+   * The cost of the change is stated plainly rather than hidden: one utility
+   * conversation per invitee, once, on a number the product controls. The thing it
+   * buys is that an academy goes live because the admin typed their roster in, not
+   * because forty people each remembered to tap something.
    */
   description:
-    'Draft the invite the ADMIN forwards from their own number, carrying a wa.me deep link with prefilled text. Works for a COACH or a FAMILY — it is the only invite in the product, and there is no other route a parent can be brought in by. The bot never sends it. The draft itself carries the [Sent it] button that records the forward — never compose your own.',
+    'SEND the invite — the bot sends it itself, from this academy\'s number, to the COACH or the FAMILY being invited. The admin forwards nothing. This is the only invite in the product and the only route a coach or parent is brought in by. Out of window it goes as an approved template and their tap opens the window; in window it goes as written. Pass `as_draft: true` ONLY to fall back to a forwardable link after a send to them has actually failed.',
   params: z.object({
     coach_id: uuid
       .nullish()
@@ -2706,9 +2727,15 @@ const sendInviteDraft: OperationDef = {
     person_id: uuid
       .nullish()
       .describe(
-        'For a FAMILY invite: the parent, by their person id. Same draft, same deep link — a parent who taps it opens the window from their side, which is what CL-INTRO fires on.',
+        'For a FAMILY invite: the parent, by their person id. Same operation, same send — the invite goes to them directly and their reply is what CL-INTRO fires on.',
       ),
-    mark_sent: z.boolean().optional().default(false),
+    as_draft: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe(
+        'The repair path, not the normal one. Hands the ADMIN a forwardable wa.me link instead of sending: for a number the bot could not reach, or an admin who asks to send it themselves. Never reach for this first — an invite the admin has to forward is the friction this operation exists to remove.',
+      ),
   }),
   async build(ctx, args, id) {
     const a = await academyOf(ctx)
@@ -2732,8 +2759,13 @@ const sendInviteDraft: OperationDef = {
      * BEFORE the transaction opens, so a coach an earlier step of the same plan creates
      * does not exist yet when this step's `build` runs. The two acts have to be two plans,
      * which is exactly what the model does when it is told — watched immediately after:
-     * it read this refusal, called `send_invite_draft` alone with the existing coach id,
-     * and the invite went out addressed properly.
+     * it read this refusal, called the invite alone with the existing coach id, and the
+     * invite went out addressed properly.
+     *
+     * **The guard matters more now than it did, not less.** When this operation drafted,
+     * a missed lookup shipped "Hi them" to the ADMIN, who would have read it before
+     * forwarding. Now the send is the act, so the same miss ships "Hi them" to the coach.
+     * The refusal below is the only reader left.
      */
     let personId = args.person_id ?? null
     let name: string | null = null
@@ -2752,65 +2784,177 @@ const sendInviteDraft: OperationDef = {
       if (p) name = p.full_name
     }
 
-    if (!name) {
+    if (!name || !personId) {
       throw new Error(
         args.coach_id || args.person_id
-          ? 'send_invite_draft: that id matches nobody I can see, so there is no name to address the invite to. ' +
-            'If the coach is created by an earlier step of THIS plan, they do not exist yet — this operation is ' +
-            'built before the plan runs. Commit the plan that adds them first, read the coach id back, then draft ' +
-            'the invite in a second plan.'
-          : 'send_invite_draft: say who this invite is for — pass coach_id (or person_id). Without one the draft ' +
-            'is addressed to "them", which is not something anyone can forward.',
+          ? 'send_invite: that id matches nobody I can see, so there is no name to address the invite to and nobody ' +
+            'to send it to. If the coach is created by an earlier step of THIS plan, they do not exist yet — this ' +
+            'operation is built before the plan runs. Commit the plan that adds them first, read the id back, then ' +
+            'send the invite in a second plan.'
+          : 'send_invite: say who this invite is for — pass coach_id (or person_id). Without one the invite is ' +
+            'addressed to "them", and it now goes to a real person rather than to you.',
       )
     }
 
-    const prefill = `Hi ${a.name}`
-    const digits = (sender?.phone_e164 ?? '').replace(/[^\d]/g, '')
-    const link = `https://wa.me/${digits}?text=${encodeURIComponent(prefill)}`
-    const draft =
-      `Hi ${name.split(' ')[0]} — we've moved ${a.name}'s scheduling onto WhatsApp. ` +
-      `Tap this and send the message it fills in, and it'll set you up: ${link}`
+    const first = name.split(' ')[0]
 
-    const steps: PlanStep[] = [
-      { note: `an invite draft for ${name}, for you to forward` },
+    /**
+     * The repair path (§8.1). Hands over the forwardable link and **changes nothing** —
+     * no status, no `invited_at`, no claim that anything was sent.
+     *
+     * The tempting alternative was a `[Sent it]` button writing `status='invited'`, and
+     * that is precisely the shape `stripHumanAssertions` exists to police: the runtime
+     * cannot see the admin's forward, so any record of it is a claim about a world it
+     * did not witness. Left at `added`, the coach still counts as un-onboarded in the
+     * brief and in `coach_not_onboarded`, which is the true state and the one that keeps
+     * chasing. So the message says exactly that instead of implying otherwise.
+     */
+    if (args.as_draft) {
+      const prefill = `Hi ${a.name}`
+      const digits = (sender?.phone_e164 ?? '').replace(/[^\d]/g, '')
+      const link = `https://wa.me/${digits}?text=${encodeURIComponent(prefill)}`
+      const draft =
+        `Hi ${first} — we've moved ${a.name}'s scheduling onto WhatsApp. ` +
+        `Tap this and send the message it fills in, and it'll set you up: ${link}`
+      return [
+        { note: `a forwardable invite link for ${name} — nothing sent from here, nothing recorded` },
+        {
+          message: {
+            to_contact_id: ctx.role === 'service' ? undefined : ctx.contactId,
+            to_person_id: ctx.role === 'service' ? id.person?.id : undefined,
+            pre_launch_ok: true,
+            body:
+              `Here's ${name}'s invite to forward from your own number:\n\n` +
+              `${draft}\n\n` +
+              `I can't see your forward, so nothing changes on my side until they write in — ` +
+              `they'll keep showing as not yet reached until then.`,
+            buttons: [
+              { title: 'Edit', action: { kind: 'reply', text: `Reword the invite for ${name}` } },
+            ],
+          },
+        },
+      ]
+    }
+
+    /* --- the normal path: the bot sends it ---------------------------------- */
+
+    if (args.coach_id) {
+      const classes = await q<{ name: string }>(
+        svc(ctx),
+        `select c.name from class_coach cc join class c on c.id = cc.class_id
+          where cc.coach_id = ${uid(args.coach_id)} and c.academy_id = ${uid(ctx.academyId)}
+          order by c.name`,
+      )
+      // Who added them, because "Sharwin added you as a coach" is recognised and a
+      // number is not — §9.1 rule 1, which is about trust and applies to a coach
+      // reading their first message from an unknown sender just as much.
+      const asker = id.person?.id ?? null
+      const [byWhom] = await q<{ full_name: string }>(
+        svc(ctx),
+        `select p.full_name from academy_admin aa join person p on p.id = aa.person_id
+          where aa.academy_id = ${uid(ctx.academyId)}
+          order by ${asker ? `(p.id = ${uid(asker)}) desc,` : ''} aa.created_at
+          limit 1`,
+      )
+      const added = byWhom?.full_name ? `${byWhom.full_name.split(' ')[0]} added you as a coach at ` : 'You are down as a coach at '
+      const load =
+        classes.length === 0
+          ? 'You have no classes on your name yet.'
+          : classes.length <= 2
+            ? `You're down for ${classes.map((c) => c.name).join(' and ')}.`
+            : `You're down for ${classes.length} classes.`
+
+      return [
+        {
+          message: {
+            to_person_id: personId,
+            // §8.1 puts the coach invite in SETUP, before the academy is live, so this is
+            // one of the few sends that must survive the pre-launch gate. Without it the
+            // invite is suppressed silently during the exact conversation that asks for it.
+            pre_launch_ok: true,
+            catalog_id: 'CO-INVITE',
+            body: `Hi ${first} — ${added}${a.name}, and I handle the scheduling here.\n\n`
+              + `${load} Tap below and I'll read them back with your pay rate before anything goes live.`,
+            buttons: [
+              { title: 'See my classes', action: { kind: 'reply', text: 'Show me my classes and my pay' } },
+              { title: 'Not me', action: { kind: 'reply', text: "I'm not a coach at this academy" } },
+            ],
+          },
+        },
+        {
+          write: `update coach set status = 'invited', invited_at = app.now()
+                   where id = ${uid(args.coach_id)} and academy_id = ${uid(ctx.academyId)} and status = 'added'`,
+        },
+        {
+          note: `${name}'s invite is sent — it went to them directly. When they tap it I read their classes and `
+            + `pay back to them, and they confirm. If a session comes up and they still haven't, I'll tell you.`,
+        },
+      ]
+    }
+
+    /**
+     * §2.6, and it is a refusal rather than a silent suppression on purpose. Before
+     * go-live the send gate would drop this as `pre_launch` and the admin would be told
+     * the invite went — R7's defining shape, on the one path where a parent hearing from
+     * a business they have not been told about is the damage.
+     */
+    if (a.onboarding_state !== 'live') {
+      throw new Error(
+        `send_invite: nothing reaches a family until this academy is live, and it is "${a.onboarding_state}". ` +
+          'Finish the roster and go live, and the invites go out staged in batches — or say so and I will send ' +
+          `${name}'s the moment you do.`,
+      )
+    }
+
+    const players = await q<{ person_id: string; full_name: string; class_name: string }>(
+      ctx,
+      `select distinct pp.id as person_id, pp.full_name, cl.name as class_name
+         from account acc
+         join player pl on pl.account_id = acc.id and pl.active
+         join person pp on pp.id = pl.person_id
+         join enrollment e on e.player_id = pl.id
+          and (e.ended_on is null or e.ended_on >= (app.now() at time zone ${lit(a.timezone)})::date)
+         join class cl on cl.id = e.class_id
+        where acc.academy_id = ${uid(ctx.academyId)} and acc.holder_person_id = ${uid(personId)}
+        order by pp.full_name`,
+    )
+    const kids = [...new Set(players.map((p) => p.full_name.split(' ')[0]))]
+    // Rule 2: say something only the real academy could know. The child's name and
+    // the class they are actually in is that, and it is the whole reason this reads
+    // as continuity rather than as a stranger with a link.
+    const proof =
+      kids.length === 0
+        ? ''
+        : ` ${kids.length === 1 ? kids[0] : `${kids.slice(0, -1).join(', ')} and ${kids[kids.length - 1]}`}`
+          + ` ${kids.length === 1 ? 'is' : 'are'} with us`
+          + (players[0]?.class_name && kids.length === 1 ? ` in ${players[0].class_name}` : '')
+          + '.'
+
+    return [
       {
         message: {
-          to_contact_id: ctx.role === 'service' ? undefined : ctx.contactId,
-          to_person_id: ctx.role === 'service' ? id.person?.id : undefined,
-          pre_launch_ok: true,
-          // `[Sent it]` re-ran this operation and re-sent the identical draft, which the
-          // repeat gate then ate — so the admin tapped a button and their chat showed
-          // nothing at all. A tap that changes something has to say something new, and
-          // what changed here is the only thing worth saying.
-          body: args.mark_sent
-            ? `Noted — ${name}'s invite is out. Nothing more from me until they tap it; ` +
-              `if they have a session in the next couple of days and still haven't, I'll tell you.`
-            : `Here's the invite for ${name} — send it from your own number so it lands warm:\n\n` +
-              `${draft}\n\n` +
-              `Once they tap it, I take it from there.`,
-          buttons: args.mark_sent
-            ? undefined
-            : [
-                {
-                  title: 'Sent it',
-                  action: {
-                    kind: 'operation',
-                    op: 'send_invite_draft',
-                    args: { coach_id: args.coach_id ?? null, person_id: personId, mark_sent: true },
-                  },
-                },
-                { title: 'Edit', action: { kind: 'reply', text: `Reword the invite for ${name}` } },
-              ],
+          to_person_id: personId,
+          catalog_id: 'CL-FIRST-CONTACT',
+          // The players, never the holder: `subjectName` drops any id equal to the
+          // recipient, so passing the parent's own id is the same as passing nothing
+          // and the template opens "For: Latha" about her own child's class.
+          subject_person_ids: players.map((p) => p.person_id),
+          body: `Hi ${first} — I'm the class manager for ${a.name}.${proof}\n\n`
+            + 'Class updates, cancellations and the monthly bill come through this chat from now on.',
+          buttons: [
+            {
+              title: kids.length === 1 ? `See ${kids[0]}'s schedule` : 'See the schedule',
+              action: {
+                kind: 'reply',
+                text: kids.length === 1 ? `Show me ${kids[0]}'s schedule` : 'Show me the schedule',
+              },
+            },
+            { title: 'Stop these', action: { kind: 'reply', text: 'Stop sending me these messages' } },
+          ],
         },
       },
+      { note: `${name}'s invite is sent — it went to them directly, not to you to forward.` },
     ]
-    if (args.mark_sent && args.coach_id) {
-      steps.push({
-        write: `update coach set status = 'invited', invited_at = app.now()
-                 where id = ${uid(args.coach_id)} and academy_id = ${uid(ctx.academyId)} and status = 'added'`,
-      })
-    }
-    return steps
   },
 }
 
@@ -3334,7 +3478,7 @@ export const OPERATIONS: Record<OperationName, OperationDef> = {
   claim_cover: claimCover,
   client_cancel: clientCancel,
   opt_out: optOut,
-  send_invite_draft: sendInviteDraft,
+  send_invite: sendInvite,
   undo,
   remember,
   forget,

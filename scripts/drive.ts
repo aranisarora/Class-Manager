@@ -1128,17 +1128,14 @@ async function main(): Promise<void> {
         )
         if (role === 'coach' && has('invite')) {
           // §8.1 — `added` is not `invited`, and only `invited` is what the admin's
-          // "they never onboarded" escalation looks for. The status moves on the second
-          // call, when the admin says they have forwarded the draft.
+          // "they never onboarded" escalation looks for. One call moves it now: the bot
+          // sends the invite itself, so there is no second "I have forwarded it" step to
+          // wait for and no `mark_sent` to match on.
           const coach = await coachContext(String(made[0].contact_id))
           await driveOperation({
-            contactId: admin.contactId, academyId, op: 'send_invite_draft',
-            args: { coach_id: coach.coachId, mark_sent: true },
-            // `mark_sent` is in the match, not just the args: the draft and the "I have
-            // sent it" are the same operation with one different argument, and matching on
-            // the coach alone taps the *draft* button — which composes the invite again and
-            // leaves the coach `added`, exactly the status this is here to move off.
-            match: { coach_id: coach.coachId, mark_sent: 'true' },
+            contactId: admin.contactId, academyId, op: 'send_invite',
+            args: { coach_id: coach.coachId },
+            match: { coach_id: coach.coachId },
             label: `Sent ${name}'s invite`,
           })
           const st = await q<any>(`select status, invited_at from coach where id = '${coach.coachId}'::uuid`, academyId)

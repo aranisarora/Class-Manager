@@ -850,7 +850,12 @@ async function census(id: Identity): Promise<string> {
               (uninvited || invited
                 ? `, and ${uninvited + invited} who cannot see a session, will not be reminded, and will not know they are expected anywhere: ` +
                   [
-                    uninvited ? `${uninvited} added but never invited — nothing has been sent to them at all` : '',
+                    // Naming the remedy, because the state alone was read as a
+                    // thing to report rather than a thing to fix, and the fix is
+                    // now one call rather than a link the admin has to forward.
+                    uninvited
+                      ? `${uninvited} added but never invited — nothing has been sent to them at all; send_invite reaches them directly`
+                      : '',
                     invited ? `${invited} invited and not yet confirmed — the invite is out; they have not tapped it` : '',
                   ]
                     .filter(Boolean)
