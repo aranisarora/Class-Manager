@@ -34,6 +34,7 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-CC** | A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule | [detail](#f-cc--a-commercial-term-nobody-agreed-to--first-class-is-free--volunteered-in-a-parenthetical-and-stated-as-the-businesss-own-rule) |
 | **F-CI** | The product reports what it TRIED as what HAPPENED — 26 unbacked claims in 33 turns, while `turnState` is already telling it otherwise | [detail](#f-ci--the-product-reports-what-it-tried-as-what-happened-and-turnstate-is-already-telling-it-otherwise) |
 | **F-CJ** | A rate change is destructive, so it re-prices sessions that already ran — and the parent was told the opposite of the row | [detail](#f-cj--a-rate-change-is-destructive-so-it-re-prices-sessions-that-already-ran--and-the-parent-was-told-the-opposite-of-the-row) |
+| **F-CK** | Quiet hours drops the message it means to delay, because nothing ever comes back for it | [detail](#f-ck--quiet-hours-drops-the-message-it-means-to-delay-because-nothing-ever-comes-back-for-it) |
 
 ---
 
@@ -693,3 +694,67 @@ attended at the old one — and §6.4 bills off attendance, so the register is e
 `mark_attendance` in `lib/agent/operations.ts` (reads the rate at mark time rather than at
 `session.starts_at`). The forward-dated half the model keeps promising — *"from 1 Sep"*,
 *"from October"* — has no home in the schema, which is why it is stated in prose every time.
+
+---
+
+### F-CK · Quiet hours drops the message it means to delay, because nothing ever comes back for it
+
+`send.ts`'s quiet-hours gate is explicit about what it is doing and why it is safe:
+
+> *Suppressed rather than deferred, and the key is released so the same moment may be attempted
+> again once morning comes: `send` has no queue of its own, and inventing one here would put a
+> second scheduler beside the real one.*
+
+The reasoning is right and the second half is not true of anything. **Nothing attempts it again.**
+
+`runDueJobs` (`lib/jobs/runner.ts`) calls the handler and then, unconditionally,
+`await finish(job.id, 'done', null)`. Send outcomes never reach that layer — the handler returns
+`void`, and no handler in `lib/jobs/handlers/` reads a `quiet_hours` outcome or re-enqueues on one.
+So the sequence is: the job runs, its send is suppressed, the idempotency key is released for a
+retry, the job is marked **done**, and morning never comes.
+
+**Measured, in the stress month** (`2026-08-21-17-19-stress-69q0`, academy `58b9df7c`, 16 simulated
+days):
+
+```
+message.suppressed_reason = 'quiet_hours'      4 rows
+job kind=client_outcome                        1 done, 1 skipped
+any pending or retried job for those sends     none
+```
+
+Four messages were composed, written to `message` as `suppressed`, and lost. Two of them are the
+**family invites at go-live**. Meera and Kiran were never introduced to the business at all — over
+the following two weeks they received tallies and dunning about money, having never had the
+introduction that explains who is messaging them.
+
+**It also makes the product lie without meaning to, which is how it was found.** In
+`st-coach-register` the model marks a register and says *"Both families get their session note
+automatically."* That was TRUE when it was said: `mark_attendance` had enqueued two
+`client_outcome` jobs and the operation result reported them as scheduled. One later ran and was
+suppressed by quiet hours; the other skipped. Nobody was told, and nobody was told that nobody was
+told. The same shape is behind `st-go-live`'s *"I'll send those once you say go"* — the invites had
+already been fired and eaten.
+
+This is why it is filed apart from [F-CI](#f-ci--the-product-reports-what-it-tried-as-what-happened-and-turnstate-is-already-telling-it-otherwise).
+F-CI is the product describing its own actions wrongly. Here the sentence is accurate at the moment
+it is written and the world changes underneath it afterwards, with no mechanism anywhere to notice
+or to say so.
+
+**Not only quiet hours.** `releasesKey` covers three reasons — `quiet_hours`,
+`recipient_frequency_cap` and `tenant_send_cap`. All three mean *the message is owed, the hour is
+wrong*; all three release the key for a retry that nothing performs. The frequency cap is the one
+that will bite hardest in production, because it fires precisely on the busiest families.
+
+**Where it lives.** `suppress()` / the quiet-hours gate in `lib/messaging/send.ts` decides "not
+now" and has, correctly, no way to schedule. `runDueJobs` in `lib/jobs/runner.ts` owns job lifecycle
+and cannot see send outcomes. The two need one signal between them, in the direction the layers
+already run (`jobs` imports `messaging`, never the reverse) — the shape `setNoteSink` and
+`setJobOrigin` already use, both of which are module-level sinks the runner sets around each
+handler. `deferPastQuietHours` already exists in `lib/jobs/util.ts` and is what the planner uses to
+avoid scheduling into the window in the first place.
+
+**The trap to design against.** A retry that is itself suppressed must not re-arm forever: a
+contact who is muted, capped, or asleep for a long weekend would generate an unbounded chain. Any
+mechanism here needs an attempt count on the payload and a ceiling, and a message that exhausts it
+is an admin's problem rather than a silent drop — which is the same shape `DUNNING_MAX` and
+`RECONCILE_MAX` already use.
