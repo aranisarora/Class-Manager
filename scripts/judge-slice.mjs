@@ -73,6 +73,40 @@ function printTurn(t) {
   console.log(t.tapped ? `[tapped a button: "${t.tapped}"]` : `"${t.say}"`)
   console.log(`\n(Decide what a good answer would be BEFORE reading any further.)`)
 
+  /**
+   * What it was told, BEFORE what it thought — because the thinking is a
+   * response to it, and because a figure the context already carried is not an
+   * invention. This section did not exist: the file's own header lists six
+   * things to read in order and none of them was the turn's own briefing, so a
+   * judge could mark a number unsourced that the prefix had handed over.
+   */
+  const ctx = (t.rounds ?? []).find((r) => r?.name === '(context)')
+  console.log(`
+--- 1b · WHAT IT WAS TOLD ----------------------------------------------`)
+  if (!ctx) {
+    console.log(
+      (t.rounds ?? []).length
+        ? '(no `(context)` row on this turn, though the trace has rounds)'
+        : '(no model was called on this turn: a tap, or a drain that only ran jobs)',
+    )
+  } else {
+    const a = ctx.args ?? {}
+    const tail = typeof a.tail === 'string' ? a.tail : ''
+    const cuts = Number(t.contextCuts ?? (tail.match(/… \(truncated\)/g) ?? []).length)
+    console.log(
+      `(${tail.length} chars of tail over a ${a.prefix?.chars ?? '?'}-char cached prefix, ` +
+        `${a.history ?? '?'} prior messages)`,
+    )
+    if (cuts) {
+      console.log(
+        `!! ${cuts} replayed read(s) were CUT AT 1,400 CHARS before the model saw them.
+` +
+          `   Section 3 shows those same reads WHOLE — that copy is the log's, not the model's.`,
+      )
+    }
+    console.log(j(tail))
+  }
+
   const reasoning = (t.rounds ?? []).filter((r) => r?.reasoning)
   console.log(`\n--- 2 · WHAT IT WAS THINKING (${reasoning.length} rounds) ----------------------------`)
   for (const r of reasoning) {

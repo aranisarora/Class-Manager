@@ -1535,7 +1535,6 @@ export type Thread = {
 
 /** One pane's messages — `GET /api/emulator/thread`. */
 export async function threadFor(contactId: string): Promise<Thread | null> {
-  const nowD = await now()
   for (const academyId of await worldAcademyIds()) {
     const found = await withSession(svc(academyId), async (tx) => {
       const head = await tx`
@@ -1581,6 +1580,12 @@ export async function threadFor(contactId: string): Promise<Thread | null> {
     })
     if (!found) continue
 
+    // Read the clock only once the academy is known, and read *that academy's*. The 24h
+    // badge compares `last_inbound_at` — stamped by a trigger in SQL, so on the tenant's
+    // clock — against this instant, and the world clock is a different instant for any
+    // tenant a sim has moved. Comparing the two answered the window question from two
+    // clocks at once, which reads "in window" for a thread that has been cold for days.
+    const nowD = await now(academyId)
     const c = found.head
     const last = isoOrNull(c.last_inbound_at)
     const lastDelivered = [...found.messages].reverse().find((m) => !m.suppressed_reason)
@@ -3023,6 +3028,21 @@ function guessMime(url: string, given?: string): string {
  * contact's state (§11.2) → run the turn.
  *
  * A tap carries `actionId`; `runTurn` consumes it with no model call (§2.2).
+ *
+ * @mechanism ingestInbound — the arrival stamp is taken in SQL as `app.now()`, never computed
+ *   in TypeScript, so an inbound row lands on the same clock as the outbound rows it sits
+ *   between. This is `lib/clock.ts`'s "honest edge of 0024" made unreachable at the one site
+ *   that fell off it: `app.now()` resolves the tenant from the session GUC and is always
+ *   right, while a TypeScript caller naming no academy silently gets the WORLD clock. The two
+ *   agree until a tenant is moved — which is what a sim does to every academy, every run — and
+ *   then `threadFor`, which orders a pane by `queued_at`, sorted every reply a person made to
+ *   the top of the thread, ahead of the question that prompted it, so the pane read as though
+ *   the messages before it were missing. Measured across four sim worlds: 77 of 77 inbound
+ *   rows misplaced, up to 8.3 days early, against 0 of 322 outbound — which take `app.now()`
+ *   and were right for free. The contact tray stayed correct throughout, because
+ *   `last_inbound_at` is stamped by a trigger in SQL, and that is what disguised a clock
+ *   defect as a rendering one.
+ *   Closes F-BX.
  */
 export async function ingestInbound(input: {
   fromPhoneE164: string
@@ -3048,7 +3068,6 @@ export async function ingestInbound(input: {
   const { identity, isNew } = resolved
   const academyId = identity.academyId
   const contactId = identity.contact.id
-  const at = (await now()).toISOString()
   const idempotencyKey = input.waMessageId ? `inbound:${input.waMessageId}` : null
 
   const written = await withSession(svc(academyId), async (tx) => {
@@ -3076,7 +3095,7 @@ export async function ingestInbound(input: {
                             media_url, wa_message_id, status, queued_at, sent_at, delivered_at,
                             in_window, reply_to_action_id, idempotency_key)
        values ($1::uuid,$2::uuid,$3::uuid,$4::uuid,'inbound',$5,$6::text::jsonb,$7,$8,'delivered',
-               $9::timestamptz,$9::timestamptz,$9::timestamptz,true,$10::uuid,$11)
+               app.now(),app.now(),app.now(),true,$9::uuid,$10)
        on conflict (idempotency_key) do nothing
        returning id`,
       [
@@ -3087,7 +3106,7 @@ export async function ingestInbound(input: {
           profileName: input.profileName ?? null,
           mediaMimeType: input.mediaUrl ? guessMime(input.mediaUrl, input.mediaMimeType) : null,
         }),
-        input.mediaUrl ?? null, input.waMessageId ?? null, at, replyTo, idempotencyKey,
+        input.mediaUrl ?? null, input.waMessageId ?? null, replyTo, idempotencyKey,
       ] as never[],
     )
     if (rows.length > 0) return { messageId: String(rows[0].id), duplicate: false }

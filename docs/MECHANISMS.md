@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-136 mechanisms · 15 findings closed by one · 11 findings still open
+137 mechanisms · 16 findings closed by one · 13 findings still open
 
 ## The scan
 
@@ -61,6 +61,7 @@ One line each. Find a candidate here, then read its entry below.
 `requireSandbox` — the refusal for the emulator controls whose scope is the whole world, so no row can vouch for them:  
 `requireSandboxAcademy` — the same refusal asked about one row rather than the whole deployment, so the owner can run scenarios again…  
 `PRICES` — one rate table the whole repo prices against, so a hand-driven turn and a probed one can be compared in the…  
+`ingestInbound` — the arrival stamp is taken in SQL as `app.now()`, never computed in TypeScript, so an inbound row lands on…  
 
 **`lib/agent/`**  
 `coachClashes` — asks the database, inside the plan's own transaction and after the steps have run, which coach this plan ju…  
@@ -234,6 +235,8 @@ One line each. Find a candidate here, then read its entry below.
   the same refusal asked about one row rather than the whole deployment, so the owner can run scenarios against the live console without "unlock production" — one permission granted to every tenant at once — being the only thing they can say. It reads `academy.is_sandbox` (0030) with the session PINNED TO THE CANDIDATE, the only pin that satisfies the service policy `using (id = app.academy_id())`; anything short of a proven `true` refuses, and a missing academyId refuses hardest, because the clock handler turns absence into the WORLD row that every tenant without one inherits. Honest only because per-tenant EFFECT already exists: 0024's nullable `sim_clock.academy_id` and `app.now_for()` mean pushing a sandbox tenant to Tuesday provably does not fire a real tenant's Tuesday.
 - **`PRICES`** — `lib/pricing.ts:4`  
   one rate table the whole repo prices against, so a hand-driven turn and a probed one can be compared in the same unit; the probe's duplicate copy is gone and every figure downstream derives from here, which makes it one place to be wrong rather than three. Cached input is its own rate per row and peak is a per-row multiplier, so a price card that moves is an edit and not a drift — a hardcoded cache fraction was wrong the day DeepSeek's cache hit landed at 3.2% of a miss. `costUsd` returns null for a model the table does not know, because "we do not know" and "it was free" are different facts and a total that silently swallows the first is a lie.
+- **`ingestInbound`** — `lib/seed.ts:3032`  
+  the arrival stamp is taken in SQL as `app.now()`, never computed in TypeScript, so an inbound row lands on the same clock as the outbound rows it sits between. This is `lib/clock.ts`'s "honest edge of 0024" made unreachable at the one site that fell off it: `app.now()` resolves the tenant from the session GUC and is always right, while a TypeScript caller naming no academy silently gets the WORLD clock. The two agree until a tenant is moved — which is what a sim does to every academy, every run — and then `threadFor`, which orders a pane by `queued_at`, sorted every reply a person made to the top of the thread, ahead of the question that prompted it, so the pane read as though the messages before it were missing. Measured across four sim worlds: 77 of 77 inbound rows misplaced, up to 8.3 days early, against 0 of 322 outbound — which take `app.now()` and were right for free. The contact tray stayed correct throughout, because `last_inbound_at` is stamped by a trigger in SQL, and that is what disguised a clock defect as a rendering one. **Closes F-BX.**
 
 ## `lib/agent/`
 
@@ -477,6 +480,6 @@ One line each. Find a candidate here, then read its entry below.
 
 ## Still open
 
-No mechanism claims 11 findings. They are listed in
+No mechanism claims 13 findings. They are listed in
 [`../findings/OPEN.md`](../findings/OPEN.md), which is generated from the ledger and is the
 one place that list lives.

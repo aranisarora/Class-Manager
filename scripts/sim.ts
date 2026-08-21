@@ -888,16 +888,35 @@ async function main(): Promise<void> {
 
   const budget = makeBudget(cfg)
   let counted = 0
-  let countedSeats = 0
   /**
    * Rupees, read off the log rather than accumulated in memory.
    *
    * A turn's cost is priced by `_capture.ts` when it is appended, and the log is
    * what the record is made of, so summing it is the one number that cannot
-   * disagree with the record's own. The seats' own tokens are added on top, in the
-   * same rupees, because `lib/pricing.ts` is the one converter and a budget that
-   * counted only one side of the conversation would be wrong by whatever the
-   * people cost.
+   * disagree with the record's own.
+   *
+   * THE CEILING MEASURES THE PRODUCT, NOT THE PEOPLE
+   * ---------------------------------------------------------------------------
+   * `--budget-inr` used to count the seats as well, on the reasoning that a
+   * budget over one side of a conversation is wrong by whatever the other side
+   * cost. That is true of a BILL and false of a CEILING, because the two sides
+   * are not the same order of magnitude and only one of them is under test.
+   *
+   * On 20 Aug a ₹34 ceiling ended a seven-day week after six windows. Of the ₹68
+   * it had counted by then, **₹67.13 was Claude playing twelve parents and 90
+   * paise was the product** — so a rupee limit on a run of this product was really
+   * a limit on the instrument driving it, and it read as the opposite of what it
+   * did. The same week run to completion spent ₹13.71 on the bot and ₹240.62 on
+   * its seats: seventeen to one. Any number a person types here means "spend about
+   * this much on the bot", and under the old accounting it never could.
+   *
+   * The seats are still measured, still recorded (`extra.run.seatInr`) and still
+   * printed beside the product's figure when the run closes. They simply do not
+   * bind the ceiling: seat spend is what the harness pays to ask the question, and
+   * a harness does not get to end the experiment. Watch a seat-model balance
+   * directly if that is what you need to cap — `--budget-min` bounds it in
+   * practice, because seat cost tracks wall-clock far more closely than it tracks
+   * anything the product does.
    */
   const settle = async (): Promise<number> => {
     const turns = await readTurns(dir)
@@ -905,9 +924,7 @@ async function main(): Promise<void> {
     // Deltas, because `spend` accumulates and the log is a running total.
     budget.spend(total - counted)
     counted = total
-    budget.spend(seatSpend.inr - countedSeats)
-    countedSeats = seatSpend.inr
-    return total + seatSpend.inr
+    return total
   }
 
   for (let day = 1; day <= cfg.days && !stoppedBy; day++) {
@@ -1285,6 +1302,25 @@ async function collectGarbage(rest: string[]): Promise<void> {
  * directory would say so. No secret goes in here — the database is named by host
  * and database only, because a manifest is a file people paste into issues.
  */
+/**
+ * The assembled stable prefix, identified rather than described.
+ *
+ * `stablePrefix()` is the same call the runtime makes and is a pure assembly of
+ * files and constants — no database, no model — so this costs one hash and
+ * cannot change what the run then does. A failure is recorded as a reason, not
+ * swallowed: a manifest that quietly omits the field would read as an old run.
+ */
+async function prefixIdentity(): Promise<Record<string, unknown>> {
+  try {
+    const { createHash } = await import('node:crypto')
+    const { stablePrefix } = await import('@/lib/agent/context')
+    const p = stablePrefix()
+    return { sha256: createHash('sha256').update(p).digest('hex'), chars: p.length }
+  } catch (e) {
+    return { unread: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 async function manifest(
   cfg: DriveConfig,
   plan: WorldPlan,
@@ -1326,6 +1362,21 @@ async function manifest(
       seat: cfg.seatModel,
       thinkingPin: process.env.PROBE_THINKING ?? null,
     },
+    /**
+     * WHICH PROMPT THIS RUN ACTUALLY RAN, as a hash of the assembled bytes.
+     *
+     * The prefix is the main independent variable in this repo — it is what
+     * `npm run ab -- --variant doctrine=<file>` exists to change — and until now
+     * only `ab` ever hashed it. Everything else recorded `{head: <120 chars>,
+     * chars: 71411}` on the turn, and 71,411 was the value in every context row
+     * of every run across seven git shas, because a length is not an identity.
+     * `ab`'s own arms prove the point: two prefixes, both real, 71,411 and 71,468
+     * characters, distinguishable by sha and by nothing else here.
+     *
+     * `git.sha` does not cover it: `dirty` is routinely non-zero, and the
+     * doctrine is a file the tree can carry uncommitted.
+     */
+    prefix: await prefixIdentity(),
     env: {
       node: process.version,
       platform: `${process.platform} ${process.arch}`,

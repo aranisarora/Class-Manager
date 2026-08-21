@@ -160,6 +160,8 @@ export type SeatMeta = {
   window?: string
   intent?: string
   personaReasoning?: unknown
+  /** What their phone showed when they decided this — see `TurnMeta.phone`. */
+  phone?: string
   /**
    * Who this is and what they are to the business, when the caller knows and
    * `PERSONAS` cannot — a seat composed from a world spec. See `drive()`.
@@ -610,6 +612,7 @@ export async function drive(
       ...(meta.window === undefined ? {} : { window: meta.window }),
       ...(meta.intent === undefined ? {} : { intent: meta.intent }),
       ...(meta.personaReasoning === undefined ? {} : { personaReasoning: meta.personaReasoning }),
+      ...(meta.phone === undefined ? {} : { phone: meta.phone }),
       ...(meta.kind === 'tap' ? { tapped: meta.say } : {}),
     },
     fn,

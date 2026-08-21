@@ -150,7 +150,15 @@ export type DriveConfig = {
   concurrency: number
   /** Stop cleanly after this many real minutes. Absent means no time limit. */
   budgetMin?: number
-  /** Stop cleanly after this many rupees. Absent means no money limit. */
+  /**
+   * Stop cleanly after this many rupees OF THE MODEL UNDER TEST. Absent means no
+   * money limit.
+   *
+   * The persona seats are not in this number, and in `sim` they dwarf it — a week
+   * that cost the product ₹13.71 cost ₹240.62 in Claude playing its twelve
+   * families. Counting both made the flag a cap on the instrument rather than on
+   * the thing being measured; `scripts/sim.ts` carries the incident.
+   */
   budgetInr?: number
   /** The persona agents' seed. The identity of a repeat — pass it back to repeat. */
   seed: string

@@ -502,7 +502,23 @@ for (const t of turns) {
   const s = scoreOf(t)
   const j = judged.get(t.n)
   const sql = t.sql ?? []
-  const modelSql = sql.filter((x) => !String(x.note ?? '').startsWith('harness'))
+  /**
+   * The model's own statements, apart from the runtime's.
+   *
+   * This filter looked for a note beginning `harness` and no call site has ever
+   * written one — the runtime's prefetches are labelled `prefetch: …` and the
+   * census carries its own label (`lib/agent/context.ts`). So the filter passed
+   * everything, and every run ever rendered showed the runtime's own reads under
+   * *"What it sent to Postgres"*, in the section a judge reads to decide whether
+   * the MODEL looked something up before answering. Attributing the context
+   * layer's work to the model is the opposite of the question being asked.
+   *
+   * Split rather than hidden: both sets are rendered, separately labelled and
+   * separately counted, so nothing is dropped and the attribution is right.
+   */
+  const isRuntime = (x) => Boolean(String(x.note ?? '').trim())
+  const modelSql = sql.filter((x) => !isRuntime(x))
+  const runtimeSql = sql.filter(isRuntime)
 
   const act = actionOf(t)
 
@@ -537,6 +553,21 @@ for (const t of turns) {
       .join(' · ')}</p>`
   }
 
+  /**
+   * What the harness could not collect, FIRST and loud.
+   *
+   * A turn missing its evidence looks exactly like a turn where nothing
+   * happened — no rounds, no tokens, ₹0 — and every number below is read off
+   * queries that may be the ones that failed. A reader has to know that before
+   * they read any of it, not after.
+   */
+  if (Array.isArray(t.notes) && t.notes.length) {
+    body += `<div class="err"><b>The harness could not collect part of this turn.</b> Everything below is
+    incomplete by that much, and a zero here may be a failure rather than a fact.<ul>${t.notes
+      .map((n) => `<li>${esc(n)}</li>`)
+      .join('')}</ul></div>`
+  }
+
   if (isQueue(t)) {
     const kinds = [...new Set((t.jobs ?? []).map(kindOf))]
     body += `<h4>What ran <span class="dim">— nobody typed; the queue came due</span></h4>
@@ -560,6 +591,19 @@ for (const t of turns) {
       <div class="think"><pre>${capped(why)}</pre></div>`
     }
     if (t.intent) body += `<h4>What they were trying to get</h4><p>${esc(t.intent)}</p>`
+    /**
+     * The screen they answered, before what they did about it.
+     *
+     * The record held the decision and not the stimulus, so a departure —
+     * the most consequential thing a driven week produces — could be read but
+     * not explained. This is the blindfolded view as it was actually rendered,
+     * not a reconstruction: rebuilding it here would risk showing a reader a
+     * message the real recipient never received.
+     */
+    if (t.phone) {
+      body += `<h4>What their phone showed <span class="dim">— the whole of what they could see</span></h4>
+      <div class="think"><pre>${capped(t.phone)}</pre></div>`
+    }
 
     if (spoke(t)) {
       body += `<h4>What they typed${
@@ -605,15 +649,42 @@ for (const t of turns) {
     }-char cached prefix${
       missed ? `, <span class="bad">${missed} failed lookup${missed === 1 ? '' : 's'} named</span>` : ''
     }</span></h4>`
+    /**
+     * The cut the model was handed, said where the model's copy is shown.
+     *
+     * `sql` below records these same reads WHOLE and flags them `truncated:
+     * false`, because that flag is about the log's copy. Without this line a
+     * reader compares a complete result against an answer that ignored it and
+     * concludes the model was careless, when it was starved.
+     */
+    // Recounted from the tail when the field is absent, so every run already on
+    // disk gets the warning too — the cut is in their bytes, only the count is new.
+    const cuts = Number(t.contextCuts ?? (tail.match(/… \(truncated\)/g) ?? []).length)
+    if (cuts) {
+      body += `<div class="err">${cuts} replayed read${cuts === 1 ? ' was' : 's were'} <b>cut at 1,400
+      characters before the model saw ${cuts === 1 ? 'it' : 'them'}</b>, mid-token. The same reads appear
+      whole under “What it sent to Postgres” — that copy is the log's, not the model's. Judge the answer
+      against what is in this block, not against what is in that one.</div>`
+    }
     body += `<div class="think"><pre>${capped(tail)}</pre></div>`
   }
 
   /* the thinking */
   const thinking = rounds.filter((r) => r.reasoning)
   if (thinking.length) {
-    body += `<h4>What it was thinking <span class="dim">— ${thinking.length} round${thinking.length === 1 ? '' : 's'}</span></h4>`
+    /**
+     * A drain is several handlers in one record and `round` restarts at 0 for
+     * each, so an unlabelled list of thirty rounds reads as one deliberation
+     * that never happened. Where more than one product turn is in here, the
+     * round is labelled with which act it belongs to.
+     */
+    const acts = [...new Set(rounds.map((r) => r.turnId).filter(Boolean))]
+    body += `<h4>What it was thinking <span class="dim">— ${thinking.length} round${
+      thinking.length === 1 ? '' : 's'
+    }${acts.length > 1 ? ` across ${acts.length} separate product turns` : ''}</span></h4>`
     for (const r of thinking) {
-      body += `<div class="think"><div class="hd">round ${r.round}</div><pre>${capped(r.reasoning)}</pre></div>`
+      const which = acts.length > 1 && r.turnId ? ` · act ${acts.indexOf(r.turnId) + 1} of ${acts.length}` : ''
+      body += `<div class="think"><div class="hd">round ${r.round}${which}</div><pre>${capped(r.reasoning)}</pre></div>`
     }
   } else if (rounds.length) {
     body += `<h4>What it was thinking</h4><p class="dim">No reasoning recorded on any round. If the model
@@ -651,6 +722,18 @@ for (const t of turns) {
   }
 
   /* the statements */
+  if (runtimeSql.length) {
+    body += `<h4>What the runtime read for it <span class="dim">— ${runtimeSql.length} prefetch${
+      runtimeSql.length === 1 ? '' : 'es'
+    }, before the model was asked anything. Not the model looking something up.</span></h4>`
+    for (const x of runtimeSql) {
+      const head = `${x.note ?? 'prefetch'} · ${x.rowCount ?? '?'} rows${x.ms ? ` · ${x.ms}ms` : ''}`
+      body += `<div class="stmt"><div class="hd">${esc(head)}</div><pre>${esc(x.sql)}</pre>`
+      if (x.error) body += `<div class="err">${esc(x.error)}</div>`
+      body += `</div>`
+    }
+  }
+
   if (modelSql.length) {
     body += `<h4>What it sent to Postgres <span class="dim">— ${modelSql.length} statement${
       modelSql.length === 1 ? '' : 's'
@@ -674,11 +757,13 @@ for (const t of turns) {
 
   /* what moved */
   const moved = worldDiff(t.beforeTap, t.afterTap)
-  body += `<h4>What it did</h4><p>Wrote <b>${t.wrote ?? 0}</b> audited row${
+  const changed = Array.isArray(t.changed) ? t.changed : null
+  body += `<h4>What it did</h4><p>Committed <b>${t.wrote ?? 0}</b> audited plan${
     (t.wrote ?? 0) === 1 ? '' : 's'
-  } and reached <b>${t.sent ?? 0}</b> ${(t.sent ?? 0) === 1 ? 'phone' : 'phones'}.${
+  }${changed?.length ? `, touching <b>${changed.length}</b> row${changed.length === 1 ? '' : 's'}` : ''}, and reached <b>${t.sent ?? 0}</b> ${(t.sent ?? 0) === 1 ? 'phone' : 'phones'}.${
     moved.length ? ` Moved: ${moved.map((m) => `<code>${esc(m)}</code>`).join(', ')}.` : ''
   }</p>`
+  body += changedTable(changed, t.wrote ?? 0)
   if (t.jobs?.length) body += `<p class="dim">Queue: ${esc(t.jobs.join(' · '))}</p>`
 
   /* what they read */
@@ -692,6 +777,23 @@ for (const t of turns) {
         t.reply ?? (spoke(t) ? '(nothing was sent)' : '(they sent nothing, so nothing came back)'),
       )}</pre>`
   if (t.buttons?.length) body += `<p>${t.buttons.map((b) => `<span class="btn">${esc(b)}</span>`).join(' ')}</p>`
+  /**
+   * The other two affordances, which the record kept none of until now.
+   *
+   * A list menu and a link are taps on a real phone, and a reply carrying only
+   * one of them used to render here as nothing at all — the same as a wall of
+   * text. F-BC's count of "messages with something to tap" is measured on
+   * `buttons` alone, so anything that shows up on this line is evidence that
+   * count is a floor.
+   */
+  const listRows = (t.messages ?? []).flatMap((m) => m.listRows ?? [])
+  const links = (t.messages ?? []).map((m) => m.link).filter(Boolean)
+  if (listRows.length || links.length) {
+    body += `<p class="dim">Also tappable, and not counted as buttons: ${[
+      ...listRows.map((r) => `<span class="btn">${esc(r)}</span>`),
+      ...links.map((l) => `<span class="btn">${esc(l)} ↗</span>`),
+    ].join(' ')}</p>`
+  }
   if (t.tapped) body += `<p class="dim">The harness tapped <b>${esc(t.tapped)}</b>.</p>`
   const suppressed = (t.messages ?? []).filter((m) => m.suppressedReason)
   if (suppressed.length) {
@@ -705,6 +807,69 @@ for (const t of turns) {
   ).toLocaleString()} out · ${inr(Number(t.inr))}</p>`
   if (t.error) body += `<div class="err">${esc(t.error)}</div>`
   body += `</details>`
+}
+
+/**
+ * The rows this turn changed, both sides — the section that used to be empty.
+ *
+ * `worldDiff` above answers "how many of each thing are there now", and only
+ * `probe-sql` ever filled the two snapshots it reads, so on every sim, live and
+ * probe-model run ever recorded this part of the page rendered nothing. `changed`
+ * is filled by every driver, because the database took the photographs itself.
+ *
+ * The summary line per row is a rendering and not a stored verdict: which keys
+ * differ is recomputed here, from the images, every time the page is built. The
+ * images themselves go under it whole — `capped` announces a clip if one bites.
+ *
+ * Absent and empty are different and are said differently: a run recorded before
+ * `changed` existed says so, rather than claiming the turn touched nothing.
+ */
+function changedTable(changed, wrote) {
+  if (changed === null) {
+    return wrote > 0
+      ? `<p class="dim">This run predates row-level capture, so what those ${wrote} plan${
+          wrote === 1 ? '' : 's'
+        } changed is not on the record — only that they committed.</p>`
+      : ''
+  }
+  if (!changed.length) return ''
+
+  const byAudit = new Map()
+  for (const c of changed) {
+    if (!byAudit.has(c.auditId)) byAudit.set(c.auditId, [])
+    byAudit.get(c.auditId).push(c)
+  }
+
+  let out = ''
+  for (const [auditId, rows] of byAudit) {
+    const intent = rows[0]?.intent
+    out += `<details class="stmt"><summary>${esc(intent || '(no stated intent)')} <span class="dim">— ${
+      rows.length
+    } row${rows.length === 1 ? '' : 's'} · ${esc(String(auditId).slice(0, 8))}</span></summary>`
+    out += `<div class="scroll"><table><tbody>`
+    for (const c of rows) {
+      out += `<tr><td><code>${esc(c.table)}</code></td><td>${esc(c.op)}</td><td class="dim">${esc(
+        String(c.pk ?? '—').slice(0, 8),
+      )}</td><td>${esc(fieldsMoved(c).join(', ') || '—')}</td></tr>`
+    }
+    out += `</tbody></table></div>`
+    for (const c of rows) {
+      out += `<div class="hd">${esc(c.table)} · ${esc(c.op)} · ${esc(String(c.pk ?? '—'))}</div>`
+      out += `<pre>${capped({ before: c.before, after: c.after })}</pre>`
+    }
+    out += `</details>`
+  }
+  return out
+}
+
+/** Which columns actually moved on one row. Recomputed from the images, never stored. */
+function fieldsMoved(c) {
+  if (c.op === 'insert') return ['inserted']
+  if (c.op === 'delete') return ['deleted']
+  const before = c.before ?? {}
+  const after = c.after ?? {}
+  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+  return keys.filter((k) => JSON.stringify(before[k]) !== JSON.stringify(after[k]))
 }
 
 /** Which counts changed either side of the tap. Only the ones that moved. */

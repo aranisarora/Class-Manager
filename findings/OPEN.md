@@ -1,6 +1,6 @@
 # What is open
 
-11 findings. This file is the source of truth for what is broken — hand-written, and short on
+13 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -28,6 +28,8 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-BL** | `session_coach` cannot record a removal **[decided]** | [detail](#f-bl--session_coach-cannot-record-a-removal) |
 | **F-BU** | The proactive surface was unpriced, and it is most of what the product says | [detail](#f-bu--the-proactive-surface-was-unpriced-and-it-is-most-of-what-the-product-says) |
 | **F-BV** | A window over `job` cannot answer "what ran in this turn", and never could | [detail](#f-bv--a-window-over-job-cannot-answer-what-ran-in-this-turn-and-never-could) |
+| **F-BY** | The context budget drops whole lookups from the model's prompt and leaves no mark | [detail](#f-by--the-context-budget-drops-whole-lookups-from-the-models-prompt-and-leaves-no-mark) |
+| **F-BZ** | A statement cannot say which turn sent it, so a drain cannot be recorded as the several turns it is | [detail](#f-bz--a-statement-cannot-say-which-turn-sent-it-so-a-drain-cannot-be-recorded-as-the-several-turns-it-is) |
 
 ---
 
@@ -315,6 +317,23 @@ one. A regex for *"one tap"* would join that list within a drive. If the orderin
 change earns nothing, this finding stays open and unfixed, which is what
 ARCHITECTURE says to do when no layer owns a defect.
 
+**21 Aug 2026 — the number above is a floor, because the instrument measured one
+of three affordances.** The product ships quick-reply buttons, a list menu
+(`payload.list.sections[].rows`) and a link (`payload.link`); `_seat.renderPhone`
+shows all three, because all three are taps on a real phone. `_capture.ts` stored
+only `payload.buttons[].title`, so a reply whose affordance was a list menu was
+recorded as `buttons: []` and counted here as nothing to tap. Both counts in this
+entry — *7 of 27*, and *6 of 20 with every one forced by machinery* — are computed
+on that field.
+
+`Outbound` now carries `listButton`, `listRows` and `link` beside `buttons`, so
+the question is answerable. **This does not overturn the finding and is not
+evidence against it**: the runs it was measured on are on disk and cannot be
+re-measured for what was never recorded. It means the re-run this entry already
+calls for has to count all three, and that the zero for the three FAMILIES needs
+confirming rather than citing. The standing prohibition on reading prose for talk
+of tapping is untouched — this counts structure the message actually carried.
+
 ### F-BL · `session_coach` cannot record a removal
 
 **What happens.** The owner took two coaches off a Saturday session and put a third on. The
@@ -400,3 +419,57 @@ question directly, and `lib/jobs/runner.ts` has the same blind spot in productio
 behaviour needs it — `job_tick` (0029) already covers whether the beat is alive — and adding a
 column to the product's schema to serve an instrument inverts this repo's own layering. Recorded
 here so the next reader does not re-derive the choice.
+
+### F-BY · The context budget drops whole lookups from the model's prompt and leaves no mark
+
+`recentLookups` (`lib/agent/loop.ts`) replays recent reads into the turn's tail so the model can
+see what it already asked. It cuts in two places and only one of them is visible:
+
+- **Each result at 1,400 characters**, leaving `… (truncated)`. Measured across every run on
+  disk: 16 occurrences, every one landing at exactly 1,417 rendered characters, several bisecting
+  a UUID mid-token.
+- **The whole block at a 6,000-character `BUDGET`** — and this one `return`s early with **no
+  marker at all**. The model is shown some prior lookups and not others, and nothing in the
+  prompt, the trace or the record says a thing was dropped.
+
+The second is the worse of the two for the same reason F-BU was worse than it looked: an absence
+leaves nothing behind. A reader sees a short list of prior lookups and cannot tell it from a
+complete one, so *"it had already read that and ignored it"* and *"it was never shown that"* are
+the same bytes.
+
+**Half-addressed, 21 Aug 2026.** `Turn.contextCuts` now counts the visible cut and
+`scripts/report.mjs`, `_judge-text.mjs` and `judge-slice.mjs` warn where it bit — because the
+record was *more complete than the model's own context* and said nothing, which convicts a
+starved model of carelessness. That closes nothing here: it counts the marked cut and cannot
+count the unmarked one.
+
+**The structural home** is `recentLookups` itself, and the shape is already in this codebase:
+`context.ts`'s `unread` states the gap where a prefetch failed rather than removing its
+paragraph, on the grounds that a paragraph that was never there is invisible to everything
+downstream. The budget should do the same — say how many blocks it dropped, in the tail, where
+the model and the record both get it.
+
+### F-BZ · A statement cannot say which turn sent it, so a drain cannot be recorded as the several turns it is
+
+`_capture.ts` attributes a beat's evidence to one record. For a seat that is right — a tap opens
+a second `turn` row and both halves are one thing a person did. For a queue drain it is not:
+several independent job handlers run in one window and land in one record. Measured on
+`2026-08-20-18-00-sim-s71s` turn 50: `who: queue`, **four `turnIds`, thirty rounds**, and
+`MAX_TOOL_ROUNDS` is five. The round counter restarts per handler, so the only way to find the
+seams was to watch for a reset — and that does not work either, because the sequence runs
+`… 2, 2, 3, 2, 0, 1 …`.
+
+**Partly addressed, 21 Aug 2026.** Every `Round` and every `Outbound` now carries the `turnId` it
+came from, and the readers label each act, so the rounds and the messages of one handler can be
+told from another's.
+
+**`sql` cannot be, and that is the finding.** `SqlRecord` has no `turnId` and `recordSql`
+(`lib/agent/sql-trace.ts`) is module state with no notion of which product turn is running — by
+design, and the file says so: two turns under one capture get their statements interleaved in
+arrival order, "which is the honest answer rather than a wrong attribution." So splitting a
+four-handler drain into four records today would strand 15.6% of the record — the part that
+answers *what did this job actually query* — and trade one blindness for another.
+
+**The structural home** is `sql-trace.ts`: a statement should carry the turn that sent it, from
+the same `app.turn_id` the database already stamps on `message` and `audit_entry` for exactly
+this reason. The record-level split of a drain is correct only after that.

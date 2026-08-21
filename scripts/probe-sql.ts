@@ -996,6 +996,15 @@ async function report(results: Result[], academyId: string): Promise<void> {
       turnIds: [],
       wrote: (r.sql ?? []).filter((x) => x.kind !== 'read' && (x.rowCount ?? 0) > 0).length,
       sent: r.reply ? 1 : 0,
+      /**
+       * Empty, and correctly so rather than for want of looking. The snapshot
+       * trigger (0005) fires only while `app.audit_id` is set, which is what
+       * `beginAudit` does around a PLAN. This suite runs model-authored SQL
+       * directly, outside a plan, so no audit entry opens and no image is taken.
+       * The world either side is what this suite records instead — `beforeTap`
+       * and `afterTap` below, which no other instrument fills.
+       */
+      changed: [],
       error: r.error,
       beforeTap: r.before,
       afterTap: r.after,

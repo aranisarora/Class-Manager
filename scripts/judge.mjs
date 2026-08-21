@@ -37,13 +37,22 @@
  * judgement you cannot argue with is not a judgement — so the reasoning travels
  * with the number, and the file is editable.
  *
- * It reads the product's own record (`turn`, `message`) rather than the probe's
- * copy, for the reason `judge-feed` does: the copy does not exist until the
- * process exits, and a turn should be gradeable within a minute of happening.
+ * IT READS THE RUN RECORD. `--run <dir>` opens `record.json` and judges from it,
+ * which is where the SQL, the rows, what changed, the harness's own failures and
+ * the untruncated trace live. The old reason for reading the `turn` table instead
+ * — "the copy does not exist until the process exits" — stopped being true on
+ * 20 Aug 2026, when `_capture` began appending one line per turn as the run walks
+ * and `_derive` began rebuilding `record.json` after each one.
+ *
+ * `--academy <name>` still reads the database, for tailing a drive that has no
+ * record yet. It sees strictly less: `turn.tool_calls` is clipped at 4,000
+ * characters unless the server was started with `PROBE_FULL_TRACE=1`, and no
+ * statement, row or changed image is on that table at all. It says so when used.
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import postgres from 'postgres'
+import { renderTurn as renderRecordTurn, JUDGE_CAP } from './_judge-text.mjs'
 
 const root = path.join(
   path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')),
@@ -65,6 +74,11 @@ const flag = (n, d = '') => {
   return a.includes('=') ? a.slice(a.indexOf('=') + 1) : (argv[i + 1] ?? d)
 }
 const ACADEMY = flag('academy', '')
+/**
+ * The run directory to judge. The record path, and the one that can see the
+ * whole turn — see the header. `--academy` remains for tailing a live drive.
+ */
+const RUN = flag('run', '')
 const LAST = Number(flag('last', '0')) || null
 const OUT = flag('out', '')
 /**
@@ -75,15 +89,23 @@ const OUT = flag('out', '')
  * uuid and would join to nothing. `turnId` on the record is the join.
  */
 const RECORDS = flag('records', '')
-const CAP = Number(flag('cap', '9000'))
+// One cap, shared with `judge-slice`, and generous: the heaviest turns on disk
+// are 85k-139k bytes and the old 9,000 showed a judge about 6% of them.
+const CAP = Number(flag('cap', String(JUDGE_CAP)))
 const MODEL = flag('model', env.MODEL_MAIN || 'deepseek-chat')
 
-if (!ACADEMY) {
-  console.error('judge — pass --academy "<name>" [--last N] [--out judgement.json]')
+if (!ACADEMY && !RUN) {
+  console.error('judge — pass --run <run-dir> (preferred), or --academy "<name>" to tail a live drive')
+  console.error('        [--last N] [--out judgement.json]')
   process.exit(2)
 }
 
-const sql = postgres(env.DATABASE_URL, { ssl: 'require', max: 2, prepare: false, onnotice: () => {} })
+/**
+ * Opened only by the `--academy` path. `--run` reads a file and must not need a
+ * database at all — judging a finished run should work from the directory alone.
+ */
+let _sql = null
+const db = () => (_sql ??= postgres(env.DATABASE_URL, { ssl: 'require', max: 2, prepare: false, onnotice: () => {} }))
 
 /** Announced, never silent — the same rule `judge-feed` holds itself to. */
 const cut = (s) => {
@@ -108,7 +130,20 @@ function renderTurn(t, msgs) {
   lines.push(`THEY SAID: ${cut(t.input?.text ?? t.input?.task?.instruction ?? '(a tap)')}`)
   for (const c of calls) {
     if (c.reasoning) lines.push(`\nTHINKING (round ${c.round}):\n${cut(c.reasoning)}`)
-    if (c.name && !c.name.startsWith('(')) {
+    /**
+     * `(context)`, `(model)` and `(reflection)` used to be dropped here, and
+     * `(context)` is what the model was TOLD. So the judge was asked whether an
+     * answer was derivable while being shown everything except the thing it was
+     * derivable from, and asked to grade ECONOMY with no per-round spend.
+     */
+    if (c.name === '(context)' && c.args?.tail) {
+      lines.push(`
+WHAT IT WAS TOLD (round ${c.round}):
+${cut(c.args.tail)}`)
+    } else if (String(c.name ?? '').startsWith('(')) {
+      if (c.result !== undefined) lines.push(`
+THE LOOP — ${c.name}: ${cut(c.result)}`)
+    } else if (c.name) {
       lines.push(`\nCALLED ${c.name}: ${cut(c.args)}`)
       if (c.error) lines.push(`  REFUSED: ${cut(c.error)}`)
       else lines.push(`  CAME BACK: ${cut(c.result)}`)
@@ -184,14 +219,65 @@ async function judgeOne(text) {
   }
 }
 
-const [academy] = await sql`select id, name from academy where name = ${ACADEMY} limit 1`
+/**
+ * The record path: one turn at a time out of `record.json`, rendered by the
+ * shared `_judge-text` so this judge and `judge-slice` cannot disagree about
+ * what a turn is.
+ */
+async function judgeFromRecord(dir) {
+  const file = path.join(dir, 'record.json')
+  if (!fs.existsSync(file)) {
+    console.error(`no record.json in ${dir}`)
+    process.exit(2)
+  }
+  const rec = JSON.parse(fs.readFileSync(file, 'utf8'))
+  const all = Array.isArray(rec.turns) ? rec.turns : []
+  const picked = LAST ? all.slice(-LAST) : all
+  const out = { turns: {}, patterns: [], verdict: null }
+
+  for (const t of picked) {
+    const key = t.id || String(t.n)
+    try {
+      const v = await judgeOne(renderRecordTurn(t, CAP))
+      out.turns[key] = v
+      const total = v.safety + v.truth + v.judgement + v.voice + v.economy
+      const mark = v.safety === 0 ? '!!' : total >= 9 ? '  ' : ' ·'
+      console.log(`${mark} ${String(key).padEnd(28)} ${total}/10  ${v.note}`)
+    } catch (e) {
+      console.error(`   ${key}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  return out
+}
+
+if (RUN) {
+  const out = await judgeFromRecord(RUN)
+  const target = OUT || path.join(RUN, 'judgement.json')
+  // A human verdict already beside the record is never overwritten by a machine
+  // one — the same rule the academy path keeps below.
+  const existing = fs.existsSync(target) ? JSON.parse(fs.readFileSync(target, 'utf8')) : {}
+  for (const [k, v] of Object.entries(existing.turns ?? {})) {
+    if (!String(v?.by ?? '').startsWith('judge:')) out.turns[k] = v
+  }
+  fs.writeFileSync(target, JSON.stringify({ ...existing, ...out }, null, 2))
+  console.log(`
+wrote ${Object.keys(out.turns).length} judgements to ${target}`)
+  process.exit(0)
+}
+
+console.error('judge: reading the `turn` table. This sees no SQL, no rows and no changed images,')
+console.error('       and a clipped trace unless the server ran with PROBE_FULL_TRACE=1.')
+console.error('       Pass --run <run-dir> to judge the record instead.')
+console.error('')
+
+const [academy] = await db()`select id, name from academy where name = ${ACADEMY} limit 1`
 if (!academy) {
   console.error(`no academy called ${ACADEMY}`)
-  await sql.end()
+  await (_sql ? _sql.end() : Promise.resolve())
   process.exit(2)
 }
 
-const turns = await sql`
+const turns = await db()`
   select t.id, t.created_at, t.role_acted, t.input, t.output, t.tool_calls,
          t.rounds, t.latency_ms
     from turn t
@@ -210,7 +296,7 @@ const picked = LAST ? turns.slice(-LAST) : turns
 const out = { turns: {}, patterns: [], verdict: null }
 
 for (const t of picked) {
-  const msgs = await sql`
+  const msgs = await db()`
     select m.body, m.contact_id, m.suppressed_reason,
            p.full_name as to_name,
            coalesce(
@@ -252,4 +338,4 @@ if (OUT) {
   console.log(`\nwrote ${Object.keys(out.turns).length} judgements to ${OUT}`)
 }
 
-await sql.end()
+await (_sql ? _sql.end() : Promise.resolve())

@@ -136,6 +136,14 @@ const { captureFullTrace } = await import('@/lib/agent/turn-trace')
 export type Round = {
   round: number
   name: string
+  /**
+   * The product turn this round came out of.
+   *
+   * `round` restarts at 0 for every product turn, and a queue drain puts several
+   * of them in one record, so the number alone cannot say where one handler
+   * stopped and the next began. Absent on runs recorded before this was stamped.
+   */
+  turnId?: string
   ms?: number
   args?: unknown
   result?: unknown
@@ -148,10 +156,77 @@ export type Outbound = {
   to: string | null
   body: string
   buttons: string[]
+  /**
+   * The other two things a person can tap, which this record used to drop.
+   *
+   * The product ships three affordances — quick-reply buttons, a list menu
+   * (`payload.list.sections[].rows`) and a link (`payload.link`) — and
+   * `renderPhone` shows all three, because all three are taps on a real phone.
+   * Only `buttons` was ever stored, so a reply whose only affordance was a list
+   * came back as `buttons: []`: indistinguishable from a wall of text with
+   * nothing to tap.
+   *
+   * That matters beyond tidiness. **F-BC's headline measurement — 7 of 27
+   * turn-composed messages carrying a tappable button, 0 across 6 messages to
+   * families — is computed on `buttons` alone**, so it is a floor rather than a
+   * count, and the finding's number has to be re-measured now that the other two
+   * are recorded. Whether the conclusion moves is a question for the re-run; the
+   * instrument's job is to stop making it unanswerable.
+   */
+  listButton?: string | null
+  listRows?: string[]
+  link?: string | null
   status: string
   /** `turn`, `job`, `tap` or `system` — what put it on the wire (0032). */
   origin: string | null
   suppressedReason: string | null
+  /**
+   * The turn the DATABASE stamped on this message (0019), so a drain's messages
+   * can be told apart by which handler sent them. Null for a standing job, a
+   * seed or a repair — rows that belong to nobody's turn.
+   */
+  turnId?: string | null
+}
+
+/**
+ * One row this turn changed, as the database itself photographed it.
+ *
+ * WHY THIS IS READ RATHER THAN RECONSTRUCTED
+ * -----------------------------------------------------------------------------
+ * `sql` records what the model SENT, and for a write that is all it records: a
+ * write is stored with its statement and its `rowCount` and never with its rows
+ * (`plan.ts`), because `captureSql({rows: true})` fills `rows` on the read path
+ * only. Measured on `2026-08-20-18-00-sim-s71s`: 266 of 268 reads kept their
+ * rows and 0 of 16 writes did. So the record could say that one row changed and
+ * never what it was, or became — which is the question every money finding in
+ * `findings/` turns out to be asking.
+ *
+ * The answer was already in the database. `0005_audit.sql` puts an
+ * after-insert-or-update-or-delete trigger on every audited table, and it writes
+ * `row_snapshot(audit_id, table_name, pk, op, before, after)` — full images,
+ * both sides, per row. `lib/audit.ts` reads it to build an undo; nothing else
+ * ever did. This turn's own rows are reachable by joining it to `audit_entry`,
+ * which `_capture` was already querying, for a `count(*)`.
+ *
+ * Nothing is added to the product's schema to serve this. F-BV considered a
+ * `ran_at` column for the queue's sake and refused it on the grounds that an
+ * instrument does not get to shape the tables it measures; reading a table that
+ * the product maintains for its own reasons is the other side of that rule.
+ */
+export type Changed = {
+  /** The table the trigger fired on. */
+  table: string
+  /** The row's id, where it has one — `row_snapshot.pk` is nullable. */
+  pk: string | null
+  op: 'insert' | 'update' | 'delete'
+  /** The row before, `null` on an insert. */
+  before: unknown | null
+  /** The row after, `null` on a delete. */
+  after: unknown | null
+  /** The audit entry these images hang off, so several rows group into one act. */
+  auditId: string
+  /** What that act said it was for, as the writer stated it. */
+  intent: string | null
 }
 
 /**
@@ -218,6 +293,8 @@ export type Turn = {
    */
   intent?: string
   personaReasoning?: unknown
+  /** The screen they answered — see `TurnMeta.phone`. */
+  phone?: string
   rounds: Round[]
   sql: SqlRecord[]
   messages: Outbound[]
@@ -240,6 +317,67 @@ export type Turn = {
   /** Rows this turn audited, and messages it put on the wire. Counts, not verdicts. */
   wrote: number
   sent: number
+  /**
+   * The rows behind that count, both sides — see `Changed`.
+   *
+   * `wrote` stays a count and keeps its meaning exactly: the number of audit
+   * entries in this turn's window. This is what those entries actually did, and
+   * it is a list rather than a diff because a diff is a reading and this layer
+   * does not read.
+   *
+   * Optional, and the distinction is load-bearing: `[]` is a turn that changed
+   * nothing, and ABSENT is a run recorded before this was collected. Every run
+   * in `.probe/archive/runs` is the second, and a required field here would be a
+   * type that lies about those files — the same reason everything past `name` on
+   * `Round` is optional.
+   */
+  changed?: Changed[]
+  /**
+   * What the harness could not collect while assembling this turn, and why.
+   *
+   * Sentences, never a flag. Four queries here used to end in `.catch(() => [])`,
+   * so a turn whose evidence query died came out byte-identical to a turn where
+   * the model did nothing: no rounds, no tokens, ₹0, no error. Both are quiet and
+   * only one of them is true, and the record could not tell them apart — the
+   * repo's own "a green tool result is not evidence" trap, inside the instrument
+   * that exists to catch it.
+   *
+   * This is evidence and not a verdict: it names what failed, in the shape
+   * `context.ts` uses for a dead prefetch, and leaves what that means to a reader.
+   */
+  notes?: string[]
+  /**
+   * How many of the read-results replayed into this turn's context were CUT
+   * before the model saw them.
+   *
+   * THE ASYMMETRY THIS EXISTS TO STATE
+   * ---------------------------------------------------------------------------
+   * `recentLookups` (loop.ts) replays recent reads into the tail and clips each
+   * one at 1,400 characters, mid-token — measured across every run on disk, 16
+   * of them, every single cut landing at exactly 1,417 rendered characters. The
+   * SAME reads are recorded in `sql` in full, with `truncated: false`, because
+   * that flag describes the log's own copy of the rows and not the model's.
+   *
+   * So the record was MORE COMPLETE THAN THE MODEL'S OWN CONTEXT, and said
+   * nothing about it. A reader sees the whole result, sees the model answer as
+   * though it had not, and writes down that the model ignored what it was given
+   * — when the model was given 1,400 characters ending inside a UUID. That is
+   * the worst kind of blindness an instrument can have: it does not hide a
+   * failure, it manufactures one.
+   *
+   * A count, not a flag, and the cut lines themselves are already in the tail
+   * this same round records whole — so a reader who wants to know WHICH read was
+   * starved reads them there.
+   */
+  contextCuts?: number
+  /**
+   * Every model that ran inside this turn, as the product recorded it.
+   *
+   * `inr` was priced against `env.MODEL_MAIN` no matter what actually ran, so an
+   * A/B arm varying the model priced one arm at the other's rate — in rupees, in
+   * an INR-billing product, in the field the run's cost table is summed from.
+   */
+  models?: string[]
   /**
    * The business, counted either side of the harness's thumb.
    *
@@ -353,6 +491,22 @@ export type TurnMeta = {
    * time window unchanged.
    */
   contactId?: string | null
+  /**
+   * EXACTLY what this person's phone showed when they decided what to do.
+   *
+   * `renderPhone` (`_seat.ts`) builds it, `_persona-agent` calls it "the only
+   * thing they can see", and it is the whole stimulus a seat responds to. The
+   * record kept the DECISION — `intent`, `personaReasoning` — and threw away the
+   * screen that produced it, so a reader looking at "she gave up" could not see
+   * what made her.
+   *
+   * It has to be handed over rather than rebuilt afterwards. The blindfold is
+   * five predicates on one query, and `DRIVING.md` names a second copy of it
+   * that drops the suppression clause as the way a reader is shown a message the
+   * real recipient never received — a reading that is false in a way nothing
+   * downstream can catch. So this is the view itself, as it was rendered.
+   */
+  phone?: string
   /**
    * The business, counted either side of this turn — see `Turn.beforeTap`.
    *
@@ -673,12 +827,29 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
     let sql: SqlRecord[] = []
     let error: string | null = null
 
-    try {
-      const got = await captureSql({ rows: true }, () => captureFullTrace(() => fn(sink)))
-      sql = got.sql
-    } catch (e) {
-      error = e instanceof Error ? (e.stack ?? e.message) : String(e)
-    }
+    /**
+     * The throw is caught INSIDE the capture, not around it.
+     *
+     * `captureSql` collects into a local array and hands it back on its return;
+     * a throw that escapes it unwinds through the `finally` that restores the
+     * sinks and the array goes with it. So the turn that died recorded `sql: []`
+     * — and the header above this function says a crashed turn is often the most
+     * interesting one in a run. It was the one turn whose statements were
+     * dropped, which is the opposite of what it says.
+     *
+     * Catching one level in means the capture always closes normally and returns
+     * everything the turn got as far as. `error` is set on the way past.
+     */
+    const got = await captureSql({ rows: true }, () =>
+      captureFullTrace(async () => {
+        try {
+          await fn(sink)
+        } catch (e) {
+          error = e instanceof Error ? (e.stack ?? e.message) : String(e)
+        }
+      }),
+    )
+    sql = got.sql
 
     /**
      * EVERY turn in the window, oldest first — not the newest one.
@@ -687,14 +858,25 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
      * limit 1` returns the TAP's trace and throws away the trace of the turn that
      * actually composed the work. Both belong to this beat and both are read.
      */
+    /**
+     * Every evidence query goes through here, so a failure is recorded instead
+     * of becoming an empty array that reads as "nothing happened".
+     */
+    const notes: string[] = []
+    const ask = async <T>(what: string, statement: string): Promise<T[]> =>
+      opts.q<T>(statement).catch((e) => {
+        notes.push(`${what} could not be read: ${e instanceof Error ? e.message : String(e)}`)
+        return [] as T[]
+      })
+
     const mine = meta.contactId ? `and contact_id = '${meta.contactId}'::uuid` : ''
-    const turnRows = await opts
-      .q<any>(
-        `select id::text, tool_calls, prompt_tokens, cached_tokens, output_tokens, error
-           from turn where created_at >= '${cursor}'::timestamptz ${mine}
-          order by created_at asc`,
-      )
-      .catch(() => [] as any[])
+    const turnRows = await ask<any>(
+      'the turn rows',
+      `select id::text, tool_calls, prompt_tokens, cached_tokens, output_tokens, error,
+              model, created_at
+         from turn where created_at >= '${cursor}'::timestamptz ${mine}
+        order by created_at asc`,
+    )
 
     /**
      * What this turn's own turn rows produced, for scoping the two tables that
@@ -715,47 +897,128 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
           ? `and (${col} is null or ${col} in (${ids.join(', ')}))`
           : `and ${col} is null`
 
-    const rounds: Round[] = turnRows.flatMap((t: any) =>
-      Array.isArray(t?.tool_calls)
+    /**
+     * Every round, stamped with the product turn it came out of.
+     *
+     * WHY THE STAMP IS NOT OPTIONAL EVIDENCE
+     * -------------------------------------------------------------------------
+     * This flattens the traces of EVERY `turn` row in the window into one array,
+     * and for a seat beat that is right — a tap opens a second turn and both
+     * halves are one thing somebody did. For a queue drain it is not: several
+     * unrelated job handlers land in one array with nothing between them.
+     *
+     * Measured on `2026-08-20-18-00-sim-s71s` turn 50: `who: queue`, four
+     * `turnIds`, thirty rounds, and `MAX_TOOL_ROUNDS` is five. The only way to
+     * tell where one handler ended was to watch the round counter reset — and
+     * that does not work either, because the sequence runs
+     * `… 2, 2, 3, 2, 0, 1 …`. So for the proactive surface, which is about 70% of
+     * what this product says, nobody could say which job produced which
+     * reasoning or which query.
+     *
+     * `round` restarts per product turn and is therefore not an identity.
+     * `turnId` is, it is already on the row being read, and it costs one field.
+     */
+    const rounds: Round[] = turnRows.flatMap((t: any) => {
+      const own: Round[] = Array.isArray(t?.tool_calls)
         ? (t.tool_calls as Round[])
         : typeof t?.tool_calls === 'string'
           ? safeParse(t.tool_calls)
-          : [],
+          : []
+      const turnId = String(t?.id ?? '')
+      return turnId ? own.map((r) => ({ ...r, turnId })) : own
+    })
+
+    const messages = await ask<any>(
+      'the outbound messages',
+      `select c.phone_e164 as to, m.body, m.payload, m.status, m.origin, m.suppressed_reason,
+              m.turn_id::text as turn_id
+         from message m left join contact c on c.id = m.contact_id
+        where m.direction = 'outbound' and m.created_at >= '${cursor}'::timestamptz
+          ${owned('m.turn_id')}
+        order by m.created_at asc`,
     )
 
-    const messages = await opts
-      .q<any>(
-        `select c.phone_e164 as to, m.body, m.payload, m.status, m.origin, m.suppressed_reason
-           from message m left join contact c on c.id = m.contact_id
-          where m.direction = 'outbound' and m.created_at >= '${cursor}'::timestamptz
-            ${owned('m.turn_id')}
-          order by m.created_at asc`,
-      )
-      .catch(() => [] as any[])
+    const out: Outbound[] = messages.map((m: any) => {
+      // Read exactly as `_seat.renderPhone` reads it, so what the record calls an
+      // affordance and what the person could actually tap are the same list.
+      const p = m.payload ?? {}
+      return {
+        to: m.to ?? null,
+        body: String(m.body ?? ''),
+        buttons: Array.isArray(p.buttons) ? p.buttons.map((b: any) => String(b?.title ?? '')) : [],
+        listButton: p.list?.buttonText ? String(p.list.buttonText) : null,
+        listRows: Array.isArray(p.list?.sections)
+          ? p.list.sections.flatMap((sec: any) => (sec?.rows ?? []).map((r: any) => String(r?.title ?? '')))
+          : [],
+        link: p.link?.title ? String(p.link.title) : null,
+        status: String(m.status ?? ''),
+        origin: m.origin ?? null,
+        suppressedReason: m.suppressed_reason ?? null,
+        turnId: m.turn_id ?? null,
+      }
+    })
 
-    const out: Outbound[] = messages.map((m: any) => ({
-      to: m.to ?? null,
-      body: String(m.body ?? ''),
-      buttons: Array.isArray(m.payload?.buttons)
-        ? m.payload.buttons.map((b: any) => String(b?.title ?? ''))
-        : [],
-      status: String(m.status ?? ''),
-      origin: m.origin ?? null,
-      suppressedReason: m.suppressed_reason ?? null,
-    }))
+    /**
+     * What changed, both sides, and the count in one pass.
+     *
+     * A LEFT join, so an audit entry that photographed nothing still returns its
+     * row and still counts toward `wrote`. `wrote` is therefore the number of
+     * DISTINCT audit entries, which is what the `count(*)` it replaced meant —
+     * the number does not move because this query arrived.
+     *
+     * Ordered by `row_snapshot.seq`, the column 0005 added for exactly this: the
+     * images of one act are read back in the order the trigger wrote them, so a
+     * cascade reads as the sequence it was rather than as a set.
+     */
+    const audited = await ask<any>(
+      'what changed',
+      `select a.id::text as audit_id, a.intent,
+              s.table_name, s.pk::text as pk, s.op, s.before, s.after
+         from audit_entry a
+         left join row_snapshot s on s.audit_id = a.id
+        where a.created_at >= '${cursor}'::timestamptz ${owned('a.turn_id')}
+        order by a.created_at asc, s.seq asc`,
+    )
 
-    const wrote = await opts
-      .q<any>(
-        `select count(*)::int as n from audit_entry
-          where created_at >= '${cursor}'::timestamptz ${owned('turn_id')}`,
-      )
-      .catch(() => [{ n: 0 }])
+    const changed: Changed[] = audited
+      .filter((r: any) => r?.table_name)
+      .map((r: any) => ({
+        table: String(r.table_name),
+        pk: r.pk ?? null,
+        op: String(r.op) as Changed['op'],
+        before: r.before ?? null,
+        after: r.after ?? null,
+        auditId: String(r.audit_id),
+        intent: r.intent ?? null,
+      }))
+
+    const wrote = new Set(audited.map((r: any) => String(r.audit_id))).size
 
     const tokens = {
       prompt: turnRows.reduce((a: number, t: any) => a + Number(t?.prompt_tokens ?? 0), 0),
       cached: turnRows.reduce((a: number, t: any) => a + Number(t?.cached_tokens ?? 0), 0),
       output: turnRows.reduce((a: number, t: any) => a + Number(t?.output_tokens ?? 0), 0),
     }
+
+    /**
+     * Counted off the recorded context itself rather than reported by the loop,
+     * so it stays true for any round that renders a clipped value into the tail
+     * — this is a property of what the model was handed, and the tail is the
+     * record of exactly that.
+     */
+    const contextCuts = rounds.reduce((n: number, r: Round) => {
+      const tail = (r as any)?.args?.tail
+      return typeof tail === 'string' ? n + (tail.match(/… \(truncated\)/g)?.length ?? 0) : n
+    }, 0)
+
+    const priced = turnRows.map((t: any) => ({
+      model: t?.model,
+      created_at: t?.created_at,
+      prompt: Number(t?.prompt_tokens ?? 0),
+      cached: Number(t?.cached_tokens ?? 0),
+      output: Number(t?.output_tokens ?? 0),
+    }))
+    const models = [...new Set(turnRows.map((t: any) => String(t?.model ?? '')).filter(Boolean))]
 
     const body: TurnBody = {
       id: meta.id,
@@ -767,6 +1030,7 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
       say: meta.say,
       ...(meta.intent === undefined ? {} : { intent: meta.intent }),
       ...(meta.personaReasoning === undefined ? {} : { personaReasoning: meta.personaReasoning }),
+      ...(meta.phone === undefined ? {} : { phone: meta.phone }),
       rounds,
       sql,
       messages: out,
@@ -775,11 +1039,17 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
       tapped: meta.tapped ?? null,
       jobs: sink.jobs,
       tokens,
-      inr: await costOf(tokens),
+      inr: await costOf(priced),
+      ...(models.length ? { models } : {}),
       ms: Date.now() - startedAt,
       turnIds: turnRows.map((t: any) => String(t.id)),
-      wrote: Number(wrote[0]?.n ?? 0),
+      wrote,
       sent: out.filter((m) => !m.suppressedReason).length,
+      changed,
+      // Spread in only when something failed, so a clean turn carries no field
+      // rather than an empty array that a reader has to look at to dismiss.
+      ...(notes.length ? { notes } : {}),
+      ...(contextCuts ? { contextCuts } : {}),
       // Written on every turn, null included — not spread in only when a driver
       // has one. `Turn` is explicit that these are nullable rather than optional
       // so that a driver with no world to count (`ask` has none at all) records
@@ -874,12 +1144,42 @@ function safeParse(s: string): Round[] {
 /**
  * Rupees, not dollars — this is an INR-billing product and a cost nobody can
  * compare to their own bill is a cost nobody reads.
+ *
+ * Priced PER TURN ROW, at the model that row says it ran and the instant it ran
+ * at. Two bugs died together when this stopped being one call over the summed
+ * tokens:
+ *
+ *   - the model was `env.MODEL_MAIN` whatever had actually run, so an A/B arm
+ *     varying the model recorded the other arm's rate;
+ *   - `costInr`'s `at` argument was never passed by anything, and `costUsd`
+ *     applies `peakMultiplier` only `at && isPeak(at)` — so the peak rate had
+ *     never once applied to a recorded run, on any instrument, ever.
+ *
+ * `null` still means "we do not know", never "it was free": one unpriceable row
+ * makes the turn unpriceable rather than quietly cheap, which is the rule
+ * `lib/pricing.ts` states for its own return.
  */
-async function costOf(t: { prompt: number; cached: number; output: number }): Promise<number | null> {
+async function costOf(
+  rows: Array<{ model?: unknown; created_at?: unknown; prompt: number; cached: number; output: number }>,
+): Promise<number | null> {
+  if (!rows.length) return 0
   try {
     const { costInr } = await import('@/lib/pricing')
     const { env } = await import('@/lib/env')
-    return costInr(env.MODEL_MAIN, t.prompt, t.cached, t.output)
+    let total = 0
+    for (const r of rows) {
+      const at = r.created_at ? new Date(String(r.created_at)) : undefined
+      const one = costInr(
+        String(r.model ?? env.MODEL_MAIN),
+        r.prompt,
+        r.cached,
+        r.output,
+        at && Number.isFinite(at.getTime()) ? at : undefined,
+      )
+      if (one === null) return null
+      total += one
+    }
+    return total
   } catch {
     return null
   }

@@ -258,11 +258,14 @@ async function move(ask: Ask): Promise<Told> {
   const seen = [...pending, ...(await readPhone(s, KEY, true))]
   pending = []
 
+  // The one rendering, kept: the seat decides from these bytes and the record
+  // gets the same ones. Rendering it twice would let the two drift.
+  const phone = renderPhone(seen)
   const turn = await nextMove({
     persona,
     day: ask.day,
     window: ask.window,
-    phone: renderPhone(seen),
+    phone,
     said,
     seed: SEED,
     model: MODEL,
@@ -333,6 +336,9 @@ async function move(ask: Ask): Promise<Told> {
       // and there is no field on a turn that holds it. `personaReasoning` is
       // `unknown` precisely so a driver does not have to clip what it knows.
       personaReasoning: { action: m.action, reasoning: m.reasoning },
+      // The screen this move was a response to. Without it the record holds the
+      // decision and not the thing decided about.
+      phone,
     },
     async () => {
       if (!m.say) return

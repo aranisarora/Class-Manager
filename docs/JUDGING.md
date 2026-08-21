@@ -50,11 +50,26 @@ One run, one directory:
   judgement.json    your verdict — written by you, or by scripts/judge.mjs
 ```
 
-`record.json` holds, per turn: what the person typed, every round's reasoning verbatim,
-every tool call with its arguments and its result untruncated, every SQL statement byte for
-byte with what Postgres answered (the refused ones included), every message that reached a
-phone with its buttons, what the queue ran, the world counted either side of the turn, and
-the tokens, seconds and rupees.
+`record.json` holds, per turn: what the person typed, what their phone showed when they
+decided it (`phone`), what the model was told (the `(context)` round's tail, whole), every
+round's reasoning verbatim, every tool call with its arguments and its result untruncated,
+every SQL statement byte for byte with what Postgres answered (the refused ones included),
+**every row the turn changed with its before and after image** (`changed`, read from the
+database's own snapshot trigger), every message that reached a phone with everything on it
+that could be tapped, what the queue ran, the world counted either side of the turn, and the
+tokens, seconds and rupees.
+
+**Two fields are about the record itself rather than the turn, and both change how you read
+everything else:**
+
+- `notes` — what the harness could not collect, and why. A turn whose evidence query died used
+  to be byte-identical to a turn where the model did nothing: no rounds, no tokens, ₹0. If this
+  is present, a zero below it may be a failure rather than a fact.
+- `contextCuts` — how many read-results were **cut at 1,400 characters before the model saw
+  them**. The same reads appear whole under the SQL, because that copy is the log's and not the
+  model's. Where this is non-zero the record is *more complete than the model's own context*,
+  and judging the answer against the SQL rather than against the context block will convict a
+  model that was starved. Judge it against what is in the context block.
 
 **Not every turn has a person in it.** A turn whose `who` is `queue` is the queue draining —
 a window where standing jobs came due and the product spoke first: briefs, digests, coach

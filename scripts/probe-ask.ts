@@ -464,6 +464,9 @@ const run: Run = {
     turnIds: [],
     wrote: 0,
     sent: 0,
+    // Empty because this suite is toolless: it has no tools to write with, so
+    // there is nothing for the snapshot trigger to have photographed.
+    changed: [],
     error: null,
   })),
   world: { note: 'no world — this suite is toolless by design' },
