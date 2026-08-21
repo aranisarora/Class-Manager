@@ -179,7 +179,20 @@ export type PlanResult = {
   ok: boolean
   diffs: TableDiff[]
   totalRows: number
-  stagedMessages: { toContactId: string; preview: string }[]
+  /**
+   * `preview` is clipped to 160 characters and carries the button titles — it is
+   * what the MODEL reads in `compactDiff`, where a plan staging eight messages
+   * would otherwise spend a thousand tokens quoting itself. `body` is the message,
+   * whole.
+   *
+   * Both, because the two readers want different things and the clipped one used
+   * to be all there was. `writeTurn` records what a turn said, and on the tap path
+   * the only thing it could reach for was `buildSummary`'s receipt — a sentence
+   * composed for a person who, whenever the plan spoke for itself, never received
+   * it. So the `turn` row held a message nobody was sent, and every instrument that
+   * reads a run back was reading it.
+   */
+  stagedMessages: { toContactId: string; preview: string; body: string }[]
   scheduled: { kind: string; run_at: string }[]
   summary: string
   /**
@@ -1240,7 +1253,7 @@ export async function previewPlan(
       ok: true,
       diffs: merged,
       totalRows: merged.reduce((n, d) => n + d.count, 0),
-      stagedMessages: state.staged.map((m) => ({ toContactId: m.toContactId, preview: previewOf(m) })),
+      stagedMessages: state.staged.map((m) => ({ toContactId: m.toContactId, preview: previewOf(m), body: m.body })),
       scheduled: state.scheduled,
       summary: buildSummary(merged, state),
       clashes: inTx.clashes,
@@ -1510,7 +1523,7 @@ export async function executePlan(
       outcomes,
       diffs: merged,
       totalRows: merged.reduce((n, d) => n + d.count, 0),
-      stagedMessages: state.staged.map((m) => ({ toContactId: m.toContactId, preview: previewOf(m) })),
+      stagedMessages: state.staged.map((m) => ({ toContactId: m.toContactId, preview: previewOf(m), body: m.body })),
       scheduled: state.scheduled,
       summary: receipt,
       clashes: inTx.clashes,

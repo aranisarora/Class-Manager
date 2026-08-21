@@ -10,14 +10,22 @@
  *   two people at one court.
  *
  * "A button's action is authored at compose time, validated, stored. The tap replays the
- * stored payload. **No model inference at tap time**, where a misread commits someone to
- * being somewhere."
+ * stored payload. **No model inference decides what a tap runs**, because a misread there
+ * commits someone to being somewhere."
  *
  * So `consumeAction` makes no model call, re-resolves nothing, and parses no strings. It
  * loads a row, checks three things the database also checks, and claims it. The freedom is
  * in what can be minted — `operation` and `steps` make the button surface exactly as wide as
  * the write surface (§6.5) — and the safety is that minting and tapping are different
  * moments.
+ *
+ * **The invariant is about the WRITE, and it used to be read as being about the whole tap.**
+ * Nothing in it says the runtime must also compose the message afterwards, and for most of
+ * this product's life it did: `buildSummary`'s row counts went straight to a phone with no
+ * model between the commit and the person (F-CD). What happens after the transaction closes
+ * is an ordinary turn now — see `TapNarration` in `lib/agent/loop.ts`. Everything in this
+ * file is unchanged by that, and deliberately so: the claim, the supersession and the
+ * question-resolution below all run before any model is called.
  *
  * The claim is a single conditional UPDATE. That one statement is what makes §12.3's
  * `CO-COVER-OFFER` race correct: two coaches tap `[Claim this session]` in the same second,

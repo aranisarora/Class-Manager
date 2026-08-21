@@ -52,4 +52,5 @@ this is only the receipt. The full narrative for everything before 20 Aug 2026 i
 | **F-BS** | The conversation was the only thing shown to the model with no stamp | 20 Aug 2026, mechanism verified in code |
 | **F-BT** | Every client message went to the account holder, with no override | 20 Aug 2026, mechanism verified in code |
 | **F-BX** | Inbound arrival was stamped from the world clock, so every reply sorted to the top of its thread | 21 Aug 2026, mechanism verified in code |
+| **F-CD** | A confirmation denied the write it was confirming, because the tap path composed its own receipt | 21 Aug 2026, by wiring the tap into the turn |
 | **F-CE** | A genuinely unknown number was dropped without trace — no message, no turn, no row that a stranger ever wrote | 21 Aug 2026, by the front desk (0039, `lib/frontdesk/`) |
