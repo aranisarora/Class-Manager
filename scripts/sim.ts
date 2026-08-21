@@ -828,6 +828,36 @@ async function main(): Promise<void> {
 
   console.log(c.bold(`\n  sim — ${describeConfig(cfg)}`))
   console.log(c.dim(`  world:    ${plan.is}`))
+  /**
+   * Where the hand-written prose runs out, said before the money is spent.
+   *
+   * `--days` has no ceiling, and the thing that genuinely stops scaling with it
+   * is not the clock or the timetable — both are fine — but the `life` blocks
+   * somebody typed. Read off the REAL briefs rather than assumed, because the
+   * canonical four are written to day 7 and a spec world's people are written to
+   * wherever their file stops, which is often nowhere at all.
+   *
+   * A note and not a refusal: a long run of ordinary days is a perfectly good
+   * question — *does the product stay sane over a billing month with nothing
+   * dramatic in it* — and it is one nothing here could ask before. What would be
+   * wrong is finding out afterwards that days 8–30 were blank and reading the
+   * quiet as a product that stopped engaging.
+   */
+  const lifeUntil = Math.max(
+    0,
+    ...Object.values(plan.briefs).flatMap((b) => Object.keys(b.life ?? {}).map(Number)),
+  )
+  const weekHasSomething =
+    (eventSpec.events?.length ?? 0) > 0 || Object.values(eventSpec.chaos ?? {}).some((r) => r > 0)
+  if (cfg.days > lifeUntil && !weekHasSomething) {
+    console.log(
+      c.yellow(
+        `  note:     nobody wrote a life event past day ${lifeUntil || 0} — days ` +
+          `${(lifeUntil || 0) + 1}–${cfg.days} are ordinary.\n` +
+          `            --events <file> or --chaos <rate> is how you fill them.`,
+      ),
+    )
+  }
   console.log(c.dim(`  schedule: ${balance}${whole || !canonical ? '' : ' (before this run’s filters)'}\n`))
 
   const dir = await runDir('sim')

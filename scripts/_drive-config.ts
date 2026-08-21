@@ -112,7 +112,19 @@ export type WindowName = Window
 export type { PersonaKey }
 
 export type DriveConfig = {
-  /** Simulated days to run. Bounded by `SCHEDULE`, which is who speaks when. */
+  /**
+   * Simulated days to run. **No ceiling** — a week, a fortnight, a billing month.
+   *
+   * It was capped at seven for most of this file's life, which put every question
+   * needing more than one week out of reach: a monthly bill correct only on the
+   * 1st, a ten-session package exhausting in week three, dunning escalating over
+   * three cycles, a family going quiet for a fortnight before it leaves.
+   *
+   * Simulated length, never real length — `budgetMin` and `budgetInr` are the
+   * real stop, and confusing the two is the expensive mistake this file exists to
+   * prevent. Past the last day anybody wrote a `life` for, the days are ordinary
+   * unless `events` or `chaos` fills them; `sim.ts` prints where that line falls.
+   */
   days: number
   /** Which windows run each day, in the order the clock reaches them. */
   windows: WindowName[]
@@ -240,8 +252,6 @@ export type DriveConfig = {
  */
 const ALL_WINDOWS = Object.keys(WINDOW_AT) as WindowName[]
 const ALL_PERSONAS = Object.keys(PERSONAS) as PersonaKey[]
-/** The last day `SCHEDULE` puts anybody at a phone. Past it, the days are empty. */
-const SCHEDULED_DAYS = Math.max(...Object.keys(SCHEDULE).map(Number))
 /** How many tiers the ramp actually defines. Five, read rather than assumed. */
 const RAMP_TIERS = Math.max(...Object.keys(TIERS).map(Number))
 
@@ -881,16 +891,40 @@ function check(cfg: DriveConfig): void {
   if (!cfg.windows.length) fail(`no windows: give at least one of ${ALL_WINDOWS.join(', ')}`)
   const canonical = false
 
-  if (cfg.days > SCHEDULED_DAYS) {
-    fail(
-      `--days ${cfg.days} runs past the end of the week`,
-      canonical ?
-        `SCHEDULE in scripts/_personas.ts covers ${SCHEDULED_DAYS} days, so days ${SCHEDULED_DAYS + 1}–${cfg.days} put nobody at a phone.`
-      : `A drive opens on a Monday at 06:00 and its DAY NUMBER is the ISO weekday, which is the invariant`,
-      canonical ?
-        'They would still burn clock and standing jobs, and read afterwards as silence.'
-      : `every timetable and every brief is read across. Day ${SCHEDULED_DAYS + 1} is a second Monday, and a brief written for day 1 would arrive on it.`,
-    )
+  /**
+   * HOW LONG A RUN IS, IS THE DRIVER'S DECISION. There is no ceiling.
+   *
+   * There used to be one at seven days, and the reason it gave was wrong. It
+   * said "day 8 is a second Monday, and a brief written for day 1 would arrive on
+   * it" — but nothing anywhere takes a day number modulo anything. `life` is a
+   * plain `Record<number, string>`, so day 8 looks up `life[8]`, finds nothing,
+   * and the seat is told nothing unusual is happening. Wrong in the other
+   * direction, and benign.
+   *
+   * What the ceiling actually cost was every question that needs more than one
+   * week to ask: a monthly bill that is only correct on the 1st, a package of ten
+   * exhausting in week three, a family that goes quiet for a fortnight before it
+   * leaves, dunning that escalates over three cycles. `probe-model`'s suites
+   * cannot ask those either, so nothing here could.
+   *
+   * Nothing mechanical binds. `deriveSchedule` deals `days × windows` cells for
+   * any `days`. `walkTo` walks between two hours of ONE day, so its hop ceiling
+   * is per window and not per run. And `materialize_sessions` runs on a ROLLING
+   * 21-day horizon re-planned on every walk (`HORIZON_DAYS`, §13), so the
+   * timetable keeps being written ahead of the clock however far it goes — the
+   * one thing that would have made a long run quietly go silent.
+   *
+   * What does run out is hand-written prose, and `sim.ts` says so out loud
+   * against the real briefs once the world is read: past the last day anybody
+   * wrote a `life` for, the days are ordinary. `events/` is how you fill them,
+   * and `--chaos` fills them without writing anything.
+   *
+   * The REAL stop is still `--budget-min` / `--budget-inr`. `--days 90` is a
+   * legitimate thing to ask for and a bad thing to sit through, and this file has
+   * always kept those two questions apart.
+   */
+  if (!Number.isInteger(cfg.days) || cfg.days < 1) {
+    fail(`--days must be a whole number of days, at least 1 — not ${cfg.days}`)
   }
 
   /**

@@ -187,14 +187,14 @@ still contains everybody, they just do not all speak at once.
 
 `--budgetinr 250` is not a budget of 250 rupees, it is no budget at all, and the run it belongs
 to looks exactly like the run it was supposed to be. So an unknown flag, a **one-dashed** flag,
-an unknown window, an unknown seat, an unknown preset and a `days` past the end of `SCHEDULE`
-all stop the process at second zero:
+an unknown window, an unknown seat, an unknown preset, an unknown chaos rate and an events file
+that names nobody this world has all stop the process at second zero:
 
 ```
 $ npx tsx scripts/sim.ts --daays 3
 
 x  unknown flag --daays
-   known flags: --preset --days --windows --personas --concurrency --budget-min --budget-inr --seed --model --arm --config --ramp --keep --drop
+   known flags: --preset --days --windows --personas --concurrency --budget-min --budget-inr --seed --model --arm --config --events --chaos --ramp --keep --drop
    A flag nothing reads is a parameter that did nothing, and the run then looks
    exactly like the run it was supposed to be. That is how an A/B ends up
    comparing two things that were never different.

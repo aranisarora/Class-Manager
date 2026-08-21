@@ -178,9 +178,11 @@ somebody else wrote.
 
 Worth knowing before you plan a week around it.
 
-- **Day numbers are weekdays.** Day 1 is a Monday and `--days` stops at 7, because a day number
-  *is* the ISO weekday across the whole instrument. "A child misses three weeks running" is not
-  sayable; "a child misses both sessions this week" is.
+- **Day 1 is a Monday**, so day 8 is the next Monday and `"day": [1, 8, 15]` is *every Monday*.
+  There is **no ceiling on `--days`** — `--days 30` is a billing month, and "a child misses
+  three weeks running" is `{ "what": "absent", "day": [3, 10, 17], "who": "…" }`. Past the last
+  day anybody wrote a `life` for, the days are ordinary unless a file or a `chaos` rate fills
+  them, and the run says so on its first line.
 - **Two windows, 08:30 and 20:15.** A `note` or an `away` lands in one of them. Something that
   has to happen at two in the afternoon lands in the evening window.
 - **An `absent` needs a real session.** A scenario about a class the business does not run needs
