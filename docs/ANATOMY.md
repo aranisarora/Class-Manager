@@ -70,8 +70,12 @@ inbound (Meta webhook · emulator · job)
 | A tap claims its button in one conditional UPDATE, then runs the stored payload — no model call, and `origin` records that | `consumeAction` · `lib/actions.ts` · `executeAction` · `lib/agent/loop.ts` |
 | A button whose payload was a reply re-enters as if it had been typed | `executeAction` · `lib/agent/loop.ts` |
 | An image, voice note or file is answered in words by the runtime; anything typed alongside still goes to the model | `mediaRefusal` · `lib/agent/loop.ts` |
+| A shared contact card takes the opposite path — it is data, so it is rendered into the turn's own text and read by the model | `bodyWithSharedContacts` · `lib/messaging/contact-card.ts` |
 
-Only a turn carrying text or a task reaches stage 2.
+Only a turn carrying text or a task reaches stage 2. **A card is text by the time this test
+runs**, which is the whole of why it reaches the model and a photo does not — and it is also
+why order matters here: fold the card in *after* the test and a bare contact share falls
+through to "that came through as something I can't read".
 
 ## 2 · Context
 

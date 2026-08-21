@@ -1089,9 +1089,18 @@ async function main(): Promise<void> {
           told.tapped ? c.bold(`tapped [ ${told.tapped} ]`)
           : told.say ? `“${told.say.replace(/\s+/g, ' ').slice(0, 88)}”`
           : c.dim('(said nothing)')
+        // A shared card is a thing that happened in this window and the body already
+        // carries it, so the line would read as prose about a contact rather than as
+        // an attachment. Named separately, and so is a name their phone did not have
+        // — a seat reaching repeatedly for somebody who is not in its contacts is a
+        // finding about the world, not noise to swallow.
+        const attached =
+          told.shared?.length ? c.dim(` 📎 ${told.shared.join(', ')}`)
+          : told.notInContacts?.length ? c.yellow(` 📎 not in contacts: ${told.notInContacts.join(', ')}`)
+          : ''
         console.log(
           `      ${c.dim(key.padEnd(7))} ${told.action === 'giveup' ? c.red('giveup ') : told.action === 'quiet' ? c.yellow('quiet  ') : 'say    '}` +
-            `${what} ${c.dim(`· ${told.arrived} back · ${Math.round(told.ms / 1000)}s`)}`,
+            `${what}${attached} ${c.dim(`· ${told.arrived} back · ${Math.round(told.ms / 1000)}s`)}`,
         )
       })
 

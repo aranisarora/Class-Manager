@@ -58,6 +58,7 @@ import { c, loadEnvFiles } from './_env'
 import { opsCookie } from './ops-cookie.mjs'
 import { isToolCall } from '@/lib/agent/loop'
 import { costInr } from '@/lib/pricing'
+import type { SharedContact } from '@/lib/messaging/contact-card'
 import type { OperationName } from '@/lib/agent/operations'
 import type { PlanStep } from '@/lib/agent/plan'
 
@@ -77,6 +78,26 @@ function flag(name: string): string | undefined {
   return next !== undefined && !next.startsWith('--') ? next : ''
 }
 const has = (name: string) => rest.some((a) => a === `--${name}` || a.startsWith(`--${name}=`))
+/**
+ * Every occurrence of a flag, in order — `flag()` answers only the first.
+ *
+ * `--contact` is the one flag here that is genuinely repeatable, because WhatsApp's
+ * own picker is: several people go on one message, and a driver that could only
+ * send them one at a time could not reproduce the case the feature is for.
+ */
+const flags = (name: string): string[] => {
+  const out: string[] = []
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i] as string
+    if (a === `--${name}`) {
+      const next = rest[i + 1]
+      if (next !== undefined && !next.startsWith('--')) out.push(next)
+    } else if (a.startsWith(`--${name}=`)) {
+      out.push(a.slice(a.indexOf('=') + 1))
+    }
+  }
+  return out
+}
 const positional = rest.filter((a, i) => {
   if (a.startsWith('--')) return false
   const prev = rest[i - 1]
@@ -777,6 +798,54 @@ async function attach(path: string): Promise<{ dataUri: string; mimeType: string
 }
 
 /**
+ * `--contact` — the composer's `📎 attach › Contact`, from the command line.
+ *
+ * Two forms, and both exist because a driver is not blindfolded and should not
+ * pretend to be:
+ *
+ *   --contact "Vandana Achar"                 a name out of this academy's own book
+ *   --contact "Meghna Pai:+919845012345"      a literal, yours to get wrong
+ *
+ * The bare name goes through `phonebookLookup`, so it can only ever produce a
+ * number derived from this tenant's id — the §10.1 collision `lib/phonebook.ts`
+ * exists to prevent. The literal form is the deliberate escape hatch: a number
+ * another academy already holds is a real case worth driving on purpose, and it
+ * should take an explicit act to reach it. Repeatable, so several cards can ride
+ * on one message the way WhatsApp's picker allows.
+ *
+ * Refuses rather than repairs. A name the book does not hold, or a literal number
+ * `dialablePhone` will not accept, stops the command — because the alternative is
+ * a card that silently did not go, and a turn whose reply is then read as the
+ * product ignoring an attachment.
+ */
+async function contactCards(academyId: string): Promise<SharedContact[]> {
+  const raw = flags('contact')
+  if (raw.length === 0) return []
+  const { phonebookLookup, phonebookNames } = await import('@/lib/phonebook')
+  const { dialablePhone } = await import('@/lib/format')
+
+  return raw.map((spec) => {
+    const cut = spec.lastIndexOf(':')
+    if (cut > 0) {
+      const name = spec.slice(0, cut).trim()
+      const dialable = dialablePhone(spec.slice(cut + 1))
+      if (!name) die(c.red(`--contact "${spec}" has no name before the colon`))
+      if (!dialable.ok) die(c.red(`--contact "${spec}": ${dialable.why}`))
+      return { name, phone: dialable.phone }
+    }
+    const hit = phonebookLookup(academyId, spec)
+    if (!hit) {
+      die(
+        c.red(`nobody called "${spec}" is in this academy's phone book.`) +
+          `\n  it holds: ${phonebookNames(academyId).join(', ')}` +
+          `\n  or give a literal:  --contact "${spec}:+919845012345"`,
+      )
+    }
+    return hit
+  })
+}
+
+/**
  * The cursor for "everything that happened from here on" — in DOMAIN time, again.
  *
  * This has flipped twice, and each flip followed `created_at`. Originally it read
@@ -828,6 +897,7 @@ const HELP: [string, string][] = [
   ['new [academyId] --name X --role client|coach|admin|prospect', 'add a person, wired up'],
   ['new … --class "<class>" [--invite] [--rate N --unit per_month]', 'and put them ON that class'],
   ['say <contactId> "<text>" [--media f]', 'type as that person, with an attachment'],
+  ['say … --contact "<name>" [--contact …]', "share a contact card out of that academy's phone book"],
   ['stranger <+91...> "<text>" [--media f]', 'an unknown number, cold'],
   ['tap <contactId> [n] [--title|--action|--message]', 'tap a button OR a list row, new or old'],
   ['confirm <coachContactId> [--session] [--arrived]', 'a coach says yes'],
@@ -1161,7 +1231,10 @@ async function main(): Promise<void> {
       const contactId = positional[0]
       const text = positional.slice(1).join(' ')
       const media = flag('media')
-      if (!contactId || (!text && !media)) die(c.red('drive say <contactId> "<what they type>" [--media <file>]'))
+      const cards = contactId ? await contactCards(await academyOfContact(contactId)) : []
+      if (!contactId || (!text && !media && cards.length === 0)) {
+        die(c.red('drive say <contactId> "<what they type>" [--media <file>] [--contact "<name>"]'))
+      }
       const at = await cursorNow()
       // `--media` no longer reaches the model — it is text-only (§14.5, repealed) —
       // and that is exactly why this stays: what it drives now is the runtime's
@@ -1169,11 +1242,15 @@ async function main(): Promise<void> {
       // capability. A voice note and a photo should come back with different
       // sentences, and anything typed alongside should still be answered.
       const attached = media ? await attach(media) : null
-      console.log(`${c.dim('  →')} ${text}${attached ? c.dim(`  [${attached.mimeType}, ${attached.bytes} bytes]`) : ''}`)
+      console.log(
+        `${c.dim('  →')} ${text}${attached ? c.dim(`  [${attached.mimeType}, ${attached.bytes} bytes]`) : ''}` +
+          (cards.length ? c.dim(`  [📎 ${cards.map((k) => `${k.name} ${k.phone}`).join(', ')}]`) : ''),
+      )
       await api('/api/emulator/inbound', {
         contactId,
         ...(text ? { text } : {}),
         ...(attached ? { mediaUrl: attached.dataUri, mediaMimeType: attached.mimeType } : {}),
+        ...(cards.length ? { contacts: cards } : {}),
       })
       await showTurn(contactId, at, { full: has('full') })
       break

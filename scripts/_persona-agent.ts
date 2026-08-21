@@ -135,6 +135,28 @@ export type SeatMove = {
    */
   say: string
   /**
+   * People from their own phone, attached to this message as contact cards.
+   *
+   * NAMES, never numbers, and that is the whole safety property. A persona that
+   * could see a phone number would type one — models reach for `9876543210` with
+   * striking consistency, `worlds/README.md` measured it — and §10.1 resolves an
+   * inbound by `(from, sender)`, so a number two academies both hold matches both
+   * and resolves to NEITHER. The caller turns each name into a card through
+   * `phonebookLookup`, which only ever returns numbers derived from that academy's
+   * own id, so a seat cannot produce a collision even by trying.
+   *
+   * A name the caller cannot find is dropped and logged, exactly as an unresolvable
+   * button title is: a person who cannot find somebody in their contacts has not
+   * hit an error, they have had a small ordinary failure, and the run should record
+   * it rather than crash on it.
+   *
+   * Rides on the message rather than being an action of its own, because that is
+   * what it is on a handset — you type a sentence and tap the paperclip. A fourth
+   * action would have made "here's his number" and "here is his card" two
+   * different kinds of turn, which they are not.
+   */
+  attach?: string[]
+  /**
    * What they are TRYING to get out of them, in their own words. One line.
    *
    * Optional in what arrives — see `validateMove` — and empty when it was not
@@ -157,6 +179,17 @@ export type SeatContext = {
   window: Window
   /** EXACTLY what `renderPhone()` showed. The only thing they can see. */
   phone: string
+  /**
+   * Who is saved in their phone, by name — `phonebookNames(academyId)`.
+   *
+   * A fact about their handset rather than about the product, which is why it is
+   * admissible under the blindfold: it tells them nothing about the academy's
+   * records, what an answer cost, or how it was worked out. Without it `attach`
+   * is unreachable, because a person cannot share a contact they have not got.
+   *
+   * Empty is a real state and reads as one — a phone with nobody in it.
+   */
+  contacts?: string[]
   /** What this persona has already said this run, oldest first. Their memory. */
   said: string[]
   /**
@@ -275,6 +308,12 @@ THE THREE THINGS YOU CAN DO
            usually well under twenty words, sometimes a single word, occasionally
            one long dictated run-on. Never an essay.
 
+           You can also attach somebody out of your own contacts to it, the way
+           you tap the paperclip and pick a person. Put their names in "attach".
+           Only people who are actually in your phone — the list is below — and
+           only when handing their details over is the thing you are doing. Most
+           messages attach nobody.
+
   quiet    Send nothing at all this time. Choose it when a real person would put
            the phone down: the answer was fine and wants nothing back, or you are
            busy, or you have decided not to get into it right now.
@@ -294,12 +333,15 @@ ANSWER WITH ONE JSON OBJECT AND NOTHING ELSE:
 {
   "action":    "say" or "quiet" or "giveup",
   "say":       "the message exactly as you would type it, or an empty string",
+  "attach":    ["a name from your contacts"],   // leave it out unless you mean it
   "intent":    "what you are trying to get out of them, in your own words, one line",
   "reasoning": "how you read the last reply and why you have put it this way, a sentence or two"
 }
 
   - "say" must be empty when the action is "quiet". With "giveup" it is yours to
     choose.
+  - "attach" is a list of names and nothing else. No numbers — you would not type
+    somebody's number out when you can just send their contact.
   - "intent" and "reasoning" are filled in whatever you chose, silence included,
     and they are about YOU: what you wanted, what you understood, what you are
     still not sure of. Say plainly when you could not tell what the reply meant.
@@ -406,6 +448,23 @@ function seatSituation(o: SeatContext): string {
   L.push('ON YOUR PHONE, SINCE YOU LAST LOOKED')
   L.push(o.phone.trimEnd() || '  (nothing arrived. Your phone stayed silent.)')
   L.push('')
+  /**
+   * Their contacts, in the situation rather than in the system text.
+   *
+   * It belongs here on the same argument as everything else in this function: the
+   * system half is what never changes and is therefore nearly free after the first
+   * turn, and a phone book that grew a name mid-week would invalidate the cached
+   * prefix for the rest of it. It does not grow today — the book is derived and
+   * fixed — and putting it here keeps that a property of the data rather than a
+   * promise the prompt shape is relying on.
+   */
+  L.push('SAVED IN YOUR CONTACTS')
+  L.push(
+    o.contacts?.length
+      ? o.contacts.map((n) => `  ${n}`).join('\n')
+      : '  (nobody. Your phone has no contacts saved in it.)',
+  )
+  L.push('')
   L.push(messyLine(o))
   L.push('')
   L.push('What do you do now? One JSON object, nothing else.')
@@ -469,7 +528,27 @@ function validateMove(v: unknown): SeatMove | null {
   if (!reasoning) return null
   if (action === 'say' && !say) return null
 
-  return { action, say: action === 'quiet' ? '' : say, intent, reasoning }
+  /**
+   * Names, trimmed, deduped, and never sent with a message that does not exist.
+   *
+   * A `quiet` move carrying attachments is the same contradiction as a `quiet`
+   * move carrying words, normalised the same way: nothing is sent, so there is
+   * nothing to attach it to. Numbers are NOT stripped or repaired here — a name
+   * the caller cannot find in the book is simply not shared, and the log says so,
+   * which is a truer record than a harness quietly turning `+919876543210` into
+   * somebody.
+   */
+  const attach = Array.isArray(o.attach)
+    ? [...new Set(o.attach.filter((n): n is string => typeof n === 'string').map((n) => n.trim()).filter(Boolean))]
+    : []
+
+  return {
+    action,
+    say: action === 'quiet' ? '' : say,
+    ...(attach.length && action !== 'quiet' ? { attach } : {}),
+    intent,
+    reasoning,
+  }
 }
 
 /* ---------------------------------------------------------------- the ask */

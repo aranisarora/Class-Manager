@@ -175,6 +175,28 @@ export function Pane({
     lastOutbound?.status === 'sent' ? 'delivered' : lastOutbound?.status === 'delivered' ? 'read' : null
 
   /**
+   * Everybody this academy already holds, for the contact picker's second section.
+   *
+   * Same tenant only, and the person in this seat left out — a handset shows the people
+   * you know, and sharing your own card with the business you are talking to is not a
+   * case anybody needs. Cross-tenant is excluded for the reason `lib/phonebook.ts`
+   * exists: offering Ace's contacts inside Nadam's pane is exactly the §10.1 collision
+   * the derived book is built to make impossible, drawn as a menu item.
+   */
+  const savedContacts = useMemo(
+    () =>
+      state.contacts
+        .filter((c) => c.academyId === contact?.academyId && c.id !== contactId && c.phone)
+        .map((c) => ({
+          contactId: c.id,
+          name: c.name,
+          phone: c.phone as string,
+          role: c.roles[0] ? ROLE_SHORT[c.roles[0]] : undefined,
+        })),
+    [state.contacts, contact?.academyId, contactId],
+  )
+
+  /**
    * Search inside the thread, the way WhatsApp's own does: it FILTERS rather than scrolls to
    * a hit. A long-running world puts hundreds of messages in a pane, and "show me every time
    * the fee came up" is the question actually being asked of it.
@@ -489,8 +511,11 @@ export function Pane({
         busy={!!state.busy[`send:${contactId}`]}
         optedOut={!!contact.optedOutAt}
         chrome={chrome}
+        academyId={contact.academyId}
+        savedContacts={savedContacts}
         onSendText={(text) => void actions.sendText(contactId, text)}
         onSendMedia={(media, caption) => void actions.sendMedia(contactId, media, caption)}
+        onSendContacts={(contacts, caption) => void actions.sendContacts(contactId, contacts, caption)}
         // The newest outbound message's next rung, so the ladder can be walked from the
         // composer without hunting for the right bubble (§2.4).
         nextRung={nextRung}

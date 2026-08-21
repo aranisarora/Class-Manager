@@ -22,6 +22,7 @@ import {
   useRef,
   type ReactNode,
 } from 'react'
+import { bodyWithSharedContacts, readSharedContacts, type SharedContact } from '@/lib/messaging/contact-card'
 import { EXTRA_LIMITS, LIMITS } from '@/lib/messaging/types'
 import type { ContactState, OnboardingState, Role } from '@/lib/types'
 
@@ -102,6 +103,17 @@ export type EmuMessage = {
   /** §14.6 — the Cloud API's `cta_url`: a body plus one button that opens a URL. */
   link: { title: string; url: string } | null
   media: EmuMedia | null
+  /**
+   * Contact cards shared in this message — the one attachment that is not media.
+   *
+   * A field of its own rather than a `kind` on `EmuMedia`, because the bubble has to
+   * draw a different object (a card with a name and a number, not a file with a
+   * download link) and because the two take opposite paths through a turn: media is
+   * refused in words by the runtime, a card is read by the model. `body` also carries
+   * the rendered line — see `bodyWithSharedContacts` — so a pane that knew nothing
+   * about this field would still show the right words rather than an empty bubble.
+   */
+  contacts: SharedContact[] | null
   catalogId: string | null
   templateName: string | null
   status: MessageStatus
@@ -575,6 +587,14 @@ export function normalizeMessage(raw: Raw, index: ActionIndex, fallbackContactId
       }
     : null
 
+  // `contacts` lives on the payload, beside `mediaMimeType`, because it is inbound-only
+  // and structured — the wire's own shape, kept so the pane draws a card rather than
+  // re-parsing the sentence `ingestInbound` wrote into `body`.
+  const sharedContacts = (() => {
+    const parsed = readSharedContacts(pick(raw, 'contacts') ?? pick(payload, 'contacts'))
+    return parsed.length > 0 ? parsed : null
+  })()
+
   const direction = (str(pick(raw, 'direction')) ?? 'outbound') === 'inbound' ? 'inbound' : 'outbound'
   const status = deriveStatus(raw, { sentAt, deliveredAt, readAt })
 
@@ -589,6 +609,11 @@ export function normalizeMessage(raw: Raw, index: ActionIndex, fallbackContactId
     list: normalizeList((pick(raw, 'list') as Raw) ?? (pick(payload, 'list') as Raw), localIndex),
     link: normalizeLink((pick(raw, 'link') as Raw) ?? (pick(payload, 'link') as Raw)),
     media,
+    // Through the same parser the ingest path used, rather than trusted off the row.
+    // A stored card that would no longer survive `readSharedContacts` — an old shape,
+    // a number a later rule refuses — should stop being drawn as a tappable card here
+    // rather than be the one place in the product that still believes in it.
+    contacts: sharedContacts,
     catalogId: str(pick(raw, 'catalog_id', 'catalogId')),
     templateName: str(pick(raw, 'template_name', 'templateName')),
     status: direction === 'inbound' ? 'read' : status,
@@ -1155,6 +1180,7 @@ function echo(contactId: string, body: string, nowIso: string): EmuMessage {
     list: null,
     link: null,
     media: null,
+    contacts: null,
     catalogId: null,
     templateName: null,
     status: 'read',
@@ -1479,6 +1505,8 @@ export type EmulatorActions = {
     media: { url: string; mimeType: string; filename?: string },
     caption?: string,
   ) => Promise<void>
+  /** Share one or more contact cards, with whatever was typed beside them. */
+  sendContacts: (contactId: string, contacts: SharedContact[], caption?: string) => Promise<void>
   tapAction: (contactId: string, actionId: string, label?: string) => Promise<void>
   /**
    * §2.4 has four rungs and the UI had one control, wired to the top of the ladder: every
@@ -1939,6 +1967,32 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
             contactId,
             mediaUrl: media.url,
             mediaMimeType: media.mimeType,
+            ...(caption ? { text: caption } : {}),
+          })
+          await afterMutation(contactId)
+        }),
+
+      sendContacts: (contactId, contacts, caption) =>
+        withBusy(`send:${contactId}`, async () => {
+          // The echo carries the same sentence `ingestInbound` is about to write into
+          // `body`, from the same renderer — so the bubble does not change its words when
+          // the refresh replaces the optimistic row with the stored one. A tap did exactly
+          // that once, going blank in front of the person who had just made it.
+          dispatch({
+            type: 'thread/optimistic',
+            contactId,
+            message: {
+              ...echo(
+                contactId,
+                bodyWithSharedContacts(caption, contacts) ?? '',
+                stateRef.current.clock.nowIso,
+              ),
+              contacts,
+            },
+          })
+          await post('/api/emulator/inbound', {
+            contactId,
+            contacts,
             ...(caption ? { text: caption } : {}),
           })
           await afterMutation(contactId)

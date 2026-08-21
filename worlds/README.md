@@ -170,6 +170,15 @@ So each `new-*` world tells its owner which block their people's numbers fall in
 given. It is a fact about *phones*, which this harness has always owned ("Phone numbers are not
 yours to choose", below), and not a fact about the business, which is the whole point of a sketch.
 
+**A number they *attach* never needed that rule.** Every seat can share a contact card —
+`live.ts share <who> "<name>"` for a human, an `attach` field on the move for an agent — and the
+names come from `lib/phonebook.ts`, an address book derived from the academy's own id. A persona
+is shown the names and never the numbers, which is why the two facts cannot contradict each
+other: the block sentence is about what to *type*, and there is nothing to type when you tap a
+name. It also means the case people worry about — one person shared into two academies, enrolled
+in both, unreachable from either — cannot arise by accident, because two academies are never
+offered the same number in the first place.
+
 It still means **one of these files cannot be driven twice simultaneously**: two runs of the same
 world draw from one block. Change the block, or drive a different world.
 

@@ -41,6 +41,7 @@ import { billingKey } from '@/lib/billing-keys'
 import { resolveInbound } from '@/lib/identity'
 import { runTurn, type TurnOutput } from '@/lib/agent/loop'
 import { CURATE_THRESHOLD } from '@/lib/agent/memory'
+import { bodyWithSharedContacts, readSharedContacts } from '@/lib/messaging/contact-card'
 import { markStatus } from '@/lib/messaging/send'
 // The 24h window rule, from the file that owns it (§14.7). This read model used to
 // inline the arithmetic against a `WINDOW_MS` of its own, in two places.
@@ -3052,13 +3053,36 @@ export async function ingestInbound(input: {
   actionId?: string
   mediaUrl?: string
   mediaMimeType?: string
+  /**
+   * Shared contact cards, in any of the three shapes `readSharedContacts` takes.
+   * Unvalidated on purpose: the parser is the one place a card is judged, so a
+   * caller cannot hand this path a number `add_family` would later refuse.
+   */
+  contacts?: unknown
   waMessageId?: string
   source?: 'emulator' | 'cloud'
 }): Promise<InboundResult> {
+  const contacts = readSharedContacts(input.contacts)
+  /**
+   * The card, written into `body` — which is what makes it survive past this turn.
+   *
+   * `recentHistory` in `lib/agent/loop.ts` selects `where body is not null`, so a
+   * bare card with no caption typed beside it would be in the pane, in the event
+   * log and in the payload, and absent from the conversation the model re-reads two
+   * turns later — the same hole `button_reply.title` fell into, where a tap arrived
+   * with its words attached or without them depending only on which kind of button
+   * carried it. It is not the runtime putting words in somebody's mouth: on a
+   * handset a shared contact IS the message, and this is its transcription.
+   */
+  const body = bodyWithSharedContacts(input.text, contacts)
+
   const resolved = await resolveInbound(
     input.fromPhoneE164,
     input.senderPhoneE164,
     input.profileName,
+    // The typed caption, never `body`. A card carries a PERSON's name, and
+    // `matchByName` is looking for an ACADEMY's — a stranger sharing "Ace Sports"
+    // as a contact would otherwise route themselves into Ace TT Academy.
     input.text,
   )
   if ('unresolved' in resolved) {
@@ -3099,12 +3123,15 @@ export async function ingestInbound(input: {
        on conflict (idempotency_key) do nothing
        returning id`,
       [
-        id, academyId, contactId, senderId, input.text ?? null,
+        id, academyId, contactId, senderId, body ?? null,
         JSON.stringify({
           source: input.source ?? 'emulator',
           actionId: input.actionId ?? null,
           profileName: input.profileName ?? null,
           mediaMimeType: input.mediaUrl ? guessMime(input.mediaUrl, input.mediaMimeType) : null,
+          // Structured beside the rendered line in `body`, so the pane can draw a card
+          // and nothing downstream has to parse prose back into a name and a number.
+          contacts: contacts.length > 0 ? contacts : null,
         }),
         input.mediaUrl ?? null, input.waMessageId ?? null, replyTo, idempotencyKey,
       ] as never[],
@@ -3129,6 +3156,7 @@ export async function ingestInbound(input: {
     media: input.mediaUrl
       ? [{ url: input.mediaUrl, mimeType: guessMime(input.mediaUrl, input.mediaMimeType) }]
       : undefined,
+    contacts: contacts.length > 0 ? contacts : undefined,
     source: 'inbound',
   })
 
@@ -3145,6 +3173,7 @@ export async function inboundFromContact(input: {
   actionId?: string
   mediaUrl?: string
   mediaMimeType?: string
+  contacts?: unknown
 }): Promise<InboundResult | { ok: false; notFound: true }> {
   for (const academyId of await worldAcademyIds()) {
     const found = await withSession(svc(academyId), async (tx) => {
@@ -3167,6 +3196,7 @@ export async function inboundFromContact(input: {
       actionId: input.actionId,
       mediaUrl: input.mediaUrl,
       mediaMimeType: input.mediaMimeType,
+      contacts: input.contacts,
       source: 'emulator',
     })
   }
@@ -3315,6 +3345,13 @@ async function processChangeValue(v: MetaChangeValue, part: string): Promise<str
       image?: { id?: string; mime_type?: string; caption?: string }
       audio?: { id?: string; mime_type?: string }
       document?: { id?: string; mime_type?: string; filename?: string }
+      /**
+       * `type: "contacts"` — the one attachment that arrives as data rather than as a
+       * media id. Carried straight through: `readSharedContacts` takes this exact
+       * nested shape, so the live wire and the emulator hand `ingestInbound` the same
+       * thing and §17's "something that works here works there" holds for the card.
+       */
+      contacts?: unknown
     }
     if (!m.from) continue
     if (onlyMessage && String(m.id) !== onlyMessage) continue
@@ -3346,6 +3383,7 @@ async function processChangeValue(v: MetaChangeValue, part: string): Promise<str
       actionId: actionId ?? undefined,
       mediaUrl,
       mediaMimeType: media?.mime_type,
+      contacts: m.contacts,
       waMessageId: m.id,
       source: 'cloud',
     })

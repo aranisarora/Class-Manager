@@ -101,6 +101,8 @@ const { PERSONAS } = await import('./_personas')
 const { openSeatModel } = await import('./_persona-agent')
 const { readTurns } = await import('./_derive')
 const { inboundFromContact } = await import('@/lib/seed')
+const { phonebookLookup, phonebookNames } = await import('@/lib/phonebook')
+const { bodyWithSharedContacts } = await import('@/lib/messaging/contact-card')
 
 type PersonaKey = import('./_personas').PersonaKey
 type Persona = import('./_personas').Persona
@@ -139,6 +141,17 @@ export type Told =
       intent: string
       /** The words on the affordance this was resolved to, or null for plain text. */
       tapped: string | null
+      /** Whose contact cards went with the message, by name. Absent when none did. */
+      shared?: string[]
+      /**
+       * Names they tried to attach and could not find in their own phone.
+       *
+       * Kept because it is a finding rather than noise: a seat repeatedly reaching
+       * for somebody who is not in its contacts is a persona whose week does not fit
+       * the world it was given, and a run that dropped these silently would look
+       * like a persona that simply never shared anybody.
+       */
+      notInContacts?: string[]
       /** How many messages this move put on this persona's phone. A count. */
       arrived: number
       usage: Usage
@@ -299,6 +312,10 @@ async function move(ask: Ask): Promise<Told> {
     phone,
     said,
     seed: SEED,
+    // Names only — see `SeatMove.attach`. The numbers behind them are derived from
+    // this academy's id and never enter the prompt, so a seat cannot invent one and
+    // cannot hand a number another tenant already holds.
+    contacts: phonebookNames(session.academyId),
     ...(ask.today ? { today: ask.today } : {}),
   })
 
@@ -340,6 +357,25 @@ async function move(ask: Ask): Promise<Told> {
   const tapped = actionId ? m.say : null
 
   /**
+   * The names they attached, turned into cards — and the ones that were not there.
+   *
+   * A name the book does not hold is dropped rather than invented, and the drop is
+   * recorded: a seat looking for somebody who is not in its phone is an ordinary
+   * small failure, and a harness that manufactured a number for them would be
+   * feeding the product a contact nobody could ever reach. It would also be the
+   * exact §10.1 hazard `lib/phonebook.ts` exists to remove, reintroduced by the one
+   * component that was supposed to be blindfolded from numbers entirely.
+   *
+   * A tap carries no attachment: `actionId` and `contacts` are exclusive because a
+   * button reply is not a message with a body to hang a card on.
+   */
+  const attachNames = actionId ? [] : (m.attach ?? [])
+  const shared = attachNames
+    .map((n) => phonebookLookup(session.academyId, n))
+    .filter((c): c is NonNullable<typeof c> => c !== null)
+  const unknownNames = attachNames.filter((n) => phonebookLookup(session.academyId, n) === null)
+
+  /**
    * A silent move is still a turn: the thunk posts nothing, and the turn is
    * recorded anyway.
    *
@@ -350,11 +386,21 @@ async function move(ask: Ask): Promise<Told> {
    * at all. The intent and the reasoning are attached whatever they chose, so a
    * later reader knows WHY the phone went down.
    */
+  /**
+   * What actually went on the wire, which is what the record has to hold.
+   *
+   * `m.say` alone would record a message that was nothing but a shared card as an
+   * empty string — a turn that reads, months later, as somebody sending nothing
+   * and the product answering anyway. Built from the same renderer `ingestInbound`
+   * writes into `message.body`, so the record and the database agree word for word.
+   */
+  const wire = bodyWithSharedContacts(m.say, shared) ?? ''
+
   pending = await drive(
     s,
     KEY,
     {
-      say: m.say,
+      say: actionId ? m.say : wire,
       kind: actionId ? 'tap' : 'say',
       window: ask.window,
       intent: m.intent,
@@ -371,14 +417,20 @@ async function move(ask: Ask): Promise<Told> {
       phone,
     },
     async () => {
-      if (!m.say) return
+      // Words OR cards. A message that is nothing but a shared contact is a real
+      // message — it is what "here, this is him" looks like on a handset — so the
+      // guard is no longer `if (!m.say) return`, which would have silently eaten it.
+      if (!m.say && shared.length === 0) return
       await inboundFromContact({
         contactId,
-        ...(actionId ? { actionId } : { text: m.say }),
+        ...(actionId ? { actionId } : m.say ? { text: m.say } : {}),
+        ...(shared.length ? { contacts: shared } : {}),
       })
     },
   )
-  if (m.say) said.push(m.say)
+  // Their own memory of what they sent — the card included, or they will hand the
+  // same person over again tomorrow having no record of having done it.
+  if (wire) said.push(wire)
 
   return {
     id: ask.id,
@@ -387,6 +439,8 @@ async function move(ask: Ask): Promise<Told> {
     say: m.say,
     intent: m.intent,
     tapped,
+    ...(shared.length ? { shared: shared.map((c) => c.name) } : {}),
+    ...(unknownNames.length ? { notInContacts: unknownNames } : {}),
     arrived: pending.length,
     ...spent,
   }

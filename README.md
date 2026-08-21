@@ -85,20 +85,27 @@ Open a pane per contact from the tray, then:
    every suppression with its reason, every job, every model call with tokens and latency.
 7. **Turn on a fault** — `send_fail`, `number_blocked`, `media_timeout`, `link_expired`,
    `model_error`.
-8. **Send a file.** `📎 attach` takes anything on your disk — drop it on the composer or paste a
-   screenshot. **The model cannot read any of it** (§14.5, repealed): the runtime answers the
-   attachment in words and the turn carries on from whatever was typed. Worth sending one to see
-   which sentence comes back — a voice note and a photo get different ones.
-9. **Ask what it knows.** The 🧠 button on a pane shows §5 both ways: the bounded hot set the
-   prompt actually carries, and the append-only fact record behind it, with corrections marked as
-   supersessions rather than edits.
-10. **Add your own people.** `+ person` in the tray creates a contact in the live world without a
+8. **Send a file.** `📎 attach › Document` takes anything on your disk — drop it on the composer
+   or paste a screenshot. **The model cannot read any of it** (§14.5, repealed): the runtime
+   answers the attachment in words and the turn carries on from whatever was typed. Worth sending
+   one to see which sentence comes back — a voice note and a photo get different ones.
+9. **Share a contact.** `📎 attach › Contact` is the one attachment the model *can* read, because
+   a card is a name and a number rather than bytes. Pick two or three strangers out of the phone
+   book, type *"three new families for the Monday batch"*, and watch a roster get built without
+   anybody transcribing a digit. Every academy's book is derived from its own id, so two tenants
+   are never offered the same number — the §10.1 collision that makes a family silently
+   unreachable cannot happen by accident here. The second section of the picker is the world's
+   own people, for when you want the duplicate case on purpose.
+10. **Ask what it knows.** The 🧠 button on a pane shows §5 both ways: the bounded hot set the
+    prompt actually carries, and the append-only fact record behind it, with corrections marked as
+    supersessions rather than edits.
+11. **Add your own people.** `+ person` in the tray creates a contact in the live world without a
     reseed, wired for real — a client gets an account, a player and an enrollment in the first
     class, so reminders and tallies work on them immediately. The next reseed clears them.
-11. **Make a business from empty.** `+ business` writes an academy at `setup`, its admin and
+12. **Make a business from empty.** `+ business` writes an academy at `setup`, its admin and
     nothing else, and messages nobody. Everything after that — classes, coaches, families — is
     built by talking to it.
-12. **Drive it from the command line** — `npm run drive` is the harness, and it posts
+13. **Drive it from the command line** — `npm run drive` is the harness, and it posts
     to this same API. `drive say` prints the reply, the buttons and every query that turn
     ran; `drive link` reaches the web screens without waiting for the bot to offer one.
     [`DRIVING.md`](./docs/DRIVING.md) is the method.

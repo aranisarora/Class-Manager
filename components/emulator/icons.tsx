@@ -45,6 +45,9 @@ export type IconName =
   | 'copy'
   | 'check'
   | 'jumpDown'
+  | 'person'
+  | 'file'
+  | 'plus'
 
 type Props = SVGProps<SVGSVGElement> & { name: IconName; size?: number; title?: string }
 
@@ -156,6 +159,24 @@ const PATHS: Record<IconName, ReactElement> = {
     </>
   ),
   check: <path d="m4.8 12.6 4.6 4.6L19.2 7.4" {...STROKE} />,
+  person: (
+    // WhatsApp's contact glyph: a head and the shoulders under it, open at the bottom.
+    // It marks the one attachment the model can read, so it appears in the attach menu,
+    // on the shared card in a bubble, and nowhere else.
+    <>
+      <circle cx="12" cy="8.4" r="3.6" {...STROKE} />
+      <path d="M5.2 19.6a6.8 6.8 0 0 1 13.6 0" {...STROKE} />
+    </>
+  ),
+  file: (
+    // A sheet with its corner turned. The `attach` paperclip stays the menu's own opener,
+    // so the two are never the same glyph doing two jobs.
+    <>
+      <path d="M13.6 3.6H7.2a1.6 1.6 0 0 0-1.6 1.6v13.6a1.6 1.6 0 0 0 1.6 1.6h9.6a1.6 1.6 0 0 0 1.6-1.6V8.4Z" {...STROKE} />
+      <path d="M13.6 3.6v4.8h4.8" {...STROKE} />
+    </>
+  ),
+  plus: <path d="M12 5.5v13M5.5 12h13" {...STROKE} />,
 }
 
 export function Icon({ name, size = 16, title, className, ...rest }: Props) {
