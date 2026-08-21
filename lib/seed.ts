@@ -1171,10 +1171,24 @@ export async function createAcademy(input: {
   const nowD = await now()
 
   // One shared sender across every tenant, exactly as production has one number.
+  //
+  // `is_sim` (0040) is true because this row is not that number. It is the
+  // emulator's own sender — a fabricated +91 80 number, `WABA-EMULATOR-0001`,
+  // and `credentials '{}'`, which is why a send from it under `TRANSPORT=cloud`
+  // has always failed with "no credentials cached for sender". The live Cloud
+  // number is a different row with a different id, provisioned by `npm run wa`
+  // and holding real credentials, and nothing here touches it.
+  //
+  // Marking it is what puts every academy below into the sim lane, because the
+  // academy inherits the flag from its sender exactly as `app.found_business`
+  // does for a business talked into existence. Without it, `drive`, `probe` and
+  // `probe:sql` all enqueue `lane = 'live'` jobs and the production beat claims
+  // them out from under the run — the same theft 0040 exists to stop, arriving
+  // through the one creation path that does not go through the front desk.
   await withSession(svc(academyId), async (tx) => {
     await tx`
-      insert into sender (id, phone_e164, waba_id, credentials, label)
-      values (${SENDER_ID}::uuid, ${SENDER_PHONE}, 'WABA-EMULATOR-0001', '{}'::jsonb, ${SENDER_LABEL})
+      insert into sender (id, phone_e164, waba_id, credentials, label, is_sim)
+      values (${SENDER_ID}::uuid, ${SENDER_PHONE}, 'WABA-EMULATOR-0001', '{}'::jsonb, ${SENDER_LABEL}, true)
       on conflict (id) do nothing`
   })
 
@@ -1198,11 +1212,19 @@ export async function createAcademy(input: {
       if (!phone) throw new Error('the test number range is full')
     }
 
+    // `is_sandbox` is READ OFF THE SENDER rather than passed in, which is the same
+    // rule `app.found_business` follows for a business the product talks into
+    // existence (0040 §6). One rule in two creation paths, so neither can drift:
+    // the toy-ness of a business is a fact about the number it lives on, and a
+    // caller never gets an opinion about it. A sender that does not exist or does
+    // not say answers false — 0030's polarity, where the forgotten case is a real
+    // business and every guard refuses it.
     await tx.unsafe(
       `insert into academy (id, name, category, timezone, cancellation_window_hours,
          client_reminder_lead_hours, morning_brief_at, evening_digest_at, rail, upi_handle,
-         sender_id, memory, settings, created_on, onboarding_state)
-       values ($1::uuid,$2,$3,$4,24,14,'07:00','21:00','rail1',null,$5::uuid,null,'{}'::jsonb,$6::date,'setup')`,
+         sender_id, memory, settings, created_on, onboarding_state, is_sandbox)
+       values ($1::uuid,$2,$3,$4,24,14,'07:00','21:00','rail1',null,$5::uuid,null,'{}'::jsonb,$6::date,'setup',
+               coalesce((select s.is_sim from sender s where s.id = $5::uuid), false))`,
       [academyId, input.name.trim(), input.category ?? 'sport', tz, SENDER_ID, nowD.toISOString().slice(0, 10)] as never[],
     )
 

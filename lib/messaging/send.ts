@@ -75,6 +75,8 @@ type Row = {
   sender_id: string
   sender_phone: string
   sender_credentials: unknown
+  /** `sender.is_sim` (0040) — a number a drive invented, which may never reach a handset. */
+  sender_is_sim: boolean
   is_admin: boolean
   now_at: Date
 }
@@ -541,6 +543,7 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
              s.id              as sender_id,
              s.phone_e164      as sender_phone,
              s.credentials     as sender_credentials,
+             s.is_sim          as sender_is_sim,
              exists (select 1 from academy_admin aa
                       where aa.academy_id = c.academy_id
                         and aa.person_id  = c.person_id) as is_admin,
@@ -1102,7 +1105,12 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     asTemplate,
   }
 
-  const result: TransportResult = await getTransport()
+  // The road is chosen by the NUMBER, not by the process (0040). A sender a drive
+  // invented takes the emulator whatever `TRANSPORT` says, so a run started
+  // without the `TRANSPORT=emulator` prefix cannot put an invented parent's
+  // number on the live Cloud wire. Every other sender gets the environment's
+  // choice, exactly as before.
+  const result: TransportResult = await getTransport({ senderIsSim: row.sender_is_sim === true })
     .send(req)
     .catch((e: unknown): TransportResult => ({
       ok: false,

@@ -138,11 +138,39 @@ async function claim(limit: number): Promise<Job[]> {
    *   session fired every pending job in academy B four hours early, where they declined as
    *   stale and the transcript still read calm. Costs a per-row bound instead of an index
    *   seek on `run_at`, accepted deliberately.
+   *
+   * **And belonging to WHOSE business.**
+   *
+   * `lane` (0040) is the second half of the same question. This claim used to
+   * ask only whether a row was pending and due, which is a filter with no owner
+   * in it — and one database serves both the deployed beat and every local
+   * drive. The beat runs this every sixty seconds; a drive drains when a driver
+   * says so; the beat therefore wins every race. The drive then finds its own
+   * job already `done` and records a week in which nothing happened, and the
+   * message the stolen job sent went out over the live Cloud credentials this
+   * process is holding — a test that can put text on a real handset.
+   *
+   * The filter has to be a column on `job` rather than a join to
+   * `academy.is_sandbox`, because this session is pinned to the NIL uuid and
+   * `academy` RLS is `using (id = app.academy_id())`: the join returns zero rows
+   * with no error and the predicate silently means nothing. 0040's header has
+   * the long version.
+   *
+   * @mechanism lane — the production beat claims `lane = 'live'` and nothing else, so a
+   *   simulated tenant's jobs are invisible to it however often it ticks. One database
+   *   serves the deployed site and every local drive, and this claim previously filtered on
+   *   pending-and-due with no owner at all: the beat took the drive's jobs, the drive
+   *   recorded a week in which nothing happened, and the beat — holding the live Cloud
+   *   credentials — executed a test's job against a real number. The lane is stamped by
+   *   trigger from the academy in the payload (`app.stamp_job_lane`), never by a caller,
+   *   and defaults to `live` so a job nobody classified is treated as a real business's.
+   *   Closes F-CF.
    */
   const rows = await withInfra((tx) => tx<Job[]>`
     with due as (
       select id from job
        where status = 'pending'
+         and lane = 'live'
          and run_at <= app.now_for((payload->>'academy_id')::uuid)
        order by run_at asc, created_at asc
        limit ${limit}
@@ -216,6 +244,15 @@ async function reportMissed(log: string[]): Promise<void> {
      -- out, the one status that means nobody is coming back for this was the one
      -- status rule 3 could not see.
      where status in ('pending', 'failed', 'running')
+       -- Same lane as the claim above, and for the report's own sake rather than
+       -- for safety. This scheduler is not entitled to run a simulated tenant's
+       -- jobs, so it is not entitled to call them missed either: a drive that
+       -- opens a week's queue and drains it on its own schedule would otherwise
+       -- fill production's log with MISSED lines about jobs that are being
+       -- handled correctly by somebody else. A report that cries about work it
+       -- refuses to do is a report an operator stops reading, and rule 3 exists
+       -- because the failure mode of a scheduler is silence.
+       and lane = 'live'
        and run_at < app.now() - make_interval(mins => ${MISSED_AFTER_MINUTES}::int)
      order by run_at asc
      limit 50
