@@ -30,10 +30,12 @@
  * A week is fourteen windows and twenty-four seat turns. A child per TURN pays
  * node's start-up, tsx's transform and this file's imports twenty-four times for
  * twenty-four sentences; a child per PERSONA pays it four times for the whole
- * week. The startup is the only thing that changes — a persistent worker holds
- * nothing across a window that it would be wrong to hold, because the two things
- * it does keep are the two things a person keeps: what they have already sent,
- * and what was on their phone the last time they looked.
+ * week. What a persistent worker holds across a window is what a person holds:
+ * what they have already sent, what was on their phone the last time they looked,
+ * and — since it also holds the model open (`openSeatModel`) — the conversation
+ * itself. None of the three is a thing it would be wrong to keep. The one it does
+ * NOT keep is the visible thread: what arrived since they last looked is what
+ * they are shown, so the week is reachable and never re-read.
  *
  * THE PHONE IS READ ONCE AND SHOWN TWICE
  * -----------------------------------------------------------------------------
@@ -96,7 +98,7 @@ if (!process.send) {
 }
 
 const { PERSONAS } = await import('./_personas')
-const { nextMove } = await import('./_persona-agent')
+const { openSeatModel } = await import('./_persona-agent')
 const { readTurns } = await import('./_derive')
 const { inboundFromContact } = await import('@/lib/seed')
 
@@ -191,6 +193,19 @@ if (!persona) {
   process.exit(2)
 }
 
+/**
+ * The model that plays them, held open for the whole week.
+ *
+ * One `claude` process per person rather than one per message: the thread between
+ * Tuesday and Wednesday is the point, and a fresh process each time is somebody
+ * with no memory being handed a transcript of themselves. It also stops paying
+ * ~4s of process start on every move — see `openSeatModel`.
+ *
+ * Opened here, beside the persona it plays, so the session's lifetime is this
+ * worker's lifetime and there is one place that ends it.
+ */
+const seat = openSeatModel(MODEL, persona)
+
 const session = JSON.parse(await readFile(join(DIR, 'session.json'), 'utf8')) as Session
 const contactId = session.contacts[KEY]
 if (!contactId) {
@@ -277,14 +292,13 @@ async function move(ask: Ask): Promise<Told> {
   // The one rendering, kept: the seat decides from these bytes and the record
   // gets the same ones. Rendering it twice would let the two drift.
   const phone = renderPhone(seen)
-  const turn = await nextMove({
+  const turn = await seat.move({
     persona,
     day: ask.day,
     window: ask.window,
     phone,
     said,
     seed: SEED,
-    model: MODEL,
     ...(ask.today ? { today: ask.today } : {}),
   })
 
@@ -418,7 +432,12 @@ process.on('message', (raw: unknown) => {
 })
 
 /** The driver has gone. Nothing here is worth outliving it. */
-process.on('disconnect', () => process.exit(0))
+process.on('disconnect', () => {
+  // The person leaves the phone when the phone goes. A seat process outliving its
+  // driver is a `claude` holding a session open against a week that has finished.
+  seat.end()
+  process.exit(0)
+})
 
 /**
  * Sat down.

@@ -176,6 +176,7 @@ const clock = await import('@/lib/clock')
 const { briefsFromWorld, FAMILIES, INPUT_REALISM, PERSONAS, SCHEDULE, TIMETABLE, WINDOW_AT, windowCounts } =
   await import('./_personas')
 const { RAMP_LIFE, TIERS } = await import('./_ramp')
+const { SEAT_EFFORT } = await import('./_persona-agent')
 /**
  * Who has turned up since the run started. Imported here with the rest, because
  * it reads the database and the database is what every other import above needs
@@ -1498,6 +1499,13 @@ async function manifest(
       // people talking to it, and this is the field that makes that readable.
       brain: cfg.model,
       seat: cfg.seatModel,
+      /**
+       * The effort a Claude seat runs at, recorded because it was once neither
+       * chosen nor written down. Nothing passed `--effort` and the CLI picked;
+       * a bare call at `low` still spends 82 of 98 output tokens on thinking, so
+       * "off" was never true of a Claude seat and no run said what was.
+       */
+      seatEffort: SEAT_EFFORT,
       thinkingPin: process.env.PROBE_THINKING ?? null,
     },
     /**

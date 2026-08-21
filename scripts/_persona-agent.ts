@@ -134,7 +134,12 @@ export type SeatMove = {
    * goodbye, so send whenever `say` is non-empty.
    */
   say: string
-  /** What they are TRYING to get out of them, in their own words. One line. */
+  /**
+   * What they are TRYING to get out of them, in their own words. One line.
+   *
+   * Optional in what arrives — see `validateMove` — and empty when it was not
+   * offered. Never absent from the shape, so a reader never has to check.
+   */
   intent: string
   /** How they read the last reply, and why they put it the way they did. */
   reasoning: string
@@ -154,6 +159,20 @@ export type SeatContext = {
   phone: string
   /** What this persona has already said this run, oldest first. Their memory. */
   said: string[]
+  /**
+   * Whether this is the next turn of a thread the seat is already in.
+   *
+   * True, and the outbox above is NOT resent: it is already theirs, in the
+   * conversation, and repeating it every window is handing somebody a transcript
+   * of themselves. False — a first turn, or the turn after a session had to be
+   * replaced — and it is sent in full, because a replacement process really is
+   * amnesiac and the alternative is somebody introducing themselves to an academy
+   * they have been talking to since Monday.
+   *
+   * It never affects the PHONE. What arrived since they last looked is what they
+   * are shown, in both cases; see `openSeatModel`.
+   */
+  continuing?: boolean
   /** The run's seed. Decides which messages are the messy ones — see `messyLine`. */
   seed: string
   /**
@@ -377,10 +396,13 @@ function seatSituation(o: SeatContext): string {
   // happening on. An empty day is not the same as a day nobody wrote down.
   L.push(`  ${today || 'Nothing unusual is happening to you today.'}`)
   L.push('')
-  L.push('WHAT YOU HAVE ALREADY SENT THEM, OLDEST FIRST')
-  if (!o.said.length) L.push('  (nothing — this is the first thing you have ever sent this number)')
-  else for (const [i, s] of o.said.entries()) L.push(`  ${i + 1}. ${s}`)
-  L.push('')
+  // In a live thread their own outbox is already theirs — see `SeatContext.continuing`.
+  if (!o.continuing) {
+    L.push('WHAT YOU HAVE ALREADY SENT THEM, OLDEST FIRST')
+    if (!o.said.length) L.push('  (nothing — this is the first thing you have ever sent this number)')
+    else for (const [i, s] of o.said.entries()) L.push(`  ${i + 1}. ${s}`)
+    L.push('')
+  }
   L.push('ON YOUR PHONE, SINCE YOU LAST LOOKED')
   L.push(o.phone.trimEnd() || '  (nothing arrived. Your phone stayed silent.)')
   L.push('')
@@ -434,7 +456,17 @@ function validateMove(v: unknown): SeatMove | null {
   const intent = typeof o.intent === 'string' ? o.intent.trim() : ''
   const reasoning = typeof o.reasoning === 'string' ? o.reasoning.trim() : ''
 
-  if (!intent || !reasoning) return null
+  /**
+   * `reasoning` is required and `intent` is not.
+   *
+   * Both are for the record rather than for the run — nothing downstream branches
+   * on either — and they overlap heavily, so demanding both of a person texting in
+   * a live thread turns every message into a form to fill in. `reasoning` is the
+   * half worth insisting on: it is how they read the last reply, which is the
+   * question a week is read back to answer. A move that arrives without an
+   * `intent` is a move, and the record simply holds an empty one.
+   */
+  if (!reasoning) return null
   if (action === 'say' && !say) return null
 
   return { action, say: action === 'quiet' ? '' : say, intent, reasoning }
@@ -483,75 +515,267 @@ function validateMove(v: unknown): SeatMove | null {
  * is loaded into the prompt — this repo's own instructions, handed to somebody
  * pretending to be a parent asking about a fever.
  */
-async function claudeSeat(
-  tier: string,
-  system: string,
-  situation: string,
-): Promise<{ move: SeatMove | null; error?: string; usage: SeatTurn['usage']; attempts: number; ms: number; model: string; costUsd: number }> {
-  const { execFile } = await import('node:child_process')
-  const { promisify } = await import('node:util')
+/**
+ * The effort the person at the phone is putting in, stated rather than defaulted.
+ *
+ * Nothing used to pass this and the CLI chose for us. Measured on a bare call: at
+ * `low`, `output_tokens_details.thinking_tokens` is 82 of 98 output tokens — so a
+ * Claude seat was ALWAYS thinking, at a level nothing here chose and nothing here
+ * recorded. The `thinking: 'off'` two hundred lines up is on the DeepSeek branch
+ * and never reached this one.
+ *
+ * `low` because of the argument already written for that other branch: somebody
+ * thumbing a message at a traffic light is not deliberating, and the deliberation
+ * worth keeping is the `reasoning` field, which arrives inside the answer and goes
+ * into the record. A seat that reasons harder than the person it is playing
+ * under-reports confusion, and confusion is most of what a week is for.
+ */
+export const SEAT_EFFORT = 'low'
+
+/**
+ * One `claude` process per person, alive for the whole week.
+ *
+ * WHY A SESSION AND NOT A CALL
+ * -----------------------------------------------------------------------------
+ * Every move used to be `execFile('claude', ['-p', …])` — a new process, in a new
+ * temp directory, with the persona's whole brief and their entire outbox resent as
+ * text. Two things were wrong with that and only one of them was the clock.
+ *
+ * The clock first, because it is measurable: a bare CLI call costs **~4.0s before
+ * any thinking happens**, and it was paid on every move — 22 moves a week, about
+ * ninety seconds of pure process start per run. Fed over a live stdin instead, the
+ * same turns come back in **~1.4s**. Measured, both.
+ *
+ * The other one matters more. A person on their phone is one continuous thread —
+ * they remember Tuesday on Wednesday, and they can scroll up if they choose. A
+ * fresh process each time is somebody with no memory being handed a transcript of
+ * themselves, which is a different creature wearing the same brief.
+ *
+ * WHAT IS STILL NOT RE-SHOWN
+ * -----------------------------------------------------------------------------
+ * The thread holds the week, but each turn still sends **only what arrived since
+ * they last looked**. That is the whole blindfold: `readPhone` advances a cursor
+ * and nothing here re-renders what is behind it. The history is REACHABLE and not
+ * REPEATED, which is what a phone is. Re-showing the visible thread every turn
+ * would make a busy parent read better than a busy parent does.
+ *
+ * `said` goes the same way — it is the person's own outbox and in a live thread it
+ * is already theirs. It is resent only when a session had to be restarted, because
+ * a replacement process really is amnesiac and the alternative is somebody
+ * introducing themselves to an academy they have been talking to since Monday.
+ *
+ * THE COST FIELD IS CUMULATIVE AND MUST BE DIFFERENCED
+ * -----------------------------------------------------------------------------
+ * `total_cost_usd` on the `result` event is the SESSION's running total and not
+ * this turn's: 0.0031, then 0.0063, then 0.0095 across three turns of a measured
+ * session. Added rather than differenced — which is what the one-shot code did,
+ * correctly, because every one of its processes was a session of exactly one turn
+ * — a week would bill the triangular number of its own turns. `usage` is per-turn
+ * and is summed as it always was.
+ */
+type SeatSession = {
+  child: import('node:child_process').ChildProcess
+  /** Resolvers waiting on a `result` event, in the order they were asked. */
+  waiting: ((ev: Record<string, unknown>) => void)[]
+  /** What this session had billed when its last turn finished. See the header. */
+  billed: number
+}
+
+async function spawnSession(tier: string, system: string): Promise<SeatSession> {
+  const { spawn } = await import('node:child_process')
   const { mkdtemp } = await import('node:fs/promises')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
-  const run = promisify(execFile)
 
   const cwd = await mkdtemp(join(tmpdir(), 'seat-'))
-  let usage: SeatTurn['usage'] = { promptTokens: 0, outputTokens: 0, cachedTokens: 0 }
-  let costUsd = 0
-  let ms = 0
-  let error: string | undefined
+  const child = spawn(
+    'claude',
+    [
+      '-p',
+      '--input-format', 'stream-json',
+      '--output-format', 'stream-json',
+      // Refused without it: "--output-format=stream-json requires --verbose".
+      '--verbose',
+      '--model', tier,
+      '--system-prompt', system,
+      '--allowed-tools', '',
+      '--strict-mcp-config',
+      '--exclude-dynamic-system-prompt-sections',
+      '--effort', SEAT_EFFORT,
+    ],
+    { cwd, stdio: ['pipe', 'pipe', 'pipe'] },
+  )
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const started = Date.now()
-    try {
-      const { stdout } = await run(
-        'claude',
-        [
-          '-p', situation,
-          '--output-format', 'json',
-          '--model', tier,
-          '--system-prompt', system,
-          '--allowed-tools', '',
-          '--strict-mcp-config',
-          '--exclude-dynamic-system-prompt-sections',
-        ],
-        { cwd, maxBuffer: 32 * 1024 * 1024, timeout: SEAT_CLI_TIMEOUT_MS },
-      )
-      ms += Date.now() - started
-      const env = JSON.parse(stdout) as {
-        result?: string
-        is_error?: boolean
-        total_cost_usd?: number
-        usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
-      }
-      costUsd += env.total_cost_usd ?? 0
-      const u = env.usage ?? {}
-      usage = {
-        promptTokens: usage.promptTokens + (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0),
-        cachedTokens: usage.cachedTokens + (u.cache_read_input_tokens ?? 0),
-        outputTokens: usage.outputTokens + (u.output_tokens ?? 0),
-      }
-      if (env.is_error || typeof env.result !== 'string' || !env.result.trim()) {
-        error = `the CLI returned no answer${env.is_error ? ' and reported an error' : ''}`
+  const session: SeatSession = { child, waiting: [], billed: 0 }
+
+  let buf = ''
+  child.stdout?.setEncoding('utf8')
+  child.stdout?.on('data', (chunk: string) => {
+    buf += chunk
+    for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+      const line = buf.slice(0, i)
+      buf = buf.slice(i + 1)
+      if (!line.trim()) continue
+      let ev: Record<string, unknown>
+      try {
+        ev = JSON.parse(line) as Record<string, unknown>
+      } catch {
         continue
       }
-      // The same unwrapping `generateJson` does: a fenced block is not JSON, but
-      // it is JSON with a wrapper the model added, and spending a whole retry on
-      // punctuation would be wasteful. Haiku fences by default.
-      const text = env.result.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
-      try {
-        const move = validateMove(JSON.parse(text))
-        if (move !== null) return { move, usage, attempts: attempt, ms, model: `claude:${tier}`, costUsd }
-        error = 'the JSON parsed but did not match the shape asked for'
-      } catch (e) {
-        error = `did not parse as JSON: ${(e as Error).message}`
-      }
-    } catch (e) {
-      ms += Date.now() - started
-      error = `the claude CLI failed: ${(e as Error).message.slice(0, 300)}`
+      if (ev.type !== 'result') continue
+      const done = session.waiting.shift()
+      if (done) done(ev)
     }
+  })
+  /**
+   * A dead process must not leave a window awaiting a promise nobody will settle:
+   * the week awaits every seat before it moves the clock, so one unsettled turn
+   * hangs the whole run rather than one person.
+   */
+  child.on('exit', () => {
+    for (const done of session.waiting.splice(0)) {
+      done({ type: 'result', is_error: true, result: '' })
+    }
+  })
+  return session
+}
+
+/**
+ * A model in a seat, for as long as the seat is occupied.
+ *
+ * `move()` keeps `nextMove`'s contract and returns the same `SeatTurn`, so a
+ * caller that had the one can hold the other and change nothing about how it
+ * reads the answer.
+ */
+export type SeatModel = {
+  move(o: SeatContext): Promise<SeatTurn>
+  /** Ends the process. Idempotent, and safe on a session that never started. */
+  end(): void
+}
+
+export function openSeatModel(model: string, persona: Persona): SeatModel {
+  if (!model.startsWith(CLAUDE_SEAT)) {
+    // DeepSeek has no session to hold: `generateJson` is one HTTP call, and the
+    // brief is resent every time because that is what its prompt cache is for.
+    return { move: (o) => nextMove({ ...o, model }), end: () => {} }
   }
-  return { move: null, error, usage, attempts: 2, ms, model: `claude:${tier}`, costUsd }
+
+  const tier = model.slice(CLAUDE_SEAT.length) || 'sonnet'
+  const system = seatSystem(persona)
+  let session: SeatSession | null = null
+  let ended = false
+
+  const dead = (): boolean =>
+    !session || session.child.exitCode !== null || !session.child.stdin?.writable
+
+  const ask = async (text: string): Promise<{ ev: Record<string, unknown>; ms: number }> => {
+    if (dead()) session = await spawnSession(tier, system)
+    const s = session as SeatSession
+    const started = Date.now()
+    const ev = await new Promise<Record<string, unknown>>((resolve) => {
+      const settle = (e: Record<string, unknown>): void => {
+        clearTimeout(timer)
+        resolve(e)
+      }
+      const timer = setTimeout(() => {
+        const at = s.waiting.indexOf(settle)
+        if (at >= 0) s.waiting.splice(at, 1)
+        // Killed rather than waited on. What it costs is this turn; what it saves
+        // is the rest of the week, and the next move opens a fresh session.
+        s.child.kill()
+        resolve({ type: 'result', is_error: true, result: '' })
+      }, SEAT_CLI_TIMEOUT_MS)
+      s.waiting.push(settle)
+      s.child.stdin?.write(
+        JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: [{ type: 'text', text }] },
+        }) + '\n',
+      )
+    })
+    return { ev, ms: Date.now() - started }
+  }
+
+  return {
+    async move(o: SeatContext): Promise<SeatTurn> {
+      // Resent only to somebody who has just been replaced — see the header.
+      const { situation } = seatPrompt({ ...o, continuing: !dead() })
+      let usage: SeatTurn['usage'] = { promptTokens: 0, outputTokens: 0, cachedTokens: 0 }
+      let costUsd = 0
+      let ms = 0
+      let error: string | undefined
+      let text = situation
+
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        if (ended) break
+        const { ev, ms: took } = await ask(text)
+        ms += took
+
+        const s = session
+        if (s) {
+          const total = typeof ev.total_cost_usd === 'number' ? ev.total_cost_usd : s.billed
+          costUsd += Math.max(0, total - s.billed)
+          s.billed = total
+        }
+        const u = (ev.usage ?? {}) as Record<string, number>
+        usage = {
+          promptTokens:
+            usage.promptTokens +
+            (u.input_tokens ?? 0) +
+            (u.cache_creation_input_tokens ?? 0) +
+            (u.cache_read_input_tokens ?? 0),
+          cachedTokens: usage.cachedTokens + (u.cache_read_input_tokens ?? 0),
+          outputTokens: usage.outputTokens + (u.output_tokens ?? 0),
+        }
+
+        const raw = typeof ev.result === 'string' ? ev.result : ''
+        if (ev.is_error || !raw.trim()) {
+          error = `the seat's session returned no answer${ev.is_error ? ' and reported an error' : ''}`
+          // A dead or erroring session is replaced rather than argued with, and the
+          // replacement is told everything again.
+          session = null
+          text = seatPrompt({ ...o, continuing: false }).situation
+          continue
+        }
+        // The same unwrapping the one-shot path did: a fenced block is JSON with a
+        // wrapper the model added, and spending a turn on punctuation is waste.
+        const body = raw.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+        try {
+          const parsed = validateMove(JSON.parse(body))
+          if (parsed) return { move: parsed, usage, attempts: attempt, ms, model: `claude:${tier}`, costUsd }
+          error = 'the JSON parsed but did not match the shape asked for'
+        } catch (e) {
+          error = `did not parse as JSON: ${(e as Error).message}`
+        }
+        /**
+         * The correction goes INTO the thread rather than starting a new one. A
+         * restart would throw away the week's conversation to fix a bracket, and
+         * the person would come back with no memory of the academy they have been
+         * talking to since Monday.
+         */
+        text =
+          'That was not one JSON object of the shape asked for. Send the same move again, ' +
+          'as a single JSON object and nothing else — no prose around it and no code fence.'
+      }
+
+      return {
+        move: null,
+        error: error ?? 'the seat returned no usable answer',
+        usage,
+        attempts: 2,
+        ms,
+        model: `claude:${tier}`,
+        costUsd,
+      }
+    },
+    end(): void {
+      ended = true
+      if (!session) return
+      session.child.stdin?.end()
+      session.child.kill()
+      session = null
+    },
+  }
 }
 
 /** How long one seat's message may take before the CLI is given up on. */
@@ -560,15 +784,27 @@ const SEAT_CLI_TIMEOUT_MS = 180_000
 /** `claude:sonnet` and `claude:haiku` route to the CLI; anything else is DeepSeek. */
 export const CLAUDE_SEAT = 'claude:'
 
+/**
+ * One move, for a caller that does not hold a seat open.
+ *
+ * `openSeatModel` is what a week uses, because a week is one person over fourteen
+ * windows and the thread between them is the point. This is the one-shot form:
+ * a session of exactly one turn, opened and closed. It is kept because a caller
+ * asking a single question should not have to manage a process, and because the
+ * DeepSeek branch below has no session to hold either way.
+ */
 export async function nextMove(o: SeatContext & { model: string }): Promise<SeatTurn> {
   const { system, situation } = seatPrompt(o)
 
   if (o.model.startsWith(CLAUDE_SEAT)) {
-    const tier = o.model.slice(CLAUDE_SEAT.length) || 'sonnet'
-    const r = await claudeSeat(tier, system, situation)
-    const spent = { usage: r.usage, attempts: r.attempts, model: r.model, ms: r.ms, costUsd: r.costUsd }
-    if (!r.move) return { move: null, error: r.error ?? 'the seat returned no usable answer', ...spent }
-    return { move: r.move, ...spent }
+    const seat = openSeatModel(o.model, o.persona)
+    try {
+      // `continuing` is false by construction — nothing has been said in a thread
+      // that is about to be thrown away — so the outbox goes with it.
+      return await seat.move({ ...o, continuing: false })
+    } finally {
+      seat.end()
+    }
   }
 
   const res = await generateJson<SeatMove>({
