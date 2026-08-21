@@ -170,7 +170,7 @@ const USAGE = [
   '',
   'Every other flag belongs to _drive-config.ts and is given to BOTH arms:',
   '--preset --days --windows --personas --concurrency --budget-min --budget-inr',
-  '--seed --model --config --ramp --keep',
+  '--seed --model --config --ramp --keep --drop',
 ]
 
 /* ========================================================================== *

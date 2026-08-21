@@ -1314,7 +1314,10 @@ async function main(): Promise<void> {
   console.log(c.dim(`  node scripts/report.mjs --run ${dir}`))
 
   if (cfg.keep) {
+    // The default. Said with the command that reaps it, because a default that
+    // accumulates has to hand over the broom in the same breath.
     console.log(c.dim(`  kept: ${academyName} — ${academyId}`))
+    console.log(c.dim(`  reap: npx tsx scripts/sim.ts gc --hours 6`))
   } else {
     // `job` has no foreign key to `academy`, so dropping the business leaves its
     // queue behind for the next tick anywhere in the world to pick up and fail on.

@@ -187,7 +187,20 @@ export type DriveConfig = {
   arm?: string
   /** The five-tier ramp overlay from `_ramp.ts` — `SIM_RAMP` made visible. */
   ramp: boolean
-  /** Leave the world in the database afterwards, to poke at. */
+  /**
+   * Leave the world in the database afterwards, to poke at. **Default true.**
+   *
+   * It defaulted to false for most of this file's life, on the reasoning that a
+   * run which litters a shared sender with dead businesses is a run that makes
+   * the next one harder to read. That reasoning was sound and the trade was still
+   * wrong: the thing a drive produces is a business, and dropping it at teardown
+   * meant every run had to be re-driven — at the cost of a week — before anybody
+   * could look at what it built. A record answers what happened; only the rows
+   * answer what it is like to use.
+   *
+   * `--drop` is the opt-out, and `gc` is what makes the default safe: it reaps by
+   * age and only ever matches a name this driver made. See `collectGarbage`.
+   */
   keep: boolean
 }
 
@@ -329,6 +342,12 @@ function warn(headline: string, ...detail: string[]): void {
 type Layer = Omit<Partial<DriveConfig>, 'personas'> & {
   preset?: string
   personas?: { names: string[]; at: string }
+  /**
+   * `--drop`, which resolves into `keep` and does not survive as a field of its
+   * own. A config carries what a run WAS, and "kept: false" is that; "drop: true"
+   * is how somebody asked for it, which is a fact about a command line.
+   */
+  drop?: boolean
 }
 
 const FLAGS = {
@@ -348,6 +367,7 @@ const FLAGS = {
   config: 'value',
   ramp: 'bare',
   keep: 'bare',
+  drop: 'bare',
 } as const
 
 const FLAG_NAMES = Object.keys(FLAGS)
@@ -504,6 +524,12 @@ function toLayer(raw: Record<string, unknown>, where: (key: string) => string): 
         break
       case 'keep':
         L.keep = bool(value, at)
+        break
+      case 'drop':
+        // The opt-out, and a flag of its own rather than `--keep false`, because a
+        // bare flag that also takes a value is two flags wearing one name — and
+        // `--keep` with no value has meant "keep" in every run ever recorded here.
+        L.drop = bool(value, at)
         break
       case 'config':
         // Only reachable from inside a file: `resolveConfig` takes the CLI's
@@ -695,7 +721,12 @@ export function resolveConfig(argv: string[]): DriveConfig {
      * passes `SIM_RAMP` in each child's environment instead.
      */
     ramp: m.ramp ?? process.env.SIM_RAMP === '1',
-    keep: m.keep ?? false,
+    /**
+     * `--drop` wins over `--keep`, and over the default, because it is the more
+     * specific thing to have asked for: nobody types both by accident, and a
+     * person who typed the destructive one meant it.
+     */
+    keep: m.drop === true ? false : (m.keep ?? true),
     ...(m.budgetMin !== undefined ? { budgetMin: m.budgetMin } : {}),
     ...(m.budgetInr !== undefined ? { budgetInr: m.budgetInr } : {}),
     ...(m.arm !== undefined ? { arm: m.arm } : {}),
@@ -864,7 +895,9 @@ export function describeConfig(cfg: DriveConfig): string {
   if (cfg.budgetInr !== undefined) limits.push(`₹${cfg.budgetInr}`)
   if (limits.length) parts.push(`budget ${limits.join(' / ')}`)
   if (cfg.ramp) parts.push('ramp')
-  if (cfg.keep) parts.push('keep')
+  // The default is to keep, so `keep` on every line would be noise and `drop` is
+  // the word worth reading: it is the one that ends with a business deleted.
+  if (!cfg.keep) parts.push('drop')
   return parts.join(' · ')
 }
 

@@ -185,7 +185,7 @@ all stop the process at second zero:
 $ npx tsx scripts/sim.ts --daays 3
 
 x  unknown flag --daays
-   known flags: --preset --days --windows --personas --concurrency --budget-min --budget-inr --seed --model --arm --config --ramp --keep
+   known flags: --preset --days --windows --personas --concurrency --budget-min --budget-inr --seed --model --arm --config --ramp --keep --drop
    A flag nothing reads is a parameter that did nothing, and the run then looks
    exactly like the run it was supposed to be. That is how an A/B ends up
    comparing two things that were never different.
@@ -297,9 +297,29 @@ npm run sim -- --days 3 --windows morning      # SIMULATED length
 npm run sim -- --days 7 --budget-min 20        # REAL stop, at a window boundary
 npm run sim -- --seats 2                       # only the first two people take part
 npm run sim -- --seat-model claude:haiku       # cheaper people; sonnet is the default
-npm run sim -- --keep                          # leave the academy in the database
+npm run sim -- --drop                          # delete the academy at teardown; the default is to KEEP it
 npx tsx scripts/sim.ts gc --hours 6            # reap this driver's stale worlds
 ```
+**The world stays in the database.** That is the default now, and it used to be the opposite.
+A drive's product is a business — a timetable somebody talked into existence, families on the
+books, a week of messages against them — and dropping it at teardown meant the only way to look
+at what a run built was to drive another week. A record answers *what happened*; only the rows
+answer *what it is like to use*. So `npm run dev` after a drive opens the academy that drive just
+made.
+
+`--drop` is the opt-out. `gc` is what keeps this honest, and it is now routine rather than
+exceptional:
+
+```bash
+npx tsx scripts/sim.ts gc --hours 6     # reap this driver's worlds, older than six hours
+```
+
+It only ever matches a name this driver made — `<spec name> <token>` — so a hand-built academy,
+`_world.ts`'s fixture, or a business somebody is using is never touched. Note the age trap in its
+own header: a world's `created_at` is written by the TENANT's clock, which every drive winds
+forward, so a world made ten minutes ago reads as *in the future* and `--hours 6` leaves it
+alone. `--hours 0` is the sentence that reaps those.
+
 
 `--seed` is the identity of a repeat. The default is stamped rather than constant — a fixed
 default would make every run in the repo claim to be a repeat of every other one — so it is
@@ -811,7 +831,7 @@ baseline every "did the edit help?" reading is measured against.
 **Ctrl-C is not a stop.** Use `--budget-min` or `--budget-inr`. See the budget section above for
 what a killed turn does to the attribution of everything around it.
 
-**A crashed drive leaves its world behind, and so does `--keep`.** Nothing reaps it at start-up,
+**Every drive leaves its world behind now, and so does a crash.** Nothing reaps it at start-up,
 on purpose. `npm run sim -- gc --hours 6` is the reaper, and it will not touch a world it
 cannot prove this driver made.
 
