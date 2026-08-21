@@ -1,6 +1,6 @@
 # Closed
 
-37 findings, retired. Kept as one line each for two reasons and no others:
+40 findings, retired. Kept as one line each for two reasons and no others:
 
 **A closed finding is a regression test.** `npm run findings` cross-references these codes against
 the instruments to answer the one question nothing else could — *which of the things that have
@@ -54,3 +54,6 @@ this is only the receipt. The full narrative for everything before 20 Aug 2026 i
 | **F-BX** | Inbound arrival was stamped from the world clock, so every reply sorted to the top of its thread | 21 Aug 2026, mechanism verified in code |
 | **F-CD** | A confirmation denied the write it was confirming, because the tap path composed its own receipt | 21 Aug 2026, by wiring the tap into the turn |
 | **F-CE** | A genuinely unknown number was dropped without trace — no message, no turn, no row that a stranger ever wrote | 21 Aug 2026, by the front desk (0039, `lib/frontdesk/`) |
+| **F-CF** | The job queue had no owner, so the production beat claimed a drive's jobs and the drive recorded a week that never happened | 21 Aug 2026, by the lane (0040, `app.stamp_job_lane`) |
+| **F-CG** | The road a message took was a process variable, so a drive could put an invented parent's number on the live Cloud wire | 21 Aug 2026, by binding the transport to the sender (0040, `getTransport`) |
+| **F-CH** | A business the product founded during a drive was byte-identical to a real one, so no guard could tell them apart | 21 Aug 2026, by inheriting `is_sandbox` from the sender (0040, `app.found_business`) |

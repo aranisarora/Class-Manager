@@ -259,21 +259,49 @@ export type DrainOpts = {
   plan?: boolean
 }
 
-/** Run every job that is due, then everything that becoming due unlocked. */
+/**
+ * Run every job that is due, then everything that becoming due unlocked.
+ *
+ * **Which lane this drains, and why it is asked rather than assumed.**
+ *
+ * The tenant filter below has always been here, so a drive has never been able
+ * to reach into another academy's queue. The lane (0040) is the other direction
+ * of the same fence — the one that stops the *production beat* reaching into
+ * this one — and it is worth restating here because the pair only works if both
+ * halves agree about which lane this academy is in.
+ *
+ * It is resolved from the academy rather than hard-coded to `sim`. A drive
+ * against a sandbox world drains the sim lane, which is every world `sim.ts`
+ * builds; a driver who has deliberately pointed an instrument at a real academy
+ * drains the live lane and gets the behaviour they had before this existed.
+ * Hard-coding `sim` would have turned that second case into an empty drain that
+ * throws nothing and reads exactly like a quiet queue — which is the precise
+ * failure mode 0040 exists to remove, reintroduced from the other side.
+ *
+ * The lane is logged for the same reason: a driver who *accidentally* aimed at a
+ * real tenant should be able to see it in the run record rather than infer it.
+ */
 export async function drain(academyId: string, opts: DrainOpts = {}): Promise<string[]> {
   const log: string[] = []
   if (opts.plan !== false) await plan(academyId, log)
+  const [laneRow] = await q<{ lane: string }>(
+    academyId,
+    `select app.lane_for('${academyId}'::uuid) as lane`,
+  )
+  const lane = laneRow?.lane === 'sim' ? 'sim' : 'live'
+  log.push(`lane:${lane}`)
   for (let round = 0; round < 10; round++) {
     const batch = await q<any>(
       academyId,
       `with due as (
          select id from job
           where status = 'pending' and run_at <= app.now()
+            and lane = '${lane}'
             and payload->>'academy_id' = '${academyId}'
           order by run_at asc, created_at asc limit 50 for update skip locked
        )
        update job j set status = 'running', attempts = j.attempts + 1,
-              locked_at = app.now(), locked_by = 'live'
+              locked_at = app.now(), locked_by = 'drive'
          from due where j.id = due.id returning j.*`,
     )
     if (!batch.length) break

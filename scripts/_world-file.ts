@@ -473,14 +473,34 @@ export async function buildWorld(
   const senderPhone = `+15550${digits.slice(0, 6)}`
   const phoneFor = (n: number): string => `+9195${digits.slice(0, 6)}${String(n).padStart(2, '0')}`
 
+  /**
+   * `is_sim` is the one field here that reaches outside this file, and it is what
+   * makes a run against a live database safe rather than merely isolated (0040).
+   *
+   * Everything else in this insert isolates two DRIVES from each other. This
+   * isolates the drive from PRODUCTION, which is a different fence and used not
+   * to exist: one database serves the deployed beat and every local run, the beat
+   * claimed any job that was pending and due, and it ticks every sixty seconds
+   * against a drive that drains when a driver says so. It won every race. The run
+   * then recorded a week in which its own jobs had already been done by somebody
+   * else, and the worker that did them was holding the live Cloud credentials.
+   *
+   * Three things follow from this one boolean, none of them stated here:
+   * the business the product founds on this number is born `is_sandbox`
+   * (`app.found_business`), its jobs are stamped `lane = 'sim'` and the beat
+   * cannot see them (`app.stamp_job_lane`), and its outbound takes the emulator
+   * road whatever `TRANSPORT` says (`getTransport`). The credentials stay `{}`
+   * underneath all of that, so the Cloud transport would refuse this number by
+   * name even if all three were wrong at once.
+   */
   await withSession({ role: 'service', academyId: senderId }, async (tx) => {
     await tx`
-      insert into sender (id, phone_e164, waba_id, credentials, label)
+      insert into sender (id, phone_e164, waba_id, credentials, label, is_sim)
       values (${senderId}::uuid, ${senderPhone}, ${`WABA-SIM-${o.token}`}, '{}'::jsonb,
-              ${`sim ${o.token}`})
+              ${`sim ${o.token}`}, true)
       on conflict (id) do nothing`
   })
-  log(`sender ${senderPhone} — this run's own number`)
+  log(`sender ${senderPhone} — this run's own number, sim lane`)
 
   const at = await clock.now(senderId).catch(() => new Date())
   const contacts: Record<string, string> = {}

@@ -257,6 +257,18 @@ export async function foundBusiness(
     identity.person.full_name ||
     formatPhone(identity.contact.phone_e164)
 
+  /**
+   * @mechanism found_business — a business is born with the reality of the NUMBER it was
+   *   founded on: the function reads `sender.is_sim` and stamps `academy.is_sandbox` from
+   *   it (0040), so a tenant the product talks into existence during a drive is marked
+   *   without the harness touching a product table. Before this, a drive's academy was
+   *   byte-identical to a paying one — `_danger.ts` would refuse to clean it up,
+   *   `ops-guard.ts` would refuse to act on it, and its jobs enqueued into the live lane
+   *   where the production beat claimed them. The harness cannot stamp it itself because
+   *   fixtures are gone: the `academy` row is written here, by product code, on the
+   *   strength of a conversation. Inheritance is what reaches it.
+   *   Closes F-CH.
+   */
   const rows = await withSession(
     { role: 'service', academyId: identity.academyId },
     (tx) =>
