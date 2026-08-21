@@ -153,3 +153,18 @@ numbers cannot be a free choice.
 | `settled-tennis.json` | Ace Tennis Academy: the owner also coaches, two coaches, four classes, four families, five children, one account in arrears. |
 | `multi-coach.json` | Four coaches, six clients, the admin also coaching, an adult learner, and a coach nobody has given a class to. |
 | `solo-coach-group.json` | Kamath Badminton: one man running the whole thing. He coaches all four group classes himself, twelve families, fourteen teenagers between 13 and 16, two accounts in arrears and three prospects. Every seat carries a `voice`, and they are written for the input this product will actually meet — a coach who is not a technical person, parents typing between meetings, and requests for things nobody built: message my son directly, send it to all the parents, email me a receipt, make a group. |
+| `new-swim-school.json` | Blank but for its owner: Kavitha Reddy, 34, ex-state swimmer, has just rented two lanes and has twenty-two children waiting. Seven days of life events set up a timetable, three families, a coach and a walk-in — the business is built during the week rather than before it. |
+| `new-cricket-academy.json` | Blank but for its owner: Imran Qureshi, 48, twenty-one years of a paper register, did not ask for this and checks every number twice. |
+| `new-dance-school.json` | Blank but for its owner: Ananya Ghosh, 29, running thirty-one families out of one WhatsApp group and a sheet she has not opened since March. |
+
+## A world with numbers in it cannot be run twice at once
+
+The three `new-*` worlds above hand the owner real phone numbers in their `life` events — a mother's number
+written on the back of a receipt is how a coaching business actually gains a customer, and leaving the model to
+invent one gets `+91 98765 43210` in two academies at once. Every number in a shipped world is therefore in a
+block of its own, which is what makes the three safe to drive in parallel.
+
+It also means **one of these files cannot be driven twice simultaneously**: `contact.phone_e164` is unique per
+academy, not globally, so the same number under two academies on one shared sender resolves to *neither* and the
+message is silently never delivered. Two runs of one `new-*` world are two runs whose customers cannot be reached.
+Change the block, or drive a different world.

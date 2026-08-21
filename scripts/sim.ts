@@ -176,6 +176,12 @@ const clock = await import('@/lib/clock')
 const { briefsFromWorld, FAMILIES, INPUT_REALISM, PERSONAS, SCHEDULE, TIMETABLE, WINDOW_AT, windowCounts } =
   await import('./_personas')
 const { RAMP_LIFE, TIERS } = await import('./_ramp')
+/**
+ * Who has turned up since the run started. Imported here with the rest, because
+ * it reads the database and the database is what every other import above needs
+ * the environment loaded for.
+ */
+const { arrivals } = await import('./_arrivals')
 const { BLANK_WORLD, describeConfig, makeBudget, recordedConfig, resolveConfig } =
   await import('./_drive-config')
 const { costInr, USD_INR } = await import('@/lib/pricing')
@@ -357,6 +363,66 @@ function deriveSchedule(
     schedule[d] = row
   }
   return schedule
+}
+
+/**
+ * Deal the windows that have not happened yet, over the roster as it stands now.
+ *
+ * `deriveSchedule` above is the whole week decided before anybody speaks, and it
+ * is right for the roster it was given. It cannot be right for a roster that
+ * changes on Wednesday — a business that gains four families gains them into a
+ * week whose every window was already handed out to the one man who started it.
+ *
+ * So this re-deals the REMAINDER and never touches a window that has run. Two
+ * things follow from that and both are deliberate:
+ *
+ * **It does not assert balance, and `deriveSchedule` must.** A person who arrives
+ * on Friday cannot have had Monday, and a check demanding they did would refuse
+ * every week in which the product did its job. What is balanced here is the share
+ * of what is LEFT, which is the only thing that can be. The record keeps the
+ * whole schedule, so the imbalance is legible rather than smoothed over: a seat
+ * with two windows against the owner's twelve is a person who joined on day six,
+ * and reading their week as the product's is the same mistake `deriveSchedule`'s
+ * own header names.
+ *
+ * **A duplicate is dropped rather than fatal.** `deriveSchedule` dies when a cell
+ * gets the same person twice, because at start-up that is a bug in the deal and
+ * nothing has been spent. Here it is Wednesday, ten model turns are on disk, and
+ * killing the run over a scheduling artifact would destroy evidence to protect a
+ * property nobody is judging. Somebody cannot be at their own phone twice in one
+ * window; the second copy is simply not dealt.
+ */
+function redealFrom(
+  schedule: Record<number, Record<WindowName, string[]>>,
+  seats: string[],
+  days: number,
+  windows: WindowName[],
+  after: { day: number; window: WindowName },
+): number {
+  if (!seats.length) return 0
+  const per = windows.length
+  const cells = days * per
+  const from = (after.day - 1) * per + windows.indexOf(after.window) + 1
+  const left = cells - from
+  if (left <= 0) return 0
+
+  const perSeat = Math.min(left, Math.max(1, Math.round((left * DENSITY) / seats.length)))
+  const turns = perSeat * seats.length
+  const dealt: string[][] = Array.from({ length: left }, () => [])
+  for (let t = 0; t < turns; t++) {
+    const cell = dealt[Math.floor((t * left) / turns)] as string[]
+    const who = seats[t % seats.length] as string
+    if (!cell.includes(who)) cell.push(who)
+  }
+
+  for (let i = 0; i < left; i++) {
+    const at = from + i
+    const day = Math.floor(at / per) + 1
+    const w = windows[at % per] as WindowName
+    const row = (schedule[day] ??= {} as Record<WindowName, string[]>)
+    row[w] = dealt[i] ?? []
+  }
+  return left
 }
 
 /**
@@ -701,7 +767,7 @@ async function main(): Promise<void> {
    * spec world's seats had not been counted yet, and "everybody at once" is what
    * the default has always meant — see `DriveConfig.concurrency`.
    */
-  const width = cfg.concurrency || driven.size
+  let width = cfg.concurrency || driven.size
 
   console.log(c.bold(`\n  sim — ${describeConfig(cfg)}`))
   console.log(c.dim(`  world:    ${plan.is}`))
@@ -1034,6 +1100,78 @@ async function main(): Promise<void> {
        * runs after the record closes is a promise nothing in the record kept.
        */
       const after = await queue(session, `d${day}-${w}-drain`, () => drain(academyId), { window: w })
+
+      /**
+       * Who the business gained in this window, given a phone and a person.
+       *
+       * Asked AFTER the drain and not before it, because the drain is where half
+       * of an arrival becomes real: the owner says "put Meghna's boy in the
+       * Monday batch", the turn writes the rows, and the jobs that follow are
+       * what actually reaches her phone. Admitting her before those ran would
+       * seat somebody whose first look at their phone is at an empty screen, and
+       * the first thing this product ever says to a new family is the thing being
+       * measured.
+       *
+       * It is also why this is not a start-up decision dressed as a loop. See
+       * `_arrivals.ts`: a fixed roster made every customer the owner created a
+       * person nobody was playing, so the product wrote to twelve phones and the
+       * record showed twelve outbound messages and no replies — which cannot be
+       * told from a product everybody ignored.
+       */
+      if (!stoppedBy) {
+        const joined = await arrivals({
+          academyId,
+          days: cfg.days,
+          known: new Set(Object.keys(plan.briefs)),
+        }).catch((e) => {
+          // A failed roster read is a window without newcomers, never a dead run.
+          // The week's subject is the product, and this is the harness asking a
+          // question about it.
+          console.log(c.dim(`      (could not read the roster: ${(e as Error).message})`))
+          return []
+        })
+        for (const a of joined) {
+          plan.briefs[a.key] = a.brief
+          session.contacts[a.key] = a.contactId
+          session.roster.push({
+            name: a.brief.name,
+            role: a.brief.seat,
+            contactId: a.contactId,
+            phone: a.phone,
+          })
+          driven.add(a.key)
+        }
+        if (joined.length) {
+          /**
+           * Both files are written BEFORE the first worker is spawned, because a
+           * worker reads `briefs.json` for who it is and `session.json` for the
+           * contact it speaks through, and exits with a message about neither
+           * existing if it is started first. `sim.ts` already had to learn this
+           * once for spec worlds — see `_seat-worker.ts`'s persona lookup.
+           */
+          await writeSidecar(dir, 'briefs.json', plan.briefs)
+          await writeSession(session)
+          for (const a of joined) {
+            if (!seats.has(a.key)) seats.set(a.key, openSeat(a.key, dir, cfg))
+            console.log(
+              `      ${c.green('+')} ${a.brief.name} ${c.dim(`(${a.brief.seat}) is on a phone now — ${a.brief.oneLine}`)}`,
+            )
+          }
+          width = cfg.concurrency || driven.size
+          const left = redealFrom(
+            plan.schedule,
+            [...driven].filter((k) => !gone.has(k)),
+            cfg.days,
+            cfg.windows,
+            { day, window: w },
+          )
+          console.log(
+            c.dim(
+              `        ${joined.length} joined · ${driven.size} seats now · ${left} windows re-dealt`,
+            ),
+          )
+        }
+      }
       await appendFile(
         join(dir, 'days.jsonl'),
         JSON.stringify({ day, window: w, at: at.label, jobs: [...walked, ...after] }) + '\n',

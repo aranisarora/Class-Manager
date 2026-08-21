@@ -251,6 +251,25 @@ by hand. That is not tidiness: a coach told his batch ran Monday and Thursday, i
 ran Monday and Wednesday, produced a turn that read as a product defect and was a harness one.
 A generated brief cannot contradict the world because it is read out of it.
 
+**And the roster is a question, not a decision.** After every window's drain, the run asks the
+database who now has a phone and no seat, and seats them for the rest of the week —
+`scripts/_arrivals.ts`. A coach hired on Wednesday, a family written down on Tuesday, a stranger
+whose number the owner typed off the back of a receipt: each gets a brief composed out of their
+own rows by the same composer that reads a spec, and a child process of their own from that
+window on. The windows still ahead are re-dealt over the new roster; the ones already run are
+never touched, so somebody who joined on Friday has two windows against the owner's twelve and
+the record says so rather than smoothing it.
+
+This is what makes a **blank** world drivable as a week rather than as a monologue. The seats
+used to be fixed at start-up, which is right for a settled academy and silently wrong everywhere
+else: every customer the owner created was a person nobody was playing, so the product sent to
+twelve phones and the record showed twelve outbound messages and no replies — which cannot be
+told, in the record or in any judgement made off it, from a product everybody ignored.
+
+The three `new-*` worlds in `worlds/` are built for exactly this: an owner, a phone, nothing
+else, and seven days of things happening to them that put a business on the books. What the
+week measures is a product meeting people who have never seen it — including the owner.
+
 `settled-tennis.json` is the academy this repo has always driven — **the owner also coaches**,
 an `academy_admin` row and a `coach` row over one `person`, which is the business this product
 is sold into and the one shape a role column cannot express. Four classes so no day is empty and
