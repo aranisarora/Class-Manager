@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-159 mechanisms · 21 findings closed by one · 16 findings still open
+159 mechanisms · 22 findings closed by one · 15 findings still open
 
 ## The scan
 
@@ -435,7 +435,7 @@ One line each. Find a candidate here, then read its entry below.
 - **`pending_request.resolution`** — `lib/jobs/plan-ahead.ts:182`  
   a question nobody answered and nobody tapped is swept to `expired` on the same beat that plans everything else; nothing else visits the row, and left unswept the tail told the model for weeks that somebody had been asked something about a session long since run. The sweep does not stop there: an `agent_task` is opened for whoever is OWED the answer — read from the `from:<contact>` the derived subject carries, because a request routed to the owner sits on the OWNER's contact while the parent who raised it is the one in silence. Expiry decides nothing about the question itself; an expired opt-out is not an opt-out, so the model reads what happened and chooses, including choosing silence.
 - **`proposeGoLive`** — `lib/jobs/plan-ahead.ts:538`  
-  the planner opens the one turn allowed before an academy is live: a proposal to go live, raised on the SIZE OF THE HOLE rather than on the calendar — sessions that have already run to a roster nobody was told about — and re-raised only when that number doubles, so it cannot become a daily nag. `app.guard_go_live()`'s own precondition is checked first and this gate is strictly stronger, so the plan behind the button cannot fail in the owner's hand. Six simulated weeks produced six businesses that never went live, with every reminder, digest, coach nudge and fee request suppressed for twenty-one days, because R8 put a sign on the door and nothing ever put the owner in front of it. The ledger row stays OPEN until a drive shows a business reaching `live` — this is built, not yet proven, and a `Closes` clause is a claim about evidence.
+  the planner opens the one turn allowed before an academy is live: a proposal to go live, raised on the SIZE OF THE HOLE rather than on the calendar — sessions that have already run to a roster nobody was told about — and re-raised only when that number doubles, so it cannot become a daily nag. `app.guard_go_live()`'s own precondition is checked first and this gate is strictly stronger, so the plan behind the button cannot fail in the owner's hand. Six simulated weeks produced six businesses that never went live, with every reminder, digest, coach nudge and fee request suppressed for twenty-one days, because R8 put a sign on the door and nothing ever put the owner in front of it. **Closes F-CB.**
 - **`planMonthBoundary`** — `lib/jobs/plan-ahead.ts:674`  
   the month boundary is a CATCH-UP, not a schedule: both queries ask which (enrollment, period) has no line and which closed period has no tally, bounded to BILLING_CATCHUP_MONTHS, and every job is pushed `allowPast`. A forward look at "is it the 1st" depends on the planner running on those two days, which a `clock --set` across the boundary, a worker down over a month end, or a plan that ran after 09:00 all skip — and nothing back-filled any of it, which is why every driven world reached its second month with no lines and no tally. The per-(enrollment, period) key is also what makes a player in two recurring classes billed for both.
 - **`LOCK_STALE_MINUTES`** — `lib/jobs/runner.ts:90`  
@@ -551,6 +551,6 @@ One line each. Find a candidate here, then read its entry below.
 
 ## Still open
 
-No mechanism claims 16 findings. They are listed in
+No mechanism claims 15 findings. They are listed in
 [`../findings/OPEN.md`](../findings/OPEN.md), which is generated from the ledger and is the
 one place that list lives.

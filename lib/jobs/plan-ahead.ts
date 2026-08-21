@@ -543,8 +543,8 @@ type Push = (
  *   button cannot fail in the owner's hand. Six simulated weeks produced six businesses that
  *   never went live, with every reminder, digest, coach nudge and fee request suppressed for
  *   twenty-one days, because R8 put a sign on the door and nothing ever put the owner in
- *   front of it. The ledger row stays OPEN until a drive shows a business reaching `live`
- *   — this is built, not yet proven, and a `Closes` clause is a claim about evidence.
+ *   front of it.
+ *   Closes F-CB.
  */
 async function proposeGoLive(
   tx: Tx,
