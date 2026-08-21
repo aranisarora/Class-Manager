@@ -1015,8 +1015,19 @@ async function main(): Promise<void> {
         console.log(c.dim(`  ${Object.entries(out.counts).map(([k, v]) => `${k} ${v}`).join(' · ')}`))
         break
       }
-      const out = await api('/api/emulator/seed', { scenario: flag('scenario') ?? 'both' })
-      console.log(c.green('seeded'), c.dim(JSON.stringify(out.counts ?? out)))
+      /**
+       * There is no whole-world scenario any more. `seedWorld` and its two fixtures
+       * were the only thing `--scenario` could build, and they are gone: a business is
+       * created by `drive academy`, or talked into existence at the front desk (0039).
+       */
+      const { STAGES: ALL_STAGES } = await import('@/lib/seed')
+      die(
+        c.red(`drive seed requires --stage <${ALL_STAGES.join('|')}>`) +
+          c.dim(
+            '\n   The whole-world scenario fixtures were removed. Create a business with' +
+              '\n   drive academy \"<name>\" --admin \"<name>\", or let the front desk make one.',
+          ),
+      )
       break
     }
 

@@ -53,28 +53,6 @@ async function globalCounts(db: Db): Promise<Counts | null> {
   }
 }
 
-/**
- * The tenant-scoped answer, which is the normal one: a service session sees its
- * own academy and nothing else (§2.1), so the seeded worlds are counted one
- * session at a time against `lib/seed`'s deterministic ids.
- */
-async function worldCounts(db: Db): Promise<Counts | null> {
-  try {
-    const { WORLD_ACADEMY_IDS } = await import('@/lib/seed')
-    let academies = 0
-    let contacts = 0
-    for (const academyId of Object.values(WORLD_ACADEMY_IDS)) {
-      const r = await db.withSession({ role: 'service', academyId }, async (tx) =>
-        (await db.unsafeQuery(tx, COUNT_SQL))[0],
-      )
-      academies += num(r?.academies)
-      contacts += num(r?.contacts)
-    }
-    return { academies, contacts, scope: 'seeded worlds' }
-  } catch {
-    return null
-  }
-}
 
 /** `job` is infrastructure: global for the service role, so any session reads it. */
 async function pendingJobs(db: Db): Promise<number | null> {
@@ -145,7 +123,7 @@ async function readStatus(): Promise<Status> {
     reason = errText(e)
   }
 
-  const counts = reachable ? ((await globalCounts(db)) ?? (await worldCounts(db))) : null
+  const counts = reachable ? await globalCounts(db) : null
   const jobs = reachable ? await pendingJobs(db) : null
 
   let clock: string | null = null

@@ -209,7 +209,6 @@ export type EmuClock = {
   tenantClocks: { academyId: string; offsetMs: number }[]
 }
 
-export type ScenarioMeta = { id: string; name: string; description: string | null }
 
 export type EventKind =
   | 'send'
@@ -316,8 +315,6 @@ export type EmulatorState = {
   booted: boolean
   loading: boolean
   error: string | null
-  scenario: string | null
-  scenarios: ScenarioMeta[]
   academies: EmuAcademy[]
   contacts: EmuContact[]
   clock: EmuClock
@@ -817,23 +814,6 @@ function normalizeFaults(raw: unknown, prev: EmulatorState['faults']): EmulatorS
   return next
 }
 
-function normalizeScenarios(raw: unknown): ScenarioMeta[] {
-  const rows = Array.isArray(raw) ? raw : []
-  const out: ScenarioMeta[] = []
-  for (const r of rows) {
-    if (typeof r === 'string') out.push({ id: r, name: r, description: null })
-    else if (r && typeof r === 'object') {
-      const id = str(pick(r as Raw, 'id', 'key', 'name', 'scenario'))
-      if (!id) continue
-      out.push({
-        id,
-        name: str(pick(r as Raw, 'name', 'title', 'label')) ?? id,
-        description: str(pick(r as Raw, 'description', 'summary')),
-      })
-    }
-  }
-  return out
-}
 
 /* ------------------------------------------------------------------ *
  * Time helpers — everything user-facing renders in the academy's tz.
@@ -1076,8 +1056,6 @@ const initialState: EmulatorState = {
   booted: false,
   loading: true,
   error: null,
-  scenario: null,
-  scenarios: [],
   academies: [],
   contacts: [],
   clock: {
@@ -1139,7 +1117,6 @@ type Action =
   | { type: 'toast'; toast: Toast }
   | { type: 'toast/dismiss'; id: string }
   | { type: 'ui/toggle'; key: 'showTray' | 'showLog' }
-  | { type: 'scenario/set'; scenario: string }
   | { type: 'delivery/mode'; mode: AutoDelivery }
   | { type: 'clock/scope'; academyId: string }
 
@@ -1216,7 +1193,6 @@ function reducer(state: EmulatorState, action: Action): EmulatorState {
         .map(normalizeContact)
         .filter((c): c is EmuContact => c !== null)
       const known = new Set(contacts.map((c) => c.id))
-      const scenarios = normalizeScenarios(pick(p, 'scenarios', 'worlds'))
       return {
         ...state,
         loading: false,
@@ -1224,8 +1200,6 @@ function reducer(state: EmulatorState, action: Action): EmulatorState {
         error: null,
         academies,
         contacts,
-        scenario: str(pick(p, 'scenario', 'world', 'seed')) ?? state.scenario,
-        scenarios: scenarios.length ? scenarios : state.scenarios,
         clock: normalizeClock(pick(p, 'clock', 'time') as Raw, state.clock),
         faults: normalizeFaults(pick(p, 'faults'), state.faults),
         panes: contacts.length ? state.panes.filter((id) => known.has(id)) : state.panes,
@@ -1251,8 +1225,6 @@ function reducer(state: EmulatorState, action: Action): EmulatorState {
             : state.clockScope,
       }
     }
-    case 'scenario/set':
-      return { ...state, scenario: action.scenario }
     case 'clock/set':
       return { ...state, clock: normalizeClock(action.payload, state.clock) }
     case 'thread/loading': {
@@ -1479,7 +1451,6 @@ export type EmulatorActions = {
   refreshState: () => Promise<void>
   refreshThread: (contactId: string) => Promise<void>
   refreshEvents: () => Promise<void>
-  seed: (scenario: string) => Promise<void>
   openPane: (contactId: string) => void
   closePane: (contactId: string) => void
   closeAllPanes: () => void
@@ -1880,16 +1851,6 @@ export function EmulatorProvider(props: { children?: ReactNode }) {
       refreshThread,
       refreshEvents,
 
-      seed: (scenario) =>
-        withBusy('seed', async () => {
-          dispatch({ type: 'scenario/set', scenario })
-          const res = (await post('/api/emulator/seed', { scenario })) as Raw
-          dispatch({ type: 'pane/closeAll' })
-          if (pick(res, 'clock')) dispatch({ type: 'clock/set', payload: pick(res, 'clock') as Raw })
-          await refreshState()
-          await refreshEvents()
-          notify('ok', `seeded "${scenario}"`)
-        }),
 
       openPane: (contactId) => dispatch({ type: 'pane/open', contactId }),
       closePane: (contactId) => dispatch({ type: 'pane/close', contactId }),

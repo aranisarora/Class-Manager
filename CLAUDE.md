@@ -85,16 +85,16 @@ drifting apart is what cost the twenty-nine.
 **Money is in rupees.** This is an INR-billing product. `lib/pricing.ts` is the one place that
 converts.
 
-**The leading underscore in `scripts/` means "not a command."** `_capture.ts`, `_derive.ts`,
-`_drive-config.ts`, `_env.ts`, `_world.ts`, `_personas.ts`, `_ramp.ts`, `_danger.ts`,
-`_record-from-probe.ts` are shared modules. `_findings.ts` is the one exception and it runs.
+**The leading underscore in `scripts/` means "not a command."** `_arrivals.ts`, `_capture.ts`,
+`_danger.ts`, `_derive.ts`, `_drive-config.ts`, `_env.ts`, `_events.ts`, `_persona-agent.ts`,
+`_personas.ts`, `_record-from-probe.ts`, `_seat.ts`, `_seat-worker.ts`, `_world-file.ts` are
+shared modules. `_findings.ts` is the one exception and it runs.
 
 ## Commands
 
 ```bash
 npm run dev                 # the emulator — the product surface in this build
 npm run typecheck           # tsc --noEmit; covers scripts/ too
-npm run seed                # fixtures
 npm run db:push             # migrations
 
 npm run drive               # be a person talking to the bot, one command at a time

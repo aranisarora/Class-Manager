@@ -37,9 +37,8 @@ The schema lives in `supabase/migrations/`. Applying it and building a world:
 
 ```bash
 npm run db:push       # every migration in filename order; re-running is a no-op
-npm run seed          # both academies (default)
-npm run seed ace      # Ace TT Academy only
-npm run seed solo     # Nadam Vocal only — the solo case (§18)
+npx tsx scripts/drive.ts seed --stage ready    # one business at a named point in its life
+npx tsx scripts/drive.ts academy "<name>" --admin "<name>"   # an empty business, as signup makes it
 ```
 
 Or build a business from empty by talking to it — `+ business` in the tray, or

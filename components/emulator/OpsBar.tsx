@@ -172,29 +172,6 @@ export function useCapability(cap: SandboxCapability): boolean {
   return sandbox === true
 }
 
-/**
- * A local mirror of `SCENARIOS` in `lib/seed.ts`.
- *
- * Copied rather than imported, for the same reason `ClockBar`'s `FALLBACK_SCENARIOS`
- * is: `lib/seed.ts` reaches `lib/db.ts` and therefore `postgres` and node builtins, and
- * pulling it across the client boundary to read three string literals would drag the
- * database driver into the browser bundle. The ids are the load-bearing half and they
- * are fixed by `SCENARIO_IDS`; the server validates against that enum regardless of what
- * this list claims, so the worst a drift here can produce is a wrong label, never a
- * wrong world.
- */
-const SCENARIOS: { id: string; name: string; description: string }[] = [
-  { id: 'both', name: 'Both fixtures', description: 'Ace TT Academy and Nadam Vocal on one number — tenant isolation, side by side' },
-  { id: 'ace', name: 'Multi-coach fixture', description: 'Table tennis, three coaches, eight families, money in flight' },
-  { id: 'solo', name: 'Solo fixture', description: '§18 — one person who is both the admin and the only coach' },
-]
-
-type Drive =
-  | { phase: 'idle' }
-  | { phase: 'running' }
-  | { phase: 'done'; summary: string; detail: string; failed: boolean }
-  | { phase: 'failed'; summary: string; detail: string }
-
 const LABEL = 'font-mono text-[10px] tracking-widest text-zinc-600 uppercase'
 
 const ROW = 'flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-zinc-800 bg-zinc-900/60 px-3 py-1'
@@ -202,9 +179,6 @@ const ALARM_ROW = 'flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b
 
 export function OpsBar() {
   const { status, config, error, reload } = useOpsConfig()
-  const canDrive = useCapability('seed')
-  const [scenario, setScenario] = useState<string>(SCENARIOS[0].id)
-  const [drive, setDrive] = useState<Drive>({ phase: 'idle' })
 
   const logout = useCallback(async () => {
     // The redirect happens whether or not the POST lands. A logout that fails and leaves
@@ -215,53 +189,6 @@ export function OpsBar() {
     window.location.href = '/ops/login'
   }, [])
 
-  const runDrive = useCallback(async () => {
-    const meta = SCENARIOS.find((s) => s.id === scenario)
-    if (
-      !window.confirm(
-        `Run the "${meta?.name ?? scenario}" drive?\n\n` +
-          'This wipes every business currently in the world, seeds the fixture in its place, ' +
-          'and then runs every job the seed makes due. Nothing that is there now survives it.',
-      )
-    )
-      return
-
-    setDrive({ phase: 'running' })
-    try {
-      const res = await fetch('/api/emulator/drive', {
-        method: 'POST',
-        cache: 'no-store',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scenario }),
-      })
-      const body = (await res.json().catch(() => null)) as Record<string, unknown> | null
-      if (!res.ok || body?.ok !== true) {
-        const log = Array.isArray(body?.log) ? (body.log as unknown[]) : null
-        setDrive({
-          phase: 'failed',
-          summary: String(body?.error ?? `HTTP ${res.status}`),
-          detail: log ? log.join('\n') : String(body?.error ?? ''),
-        })
-        return
-      }
-      const totals = (body.totals ?? {}) as Record<string, number>
-      const failed = Number(totals.failed ?? 0)
-      const walked = Array.isArray(body.rounds) ? body.rounds.length : 0
-      setDrive({
-        phase: 'done',
-        failed: failed > 0,
-        summary:
-          `${walked} ${walked === 1 ? 'round' : 'rounds'} · ${totals.ran ?? 0} ran` +
-          (failed > 0 ? ` · ${failed} failed` : '') +
-          (body.stopped === 'deadline' ? ' · cut short' : ''),
-        // The whole run log, untruncated. What a drive actually did is inside the turns,
-        // not in the counts, and a summary that cannot be opened is not evidence.
-        detail: Array.isArray(body.log) ? (body.log as unknown[]).join('\n') : '',
-      })
-    } catch (e) {
-      setDrive({ phase: 'failed', summary: e instanceof Error ? e.message : String(e), detail: '' })
-    }
-  }, [scenario])
 
   if (status === 'loading') {
     return (
@@ -357,97 +284,21 @@ export function OpsBar() {
         {config.commit ? config.commit.slice(0, 7) : 'local'}
       </span>
 
-      <span className="h-4 w-px bg-zinc-800" />
 
-      {canDrive ? (
-        /*
-          `drive`, not a second `seed`. The clock bar's seed control builds a fixture and
-          stops there; this one does that and then walks the job ladder to its fixed point,
-          reporting every round it ran. They are two different acts on the same world, and
-          the labels and titles have to keep saying so — a bar offering "seed" beside a bar
-          offering "seed" is worse than either.
-        */
-        <div className="flex items-center gap-1.5">
-          <span className={LABEL} title="seed a fixture and run the ladder it makes due, in one act">
-            drive
-          </span>
-          <select
-            value={scenario}
-            disabled={drive.phase === 'running'}
-            onChange={(e) => setScenario(e.target.value)}
-            title={SCENARIOS.find((s) => s.id === scenario)?.description ?? undefined}
-            className="max-w-[170px] rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[11px] text-zinc-200 focus:border-emerald-700 focus:outline-none disabled:opacity-40"
-          >
-            {SCENARIOS.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-          <Btn
-            size="xs"
-            tone="primary"
-            disabled={drive.phase === 'running'}
-            onClick={() => void runDrive()}
-            title="the clock bar's seed plus every job it makes due, run to a standstill — asks first"
-          >
-            {drive.phase === 'running' ? <Spinner /> : 'run drive'}
-          </Btn>
-          {drive.phase === 'running' ? (
-            <span className="font-mono text-[10px] text-zinc-500">
-              seeding and running the ladder — this takes minutes
-            </span>
-          ) : null}
-          {drive.phase === 'done' ? (
-            <Chip tone={drive.failed ? 'warn' : 'window'} title={drive.detail || 'the run reported no log lines'}>
-              {drive.summary}
-            </Chip>
-          ) : null}
-          {drive.phase === 'failed' ? (
-            <Chip tone="danger" title={drive.detail || drive.summary}>
-              drive failed — {drive.summary}
-            </Chip>
-          ) : null}
-        </div>
-      ) : (
-        /*
-          No scenario picker at all in production, rather than a disabled one. A greyed
-          control still says "this is a thing you could do here", and the whole point of
-          the production reading of this console is that seeding is not.
-
-          "Disabled" alone was only half the sentence, though, and stopping there is what
-          sent the owner back to localhost to try anything at all. Only the world-wide acts
-          are gone — seed and the fault panel have no tenant to scope to, so they stay
-          refused everywhere — while the scoped acts work, against an academy flagged as a
-          sandbox and nothing else. A strip that names the refusal and not the way through
-          it is how a feature ships and then goes unused, so this line carries both and
-          points at the tray control that mints the tenant it is talking about.
-
-          Delivery is named among the refusals and not among the ways through, because the
-          console cannot aim it: `POST /api/emulator/delivery` grew an optional `academyId`
-          and `runDelivery` (lib/emulator/state.ts) still posts only `{ mode }`, so the
-          guard's second branch refuses the omission for every mode and every academy. The
-          honest line is the one that matches what happens when it is clicked — the header
-          above is explicit that a control which renders, is clicked and then 403s teaches
-          the operator the console is broken, and a *sentence* that promises the same thing
-          does it just as well. Move delivery back into the second half of this line once
-          the picker sends the scope the clock already sends.
-        */
-        <span
-          className="font-mono text-[10px] text-zinc-500"
-          title={
-            'Seeding, the fault panel and the drive reach every tenant at once and are refused here ' +
-            'regardless. The clock (aimed with the “moves” picker beside it), the composer, the ' +
-            'per-message tick marks and the drop controls are allowed against an academy flagged as ' +
-            'a sandbox and nothing else — make one with “+ business” in the contact tray. Delivery ' +
-            'is the exception: its route takes an academy but nothing in this console sends one, so ' +
-            'it is refused here whichever academy is selected.'
-          }
-        >
-          seeding, faults and delivery stay off — the rest works on a{' '}
-          <span className="font-semibold tracking-widest text-emerald-400">SANDBOX</span> academy, made with “+ business”
-        </span>
-      )}
+      <span
+        className="font-mono text-[10px] text-zinc-500"
+        title={
+          'The fault panel reaches every tenant at once and is refused here regardless. The clock ' +
+          '(aimed with the “moves” picker beside it), the composer, the per-message tick marks and ' +
+          'the drop controls are allowed against an academy flagged as a sandbox and nothing else — ' +
+          'make one with “+ business” in the contact tray. Delivery is the exception: its route takes ' +
+          'an academy but nothing in this console sends one, so it is refused here whichever academy ' +
+          'is selected.'
+        }
+      >
+        faults and delivery stay off — the rest works on a{' '}
+        <span className="font-semibold tracking-widest text-emerald-400">SANDBOX</span> academy, made with “+ business”
+      </span>
 
       <div className="ml-auto flex items-center gap-2">
         {config.baseUrl ? (

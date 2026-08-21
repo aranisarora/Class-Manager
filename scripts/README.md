@@ -94,7 +94,7 @@ prose.
 
 | | |
 |---|---|
-| `seed.ts`, `db-push.ts`, `apply-migrations.mjs` | Fixtures and migrations. |
+| `db-push.ts`, `apply-migrations.mjs` | Migrations. |
 | `q.mjs` | Ask the database a question as the service role, with the tenant GUC set. |
 | `wa-cloud.ts` | `npm run wa` — the WhatsApp Cloud setup surface. |
 | `probe-surface.ts` | `npm run surface` — everything the model is shown, in one greppable file. |

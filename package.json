@@ -8,7 +8,6 @@
     "build": "next build",
     "start": "next start -p 3000",
     "typecheck": "tsc --noEmit",
-    "seed": "tsx scripts/seed.ts",
     "db:push": "tsx scripts/db-push.ts",
     "drive": "tsx scripts/drive.ts",
     "wa": "tsx scripts/wa-cloud.ts",

@@ -89,32 +89,21 @@ export function detId(...parts: string[]): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-/**
- * The canned fixtures, in one place.
- *
- * The union used to be written out here and again as a `z.enum` in the seed
- * route, so adding a fixture meant remembering a file that names none of them in
- * its imports. Deriving the type from the tuple makes the route's validator and
- * this type the same fact.
- */
-export const SCENARIO_IDS = ['ace', 'solo', 'both'] as const
-
-export type Scenario = (typeof SCENARIO_IDS)[number]
-
 export const SENDER_ID = detId('sender', 'class-manager')
 export const SENDER_PHONE = '+918047182200' // +91 80 4718 2200
 export const SENDER_LABEL = 'Class Manager'
 
-export const ACE_ACADEMY_ID = detId('academy', 'ace-tt-academy')
-export const NADAM_ACADEMY_ID = detId('academy', 'nadam-vocal')
-
-/** Every academy `seedWorld` can create. The emulator's world is exactly these. */
-export const WORLD_ACADEMY_IDS: Record<'ace' | 'solo', string> = {
-  ace: ACE_ACADEMY_ID,
-  solo: NADAM_ACADEMY_ID,
-}
-
-const SEEDED_ACADEMY_IDS = [ACE_ACADEMY_ID, NADAM_ACADEMY_ID]
+/**
+ * The tenant a global-table session is pinned to, and nothing more.
+ *
+ * `job`, `sim_fault`, `sender`, `webhook_event` and `sim_clock` carry cm_service
+ * policies of `using (true)`, so which academy the session names is irrelevant — it
+ * only has to be a value the GUC accepts, and the empty string is one.
+ *
+ * This was the Ace fixture's id, which is why deleting that fixture reached thirteen
+ * call sites that had nothing to do with it. A bootstrap context is not a business.
+ */
+const BOOTSTRAP_ACADEMY_ID = ''
 
 const svc = (academyId: string): SessionCtx => ({ role: 'service', academyId })
 
@@ -146,7 +135,7 @@ let academyIdCachedAt = 0
 export async function worldAcademyIds(o: { refresh?: boolean } = {}): Promise<string[]> {
   const fresh = academyIdCache !== null && Date.now() - academyIdCachedAt < ACADEMY_LIST_TTL_MS
   if (!o.refresh && fresh) return academyIdCache as string[]
-  const rows = await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
+  const rows = await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
     return await tx`select id from app.list_academies()`
   })
   academyIdCache = rows.map((r) => String(r.id))
@@ -224,7 +213,7 @@ const monthOf = (dt: DateTime): string => dt.startOf('month').toFormat('yyyy-LL-
  */
 export async function resetWorld(): Promise<void> {
   const live = await worldAcademyIds({ refresh: true })
-  for (const id of new Set([...live, ...SEEDED_ACADEMY_IDS])) {
+  for (const id of new Set(live)) {
     // `academy_cm_service_all` is `using (id = app.academy_id())`, so the
     // session is pinned to the row it is about to delete. RI cascades run as
     // the table owner, which clears every tenant table in one go.
@@ -234,7 +223,7 @@ export async function resetWorld(): Promise<void> {
   }
   // Global tables: cm_service policies are `using (true)`, so the academy this
   // session is pinned to is irrelevant.
-  await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
+  await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
     await tx`delete from job`
     await tx`delete from sim_fault`
     await tx`delete from sender`
@@ -441,712 +430,6 @@ const ATTENDANCE_COLS = [['id', '::uuid'], ['academy_id', '::uuid'], ['session_i
 const TALLY_COLS = [['id', '::uuid'], ['academy_id', '::uuid'], ['account_id', '::uuid'], ['player_id', '::uuid'], ['class_id', '::uuid'], ['period', '::date'], ['kind', ''], ['description', ''], ['amount', '::numeric'], ['session_id', '::uuid'], ['reason', ''], ['approved_by', '::uuid'], ['dedupe_key', '']] as const
 const PAYMENT_COLS = [['id', '::uuid'], ['academy_id', '::uuid'], ['account_id', '::uuid'], ['amount', '::numeric'], ['rail', ''], ['method', ''], ['reference', ''], ['status', ''], ['requested_at', '::timestamptz'], ['confirmed_at', '::timestamptz'], ['confirmed_by', '::uuid'], ['evidence_url', '']] as const
 
-// -----------------------------------------------------------------------------
-// seedWorld
-// -----------------------------------------------------------------------------
-
-export type AcademySummary = {
-  id: string
-  name: string
-  persons: number
-  contacts: number
-  players: number
-  coaches: number
-  classes: number
-  sessions: number
-  completedSessions: number
-  tallyLines: number
-}
-
-export type SeedResult = {
-  scenario: Scenario
-  nowIso: string
-  sender: { id: string; phone: string; label: string }
-  academies: AcademySummary[]
-}
-
-export async function seedWorld(scenario: Scenario = 'both'): Promise<SeedResult> {
-  await resetWorld()
-  const base = await now()
-
-  const targets: ('ace' | 'solo')[] =
-    scenario === 'ace' ? ['ace'] : scenario === 'solo' ? ['solo'] : ['ace', 'solo']
-
-  // The one sender, shared by every academy (§16: one number, many academies).
-  // Written from the first academy's service session; `sender` has no tenant.
-  const firstAcademyId = WORLD_ACADEMY_IDS[targets[0]]
-  await withSession(svc(firstAcademyId), async (tx) => {
-    await tx.unsafe(
-      // `::text::jsonb`, not `::jsonb` — see `jsonSafe`. Stored as a jsonb string,
-      // `cacheSenderCredentials` reads a non-object and returns early, so §16.3's
-      // per-sender credentials are silently never cached.
-      `insert into sender (id, phone_e164, waba_id, credentials, label)
-       values ($1::uuid, $2, $3, $4::text::jsonb, $5)
-       on conflict (id) do nothing`,
-      [
-        SENDER_ID,
-        SENDER_PHONE,
-        'WABA-EMULATOR-0001',
-        JSON.stringify({
-          transport: 'emulator',
-          phone_number_id: 'PNID-EMULATOR-0001',
-          access_token: 'emulator-only-no-real-token',
-        }),
-        SENDER_LABEL,
-      ] as never[],
-    )
-  })
-
-  const academies: AcademySummary[] = []
-  for (const t of targets) {
-    academies.push(t === 'ace' ? await seedAce(base) : await seedNadam(base))
-  }
-  academyIdCache = null // the world just changed shape
-
-  return {
-    scenario,
-    nowIso: base.toISOString(),
-    sender: { id: SENDER_ID, phone: SENDER_PHONE, label: SENDER_LABEL },
-    academies,
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Ace TT Academy — table tennis, multi-coach. Proves tenant isolation against
-// Nadam, and carries every §6.2 shape: a self-paying adult (n=1), a parent with
-// two children (n=2), and a 16-year-old with his own number separate from his
-// father's (§6.7 — money-shaped rows never route to a player number).
-// -----------------------------------------------------------------------------
-
-async function seedAce(base: Date): Promise<AcademySummary> {
-  const A = ACE_ACADEMY_ID
-  const tz = 'Asia/Kolkata'
-  const nowDT = DateTime.fromJSDate(base, { zone: tz })
-  const from = nowDT.minus({ days: 7 })
-  const to = nowDT.plus({ days: 21 })
-  const period = monthOf(nowDT)
-  const monthLabel = nowDT.toFormat('LLLL yyyy')
-
-  const P = (slug: string) => detId('ace', 'person', slug)
-  const C = (slug: string) => detId('ace', 'contact', slug)
-  const ACCT = (slug: string) => detId('ace', 'account', slug)
-  const PL = (slug: string) => detId('ace', 'player', slug)
-  const CO = (slug: string) => detId('ace', 'coach', slug)
-  const CLS = (slug: string) => detId('ace', 'class', slug)
-  const VEN = (slug: string) => detId('ace', 'venue', slug)
-  const ts = (d: DateTime): string => isoOf(d)
-
-  const people: { slug: string; name: string; notes?: string; memory?: string; settings?: string }[] = [
-    { slug: 'sharwin', name: 'Sharwin Rao', notes: 'Runs the academy. Confirms every UPI payment himself.' },
-    { slug: 'arjun', name: 'Arjun Menon', memory: 'Never taps buttons - always types a reply.' },
-    { slug: 'priya', name: 'Priya Shetty', settings: JSON.stringify({ coach_coming_lead_minutes: 120 }) },
-    { slug: 'ravi', name: 'Ravi Deshpande', notes: 'Invited as a coach, never opened the invite.' },
-    { slug: 'meera', name: 'Meera Iyer', memory: 'Asks about collections every Monday morning.', settings: JSON.stringify({ client_reminder_lead_hours: 20 }) },
-    { slug: 'aarav', name: 'Aarav Iyer' },
-    { slug: 'ananya', name: 'Ananya Iyer' },
-    { slug: 'deepa', name: 'Deepa Nair', notes: 'Plays herself. Holds her own account.' },
-    { slug: 'rajesh', name: 'Rajesh Kumar' },
-    { slug: 'kiran', name: 'Kiran Kumar', notes: '16. Has his own number; fees go to Rajesh.' },
-    { slug: 'sunita', name: 'Sunita Bhat' },
-    { slug: 'vivaan', name: 'Vivaan Bhat' },
-    { slug: 'diya', name: 'Diya Bhat' },
-    { slug: 'farhan', name: 'Farhan Sheikh' },
-    { slug: 'zoya', name: 'Zoya Sheikh' },
-    { slug: 'anjali', name: 'Anjali Rao' },
-    { slug: 'ishaan', name: 'Ishaan Rao' },
-    { slug: 'vikram', name: 'Vikram Joshi' },
-    { slug: 'neha', name: 'Neha Joshi' },
-    { slug: 'lata', name: 'Lata Pillai' },
-    { slug: 'rohan', name: 'Rohan Pillai' },
-  ]
-
-  const contacts: { slug: string; phone: string; state: string; lastInbound: DateTime | null; roleHint: string; profileName?: string }[] = [
-    { slug: 'sharwin', phone: '+919845010001', state: 'engaged', lastInbound: nowDT.minus({ hours: 2 }), roleHint: 'admin', profileName: 'Sharwin' },
-    { slug: 'arjun', phone: '+919845010002', state: 'engaged', lastInbound: nowDT.minus({ hours: 3 }), roleHint: 'coach', profileName: 'Arjun M' },
-    { slug: 'priya', phone: '+919845010003', state: 'registered', lastInbound: null, roleHint: 'coach' },
-    { slug: 'ravi', phone: '+919845010004', state: 'registered', lastInbound: null, roleHint: 'coach' },
-    { slug: 'meera', phone: '+919845010010', state: 'engaged', lastInbound: nowDT.minus({ minutes: 90 }), roleHint: 'parent', profileName: 'Meera' },
-    { slug: 'deepa', phone: '+919845010011', state: 'registered', lastInbound: null, roleHint: 'parent' },
-    { slug: 'rajesh', phone: '+919845010012', state: 'registered', lastInbound: null, roleHint: 'parent' },
-    // Kiran is engaged but OUTSIDE the 24h window - the clearest
-    // template-vs-in-window contrast in the world.
-    { slug: 'kiran', phone: '+919845010013', state: 'engaged', lastInbound: nowDT.minus({ hours: 26 }), roleHint: 'player', profileName: 'Kiran' },
-    { slug: 'sunita', phone: '+919845010014', state: 'registered', lastInbound: null, roleHint: 'parent' },
-    { slug: 'farhan', phone: '+919845010015', state: 'registered', lastInbound: null, roleHint: 'parent' },
-    { slug: 'anjali', phone: '+919845010016', state: 'registered', lastInbound: null, roleHint: 'parent' },
-    { slug: 'vikram', phone: '+919845010017', state: 'registered', lastInbound: null, roleHint: 'parent' },
-    { slug: 'lata', phone: '+919845010018', state: 'registered', lastInbound: null, roleHint: 'parent' },
-  ]
-
-  const accounts: { slug: string; holder: string; display: string }[] = [
-    { slug: 'meera', holder: 'meera', display: 'Meera Iyer' },
-    { slug: 'deepa', holder: 'deepa', display: 'Deepa Nair' },
-    { slug: 'rajesh', holder: 'rajesh', display: 'Rajesh Kumar' },
-    { slug: 'sunita', holder: 'sunita', display: 'Sunita Bhat' },
-    { slug: 'farhan', holder: 'farhan', display: 'Farhan Sheikh' },
-    { slug: 'anjali', holder: 'anjali', display: 'Anjali Rao' },
-    { slug: 'vikram', holder: 'vikram', display: 'Vikram Joshi' },
-    { slug: 'lata', holder: 'lata', display: 'Lata Pillai' },
-  ]
-
-  // 10 players across 8 families. `deepa` is the §6.2 n=1 case:
-  // account.holder_person_id = player.person_id.
-  const players: { slug: string; account: string; person: string }[] = [
-    { slug: 'aarav', account: 'meera', person: 'aarav' },
-    { slug: 'ananya', account: 'meera', person: 'ananya' },
-    { slug: 'deepa', account: 'deepa', person: 'deepa' },
-    { slug: 'kiran', account: 'rajesh', person: 'kiran' },
-    { slug: 'vivaan', account: 'sunita', person: 'vivaan' },
-    { slug: 'diya', account: 'sunita', person: 'diya' },
-    { slug: 'zoya', account: 'farhan', person: 'zoya' },
-    { slug: 'ishaan', account: 'anjali', person: 'ishaan' },
-    { slug: 'neha', account: 'vikram', person: 'neha' },
-    { slug: 'rohan', account: 'lata', person: 'rohan' },
-  ]
-
-  const coaches: { slug: string; pay: number | null; unit: string | null; status: string; invited: DateTime | null; onboarded: DateTime | null }[] = [
-    { slug: 'arjun', pay: 500, unit: 'per_session', status: 'active', invited: nowDT.minus({ days: 60 }), onboarded: nowDT.minus({ days: 59 }) },
-    { slug: 'priya', pay: 450, unit: 'per_session', status: 'active', invited: nowDT.minus({ days: 40 }), onboarded: nowDT.minus({ days: 39 }) },
-    // Ravi exists so AD-COACH-NOT-ONBOARDED has something to fire on.
-    { slug: 'ravi', pay: null, unit: null, status: 'invited', invited: nowDT.minus({ days: 5 }), onboarded: null },
-  ]
-
-  const classes: { slug: string; name: string; venue: string; rate: number; unit: string; count: number | null; startsOn: DateTime; slots: SlotDef[]; coaches: string[] }[] = [
-    {
-      slug: 'beginners', name: '6:30 Beginners Batch', venue: 'green-park',
-      rate: 2400, unit: 'per_month', count: null, startsOn: nowDT.minus({ days: 60 }),
-      slots: [
-        { weekday: 1, start: '18:30', end: '19:30' },
-        { weekday: 3, start: '18:30', end: '19:30' },
-        { weekday: 5, start: '18:30', end: '19:30' },
-      ],
-      coaches: ['arjun'],
-    },
-    {
-      // Two coaches, so a decline still leaves it covered (§6.3 derived coverage).
-      slug: 'advanced', name: 'Saturday Advanced', venue: 'green-park',
-      rate: 400, unit: 'per_session', count: null, startsOn: nowDT.minus({ days: 60 }),
-      slots: [{ weekday: 6, start: '08:00', end: '10:00' }],
-      coaches: ['arjun', 'priya'],
-    },
-    {
-      slug: 'camp', name: 'Sunday Camp', venue: 'indiranagar',
-      rate: 3000, unit: 'per_package', count: 10, startsOn: nowDT.minus({ days: 30 }),
-      slots: [{ weekday: 0, start: '07:00', end: '09:00' }],
-      coaches: ['arjun'],
-    },
-  ]
-
-  const enrollments: { cls: string; player: string; startedDaysAgo: number }[] = [
-    ...['aarav', 'vivaan', 'diya', 'zoya', 'ishaan', 'rohan'].map((p) => ({ cls: 'beginners', player: p, startedDaysAgo: 55 })),
-    ...['ananya', 'kiran', 'neha', 'deepa'].map((p) => ({ cls: 'advanced', player: p, startedDaysAgo: 50 })),
-    ...['aarav', 'kiran', 'neha'].map((p) => ({ cls: 'camp', player: p, startedDaysAgo: 25 })),
-  ]
-
-  const accountOfPlayer = new Map(players.map((p) => [p.slug, p.account]))
-
-  const sessionRows: Record<string, unknown>[] = []
-  const sessionCoachRows: Record<string, unknown>[] = []
-  const attendanceRows: Record<string, unknown>[] = []
-  const tallyRows: Record<string, unknown>[] = []
-  let completed = 0
-
-  for (const cls of classes) {
-    const classId = CLS(cls.slug)
-    const occ = occurrences(classId, tz, cls.slots, from, to, cls.startsOn)
-    const roster = enrollments.filter((e) => e.cls === cls.slug).map((e) => e.player)
-    let pastIndex = 0
-    let futureIndex = 0
-
-    for (const o of occ) {
-      const isPast = o.starts.toMillis() < nowDT.toMillis()
-      sessionRows.push({
-        id: o.id, academy_id: A, class_id: classId, venue_id: null,
-        starts_at: ts(o.starts), ends_at: ts(o.ends),
-        status: isPast ? 'completed' : 'scheduled', cancel_reason: null,
-      })
-      if (isPast) completed++
-
-      for (const coachSlug of cls.coaches) {
-        const coachId = CO(coachSlug)
-        let confirmed: string | null = null
-        let declined: string | null = null
-        let arrived: string | null = null
-        if (isPast) {
-          confirmed = ts(o.starts.minus({ hours: 12 }))
-          arrived = ts(o.starts.minus({ minutes: 5 }))
-        } else if (cls.slug === 'advanced' && futureIndex === 0) {
-          // The next Saturday: Priya drops, Arjun is confirmed. Declined, still covered.
-          if (coachSlug === 'priya') declined = ts(nowDT.minus({ hours: 6 }))
-          else confirmed = ts(nowDT.minus({ hours: 8 }))
-        } else if (cls.slug === 'beginners' && futureIndex === 0) {
-          confirmed = ts(nowDT.minus({ hours: 1 }))
-        }
-        // Everything else stays unconfirmed, so the §8.2 ladder and
-        // admin_escalate_uncovered have something real to fire on.
-        sessionCoachRows.push({
-          id: detId('session_coach', o.id, coachId), academy_id: A, session_id: o.id,
-          coach_id: coachId, confirmed_at: confirmed, declined_at: declined,
-          arrived_at: arrived, running_late: false,
-        })
-      }
-
-      if (isPast) {
-        for (const playerSlug of roster) {
-          const status =
-            playerSlug === 'neha' ? 'absent'
-              : playerSlug === 'kiran' && pastIndex === 0 ? 'late'
-              : 'present'
-          const note =
-            status === 'absent' ? 'Family travel - asked to rebook'
-              : status === 'late' ? 'Arrived 15 minutes in'
-              : null
-          attendanceRows.push({
-            id: detId('attendance', o.id, PL(playerSlug)), academy_id: A, session_id: o.id,
-            player_id: PL(playerSlug), status, note,
-            marked_by_coach_id: CO(cls.coaches[0]), marked_at: ts(o.ends),
-          })
-          // §6.4: a per_session line is written when attendance is marked
-          // present/late/absent. per_package sessions consume the package
-          // instead, so they write no session line.
-          if (cls.unit === 'per_session') {
-            tallyRows.push({
-              id: detId('tally', o.id, PL(playerSlug)), academy_id: A,
-              account_id: ACCT(accountOfPlayer.get(playerSlug)!), player_id: PL(playerSlug),
-              class_id: CLS(cls.slug),
-              period: monthOf(o.starts), kind: 'session',
-              description: `${cls.name} - ${o.starts.toFormat('d LLL')}`,
-              amount: cls.rate, session_id: o.id, reason: null, approved_by: null,
-              dedupe_key: billingKey.session(PL(playerSlug), o.id),
-            })
-          }
-        }
-        pastIndex++
-      } else {
-        futureIndex++
-      }
-    }
-  }
-
-  // per_month lines for the current period, one per active enrollment (§6.4).
-  for (const e of enrollments) {
-    const cls = classes.find((c) => c.slug === e.cls)!
-    if (cls.unit === 'per_month') {
-      tallyRows.push({
-        id: detId('tally', 'monthly', period, CLS(cls.slug), PL(e.player)), academy_id: A,
-        account_id: ACCT(accountOfPlayer.get(e.player)!), player_id: PL(e.player),
-        class_id: CLS(cls.slug),
-        period, kind: 'monthly', description: `${cls.name} - ${monthLabel}`,
-        amount: cls.rate, session_id: null, reason: null, approved_by: null,
-        dedupe_key: billingKey.monthly(PL(e.player), CLS(cls.slug), period),
-      })
-    }
-    if (cls.unit === 'per_package') {
-      // §6.4: the count remaining rides on the tally.
-      const consumed = attendanceRows.filter(
-        (a) =>
-          a.player_id === PL(e.player) &&
-          sessionRows.some((s) => s.id === a.session_id && s.class_id === CLS(cls.slug)),
-      ).length
-      const remaining = (cls.count ?? 0) - consumed
-      tallyRows.push({
-        id: detId('tally', 'package', period, CLS(cls.slug), PL(e.player)), academy_id: A,
-        account_id: ACCT(accountOfPlayer.get(e.player)!), player_id: PL(e.player),
-        class_id: CLS(cls.slug),
-        period, kind: 'package',
-        description: `${cls.name} - ${cls.count}-session package (${remaining} of ${cls.count} left)`,
-        amount: cls.rate, session_id: null, reason: null, approved_by: null,
-        // The seed opens exactly one pack per player per class, so it is pack 1.
-        dedupe_key: billingKey.package(PL(e.player), CLS(cls.slug), 1),
-      })
-    }
-  }
-
-  // §6.4: adjustments are one primitive, not six features.
-  tallyRows.push({
-    id: detId('tally', 'adjustment', period, 'lata'), academy_id: A,
-    account_id: ACCT('lata'), player_id: PL('rohan'), class_id: null, period, kind: 'adjustment',
-    description: 'Goodwill credit - court unavailable', amount: -400, session_id: null,
-    reason: 'Court double-booked on the 5th; Sharwin offered a credit',
-    approved_by: P('sharwin'),
-    // A goodwill credit is a decision somebody made, not a recurring charge, so it
-    // carries no key — see `billingKey`. The partial index ignores it, which is
-    // what lets an admin issue two of them on purpose.
-    dedupe_key: null,
-  })
-
-  const owedBy = (acct: string): number =>
-    tallyRows
-      .filter((t) => t.account_id === ACCT(acct))
-      .reduce((n, t) => n + Number(t.amount), 0)
-
-  // Two families unpaid (Meera has an outstanding request, Vikram nothing at
-  // all), one confirmed payment (Sunita).
-  const paymentRows: Record<string, unknown>[] = [
-    {
-      id: detId('payment', 'sunita', period), academy_id: A, account_id: ACCT('sunita'),
-      amount: owedBy('sunita'), rail: 'rail1', method: 'upi',
-      reference: 'UPI/2026/AC/44821', status: 'confirmed',
-      requested_at: ts(nowDT.minus({ days: 4 })), confirmed_at: ts(nowDT.minus({ days: 2 })),
-      confirmed_by: P('sharwin'), evidence_url: null,
-    },
-    {
-      id: detId('payment', 'meera', period), academy_id: A, account_id: ACCT('meera'),
-      amount: owedBy('meera'), rail: 'rail1', method: 'upi',
-      reference: null, status: 'requested',
-      requested_at: ts(nowDT.minus({ days: 1 })), confirmed_at: null,
-      confirmed_by: null, evidence_url: null,
-    },
-  ]
-
-  await withSession(svc(A), async (tx) => {
-    await tx.unsafe(
-      `insert into academy (id, name, category, timezone, cancellation_window_hours,
-         client_reminder_lead_hours, morning_brief_at, evening_digest_at, rail, upi_handle,
-         sender_id, memory, settings, created_on, onboarding_state)
-       values ($1::uuid,$2,$3,$4,$5::int,$6::int,$7::time,$8::time,$9,$10,$11::uuid,$12,$13::text::jsonb,$14::date,$15)`,
-      [
-        A, 'Ace TT Academy', 'table tennis', tz, 24, 14, '07:00', '21:00', 'rail1', 'sharwin@upi',
-        SENDER_ID,
-        'Sharwin calls them batches, not classes. Fees come by UPI to sharwin@upi and he confirms each one himself. Saturday Advanced is the flagship batch.',
-        JSON.stringify({}),
-        dayOf(nowDT.minus({ days: 45 })),
-        'live',
-      ] as never[],
-    )
-
-    await bulk(tx, 'venue', VENUE_COLS, [
-      { id: VEN('green-park'), academy_id: A, name: 'Green Park', address: 'Green Park Sports Complex, 12th Main, Malleswaram', notes: 'Four tables. Gate closes at 21:00.' },
-      { id: VEN('indiranagar'), academy_id: A, name: 'Indiranagar', address: 'Indiranagar Club Courts, 100 Feet Road', notes: 'Sunday mornings only.' },
-    ])
-
-    await bulk(tx, 'person', PERSON_COLS, people.map((p) => ({
-      id: P(p.slug), academy_id: A, full_name: p.name, notes: p.notes ?? null,
-      memory: p.memory ?? null, settings: p.settings ?? '{}',
-    })))
-
-    await bulk(tx, 'contact', CONTACT_COLS, contacts.map((c) => ({
-      id: C(c.slug), academy_id: A, person_id: P(c.slug), phone_e164: c.phone,
-      wa_id: c.phone.replace('+', ''), profile_name: c.profileName ?? null, is_primary: true,
-      state: c.state, opted_out_at: null,
-      last_inbound_at: c.lastInbound ? ts(c.lastInbound) : null, role_hint: c.roleHint,
-    })))
-
-    await bulk(tx, 'account', ACCOUNT_COLS, accounts.map((a) => ({
-      id: ACCT(a.slug), academy_id: A, holder_person_id: P(a.holder), display_name: a.display,
-    })))
-
-    await bulk(tx, 'player', PLAYER_COLS, players.map((p) => ({
-      id: PL(p.slug), academy_id: A, account_id: ACCT(p.account), person_id: P(p.person), active: true,
-    })))
-
-    await bulk(tx, 'coach', COACH_COLS, coaches.map((c) => ({
-      id: CO(c.slug), academy_id: A, person_id: P(c.slug), pay_amount: c.pay, pay_unit: c.unit,
-      status: c.status, invited_at: c.invited ? ts(c.invited) : null,
-      onboarded_at: c.onboarded ? ts(c.onboarded) : null, ended_on: null,
-    })))
-
-    await bulk(tx, 'academy_admin', ADMIN_COLS, [
-      { id: detId('ace', 'admin', 'sharwin'), academy_id: A, person_id: P('sharwin') },
-    ])
-
-    await bulk(tx, 'class', CLASS_COLS, classes.map((c) => ({
-      id: CLS(c.slug), academy_id: A, name: c.name, venue_id: VEN(c.venue),
-      rate_amount: c.rate, rate_unit: c.unit, rate_count: c.count,
-      starts_on: dayOf(c.startsOn), ends_on: null, active: true,
-    })))
-
-    await bulk(tx, 'class_slot', SLOT_COLS, classes.flatMap((c) =>
-      c.slots.map((s) => ({
-        id: detId('ace', 'slot', c.slug, String(s.weekday), s.start), academy_id: A,
-        class_id: CLS(c.slug), weekday: s.weekday, start_time: s.start, end_time: s.end,
-      })),
-    ))
-
-    await bulk(tx, 'class_coach', CLASS_COACH_COLS, classes.flatMap((c) =>
-      c.coaches.map((co) => ({
-        id: detId('ace', 'class_coach', c.slug, co), academy_id: A,
-        class_id: CLS(c.slug), coach_id: CO(co),
-      })),
-    ))
-
-    await bulk(tx, 'enrollment', ENROLLMENT_COLS, enrollments.map((e) => ({
-      id: detId('ace', 'enrollment', e.cls, e.player), academy_id: A, class_id: CLS(e.cls),
-      player_id: PL(e.player), rate_amount: null, rate_unit: null, rate_count: null,
-      is_trial: false, started_on: dayOf(nowDT.minus({ days: e.startedDaysAgo })), ended_on: null,
-    })))
-
-    await bulk(tx, 'session', SESSION_COLS, sessionRows)
-    await bulk(tx, 'session_coach', SESSION_COACH_COLS, sessionCoachRows)
-    await bulk(tx, 'attendance', ATTENDANCE_COLS, attendanceRows)
-    await bulk(tx, 'tally_line', TALLY_COLS, tallyRows)
-    await bulk(tx, 'payment', PAYMENT_COLS, paymentRows)
-
-    await bulk(tx, 'memory_fact', FACT_COLS, [
-      { id: detId('ace', 'fact', '1'), academy_id: A, subject_kind: 'academy', subject_id: A, fact: 'Sharwin calls them batches, not classes', source: 'onboarding' },
-      { id: detId('ace', 'fact', '2'), academy_id: A, subject_kind: 'academy', subject_id: A, fact: 'Fees are collected by UPI to sharwin@upi; Sharwin confirms each payment himself', source: 'onboarding' },
-      { id: detId('ace', 'fact', '3'), academy_id: A, subject_kind: 'person', subject_id: P('meera'), fact: 'Meera asks about collections every Monday morning', source: 'observed' },
-      { id: detId('ace', 'fact', '4'), academy_id: A, subject_kind: 'person', subject_id: P('arjun'), fact: 'Arjun never taps buttons, always types', source: 'observed' },
-      { id: detId('ace', 'fact', '5'), academy_id: A, subject_kind: 'person', subject_id: P('deepa'), fact: 'Deepa plays herself - there is no child on her account', source: 'onboarding' },
-      { id: detId('ace', 'fact', '6'), academy_id: A, subject_kind: 'person', subject_id: P('kiran'), fact: 'Kiran has his own number; anything about money goes to his father Rajesh', source: 'onboarding' },
-      { id: detId('ace', 'fact', '7'), academy_id: A, subject_kind: 'person', subject_id: P('priya'), fact: 'Priya wants her session prompt two hours ahead, not one', source: 'observed' },
-    ])
-  })
-
-  return {
-    id: A, name: 'Ace TT Academy', persons: people.length, contacts: contacts.length,
-    players: players.length, coaches: coaches.length, classes: classes.length,
-    sessions: sessionRows.length, completedSessions: completed, tallyLines: tallyRows.length,
-  }
-}
-
-// -----------------------------------------------------------------------------
-// Nadam Vocal — the §18 solo case. Lakshmi is ONE person with both an
-// `academy_admin` row and an `active` `coach` row, which is what the two
-// suppression rules on the send path detect. It exists so they can be watched
-// working: nobody is ever asked to confirm something to themselves, and no
-// escalation about the coach pings the coach.
-// -----------------------------------------------------------------------------
-
-async function seedNadam(base: Date): Promise<AcademySummary> {
-  const A = NADAM_ACADEMY_ID
-  const tz = 'Asia/Kolkata'
-  const nowDT = DateTime.fromJSDate(base, { zone: tz })
-  const from = nowDT.minus({ days: 7 })
-  const to = nowDT.plus({ days: 21 })
-  const period = monthOf(nowDT)
-  const monthLabel = nowDT.toFormat('LLLL yyyy')
-
-  const P = (slug: string) => detId('solo', 'person', slug)
-  const C = (slug: string) => detId('solo', 'contact', slug)
-  const ACCT = (slug: string) => detId('solo', 'account', slug)
-  const PL = (slug: string) => detId('solo', 'player', slug)
-  const CO = (slug: string) => detId('solo', 'coach', slug)
-  const CLS = (slug: string) => detId('solo', 'class', slug)
-  const VEN = (slug: string) => detId('solo', 'venue', slug)
-  const ts = (d: DateTime): string => isoOf(d)
-
-  const people: { slug: string; name: string; notes?: string; memory?: string }[] = [
-    { slug: 'lakshmi', name: 'Lakshmi Subramanian', notes: 'Runs Nadam Vocal and teaches every class herself.', memory: 'Both the admin and the only coach. Never ask her to confirm her own class.' },
-    { slug: 'ramesh', name: 'Ramesh Iyengar' },
-    { slug: 'anika', name: 'Anika Iyengar' },
-    { slug: 'gayatri', name: 'Gayatri Rao' },
-    { slug: 'vedanth', name: 'Vedanth Rao' },
-    { slug: 'suresh', name: 'Suresh Krishnan' },
-    { slug: 'shruti', name: 'Shruti Krishnan' },
-    { slug: 'padma', name: 'Padma Venkatesh' },
-    { slug: 'meghana', name: 'Meghana Venkatesh' },
-    { slug: 'nithya', name: 'Nithya Balan', notes: 'Adult learner. Holds her own account.' },
-    { slug: 'kaushik', name: 'Kaushik Ramanathan', notes: 'Adult learner. Holds his own account.' },
-  ]
-
-  const contacts: { slug: string; phone: string; state: string; lastInbound: DateTime | null; roleHint: string; profileName?: string }[] = [
-    { slug: 'lakshmi', phone: '+919845020001', state: 'engaged', lastInbound: nowDT.minus({ hours: 4 }), roleHint: 'admin', profileName: 'Lakshmi' },
-    { slug: 'ramesh', phone: '+919845020002', state: 'registered', lastInbound: null, roleHint: 'parent' },
-    { slug: 'gayatri', phone: '+919845020003', state: 'engaged', lastInbound: nowDT.minus({ hours: 5 }), roleHint: 'parent', profileName: 'Gayatri' },
-    { slug: 'suresh', phone: '+919845020004', state: 'registered', lastInbound: null, roleHint: 'parent' },
-    { slug: 'padma', phone: '+919845020005', state: 'registered', lastInbound: null, roleHint: 'parent' },
-    { slug: 'nithya', phone: '+919845020006', state: 'registered', lastInbound: null, roleHint: 'parent' },
-    { slug: 'kaushik', phone: '+919845020007', state: 'registered', lastInbound: null, roleHint: 'parent' },
-  ]
-
-  // Four parent-held accounts and two self-paying adults (§6.2 at n=1 again).
-  const accounts: { slug: string; holder: string; display: string }[] = [
-    { slug: 'ramesh', holder: 'ramesh', display: 'Ramesh Iyengar' },
-    { slug: 'gayatri', holder: 'gayatri', display: 'Gayatri Rao' },
-    { slug: 'suresh', holder: 'suresh', display: 'Suresh Krishnan' },
-    { slug: 'padma', holder: 'padma', display: 'Padma Venkatesh' },
-    { slug: 'nithya', holder: 'nithya', display: 'Nithya Balan' },
-    { slug: 'kaushik', holder: 'kaushik', display: 'Kaushik Ramanathan' },
-  ]
-
-  const players: { slug: string; account: string; person: string }[] = [
-    { slug: 'anika', account: 'ramesh', person: 'anika' },
-    { slug: 'vedanth', account: 'gayatri', person: 'vedanth' },
-    { slug: 'shruti', account: 'suresh', person: 'shruti' },
-    { slug: 'meghana', account: 'padma', person: 'meghana' },
-    { slug: 'nithya', account: 'nithya', person: 'nithya' },
-    { slug: 'kaushik', account: 'kaushik', person: 'kaushik' },
-  ]
-
-  const classes: { slug: string; name: string; rate: number; unit: string; startsOn: DateTime; slots: SlotDef[] }[] = [
-    { slug: 'tuesday', name: 'Tuesday Beginners', rate: 1800, unit: 'per_month', startsOn: nowDT.minus({ days: 20 }), slots: [{ weekday: 2, start: '17:00', end: '18:00' }] },
-    { slug: 'kriti', name: 'Saturday Kriti', rate: 1800, unit: 'per_month', startsOn: nowDT.minus({ days: 20 }), slots: [{ weekday: 6, start: '10:00', end: '11:30' }] },
-  ]
-
-  const enrollments: { cls: string; player: string }[] = [
-    { cls: 'tuesday', player: 'anika' },
-    { cls: 'tuesday', player: 'vedanth' },
-    { cls: 'tuesday', player: 'shruti' },
-    { cls: 'tuesday', player: 'nithya' },
-    { cls: 'kriti', player: 'shruti' },
-    { cls: 'kriti', player: 'nithya' },
-    { cls: 'kriti', player: 'kaushik' },
-    { cls: 'kriti', player: 'meghana' },
-  ]
-
-  const accountOfPlayer = new Map(players.map((p) => [p.slug, p.account]))
-
-  const sessionRows: Record<string, unknown>[] = []
-  const sessionCoachRows: Record<string, unknown>[] = []
-  const attendanceRows: Record<string, unknown>[] = []
-  const tallyRows: Record<string, unknown>[] = []
-  let completed = 0
-
-  for (const cls of classes) {
-    const classId = CLS(cls.slug)
-    const occ = occurrences(classId, tz, cls.slots, from, to, cls.startsOn)
-    const roster = enrollments.filter((e) => e.cls === cls.slug).map((e) => e.player)
-
-    for (const o of occ) {
-      const isPast = o.starts.toMillis() < nowDT.toMillis()
-      sessionRows.push({
-        id: o.id, academy_id: A, class_id: classId, venue_id: null,
-        starts_at: ts(o.starts), ends_at: ts(o.ends),
-        status: isPast ? 'completed' : 'scheduled', cancel_reason: null,
-      })
-      if (isPast) completed++
-
-      // Lakshmi is always on her own sessions and always "arrived" in the past;
-      // future ones carry no confirmation because she is never asked for one.
-      sessionCoachRows.push({
-        id: detId('session_coach', o.id, CO('lakshmi')), academy_id: A, session_id: o.id,
-        coach_id: CO('lakshmi'),
-        confirmed_at: isPast ? ts(o.starts.minus({ hours: 12 })) : null,
-        declined_at: null,
-        arrived_at: isPast ? ts(o.starts.minus({ minutes: 10 })) : null,
-        running_late: false,
-      })
-
-      if (isPast) {
-        for (const playerSlug of roster) {
-          attendanceRows.push({
-            id: detId('attendance', o.id, PL(playerSlug)), academy_id: A, session_id: o.id,
-            player_id: PL(playerSlug), status: playerSlug === 'meghana' ? 'absent' : 'present',
-            note: playerSlug === 'meghana' ? 'Exams' : null,
-            marked_by_coach_id: CO('lakshmi'), marked_at: ts(o.ends),
-          })
-        }
-      }
-    }
-  }
-
-  for (const e of enrollments) {
-    const cls = classes.find((c) => c.slug === e.cls)!
-    tallyRows.push({
-      id: detId('tally', 'monthly', period, CLS(cls.slug), PL(e.player)), academy_id: A,
-      account_id: ACCT(accountOfPlayer.get(e.player)!), player_id: PL(e.player),
-      class_id: CLS(cls.slug),
-      period, kind: 'monthly', description: `${cls.name} - ${monthLabel}`,
-      amount: cls.rate, session_id: null, reason: null, approved_by: null,
-      dedupe_key: billingKey.monthly(PL(e.player), CLS(cls.slug), period),
-    })
-  }
-
-  const paymentRows: Record<string, unknown>[] = [
-    {
-      id: detId('payment', 'solo', 'ramesh', period), academy_id: A, account_id: ACCT('ramesh'),
-      amount: 1800, rail: 'rail1', method: 'upi', reference: 'UPI/2026/NV/10233',
-      status: 'confirmed', requested_at: ts(nowDT.minus({ days: 5 })),
-      confirmed_at: ts(nowDT.minus({ days: 4 })), confirmed_by: P('lakshmi'), evidence_url: null,
-    },
-  ]
-
-  await withSession(svc(A), async (tx) => {
-    await tx.unsafe(
-      `insert into academy (id, name, category, timezone, cancellation_window_hours,
-         client_reminder_lead_hours, morning_brief_at, evening_digest_at, rail, upi_handle,
-         sender_id, memory, settings, created_on, onboarding_state)
-       values ($1::uuid,$2,$3,$4,$5::int,$6::int,$7::time,$8::time,$9,$10,$11::uuid,$12,$13::text::jsonb,$14::date,$15)`,
-      [
-        A, 'Nadam Vocal', 'carnatic vocal', tz, 24, 14, '06:30', '20:30', 'rail1', 'lakshmi@upi',
-        SENDER_ID,
-        'Lakshmi teaches every class herself. She is both the admin and the only coach, so she is never asked to confirm her own sessions.',
-        JSON.stringify({}),
-        dayOf(nowDT.minus({ days: 10 })),
-        'live',
-      ] as never[],
-    )
-
-    await bulk(tx, 'venue', VENUE_COLS, [
-      { id: VEN('studio'), academy_id: A, name: 'Malleswaram Studio', address: '4th Cross, Malleswaram', notes: 'Ground floor room, seats twelve.' },
-    ])
-
-    await bulk(tx, 'person', PERSON_COLS, people.map((p) => ({
-      id: P(p.slug), academy_id: A, full_name: p.name, notes: p.notes ?? null,
-      memory: p.memory ?? null, settings: '{}',
-    })))
-
-    await bulk(tx, 'contact', CONTACT_COLS, contacts.map((c) => ({
-      id: C(c.slug), academy_id: A, person_id: P(c.slug), phone_e164: c.phone,
-      wa_id: c.phone.replace('+', ''), profile_name: c.profileName ?? null, is_primary: true,
-      state: c.state, opted_out_at: null,
-      last_inbound_at: c.lastInbound ? ts(c.lastInbound) : null, role_hint: c.roleHint,
-    })))
-
-    await bulk(tx, 'account', ACCOUNT_COLS, accounts.map((a) => ({
-      id: ACCT(a.slug), academy_id: A, holder_person_id: P(a.holder), display_name: a.display,
-    })))
-
-    await bulk(tx, 'player', PLAYER_COLS, players.map((p) => ({
-      id: PL(p.slug), academy_id: A, account_id: ACCT(p.account), person_id: P(p.person), active: true,
-    })))
-
-    // One person, an academy_admin row AND an active coach row. This is §18.
-    await bulk(tx, 'coach', COACH_COLS, [{
-      id: CO('lakshmi'), academy_id: A, person_id: P('lakshmi'), pay_amount: null,
-      pay_unit: null, status: 'active', invited_at: null,
-      onboarded_at: ts(nowDT.minus({ days: 10 })), ended_on: null,
-    }])
-
-    await bulk(tx, 'academy_admin', ADMIN_COLS, [
-      { id: detId('solo', 'admin', 'lakshmi'), academy_id: A, person_id: P('lakshmi') },
-    ])
-
-    await bulk(tx, 'class', CLASS_COLS, classes.map((c) => ({
-      id: CLS(c.slug), academy_id: A, name: c.name, venue_id: VEN('studio'),
-      rate_amount: c.rate, rate_unit: c.unit, rate_count: null,
-      starts_on: dayOf(c.startsOn), ends_on: null, active: true,
-    })))
-
-    await bulk(tx, 'class_slot', SLOT_COLS, classes.flatMap((c) =>
-      c.slots.map((s) => ({
-        id: detId('solo', 'slot', c.slug, String(s.weekday), s.start), academy_id: A,
-        class_id: CLS(c.slug), weekday: s.weekday, start_time: s.start, end_time: s.end,
-      })),
-    ))
-
-    await bulk(tx, 'class_coach', CLASS_COACH_COLS, classes.map((c) => ({
-      id: detId('solo', 'class_coach', c.slug, 'lakshmi'), academy_id: A,
-      class_id: CLS(c.slug), coach_id: CO('lakshmi'),
-    })))
-
-    await bulk(tx, 'enrollment', ENROLLMENT_COLS, enrollments.map((e) => ({
-      id: detId('solo', 'enrollment', e.cls, e.player), academy_id: A, class_id: CLS(e.cls),
-      player_id: PL(e.player), rate_amount: null, rate_unit: null, rate_count: null,
-      is_trial: false, started_on: dayOf(nowDT.minus({ days: 18 })), ended_on: null,
-    })))
-
-    await bulk(tx, 'session', SESSION_COLS, sessionRows)
-    await bulk(tx, 'session_coach', SESSION_COACH_COLS, sessionCoachRows)
-    await bulk(tx, 'attendance', ATTENDANCE_COLS, attendanceRows)
-    await bulk(tx, 'tally_line', TALLY_COLS, tallyRows)
-    await bulk(tx, 'payment', PAYMENT_COLS, paymentRows)
-
-    await bulk(tx, 'memory_fact', FACT_COLS, [
-      { id: detId('solo', 'fact', '1'), academy_id: A, subject_kind: 'academy', subject_id: A, fact: 'Lakshmi teaches alone - she is both the admin and the only coach', source: 'onboarding' },
-      { id: detId('solo', 'fact', '2'), academy_id: A, subject_kind: 'person', subject_id: P('lakshmi'), fact: 'Lakshmi does not want to be asked to confirm her own classes', source: 'observed' },
-      { id: detId('solo', 'fact', '3'), academy_id: A, subject_kind: 'person', subject_id: P('gayatri'), fact: 'Gayatri replies late in the evening, never during the day', source: 'observed' },
-    ])
-  })
-
-  return {
-    id: A, name: 'Nadam Vocal', persons: people.length, contacts: contacts.length,
-    players: players.length, coaches: 1, classes: classes.length,
-    sessions: sessionRows.length, completedSessions: completed, tallyLines: tallyRows.length,
-  }
-}
-
 // =============================================================================
 // READ MODEL — what the emulator renders.
 // =============================================================================
@@ -1253,23 +536,14 @@ export type WorldClock = {
 
 export type WorldState = {
   seeded: boolean
-  /** Which seed the world currently is, derived from what is actually there. */
-  scenario: Scenario | null
   clock: WorldClock
   sender: { id: string; phone: string; label: string } | null
   academies: WorldAcademy[]
   /** Every contact in the world, flat — the contact tray opens any of them. */
   contacts: WorldContact[]
-  scenarios: { id: Scenario; name: string; description: string }[]
   faults: { kind: string; active: boolean; rate: number }[]
   jobs: { pending: number; running: number; done: number; failed: number; skipped: number; nextRunAt: string | null }
 }
-
-export const SCENARIOS: { id: Scenario; name: string; description: string }[] = [
-  { id: 'both', name: 'Both academies', description: 'Ace TT Academy and Nadam Vocal on one number — tenant isolation, side by side' },
-  { id: 'ace', name: 'Ace TT Academy', description: 'Table tennis, three coaches, eight families, money in flight' },
-  { id: 'solo', name: 'Nadam Vocal', description: 'The solo case: one person who is both the admin and the only coach' },
-]
 
 function rolesOf(r: Record<string, unknown>): Role[] {
   const roles: Role[] = []
@@ -1467,7 +741,7 @@ export async function worldState(): Promise<WorldState> {
   )
   const academies: WorldAcademy[] = perAcademy.filter((a): a is WorldAcademy => a !== null)
 
-  const infra = await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
+  const infra = await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
     const clock = await tx`select offset_ms from sim_clock where academy_id is null`
     const tenantClocks = await tx`
       select academy_id, offset_ms from sim_clock where academy_id is not null`
@@ -1486,12 +760,9 @@ export async function worldState(): Promise<WorldState> {
 
   const nowIso = nowD.toISOString()
   const nextIso = nextEvent ? nextEvent.toISOString() : null
-  const hasAce = academies.some((a) => a.id === ACE_ACADEMY_ID)
-  const hasSolo = academies.some((a) => a.id === NADAM_ACADEMY_ID)
 
   return {
     seeded: academies.length > 0,
-    scenario: hasAce && hasSolo ? 'both' : hasAce ? 'ace' : hasSolo ? 'solo' : null,
     clock: {
       nowIso,
       now: nowIso,
@@ -1513,7 +784,6 @@ export async function worldState(): Promise<WorldState> {
         : null,
     academies,
     contacts: academies.flatMap((a) => a.contacts),
-    scenarios: SCENARIOS,
     faults: infra.faults.map((f) => ({
       kind: String(f.kind),
       active: Boolean(f.active),
@@ -1810,7 +1080,7 @@ async function turnEvents(academyId: string, since: string, limit: number): Prom
 }
 
 async function jobEvents(since: string, limit: number): Promise<WorldEvent[]> {
-  return withSession(svc(ACE_ACADEMY_ID), async (tx) => {
+  return withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
     const rows = await tx`
       select id, created_at, kind, status, run_at, dedupe_key, attempts, last_error
       from job
@@ -2911,7 +2181,7 @@ export async function pollWorld(o: { cursor?: string | null; statusLimit?: numbe
   events.sort((a, b) => a.at.localeCompare(b.at))
 
   const nowD = await now()
-  const offset = await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
+  const offset = await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
     return await tx`select offset_ms from sim_clock where academy_id is null`
   })
 
@@ -2943,7 +2213,7 @@ export async function latestCursor(): Promise<string> {
     })
     r.forEach(take)
   }
-  const j = await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
+  const j = await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
     return await tx`select max(created_at) as t from job`
   })
   take(j[0]?.t)
@@ -2960,7 +2230,7 @@ export async function setFault(f: { kind: FaultKind; active: boolean; rate?: num
   { kind: string; active: boolean; rate: number }[]
 > {
   const rate = f.rate ?? 1.0
-  return withSession(svc(ACE_ACADEMY_ID), async (tx) => {
+  return withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
     await tx`
       insert into sim_fault (kind, active, rate)
       values (${f.kind}, ${f.active}, ${rate}::numeric)
@@ -2982,14 +2252,14 @@ export async function setFault(f: { kind: FaultKind; active: boolean; rate?: num
  * one that landed on a tenant being driven pushed on a clock nobody moved.
  */
 export async function clockOffsetMs(): Promise<number> {
-  const rows = await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
+  const rows = await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
     return await tx`select offset_ms from sim_clock where academy_id is null`
   })
   return rows.length > 0 ? Number(rows[0].offset_ms) : 0
 }
 
 export async function listFaults(): Promise<{ kind: string; active: boolean; rate: number }[]> {
-  return withSession(svc(ACE_ACADEMY_ID), async (tx) => {
+  return withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
     const rows = await tx`select kind, active, rate from sim_fault order by kind`
     return rows.map((r) => ({ kind: String(r.kind), active: Boolean(r.active), rate: Number(r.rate) }))
   })
@@ -3320,7 +2590,7 @@ export async function queueWebhookEvent(payload: unknown): Promise<{ queued: num
   }
   if (keys.length === 0) keys.push(`wh:raw:${newId()}`)
 
-  const queued = await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
+  const queued = await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
     let n = 0
     for (const key of keys) {
       const rows = await tx.unsafe(
@@ -3444,7 +2714,7 @@ export async function drainWebhookEvents(limit = 25): Promise<{
   failed: number
   log: string[]
 }> {
-  const claimed = await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
+  const claimed = await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
     return await tx`
       update job
          set locked_at = app.now(), locked_by = 'webhook-drain', attempts = attempts + 1
@@ -3473,7 +2743,7 @@ export async function drainWebhookEvents(limit = 25): Promise<{
           if (change.value) log.push(...(await processChangeValue(change.value, String(payload?.part ?? ''))))
         }
       }
-      await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
+      await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
         await tx`update job set status = 'done', last_error = null where id = ${jobId}::uuid`
       })
       processed++
@@ -3485,7 +2755,7 @@ export async function drainWebhookEvents(limit = 25): Promise<{
       // Stays 'running' so the next drain retries it — never 'pending', which
       // would hand a kind with no handler to `runDueJobs`. Three goes, then it
       // stands as failed evidence.
-      await withSession(svc(ACE_ACADEMY_ID), async (tx) => {
+      await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
         await tx`update job
                     set status = ${attempts >= 3 ? 'failed' : 'running'},
                         last_error = ${msg}, locked_by = null
