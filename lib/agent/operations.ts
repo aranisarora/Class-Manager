@@ -37,6 +37,7 @@ import { undo as inverseOf } from '@/lib/audit'
 import { dedupe, liveAgentTasks, sessionJobPrefixes, TIMING_KEYS } from '@/lib/jobs'
 import { now } from '@/lib/clock'
 import { dialablePhone, formatINR } from '@/lib/format'
+import { LIMITS } from '@/lib/messaging/types'
 import { newId } from '@/lib/ids'
 import type { Identity } from '@/lib/types'
 import { DateTime } from 'luxon'
@@ -2717,6 +2718,17 @@ const sendInvite: OperationDef = {
    * conversation per invitee, once, on a number the product controls. The thing it
    * buys is that an academy goes live because the admin typed their roster in, not
    * because forty people each remembered to tap something.
+   *
+   * @mechanism sendInvite — the bot sends the invite to the coach or the family itself,
+   *   retiring the class of defect where onboarding stalls on a human relay: the old
+   *   `send_invite_draft` handed the ADMIN a `wa.me` link to forward per person, so a
+   *   forty-family go-live was forty manual forwards and a parent who was never sent
+   *   anything looked identical to one who never tapped. It needs no ninth template —
+   *   `coach_prompt` and `session_reminder` already cover the invite rows, and `send`'s
+   *   window gate renders one automatically for a recipient who has never written in.
+   *   The forwardable link survives only as `as_draft`, for a number the bot could not
+   *   reach, and it deliberately records nothing: the runtime cannot witness a forward,
+   *   so it no longer accepts a claim about one.
    */
   description:
     'SEND the invite — the bot sends it itself, from this academy\'s number, to the COACH or the FAMILY being invited. The admin forwards nothing. This is the only invite in the product and the only route a coach or parent is brought in by. Out of window it goes as an approved template and their tap opens the window; in window it goes as written. Pass `as_draft: true` ONLY to fall back to a forwardable link after a send to them has actually failed.',
@@ -2799,6 +2811,41 @@ const sendInvite: OperationDef = {
     const first = name.split(' ')[0]
 
     /**
+     * **A number to send to, checked here rather than discovered by silence.**
+     *
+     * When this operation drafted, the only recipient was the admin, who is in the
+     * conversation by definition. Now the recipient is somebody who may have a `person`
+     * row and no `contact` — a coach added without a number, a parent typed in as a name
+     * — and `resolveContact` answers that with `null`, which `runSteps` turns into
+     * `if (!to) continue`: no message row, no `suppressed_reason`, no error, and the note
+     * below still says the invite is sent. That is R7 exactly, on the one path where the
+     * whole point is that a real person hears from us.
+     *
+     * So the lookup happens up front, the id is passed explicitly rather than resolved
+     * again downstream, and the two ways it can fail are told apart — no number at all is
+     * a thing the admin can fix, and a number that opted out is a thing they must not.
+     *
+     * The opt-out refusal is checked BEFORE the draft path and the missing-number refusal
+     * AFTER it, and the asymmetry is deliberate. `as_draft` needs no number of theirs —
+     * the link carries OUR number and the admin forwards it from their own chat — so it
+     * is exactly the right answer for somebody we cannot reach. It is never the right
+     * answer for somebody who asked us to stop.
+     */
+    const [target] = await q<{ id: string; opted: boolean }>(
+      svc(ctx),
+      `select id, (opted_out_at is not null) as opted from contact
+        where academy_id = ${uid(ctx.academyId)} and person_id = ${uid(personId)}
+        order by (opted_out_at is null) desc, is_primary desc, created_at
+        limit 1`,
+    )
+    if (target?.opted) {
+      throw new Error(
+        `send_invite: ${name} has asked this academy to stop messaging them, so I will not invite them. ` +
+          'If they have changed their mind, they can message in and it turns back on from their side.',
+      )
+    }
+
+    /**
      * The repair path (§8.1). Hands over the forwardable link and **changes nothing** —
      * no status, no `invited_at`, no claim that anything was sent.
      *
@@ -2838,6 +2885,14 @@ const sendInvite: OperationDef = {
 
     /* --- the normal path: the bot sends it ---------------------------------- */
 
+    if (!target) {
+      throw new Error(
+        `send_invite: ${name} has no WhatsApp number on file, so there is nothing to send an invite to. ` +
+          'Add their number first and I will send it. If you have their number elsewhere and want to forward ' +
+          'the invite from your own phone instead, ask for it as a draft.',
+      )
+    }
+
     if (args.coach_id) {
       const classes = await q<{ name: string }>(
         svc(ctx),
@@ -2867,7 +2922,7 @@ const sendInvite: OperationDef = {
       return [
         {
           message: {
-            to_person_id: personId,
+            to_contact_id: target.id,
             // §8.1 puts the coach invite in SETUP, before the academy is live, so this is
             // one of the few sends that must survive the pre-launch gate. Without it the
             // invite is suppressed silently during the exact conversation that asks for it.
@@ -2919,21 +2974,39 @@ const sendInvite: OperationDef = {
         order by pp.full_name`,
     )
     const kids = [...new Set(players.map((p) => p.full_name.split(' ')[0]))]
-    // Rule 2: say something only the real academy could know. The child's name and
-    // the class they are actually in is that, and it is the whole reason this reads
-    // as continuity rather than as a stranger with a link.
-    const proof =
-      kids.length === 0
-        ? ''
-        : ` ${kids.length === 1 ? kids[0] : `${kids.slice(0, -1).join(', ')} and ${kids[kids.length - 1]}`}`
-          + ` ${kids.length === 1 ? 'is' : 'are'} with us`
-          + (players[0]?.class_name && kids.length === 1 ? ` in ${players[0].class_name}` : '')
-          + '.'
+    const named = kids.length === 1 ? `See ${kids[0]}'s schedule` : null
+
+    /**
+     * §9.1 rule 2 — say something only the real academy could know — enforced rather
+     * than hoped for, and it is the same predicate `firstContactBatch` selects on.
+     *
+     * A contact with no active enrolment is somebody this business has nothing true to
+     * say to, so the invite would open "Hi Latha — I'm the class manager for Ace TT
+     * Academy" and stop: a cold message from an unknown number with no reason attached,
+     * which is the shape that gets blocked and, on a shared number, is charged to every
+     * tenant (§16.1). It is also the §16.2 boundary — a person with no live relationship
+     * is a prospect, and a prospect is re-approached from the ADMIN's own number.
+     */
+    if (players.length === 0) {
+      throw new Error(
+        `send_invite: ${name} has no child enrolled in anything right now, so there is nothing true I can open ` +
+          'with — and a first message with no reason in it is the one that gets blocked. Enrol them first and ' +
+          "I'll invite them, or send it yourself from your own number if you are re-approaching them.",
+      )
+    }
+    // Rule 2 rendered: the child's name and the class they are actually in. Guaranteed
+    // non-empty by the refusal above, which is why there is no empty branch here.
+    // The class is named only for a single child — with two, "Aarav and Nithya are with
+    // us in Beginners" would be false as often as not, and a frozen sentence must not
+    // conjugate with facts it cannot see.
+    const who = kids.length === 1 ? kids[0] : `${kids.slice(0, -1).join(', ')} and ${kids[kids.length - 1]}`
+    const inClass = kids.length === 1 && players[0]?.class_name ? ` in ${players[0].class_name}` : ''
+    const proof = ` ${who} ${kids.length === 1 ? 'is' : 'are'} with us${inClass}.`
 
     return [
       {
         message: {
-          to_person_id: personId,
+          to_contact_id: target.id,
           catalog_id: 'CL-FIRST-CONTACT',
           // The players, never the holder: `subjectName` drops any id equal to the
           // recipient, so passing the parent's own id is the same as passing nothing
@@ -2943,7 +3016,11 @@ const sendInvite: OperationDef = {
             + 'Class updates, cancellations and the monthly bill come through this chat from now on.',
           buttons: [
             {
-              title: kids.length === 1 ? `See ${kids[0]}'s schedule` : 'See the schedule',
+              // `compose` REJECTS a 21-character title rather than truncating it (§17), so
+              // a name-bearing button has to be bounded here or a long enough first name
+              // suppresses the whole invite. "See Nithya's schedule" is 21. The reply text
+              // keeps the name either way — only the label falls back.
+              title: named && named.length <= LIMITS.buttonTitleChars ? named : 'See the schedule',
               action: {
                 kind: 'reply',
                 text: kids.length === 1 ? `Show me ${kids[0]}'s schedule` : 'Show me the schedule',
@@ -3262,7 +3339,7 @@ const dropWatch: OperationDef = {
  *   THE ELEVATION POINTS — `mark_attendance` (the billing line is the runtime's
  *   consequence, not the coach's write), `book_trial` (a stranger has no
  *   permission at all), `onboard_coach` (a coach who could set their own status
- *   could set their own pay), `send_invite_draft`, `remember`, `forget`,
+ *   could set their own pay), `send_invite`, `remember`, `forget`,
  *   `drop_watch`, and the ending operations whose reassignment and credit-back
  *   run as the service role. Each is a permission grant wearing a function's
  *   clothes, and each stays only until its RLS question is answered properly in

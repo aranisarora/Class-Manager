@@ -713,12 +713,13 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     // belongs to the very contact being written to, so no broadcast, digest or job can
     // acquire it.
     //
-    // Without this, §8.1's invite could not work at all. The admin forwards the deep
-    // link, the coach taps it and sends the prefilled message — which is the moment the
-    // whole design turns on, because the window opens from their side — and the answer
-    // was dropped as pre-launch traffic. Watched happening: the coach's first contact
-    // with the product was silence, and the schedule read back to them existed, was
-    // correct, and never left the building.
+    // Without this, §8.1's invite could not work at all. It used to be the admin's
+    // forwarded deep link the coach tapped; the invite is a bot send now, but the half
+    // that needs this exemption is unchanged and matters more — CO-INVITE carries
+    // `preLaunchOk` out, and the coach's REPLY to it lands in a setup-state academy,
+    // where CO-INVITE-CONFIRM reads their schedule back. Watched happening before the
+    // exemption existed: the coach's first contact with the product was silence, and
+    // the schedule read back to them existed, was correct, and never left the building.
     if (row.onboarding_state !== 'live' && !msg.preLaunchOk && !row.is_admin && !msg.solicited) {
       return suppress(tx, row, msg, 'pre_launch', inWindow)
     }

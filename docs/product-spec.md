@@ -509,8 +509,8 @@ The unavoidable cost of adoption is **data entry**. Reducing it is the highest-l
 
 1. **The setup ladder** (§14.6) — business name, category, venues, operating pattern, cancellation window, asked in the chat. This was a one-screen form and the form is gone, so the cost to beat is the dozen small waits a naive ladder would spend: **assume what can be assumed and say so, take everything a sentence gives, and stop as soon as there is enough to create a class.** The rest is filled in when it matters. `set_up_business` is safe to call repeatedly, so a fact learned is a fact written.
 2. **Bring the timetable in one message, however messy** (§14.5). "Mon & Wed 6:30 beginners at Green Park, Sat 8am juniors" — no punctuation needed, every class at once. The bot parses, reads back, creates on a tap. **This is the single biggest friction reducer in the product**, and since §14.5 was repealed it is the only one: a photo of the whiteboard is answered with an apology and this sentence.
-3. **Coaches** — §8.1. Three facts each, then invites.
-4. **Families** — §9.1. Contacts shared, roster built, nobody messaged.
+3. **Coaches** — §8.1. Three facts each, and the bot invites them. The admin forwards nothing.
+4. **Families** — §9.1. Contacts typed in, roster built, nobody messaged — the invites go out at go-live, from the bot.
 5. **Payments** — one UPI handle. Rail 1, under a minute.
 
 **Everything goes in at once.** Partial state is worse than either extreme: the admin would have to remember which classes the bot handles, a parent with two children would get reminders for one, and a coach seeing 1 of their 3 sessions loses trust immediately. If the bulk import in step 2 works, this is minutes rather than an hour.
@@ -538,9 +538,13 @@ Three constraints: the coach is a **warm contact** (the admin employs them), **t
 
 **Step 1 — the admin supplies three facts.** Contact (name and number, typed), which classes, pay rate. Nothing else. No availability grid — the admin assigns the coaching, so there is nothing to declare. `status='added'`. **Messages nobody.**
 
-**Step 2 — the invite, self-initiated.** The bot drafts a short plain message; the admin forwards it from their own number. It carries a `wa.me` deep link with prefilled text. The coach taps, sends, and **the window opens from their side** — free, no template, no block risk, no tier consumption. `status='invited'`.
+**Step 2 — the bot sends the invite** [`CO-INVITE`]. Straight to the coach, from the academy's own number, the moment the admin asks. `send_invite`, one call, `status='invited'`. **The admin forwards nothing.**
 
-The draft is written plainly and offered with `[Send as is]` `[Edit]`. **No attempt to emulate the admin's voice** — they are forwarding it from their own number to someone who already knows them; it only has to avoid reading like a blast.
+It goes out of window, so an approved template carries it — `coach_prompt`, which already covers the coach rows, so this costs **no new approval**. The template is a window-opener (§14.7): the coach's tap *is* their first inbound, which opens the window and lands them in Step 3 for free. It names the admin who added them — *"Sharwin added you as a coach"* — because that is the recognised thing, and the number is not.
+
+**This step used to be a deep link the admin forwarded per person**, so the recipient sent the first message and the window opened from their side: free, no template, no tier consumption. That saving was real and it was small, and it was paid for with the scarcest thing in the product. It made the admin the transport — every coach and every family a separate manual forward — and its failure mode is silent, because a coach who was never sent anything looks exactly like a coach who never tapped. §7.1 names reducing the admin's onboarding work as the highest-leverage thing here; a per-person forward is that work with a third party's attention span added to it.
+
+**The forwardable link survives as a repair, not a route.** `send_invite(as_draft: true)` mints it for a number the bot could not reach — not on WhatsApp, or blocking us. It **records nothing**: the runtime cannot see the admin's forward, so the coach stays `added` and keeps being chased. A `[Sent it]` button writing `status='invited'` is precisely the unwitnessed claim §14.2's stripped-parameter rule exists to refuse.
 
 **Step 3 — first run is one confirmation** [`CO-INVITE-CONFIRM`]:
 
@@ -608,20 +612,19 @@ Coaches leave often and new ones arrive. Routine operations, not exceptional one
 
 ### 9.1 Onboarding
 
-**Don't import — get invited.** Every path where the parent sends the first message is strictly better: free, no template, no block risk, no tier consumption, and the window opens itself.
+**Don't import — reach out.** The admin types the roster in; **the bot does the outreach**. Nothing about joining is the admin's errand.
 
 **Step 1 — the admin types the families in.** One line per family, children's names with them; several families in one message is normal and expected. (Shared contact cards and a photographed register were the intended route; neither reaches the model — §14.5.) The bot builds `person`, `contact`, `account`, `player`, `enrollment` — **while messaging nobody.**
 
-**Step 2 — parents invite themselves.** The bot drafts the invite; the admin sends it from their own number. It carries a deep link; the parent taps, sends the prefilled text, and the bot introduces itself [`CL-INTRO`] — whose manager it is, the three things it does, then **proof instead of promises**: their child's actual schedule, with a useful next tap.
+**Step 2 — the bot sends the invite** [`CL-FIRST-CONTACT`], at go-live, to every registered contact this academy has never messaged. Soonest session first. It carries the child's name and the class they are actually in, because that is what makes it read as continuity rather than as a stranger with a link. A reply lands in `CL-INTRO` — whose manager this is, the three things it does, then **proof instead of promises**: the child's actual schedule, with a useful next tap.
 
-**Two vectors, and the default is not the obvious one.**
+**Nothing waits for a near session.** This message used to be the fallback for parents who never tapped the admin's forwarded link, so it fired only when a session was within 48h. As the invite, that bound was a trap: a family whose class is next Tuesday sat unreachable for six days, and a family enrolled in a class with nothing scheduled yet sat unreachable forever. Going live is the reason.
 
-- **The academy's existing parents' group, first.** Almost every one of these businesses already has one, and posting the link there costs one message, reaches everyone in it, and still has the parent initiate. **The bot asks whether one exists before it proposes anything else.**
-- **A WhatsApp Broadcast List** for whoever is not in it (≤256 recipients, lands as a normal 1:1 from the admin, recipients never see each other) — **with the constraint said out loud: a broadcast list only delivers to people who have the admin's number saved in their contacts.** Everyone else gets silence, and silence during a go-live is the worst failure the product has, because it looks like success. The bot names this before the admin sends, tracks who never arrived, and offers to fall back to individual forwards for them.
+**It is staged and it halts** — rule 6 below, unchanged and now load-bearing rather than precautionary. Batching with a halt on the first bad signal is what stops "the bot sends" from being a bigger blast radius than "the admin forwards": a bad roster costs ten messages and a question, not forty and a quality strike (§16.1).
 
-**Identity is the phone number. There are no join codes.** Step 1 registered the number, so a recognized sender resolves on sight. The prefilled text gives the parent something to send and names the academy for numbers Step 1 never saw — a forwarded invite, a second parent — which resolve by academy name plus one confirming question.
+**What this replaces, and why the saving was not worth it.** Step 2 was a deep link the admin forwarded — ideally into the academy's existing parents' group, or via a Broadcast List — so the parent always sent the first message and the window opened from their side, free. The problem was never the arithmetic: it was that a broadcast list silently delivers only to people who have the admin's number saved, a group post reaches whoever happens to read it, and everyone else gets **silence during a go-live, which is the worst failure the product has because it looks exactly like success.** The bot sending each invite makes delivery a fact the product can see, and a failure something it can report.
 
-**Step 3 — non-clickers get a useful message, event-triggered** [`CL-FIRST-CONTACT`]. No waiting period, no nag: contacted the first time there is a real reason, a session within 48h.
+**Identity is the phone number. There are no join codes.** Step 1 registered the number, so a recognized sender resolves on sight. For a number Step 1 never saw — a forwarded invite, a second parent — the academy's name in the message is what they reply about, and it resolves by name plus one confirming question.
 
 **First-contact rules, whichever path produced the message:**
 
@@ -629,7 +632,7 @@ Coaches leave often and new ones arrive. Routine operations, not exceptional one
 2. Say something only the real academy could know (the class, the time)
 3. One *useful* button, never a consent-shaped one
 4. Frame as service continuity ("class updates have moved here"), never launch — "introducing…" is marketing category
-5. Admin's heads-up goes out hours earlier, bot-drafted and admin-forwarded
+5. Admin's heads-up goes out hours earlier, bot-drafted and admin-forwarded — into the parents' group or wherever they already talk. This is the one thing the admin still sends by hand, and it matters more now that the first message from us arrives unannounced: it is warming, not delivery, and nothing depends on who reads it
 6. **Staged, as a job with a batch size** (§13) — 10, check delivery, read and block signals, then the rest in batches, halting on a bad signal. Not a campaign system: for a forty-family academy this is two batches
 
 ### 9.2 Day-to-day
@@ -774,8 +777,8 @@ It applies §2.8 to make that call — the same test it applies to messages it c
 
 | ID | Trigger | Buttons | On silence |
 |---|---|---|---|
-| `CL-INTRO` | First inbound after invite tap | `[See <player>'s schedule]` | — |
-| `CL-FIRST-CONTACT` | Non-clicker, session <48h | `[See schedule]` `[Stop these]` | Nothing. No nag. |
+| `CL-INTRO` | First inbound — a reply to the invite, or a known number writing in | `[See <player>'s schedule]` | — |
+| `CL-FIRST-CONTACT` | **The invite. Bot-sent** at go-live, to every registered contact never messaged; staged, halts | `[See schedule]` `[Stop these]` | Nothing. No nag. |
 | `CL-REMINDER` | `client_reminder_lead_hours` before | `[I'll be there]` `[Can't make it]` | Nothing |
 | `CL-CANCEL-CONFIRM` | Tap of `[Can't make it]` | `[Yes, cancel]` `[Never mind]` | Expires 1h |
 | `CL-SESSION-TROUBLE` | `running_late`, or uncovered near `starts_at` | — | — |
@@ -801,6 +804,7 @@ It applies §2.8 to make that call — the same test it applies to messages it c
 
 | ID | Trigger | Buttons | On silence |
 |---|---|---|---|
+| `CO-INVITE` | **The invite. Bot-sent** to the coach when the admin asks | `[See my classes]` `[Not me]` | Admin is told via `AD-COACH-NOT-ONBOARDED` |
 | `CO-INVITE-CONFIRM` | First inbound | `[Looks right]` `[Something's wrong]` | Stays `invited` |
 | `CO-DAY` | Morning, if sessions today | `[All good]` `[Something's wrong]` `[Mark someone out]` | — |
 | `CO-COMING` | T-60 | `[Yes, I'm coming]` `[Can't make it]` `[Directions]` | → `CO-NUDGE` |
@@ -1137,7 +1141,9 @@ Each carries **structured parameters holding real content** — `"{academy}: {ev
 **Two limits on what a template can carry:**
 
 - **A template cannot be a wrapper around free prose.** Meta rejects bodies that are substantially one variable, so anything the model *composes* — the digest, a synthesized answer, an explanation — cannot go out as a template. Out of window those become window-openers and the real message follows the reply (§10.2, §14.7).
-- **There is no marketing template in this product, and `payment_due` is the closest thing to a boundary.** Every one of the eight is transactional: something happened, or something is due, to somebody who is already a customer. **A promotional message to a prospect who did not convert is not on this list and will not be added** (§20) — on a shared number, one marketing classification is charged to every tenant. When an admin wants to re-approach a cold prospect, the bot drafts it and **the admin sends it from their own number**, exactly as with the coach invite (§8.1): no template, no category, no cost, and the reply lands in an open window.
+- **There is no marketing template in this product, and `payment_due` is the closest thing to a boundary.** Every one of the eight is transactional: something happened, or something is due, to somebody who is already a customer. **A promotional message to a prospect who did not convert is not on this list and will not be added** (§20) — on a shared number, one marketing classification is charged to every tenant. When an admin wants to re-approach a cold prospect, the bot drafts it and **the admin sends it from their own number**: no template, no category, no cost, and the reply lands in an open window.
+
+**This used to be described as "exactly as with the coach invite (§8.1)", and that comparison is now wrong in the way that matters.** The coach invite is a bot send, because a coach the admin employs and a family already enrolled are people this business has a transaction with, which is what makes `coach_prompt` and `session_reminder` honestly *utility*. A prospect who did not convert has no such relationship, so the same send would read promotional, and one marketing classification is charged to every tenant on the number. **The line is the relationship, not the mechanism** — and it is the one place the admin's own number is still the right answer.
 
 ### 16.3 Guardrails, built in
 
@@ -1234,7 +1240,7 @@ Each phase has an acceptance criterion. Do not start a phase before its predeces
 | 3 | **Catalog & sessions** | Classes, slots, enrollments, all four `rate_unit`s incl. per-enrollment overrides, `materialize_sessions`, the setup ladder | A class created through the setup conversation produces correct sessions three weeks out, and editing a slot rematerialises future sessions without losing cancellations or marked attendance. A per-session drop-in inside a monthly class bills correctly |
 | 4 | **Coach day** | §8.2 ladder with per-person timings, the inverted register, coverage derivation, cover offers, unprompted actions | Full ladder observable by advancing the clock. Uncovered escalation fires. A confirmed coach is never asked twice. "I'm here" works with no prompt. A per-person override changes when a prompt fires. A twelve-player class with nobody absent is one tap |
 | 5 | **Client day** | Reminders, cancel with scope, outcomes, class-starting relay | Cancel inside window writes `cancelled_timely`, outside writes `absent`. Mis-tap protection confirmed |
-| 6 | **Onboarding funnels** | Coach invite (§8.1), client Steps 1–3 (§9.1), staged first contact, templates submitted | Deep link → prefilled send → resolve on sight → `CO-INVITE-CONFIRM`. Staging halts on a bad signal |
+| 6 | **Onboarding funnels** | Coach invite (§8.1), client Steps 1–2 (§9.1), staged first contact, templates submitted | Bot sends the invite → template out of window → their tap opens it → `CO-INVITE-CONFIRM` / `CL-INTRO`. Staging halts on a bad signal |
 | 7 | **Money** | Rates, tally lines, adjustments, Rail 1 links, reconciliation, dunning | A month of mixed per-session and per-month enrollments produces a correct line-by-line tally with a waiver applied |
 | 8 | **Admin day** | Brief and digest as synthesis (§10.2), NL CLI, follow-up buttons, delivery-status answers, audit and undo | *"Did Meera get the reminder?"* answers from real status. Undoing a messaging operation sends corrections to exactly the people who were told. Every number in a generated digest traces to a query result in its payload |
 | 9 | ~~**Flows**~~ — **removed** (§14.6) · **images** | Flows were to be published JSON artifacts with `flow_send`, response validation and publish/version handling. All of it is gone: form-shaped work is asked for in the chat, which needs no phase of its own because it is the phase-2 agent loop doing its ordinary job. What remains here is the image renderer (timetable, month grid, trend line) | A week's timetable renders to an image that is legible on a phone. **For the work that used to be this phase, the test is a conversation:** a coach who says "everyone except Aarav, and Kiran was late" gets a correctly marked register, and an owner who says two facts about their business has both written without being asked for the other seven |

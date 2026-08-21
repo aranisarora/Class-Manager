@@ -444,6 +444,29 @@ export async function firstContactBatch(job: Job): Promise<void> {
 
     if (bad) return { halted: bad, academy, adminRows, batch: [] as ContactTarget[], remaining: 0 }
 
+    /**
+     * **The session join below is LEFT, and there is no 48-hour bound on it.**
+     *
+     * It used to be an inner join requiring a scheduled session between now and
+     * 48 hours out, because this message was the FALLBACK for families who never
+     * tapped the admin's forwarded link — "contacted the first time there is a
+     * real reason".
+     *
+     * It is the invite now, so waiting for a near session is waiting for nothing:
+     * the reason is that the academy went live. Under the old bound a family whose
+     * class is next Tuesday sat unreachable for six days, and a family enrolled in
+     * a class with nothing on the books yet sat unreachable forever — silently,
+     * which §9.1 names as the worst failure the product has, because it looks
+     * exactly like success.
+     *
+     * The enrolment joins stay INNER on purpose. A contact with no active enrolment
+     * is somebody this academy has nothing true to say to, and §9.1 rule 2 — say
+     * something only the real academy could know — is not satisfiable without one.
+     *
+     * `plan-ahead`'s `pending` count is the same predicate and moved with it. An
+     * `exists` narrower than this query leaves families this handler would invite
+     * with no job that ever wakes to invite them.
+     */
     const batch = await tx<ContactTarget[]>`
       select ct.id as contact_id, ct.person_id, pe.full_name as holder_name,
              nx.player_person_id, nx.player_name, nx.class_name, nx.starts_at, nx.venue_name
@@ -458,24 +481,7 @@ export async function firstContactBatch(job: Job): Promise<void> {
             join enrollment e on e.player_id = pl.id
              and (e.ended_on is null or e.ended_on >= (app.now() at time zone ${academy.timezone})::date)
             join class cl on cl.id = e.class_id
-            /**
-             * LEFT, and no 48-hour bound. This used to be an inner join on a session
-             * `between app.now() and app.now() + interval '48 hours'`, because this
-             * message was the FALLBACK for families who never tapped the admin's
-             * forwarded link — "contacted the first time there is a real reason".
-             *
-             * It is the invite now, so waiting for a near session is waiting for
-             * nothing: the reason is that the academy went live. A family whose class
-             * is next Tuesday would have sat unreachable for six days, and a family
-             * enrolled in a class with no session on the books yet would have sat
-             * unreachable forever — silently, which §9.1 names as the worst failure
-             * the product has, because it looks like success.
-             *
-             * The enrolment joins stay INNER on purpose. A contact with no active
-             * enrolment is somebody the academy has nothing true to say to, and rule 2
-             * ("say something only the real academy could know") is not satisfiable
-             * without one.
-             */
+            -- LEFT, and unbounded: enrolled is enough to be invited. See above.
             left join session s on s.class_id = e.class_id and s.status = 'scheduled'
              and s.starts_at >= app.now()
             left join venue v on v.id = coalesce(s.venue_id, cl.venue_id)

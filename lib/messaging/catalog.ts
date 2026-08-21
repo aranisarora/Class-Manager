@@ -1,5 +1,5 @@
 /**
- * lib/messaging/catalog.ts — §12, all 32 rows.
+ * lib/messaging/catalog.ts — §12, all 34 rows.
  *
  * @mechanism CATALOG — one row per moment code raises, with the policy riding on it as DATA
  *   rather than as prose at each call site: `fixed` marks the rows the bot may reword or
@@ -93,7 +93,7 @@ export type CatalogEntry = {
  * nine days later (F-AV). A preference stored as prose stops nothing, because the
  * jobs compose from queries.
  *
- * A table beside the catalog rather than a field on 33 rows, and exhaustive over
+ * A table beside the catalog rather than a field on 34 rows, and exhaustive over
  * `CatalogId` so a new moment cannot be added without deciding: an unclassified
  * moment would silently become unmutable, which is the failure this closes.
  *
@@ -176,10 +176,9 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
     id: 'CL-FIRST-CONTACT',
     audience: 'client',
     trigger:
-      'The family invite (§9.1 step 2), and **the bot sends it** — every registered contact this academy has never messaged, '
-      + 'soonest session first. No admin forward, no link to mint, no waiting for a session to be near. One message per '
-      + 'family, ever: staged ten at a time and HALTING on the first bad delivery signal, because on a shared number that is '
-      + 'what the reputation is worth (§16.1).',
+      'The family invite, and **the bot sends it** (§9.1 step 2): every registered contact this academy has never messaged, '
+      + 'soonest session first. No admin forward, no waiting for a near session. One per family ever, staged ten at a time, '
+      + 'halting on the first bad delivery signal (§16.1).',
     defaultButtons: ['See schedule', 'Stop these'],
     onSilence: 'Nothing. No nag.',
     fixed: false,
@@ -323,15 +322,12 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
     id: 'CO-INVITE',
     audience: 'coach',
     trigger:
-      'The invite itself (§8.1 step 2), and **the bot sends it** — from the academy\'s own number, to the coach, the moment '
-      + 'the admin asks. The admin forwards nothing. Out of window it is a window-opener carried by `coach_prompt`, so the '
-      + "detail it cannot hold is not lost: the coach's tap IS their first inbound, and CO-INVITE-CONFIRM answers it with "
-      + 'their actual schedule. Name the admin who added them — a coach recognises "Sharwin added you as a coach" and does '
-      + 'not recognise a number.',
+      'The invite, and **the bot sends it** (§8.1 step 2): straight to the coach the moment the admin asks. The admin '
+      + "forwards nothing. Out of window it is a window-opener, so their tap is their first inbound and CO-INVITE-CONFIRM "
+      + 'answers it with their schedule. Name the admin who added them — a coach recognises "Sharwin added you", not a number.',
     defaultButtons: ['See my classes'],
     onSilence:
-      'Nothing further to the coach. `coach_not_onboarded` tells the ADMIN when a session is coming and they still have not '
-      + 'tapped — the chase belongs to the person who employs them.',
+      'Nothing to the coach. `coach_not_onboarded` tells the ADMIN if a session comes up and they still have not tapped.',
     // The one message that tells a coach this business runs here at all. A bot
     // that decides to stay quiet on it leaves somebody expected at a court they
     // were never told about.
@@ -344,9 +340,9 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
     id: 'CO-INVITE-CONFIRM',
     audience: 'coach',
     trigger:
-      "A coach's first inbound after CO-INVITE reached them (§8.1 step 3): read their schedule and their pay back to them "
-      + 'before anything goes live. Out of window the invite was a window-opener, so this is where the detail it could not '
-      + 'carry actually arrives — a second message by design, not a repetition.',
+      "A coach's first inbound after CO-INVITE (§8.1 step 3): read their schedule and their pay back to them before "
+      + 'anything goes live. The invite was a window-opener, so this is where the detail arrives — a second message by '
+      + 'design, not a repetition.',
     defaultButtons: ['Looks right', "Something's wrong"],
     onSilence: 'Stays `invited`.',
     fixed: false,

@@ -64,10 +64,14 @@ export type LinkButton = { title: string; url: string }
 /**
  * A link the recipient should **forward** rather than tap.
  *
- * §8.1's coach invite and §9.1's parent invite are drafts the admin copies out of this
- * chat and sends from their own number, and their whole payload is a `wa.me` deep link
- * with prefilled text. That link belongs in the text, because the text is the artifact.
- * It is also short, readable, and says what it is — the opposite of a signed JWT.
+ * `send_invite`'s `as_draft` is the one thing that still produces one: a `wa.me` deep
+ * link with prefilled text, handed to the admin to forward when the bot's own send to
+ * that number could not land. The link belongs in the text, because the text is the
+ * artifact the admin copies out. It is also short, readable, and says what it is — the
+ * opposite of a signed JWT.
+ *
+ * That path used to be the ONLY way anybody joined, which is why this predicate is as
+ * load-bearing as its history says. It is a repair now, and the rule is unchanged.
  *
  * So the rule is not "no URLs in bodies", it is: **a link the recipient taps is a
  * button; a link the recipient forwards is text.** It lives here, next to the check that
@@ -393,10 +397,11 @@ export function validateOutbound(msg: OutboundMessage): string[] {
   // repair exempted a forwardable `wa.me` deep link ("a link the recipient taps is a
   // button; a link the recipient forwards is text") and this checked for any url at all.
   // Two rules about one thing, and the one that runs last has no model in the loop — so
-  // §8.1's coach invite and §9.1's parent invite, the only mechanism by which anybody
-  // but the admin ever joins, were suppressed as `limit_violation` one hundred percent
-  // of the time. The admin was told the invite had been drafted. Nothing had been sent,
-  // and tapping `[Sent it]` produced no message at all.
+  // §8.1's coach invite and §9.1's parent invite, which were then the only mechanism by
+  // which anybody but the admin ever joined, were suppressed as `limit_violation` one
+  // hundred percent of the time. The admin was told the invite had been drafted. Nothing
+  // had been sent, and tapping `[Sent it]` produced no message at all. The invite is a
+  // bot send now and no longer depends on this, but `as_draft` still does.
   for (const url of (msg.body ?? '').match(/https?:\/\/\S+/gi) ?? []) {
     if (isForwardableLink(url)) continue
     bad.push('the body contains a url — links are buttons, never text (§14.6)')
