@@ -122,6 +122,36 @@ no row.
 `life` has no derived half at all — a generated life event would be invention dressed as
 circumstance — so a world file is the only place one can come from.
 
+## What happens to the business during the week
+
+A world file is a **moment**. What happens next lives in [`events/`](../events/README.md), and
+a world may carry its own in a `week` block when its weather is part of its identity — a
+monsoon academy, one that empties in exam season:
+
+```json
+{ "name": "Coastal Cricket Academy",
+  "classes": [ "…" ],
+  "week": {
+    "about": "It rains here.",
+    "chaos": { "washout": 0.15 },
+    "events": [ { "what": "absent", "day": 4, "who": "Anika Rao", "why": "a fever" } ] } }
+```
+
+`week` and `--events <file>` compose — the world's own is the base, the flag is laid over it —
+so one scenario still points at any business and one business can still be run through six
+scenarios. That is the reason the two are separate files at all.
+
+It is the mechanical half of what `life` is the narrative half of, and the half `life` could
+never be: a `life` string is one person's prose and nothing checks it against anything, so
+"Anika has a fever and is not going tomorrow" left her coach's register untouched and her coach
+free to invent it. An `absent` is resolved against the real session and the real roster, told to
+her coach after the class and to her mother in her own words, and written into `truth.json`
+where `npm run truth` can put it beside what the product ended up believing.
+
+Every rule about the shape lives in `events/README.md` and in `scripts/_events.ts`. This file
+carries the block through untouched: a second copy of those rules is how the block and the flag
+come to disagree about what a `lag` needs.
+
 ## It refuses; it never repairs
 
 A hand-written fixture usually fails silently or not at all. `"coachs": 4` is not four coaches,

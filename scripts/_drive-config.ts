@@ -112,7 +112,19 @@ export type WindowName = Window
 export type { PersonaKey }
 
 export type DriveConfig = {
-  /** Simulated days to run. Bounded by `SCHEDULE`, which is who speaks when. */
+  /**
+   * Simulated days to run. **No ceiling** — a week, a fortnight, a billing month.
+   *
+   * It was capped at seven for most of this file's life, which put every question
+   * needing more than one week out of reach: a monthly bill correct only on the
+   * 1st, a ten-session package exhausting in week three, dunning escalating over
+   * three cycles, a family going quiet for a fortnight before it leaves.
+   *
+   * Simulated length, never real length — `budgetMin` and `budgetInr` are the
+   * real stop, and confusing the two is the expensive mistake this file exists to
+   * prevent. Past the last day anybody wrote a `life` for, the days are ordinary
+   * unless `events` or `chaos` fills them; `sim.ts` prints where that line falls.
+   */
   days: number
   /** Which windows run each day, in the order the clock reaches them. */
   windows: WindowName[]
@@ -183,6 +195,28 @@ export type DriveConfig = {
    * confusion, and confusion is most of what a week is for.
    */
   seatModel: string
+  /**
+   * What happens to the business during the week — a name, a path or inline JSON
+   * that `scripts/_events.ts` resolves. Empty means nothing happens, which is
+   * what every run before this flag existed was measuring.
+   *
+   * Separate from `world` on purpose, and the separation is the whole point of
+   * the flag: `worlds/` says what the business IS and `events/` says what the
+   * week DOES to it, so one scenario runs against six businesses and one business
+   * runs through six scenarios without either file being edited. A `week` block
+   * inside a world file says the same thing for a world whose weather is part of
+   * its identity, and the two compose.
+   */
+  events: string
+  /**
+   * Rates for the things nobody wrote down — `absent`, `quiet`, `lag`, `washout`.
+   *
+   * Rolled off `seed`, so a chaotic week is reproducible and an A/B's two arms
+   * get the SAME weather. Every roll is materialised into the record exactly as
+   * though somebody had typed it: a harness whose randomness is invisible in its
+   * own record produces runs nobody can explain afterwards.
+   */
+  chaos: Record<string, number>
   /** Which side of an A/B this is. Set by the runner, carried into the record. */
   arm?: string
   /** The five-tier ramp overlay from `_ramp.ts` — `SIM_RAMP` made visible. */
@@ -218,8 +252,6 @@ export type DriveConfig = {
  */
 const ALL_WINDOWS = Object.keys(WINDOW_AT) as WindowName[]
 const ALL_PERSONAS = Object.keys(PERSONAS) as PersonaKey[]
-/** The last day `SCHEDULE` puts anybody at a phone. Past it, the days are empty. */
-const SCHEDULED_DAYS = Math.max(...Object.keys(SCHEDULE).map(Number))
 /** How many tiers the ramp actually defines. Five, read rather than assumed. */
 const RAMP_TIERS = Math.max(...Object.keys(TIERS).map(Number))
 
@@ -361,6 +393,8 @@ const FLAGS = {
   concurrency: 'value',
   'budget-min': 'value',
   'budget-inr': 'value',
+  events: 'value',
+  chaos: 'value',
   seed: 'value',
   model: 'value',
   arm: 'value',
@@ -386,6 +420,65 @@ function num(value: unknown, at: string, o: { int?: boolean; min: number }): num
   if (o.int && !Number.isInteger(n)) fail(`${at} must be a whole number, not ${n}`)
   if (n < o.min) fail(`${at} must be at least ${o.min}, not ${n}`)
   return n
+}
+
+/** The four things `chaos` can turn up. Named here so a typo is refused by name. */
+const CHAOS_RATES = ['absent', 'quiet', 'lag', 'washout'] as const
+
+/**
+ * `--chaos 0.15` or `--chaos absent=0.2,lag=0.1` — one dial, or four.
+ *
+ * The bare number is the fast path and the reason this flag is worth having: a
+ * messy week without authoring one, in eleven characters. The `k=v` form is for
+ * when only one thing should be messy, which is most of the time you are chasing
+ * something specific.
+ *
+ * A rate outside 0..1 and an unknown name are both refused rather than clamped or
+ * dropped. This is `--budgetinr 250` again: a knob nothing reads is a knob that
+ * did nothing, and the run then looks exactly like the run it was meant to be.
+ */
+function rates(value: unknown, at: string): Record<string, number> {
+  const raw = value
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const out: Record<string, number> = {}
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (!CHAOS_RATES.includes(k as (typeof CHAOS_RATES)[number])) {
+        fail(`${at}: unknown chaos rate "${k}"`, `rates: ${CHAOS_RATES.join(', ')}`)
+      }
+      out[k] = num(v, `${at}.${k}`, { min: 0 })
+      if (out[k]! > 1) fail(`${at}.${k} is a probability and must be between 0 and 1, not ${out[k]}`)
+    }
+    return out
+  }
+
+  const text = str(raw, at)
+  if (!text.includes('=')) {
+    // A value with a separator in it but no `=` is somebody reaching for the
+    // named form and missing, not somebody typing one dial. Saying "is not a
+    // number" there is true and useless.
+    if (/[,:]/.test(text)) {
+      fail(
+        `${at}: "${text}" is neither one rate nor name=rate pairs`,
+        `--chaos 0.15 turns all four up; --chaos absent=0.2,lag=0.1 names them.`,
+      )
+    }
+    const n = num(text, at, { min: 0 })
+    if (n > 1) fail(`${at} is a probability and must be between 0 and 1, not ${n}`)
+    return Object.fromEntries(CHAOS_RATES.map((k) => [k, n]))
+  }
+
+  const out: Record<string, number> = {}
+  for (const part of text.split(',')) {
+    const [k, v] = part.split('=').map((s) => s.trim())
+    if (!k || v === undefined) fail(`${at}: "${part.trim()}" is not name=rate`)
+    if (!CHAOS_RATES.includes(k as (typeof CHAOS_RATES)[number])) {
+      fail(`${at}: unknown chaos rate "${k}"`, `rates: ${CHAOS_RATES.join(', ')}`)
+    }
+    const n = num(v, `${at}.${k}`, { min: 0 })
+    if (n > 1) fail(`${at}.${k} is a probability and must be between 0 and 1, not ${n}`)
+    out[k!] = n
+  }
+  return out
 }
 
 function bool(value: unknown, at: string): boolean {
@@ -500,6 +593,15 @@ function toLayer(raw: Record<string, unknown>, where: (key: string) => string): 
         break
       case 'world':
         L.world = worldRef(value, at)
+        break
+      case 'events':
+        // Not resolved here. A reference is a name, a path or inline JSON and
+        // only `_events.ts` knows which; resolving it in two places is how the
+        // two come to disagree about what `monsoon` means.
+        L.events = str(value, at)
+        break
+      case 'chaos':
+        L.chaos = rates(value, at)
         break
       case 'concurrency':
         L.concurrency = num(value, at, { int: true, min: 1 })
@@ -710,6 +812,8 @@ export function resolveConfig(argv: string[]): DriveConfig {
      * them" — see `DriveConfig.concurrency`.
      */
     concurrency: m.concurrency ?? personas.length,
+    events: m.events ?? '',
+    chaos: m.chaos ?? {},
     seed: m.seed ?? stampSeed(),
     model: m.model ?? mainModel(),
     seatModel: m.seatModel ?? DEFAULT_SEAT_MODEL,
@@ -787,16 +891,40 @@ function check(cfg: DriveConfig): void {
   if (!cfg.windows.length) fail(`no windows: give at least one of ${ALL_WINDOWS.join(', ')}`)
   const canonical = false
 
-  if (cfg.days > SCHEDULED_DAYS) {
-    fail(
-      `--days ${cfg.days} runs past the end of the week`,
-      canonical ?
-        `SCHEDULE in scripts/_personas.ts covers ${SCHEDULED_DAYS} days, so days ${SCHEDULED_DAYS + 1}–${cfg.days} put nobody at a phone.`
-      : `A drive opens on a Monday at 06:00 and its DAY NUMBER is the ISO weekday, which is the invariant`,
-      canonical ?
-        'They would still burn clock and standing jobs, and read afterwards as silence.'
-      : `every timetable and every brief is read across. Day ${SCHEDULED_DAYS + 1} is a second Monday, and a brief written for day 1 would arrive on it.`,
-    )
+  /**
+   * HOW LONG A RUN IS, IS THE DRIVER'S DECISION. There is no ceiling.
+   *
+   * There used to be one at seven days, and the reason it gave was wrong. It
+   * said "day 8 is a second Monday, and a brief written for day 1 would arrive on
+   * it" — but nothing anywhere takes a day number modulo anything. `life` is a
+   * plain `Record<number, string>`, so day 8 looks up `life[8]`, finds nothing,
+   * and the seat is told nothing unusual is happening. Wrong in the other
+   * direction, and benign.
+   *
+   * What the ceiling actually cost was every question that needs more than one
+   * week to ask: a monthly bill that is only correct on the 1st, a package of ten
+   * exhausting in week three, a family that goes quiet for a fortnight before it
+   * leaves, dunning that escalates over three cycles. `probe-model`'s suites
+   * cannot ask those either, so nothing here could.
+   *
+   * Nothing mechanical binds. `deriveSchedule` deals `days × windows` cells for
+   * any `days`. `walkTo` walks between two hours of ONE day, so its hop ceiling
+   * is per window and not per run. And `materialize_sessions` runs on a ROLLING
+   * 21-day horizon re-planned on every walk (`HORIZON_DAYS`, §13), so the
+   * timetable keeps being written ahead of the clock however far it goes — the
+   * one thing that would have made a long run quietly go silent.
+   *
+   * What does run out is hand-written prose, and `sim.ts` says so out loud
+   * against the real briefs once the world is read: past the last day anybody
+   * wrote a `life` for, the days are ordinary. `events/` is how you fill them,
+   * and `--chaos` fills them without writing anything.
+   *
+   * The REAL stop is still `--budget-min` / `--budget-inr`. `--days 90` is a
+   * legitimate thing to ask for and a bad thing to sit through, and this file has
+   * always kept those two questions apart.
+   */
+  if (!Number.isInteger(cfg.days) || cfg.days < 1) {
+    fail(`--days must be a whole number of days, at least 1 — not ${cfg.days}`)
   }
 
   /**
@@ -889,6 +1017,17 @@ export function describeConfig(cfg: DriveConfig): string {
   // Named only when it is not the default, because a line that says `canonical`
   // on every run is a line nobody reads on the one run it matters.
   parts.push(`world ${cfg.world}`)
+  /**
+   * Printed only when there is something to print, and always when there is.
+   *
+   * A week in which it rained and a week in which it did not are different runs
+   * and cost different money, and the top line is where somebody comparing two
+   * records looks first. Silence here on a run that had weather is how two
+   * incomparable records come to look like a repeat.
+   */
+  if (cfg.events) parts.push(`events ${cfg.events}`)
+  const chaos = Object.entries(cfg.chaos).filter(([, v]) => v > 0)
+  if (chaos.length) parts.push(`chaos ${chaos.map(([k, v]) => `${k}=${v}`).join(',')}`)
   if (cfg.arm) parts.push(`arm ${cfg.arm}`)
   const limits: string[] = []
   if (cfg.budgetMin !== undefined) limits.push(`${cfg.budgetMin}min`)

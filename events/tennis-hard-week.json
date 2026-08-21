@@ -1,0 +1,44 @@
+{
+  "about": "Ace Tennis, a bad week: a fever nobody reported, a family away, a coach with no signal, and a Saturday that falls through on Friday night.",
+  "events": [
+    {
+      "what": "lag",
+      "day": 1,
+      "window": "evening",
+      "who": "Arjun Shetty",
+      "hours": 6,
+      "why": "no signal at the courts all evening"
+    },
+    {
+      "what": "away",
+      "day": [2, 3, 4],
+      "who": "Meera Iyer",
+      "why": "you are in Coorg with family and you are barely looking at your phone"
+    },
+    {
+      "what": "absent",
+      "day": 3,
+      "who": "Vivaan Iyer",
+      "why": "he is in Coorg with the family"
+    },
+    {
+      "what": "absent",
+      "day": 4,
+      "who": "Anika Rao",
+      "why": "the fever she has had since Wednesday"
+    },
+    {
+      "what": "note",
+      "day": 5,
+      "window": "evening",
+      "who": "Priya Nair",
+      "why": "Your sister's wedding is tomorrow morning and you had completely forgotten it is the same day as the Weekend Squad. You cannot take it. It is Friday night."
+    },
+    {
+      "what": "absent",
+      "day": 6,
+      "who": "Tara Krishnan",
+      "why": "her mother did not bring her and did not say why"
+    }
+  ]
+}

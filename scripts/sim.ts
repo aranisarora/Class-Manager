@@ -183,6 +183,12 @@ const { SEAT_EFFORT } = await import('./_persona-agent')
  * the environment loaded for.
  */
 const { arrivals } = await import('./_arrivals')
+/**
+ * What happens to the business during the week — the physical facts the product
+ * can only learn by being told. Imported here for the same reason `arrivals` is:
+ * it reads the database.
+ */
+const { openEvents, readEventSpecs, validateEventSpec } = await import('./_events')
 const { BLANK_WORLD, describeConfig, makeBudget, recordedConfig, resolveConfig } =
   await import('./_drive-config')
 const { costInr, USD_INR } = await import('@/lib/pricing')
@@ -193,6 +199,8 @@ type WindowName = import('./_personas').Window
 type DriveConfig = import('./_drive-config').DriveConfig
 type Ask = import('./_seat-worker').Ask
 type Told = import('./_seat-worker').Told
+type EventSpec = import('./_events').EventSpec
+type EventsRuntime = import('./_events').EventsRuntime
 
 const WORKER = fileURLToPath(new URL('./_seat-worker.ts', import.meta.url))
 const ALL_PERSONAS = Object.keys(PERSONAS) as PersonaKey[]
@@ -265,6 +273,12 @@ type WorldPlan = {
   briefs: Record<string, Brief>
   /** Who is at a phone, in which window of which day. */
   schedule: Record<number, Record<WindowName, string[]>>
+  /**
+   * This world's own weather, when its file carries a `week` block — the base
+   * `--events` is laid over. Absent for a world whose file says nothing about it,
+   * which is every world that existed before this block did.
+   */
+  week?: EventSpec
   build(token: string, log: (s: string) => void): Promise<BuiltWorld>
 }
 
@@ -494,6 +508,7 @@ async function planWorld(cfg: DriveConfig): Promise<WorldPlan> {
     is: describeWorld(spec),
     briefs: Object.fromEntries(known),
     schedule: deriveSchedule(chosen.map((b) => b.key), cfg.days, cfg.windows),
+    ...(spec.week !== undefined ? { week: spec.week as EventSpec } : {}),
     async build(token, log): Promise<BuiltWorld> {
       const built = await buildSpecWorld(spec, { token, log })
 
@@ -729,6 +744,47 @@ async function main(): Promise<void> {
   const canonical = false
 
   /**
+   * The week's weather, read and refused on the same terms as the world.
+   *
+   * Everything answerable from the FILE is answered here, before a run directory
+   * or an academy exists: an unknown verb, a day past the end of the run, a lag
+   * with no hours, a `note` nobody is told. The name checks that need rows —
+   * "this world has nobody called Anika Rao" — wait for `openEvents` below,
+   * because they need a built world to be checked against.
+   *
+   * A `week` block inside the world file is the same shape and composes with the
+   * flag: the world's own weather is the base, and `--events` is laid over it. A
+   * world whose identity includes its weather — a monsoon academy, a school-term
+   * one — says so once in its own file, and a scenario is still a thing you can
+   * point at any world.
+   */
+  let eventSpec: EventSpec = {}
+  let eventRef = '(nothing happens)'
+  try {
+    const fromFlag = cfg.events ? readEventSpecs(cfg.events) : { spec: {} as EventSpec, ref: '' }
+    eventSpec = {
+      about: [plan.week?.about, fromFlag.spec.about].filter(Boolean).join(' · '),
+      chaos: { ...(plan.week?.chaos ?? {}), ...(fromFlag.spec.chaos ?? {}), ...cfg.chaos },
+      events: [...(plan.week?.events ?? []), ...(fromFlag.spec.events ?? [])],
+    }
+    eventRef =
+      [plan.week ? `${plan.ref}#week` : '', fromFlag.ref].filter(Boolean).join(' + ') || eventRef
+    validateEventSpec(eventSpec, cfg.days)
+  } catch (e) {
+    /**
+     * One catch over reading AND validating, so a missing file and a bad verb
+     * come out the same shape a flag error does. A stack trace here would be the
+     * only refusal in this file that prints like a crash.
+     *
+     * The reference is prefixed only once it is known — a file that would not
+     * open names itself in its own message, and `(nothing happens)` in front of
+     * that would read as a claim about the run rather than about the file.
+     */
+    const known = eventRef !== '(nothing happens)'
+    die(`${c.red('x')}  ${known ? `${eventRef}: ` : ''}${(e as Error).message}`)
+  }
+
+  /**
    * Balanced by construction, and asserted rather than intended.
    *
    * `windowCounts` reads `SCHEDULE`, which gives each of the four six windows over
@@ -772,6 +828,36 @@ async function main(): Promise<void> {
 
   console.log(c.bold(`\n  sim — ${describeConfig(cfg)}`))
   console.log(c.dim(`  world:    ${plan.is}`))
+  /**
+   * Where the hand-written prose runs out, said before the money is spent.
+   *
+   * `--days` has no ceiling, and the thing that genuinely stops scaling with it
+   * is not the clock or the timetable — both are fine — but the `life` blocks
+   * somebody typed. Read off the REAL briefs rather than assumed, because the
+   * canonical four are written to day 7 and a spec world's people are written to
+   * wherever their file stops, which is often nowhere at all.
+   *
+   * A note and not a refusal: a long run of ordinary days is a perfectly good
+   * question — *does the product stay sane over a billing month with nothing
+   * dramatic in it* — and it is one nothing here could ask before. What would be
+   * wrong is finding out afterwards that days 8–30 were blank and reading the
+   * quiet as a product that stopped engaging.
+   */
+  const lifeUntil = Math.max(
+    0,
+    ...Object.values(plan.briefs).flatMap((b) => Object.keys(b.life ?? {}).map(Number)),
+  )
+  const weekHasSomething =
+    (eventSpec.events?.length ?? 0) > 0 || Object.values(eventSpec.chaos ?? {}).some((r) => r > 0)
+  if (cfg.days > lifeUntil && !weekHasSomething) {
+    console.log(
+      c.yellow(
+        `  note:     nobody wrote a life event past day ${lifeUntil || 0} — days ` +
+          `${(lifeUntil || 0) + 1}–${cfg.days} are ordinary.\n` +
+          `            --events <file> or --chaos <rate> is how you fill them.`,
+      ),
+    )
+  }
   console.log(c.dim(`  schedule: ${balance}${whole || !canonical ? '' : ' (before this run’s filters)'}\n`))
 
   const dir = await runDir('sim')
@@ -853,7 +939,11 @@ async function main(): Promise<void> {
     'config.json',
     recordedConfig(cfg, { is: plan.is, seats: [...driven], concurrency: width }),
   )
-  await writeSidecar(dir, 'manifest.json', await manifest(cfg, plan, academyId, academyName, dir))
+  await writeSidecar(
+    dir,
+    'manifest.json',
+    await manifest(cfg, plan, academyId, academyName, dir, { ref: eventRef, spec: eventSpec }),
+  )
   /**
    * The briefs this run's seats are sitting in, beside the record — and the
    * handover to the seats themselves.
@@ -876,6 +966,38 @@ async function main(): Promise<void> {
   console.log(`  academy  ${academyName} — ${academyId}`)
   console.log(`  seats    ${[...driven].join(', ')}`)
   console.log(`  record   ${dir}`)
+
+  /**
+   * The week's weather, bound to the rows it is about.
+   *
+   * The FILE was refused at second zero; this is where the NAMES are, and they
+   * need a built world to be checked against. A misspelt child, a class this
+   * business does not run, an absence on a day the class does not meet: each of
+   * them is a week that runs perfectly and quietly measures nothing, so each of
+   * them stops the run here with what is actually in the database.
+   *
+   * Everybody the world has, not only `driven`. An event may name somebody this
+   * run narrowed out, and refusing the name would make `--seats 2` reject a
+   * scenario written for the whole business.
+   */
+  let events: EventsRuntime
+  try {
+    events = await openEvents({
+      spec: eventSpec,
+      ref: eventRef,
+      days: cfg.days,
+      seed: cfg.seed,
+      academyId,
+      windowAt: WINDOW_AT,
+      people: Object.values(plan.briefs).map((b) => ({ key: b.key, name: b.name, seat: b.seat })),
+      q: sql,
+    })
+  } catch (e) {
+    die(`${c.red('x')}  ${(e as Error).message}`)
+  }
+  if (events.active) {
+    console.log(`  events   ${eventRef}${events.about ? c.dim(` — ${events.about}`) : ''}`)
+  }
 
   // Sat down before the first window, so a seat's node start-up happens while the
   // timetable below is being materialised rather than inside a turn's stopwatch.
@@ -1005,6 +1127,28 @@ async function main(): Promise<void> {
     const tier = cfg.ramp ? TIERS[day] : undefined
     if (tier) console.log(c.dim(`    tier ${day} · ${tier.name} — ${tier.what}`))
 
+    /**
+     * What physically happened today, fixed before the first window opens.
+     *
+     * Fixed at the top of the day rather than inside a window because it is a
+     * fact about the DAY: who was on court at seven has to be the same fact when
+     * their parent's evening window comes round, and a decision taken twice is
+     * two facts. Revealing it is separate and happens per window — a coach is
+     * told about a class after it has ended and not before.
+     *
+     * The clock is already on today's date here: the overnight walk of the
+     * previous day ends past midnight, and day 1 opens on the Monday the world
+     * was built against. It runs BEFORE the first `walkTo`, so nothing has fired
+     * yet on the strength of a session this has not looked at.
+     */
+    if (events.active) {
+      try {
+        await events.openDay(day)
+      } catch (e) {
+        die(`${c.red('x')}  ${(e as Error).message}`)
+      }
+    }
+
     for (const w of cfg.windows) {
       /**
        * The clock moves here and nowhere else, and it moves before anybody speaks.
@@ -1025,10 +1169,39 @@ async function main(): Promise<void> {
        */
       if (stoppedBy) break
       const at = clock.inZone(await clock.now(academyId), TZ)
-      const active = (plan.schedule[day]?.[w] ?? []).filter((k) => driven.has(k) && !gone.has(k))
+      /**
+       * What the world does to this window: extra lines for people's `today`,
+       * whose phone is behind, and who is not at one at all.
+       *
+       * Resolved AFTER the clock walk, because the walk is what makes the jobs of
+       * this window fire — a lag measured against a clock that had not moved yet
+       * would hold back the wrong messages.
+       */
+      const effects =
+        events.active ?
+          events.forWindow(day, w)
+        : { today: {} as Record<string, string[]>, skip: new Map<string, string>(), lag: new Map<string, number>() }
+
+      const dealt = (plan.schedule[day]?.[w] ?? []).filter((k) => driven.has(k) && !gone.has(k))
+      /**
+       * Somebody away is not driven, and is not `quiet` either.
+       *
+       * `quiet` is a MOVE — a person read their phone and put it down, and the
+       * seat chose it with reasoning attached. Being on holiday is not a move,
+       * and dressing it as one would put a decision nobody made into the record
+       * as though a model had made it. So the window skips them, and the skip is
+       * printed, logged into `days.jsonl` and carried in `truth.json` with the
+       * reason: three places a reader can find "she was in Kerala" rather than
+       * being left to infer it from an absence.
+       */
+      const asleep = dealt.filter((k) => effects.skip.has(k))
+      const active = dealt.filter((k) => !effects.skip.has(k))
       console.log(
         `    ${at.time} ${c.bold(w.padEnd(8))} ${c.dim(`${walked.length} jobs`)}` +
-          `  ${c.dim(active.length ? active.join(', ') : '(nobody at a phone)')}`,
+          `  ${c.dim(active.length ? active.join(', ') : '(nobody at a phone)')}` +
+          (asleep.length
+            ? c.yellow(`  away: ${asleep.map((k) => `${k} (${effects.skip.get(k)})`).join(', ')}`)
+            : ''),
       )
 
       await inFlight(active, width, async (key) => {
@@ -1053,12 +1226,31 @@ async function main(): Promise<void> {
          * refused outright against a spec world, because `RAMP_LIFE` is keyed by
          * the four names and every lookup would miss in silence.
          */
-        const today = (cfg.ramp ? RAMP_LIFE[key as PersonaKey]?.[day] : undefined) ?? plan.briefs[key]?.life[day]
+        const written = (cfg.ramp ? RAMP_LIFE[key as PersonaKey]?.[day] : undefined) ?? plan.briefs[key]?.life[day]
+        /**
+         * What was written about today, and then what actually happened in it.
+         *
+         * In that order, and joined rather than replaced. `life` is the standing
+         * situation somebody wrote down — Priya asked for a raise, you are fed up
+         * being asked about waivers — and the event lines are the physical facts
+         * of the day: a class that did not run, a child who was not there, no
+         * signal at the courts. Neither substitutes for the other, and a world
+         * event that silently overwrote a `life` string would delete the reason
+         * the persona was written.
+         *
+         * This is also the ONLY channel the world reaches a seat by. Nothing here
+         * says what the product can do about any of it, which is the rule
+         * `_personas.ts` and `_ramp.ts` both open with: a persona who has been
+         * told the answer is not a persona.
+         */
+        const today = [written, ...(effects.today[key] ?? [])].filter(Boolean).join('\n\n') || undefined
+        const lag = effects.lag.get(key)
         const told = await seat.ask({
           id: `d${day}-${w}-${key}`,
           day,
           window: w,
           ...(today ? { today } : {}),
+          ...(lag ? { lag } : {}),
         })
 
         if (told.kind === 'ready') return
@@ -1100,7 +1292,11 @@ async function main(): Promise<void> {
           : ''
         console.log(
           `      ${c.dim(key.padEnd(7))} ${told.action === 'giveup' ? c.red('giveup ') : told.action === 'quiet' ? c.yellow('quiet  ') : 'say    '}` +
-            `${what}${attached} ${c.dim(`· ${told.arrived} back · ${Math.round(told.ms / 1000)}s`)}`,
+            `${what}${attached} ${c.dim(`· ${told.arrived} back · ${Math.round(told.ms / 1000)}s`)}` +
+            // Printed beside the move, because a quiet turn on a lagged phone and
+            // a quiet turn on a phone that showed everything are different
+            // findings, and the line is where a reader forms the first of the two.
+            (lag ? c.yellow(` · phone ${lag}h behind`) : ''),
         )
       })
 
@@ -1161,6 +1357,21 @@ async function main(): Promise<void> {
            */
           await writeSidecar(dir, 'briefs.json', plan.briefs)
           await writeSession(session)
+          /**
+           * The world learns about the people the business just gained.
+           *
+           * Without this a coach hired on Wednesday coaches Thursday's session
+           * and is the one person in the week nobody tells what happened in it —
+           * which is precisely the defect this whole mechanism removes, quietly
+           * reintroduced for the people most likely to expose it. It re-reads the
+           * coach and guardian relations, which is two queries in a window that
+           * gained somebody and nothing at all in every other window.
+           */
+          if (events.active) {
+            await events.admit(
+              joined.map((a) => ({ key: a.key, name: a.brief.name, seat: a.brief.seat })),
+            )
+          }
           for (const a of joined) {
             if (!seats.has(a.key)) seats.set(a.key, openSeat(a.key, dir, cfg))
             console.log(
@@ -1184,7 +1395,18 @@ async function main(): Promise<void> {
       }
       await appendFile(
         join(dir, 'days.jsonl'),
-        JSON.stringify({ day, window: w, at: at.label, jobs: [...walked, ...after] }) + '\n',
+        JSON.stringify({
+          day,
+          window: w,
+          at: at.label,
+          jobs: [...walked, ...after],
+          // What the world did to this window, beside what the queue did.
+          // `days.jsonl` is where a reader goes to ask "what happened on
+          // Wednesday evening", and a window in which two people were away and
+          // one was on a lagged phone answers that question differently.
+          ...(asleep.length ? { away: asleep.map((k) => ({ key: k, why: effects.skip.get(k) })) } : {}),
+          ...(effects.lag.size ? { lag: Object.fromEntries(effects.lag) } : {}),
+        }) + '\n',
       )
 
       /**
@@ -1241,10 +1463,25 @@ async function main(): Promise<void> {
     console.log(
       c.dim(`    overnight  ${night.length} jobs · ${unprompted.length} messages sent unprompted\n`),
     )
+    /**
+     * The world's account, rewritten at the end of every day rather than once at
+     * the close.
+     *
+     * A week that dies on day 4 still has four days of ground truth on disk, and
+     * a run cut short by a budget is explicitly a run this repo expects to be
+     * judged — `--budget-min` exists so a short record is a WHOLE one. Truth kept
+     * only in memory until teardown would be the one part of a stopped run that
+     * is not whole. It is a few kilobytes.
+     */
+    if (events.active) await writeSidecar(dir, 'truth.json', events.truth())
     await settle()
   }
 
   for (const seat of seats.values()) seat.end()
+
+  // Once more, because the last day's windows may have fired events after the
+  // day-end write above — a run stopped by a budget mid-window ends here.
+  if (events.active) await writeSidecar(dir, 'truth.json', events.truth())
 
   /* ------------------------------------------------------------- close */
 
@@ -1298,6 +1535,19 @@ async function main(): Promise<void> {
       seatLog: await readJsonl(join(dir, 'seat.jsonl')),
       seats: seatSpend,
       departures,
+      /**
+       * What the WORLD says happened, which is not what the product believes.
+       *
+       * The two are deliberately kept apart and never reconciled here: `world`
+       * above holds the product's own closing counts — how many attendance rows
+       * it wrote, how much it billed — and this holds the physical facts those
+       * rows were supposed to be about. `npm run truth` puts them side by side.
+       *
+       * Nothing computes the difference. A difference carries a sign and the sign
+       * is the verdict, and verdicts do not go in records — the same reason
+       * `ab.ts` prints two columns and no third.
+       */
+      truth: events.active ? events.truth() : null,
       run: {
         academyName,
         elapsedMin: Number(budget.elapsedMin().toFixed(2)),
@@ -1497,6 +1747,7 @@ async function manifest(
   academyId: string,
   academyName: string,
   dir: string,
+  week: { ref: string; spec: EventSpec },
 ): Promise<Record<string, unknown>> {
   const { execFile } = await import('node:child_process')
   const git = (args: string[]): Promise<string> =>
@@ -1565,6 +1816,17 @@ async function manifest(
     // is a file people paste into issues, and "worlds/multi-coach.json" pasted
     // into one six months from now names whatever that file holds then.
     world: { academyId, academyName, ref: plan.ref, is: plan.is },
+    /**
+     * What was supposed to happen to the business this week, beside what the
+     * business was.
+     *
+     * The same argument the `world` field above rests on: `events/monsoon.json`
+     * pasted into an issue six months from now names whatever that file holds
+     * then, and a chaos rate rolled off a seed is unreproducible without both the
+     * rate and the seed. `--seed` is already in `config.json`; this is what makes
+     * the two readable together.
+     */
+    events: { ref: week.ref, chaos: week.spec.chaos ?? {}, count: week.spec.events?.length ?? 0 },
     argv: process.argv.slice(2),
   }
 }

@@ -770,7 +770,22 @@ function aBusiness(s: NormalSpec): string {
  * early. `days` is the driver's own, out of `DriveConfig`.
  */
 function horizon(days: number): string {
-  return days === 1 ? 'today' : days >= 7 ? 'by the end of the week' : `by the end of day ${days}`
+  if (days === 1) return 'today'
+  if (days < 7) return `by the end of day ${days}`
+  if (days === 7) return 'by the end of the week'
+  if (days === 14) return 'by the end of the fortnight'
+  /**
+   * Past a week this used to say "by the end of the week" for every length,
+   * because the old ceiling meant no run could be longer than one and the branch
+   * was never reachable. With the ceiling gone it is: a thirty-day run would give
+   * every persona a deadline three weeks before the run ends, and a seat that
+   * reads one either abandons its goal on Sunday or spends the other twenty-three
+   * days apologising for being late. Both are harness artefacts that read as the
+   * product failing to close something out.
+   */
+  if (days % 7 === 0) return `by the end of week ${days / 7}`
+  if (days >= 28 && days <= 31) return 'by the end of the month'
+  return `within the next ${days} days`
 }
 
 /** The same, opening a sentence. */

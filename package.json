@@ -29,6 +29,7 @@
     "mechanisms": "tsx scripts/build-mechanisms.ts",
     "check:mechanisms": "tsx scripts/build-mechanisms.ts --check",
     "judge": "node scripts/judge.mjs",
+    "truth": "tsx scripts/truth.ts",
     "report": "node scripts/report.mjs",
     "runs": "node scripts/report.mjs --list",
     "findings": "tsx scripts/_findings.ts",
