@@ -33,6 +33,7 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-CA** | A staged plan is described in the past tense, so the owner is told a change was made while the buttons still ask whether to make it | [detail](#f-ca--a-staged-plan-is-described-in-the-past-tense-so-the-owner-is-told-a-change-was-made-while-the-buttons-still-ask-whether-to-make-it) |
 | **F-CC** | A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule | [detail](#f-cc--a-commercial-term-nobody-agreed-to--first-class-is-free--volunteered-in-a-parenthetical-and-stated-as-the-businesss-own-rule) |
 | **F-CI** | The product reports what it TRIED as what HAPPENED — 26 unbacked claims in 33 turns, while `turnState` is already telling it otherwise | [detail](#f-ci--the-product-reports-what-it-tried-as-what-happened-and-turnstate-is-already-telling-it-otherwise) |
+| **F-CJ** | A rate change is destructive, so it re-prices sessions that already ran — and the parent was told the opposite of the row | [detail](#f-cj--a-rate-change-is-destructive-so-it-re-prices-sessions-that-already-ran--and-the-parent-was-told-the-opposite-of-the-row) |
 
 ---
 
@@ -638,3 +639,57 @@ month of the same night carries the same `truth` profile against a different wor
 strings state them again per call (`tools.ts:1453`, `:1705`); the tap receipt (F-CD) is the one
 place a receipt is minted rather than written. Nothing reconciles the sentence with any of them,
 by deliberate design, and the deliberate design does not hold at this width.
+
+---
+
+### F-CJ · A rate change is destructive, so it re-prices sessions that already ran — and the parent was told the opposite of the row
+
+`2026-08-21-17-19-stress-69q0`, the stress month. Sanjay raises Aarav's one-to-one from ₹900 to
+₹1,100 on 30 Aug, effective 1 Sep. The plan is two updates:
+
+```sql
+update class      set rate_amount = 1100 where id = '24526fa7-…'
+update enrollment set rate_amount = 1100 where id = '18b55e89-…'
+```
+
+**There is nowhere for the old rate to go.** `app.effective_rate()` is
+`coalesce(e.rate_amount, c.rate_amount)` and carries no date; `enrollment` holds `rate_amount`,
+`rate_count` and `rate_unit` and **no effective-from column**. A rate is one current number with
+no history, so ₹900 is not superseded — it is destroyed.
+
+The 25 Aug one-to-one had already run and its register is still unmarked. `mark_attendance`
+(`lib/agent/operations.ts`) reads `rate_amount` at the moment the register is marked, with no
+reference to `session.starts_at`. So marking that session today writes **₹1,100 for a class that
+ran at ₹900**, and the database already says so — `unmarked_billable_session` returns session
+`334251ff` (2026-08-25) at `unbilled_amount 1100.00`.
+
+**The product diagnosed this correctly and told two people opposite things about it, four minutes
+apart.** To Sanjay, four separate times, accurately: *"with the rate now ₹1,100 it would bill at
+that rather than the ₹900 it ran at"*, and *"₹1,100 has sat a week with no bill written"*. To
+Meera — the parent who pays — at 2026-08-30T04:38:01Z:
+
+> **"The class before that, 25 Aug, stays at the old ₹900."**
+
+Only one of those is backed by a row, and it is not the one the paying parent received.
+
+It also mis-states the total twice, on 2 and 4 Sep: *"Aarav's two one-to-ones are ₹2,000 sitting
+unbilled"*. The view says `1100.00 + 1100.00` = **₹2,200**. The model is quoting the rate the
+sessions ran at while the rows carry the rate they will bill at, which is the same defect
+arriving as arithmetic.
+
+**Why this is a money defect and not a prose one.** The model was right about the mechanism,
+said so repeatedly and unprompted, and **had nowhere to act**. `raisePartialPeriod` exists for the
+mid-period *enrolment* shape and does its job well — it fired three times in this same run with
+exact arithmetic. Nothing exists for the mid-period *rate-change* shape, which is the same class of
+problem: a charge computed at write time for a window that has since moved. The product cannot
+express "₹900 from 21 Aug, ₹1,100 from 1 Sep" in any table it has.
+
+**Blast radius.** Every unmarked register older than a rate change bills at the new rate. In this
+run that is ₹200 on one child. On a business with a term's worth of unmarked sessions and an
+annual price rise it is the whole difference between the two prices, charged to families who
+attended at the old one — and §6.4 bills off attendance, so the register is exactly where it lands.
+
+**Where it lives.** `app.effective_rate()` (no date), `enrollment` (no effective-from column),
+`mark_attendance` in `lib/agent/operations.ts` (reads the rate at mark time rather than at
+`session.starts_at`). The forward-dated half the model keeps promising — *"from 1 Sep"*,
+*"from October"* — has no home in the schema, which is why it is stated in prose every time.
