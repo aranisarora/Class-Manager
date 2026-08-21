@@ -195,6 +195,7 @@ findings/                 the ledgers — what has broken, and what is still ope
 lib/db.ts                 the session boundary — roles, GUCs, model queries
 lib/clock.ts              the drivable clock (app.now())
 lib/agent/                prompt layering, tools, plans, operations, the loop
+lib/frontdesk/            the arrivals hall — a stranger, asked which side they are on
 lib/doctrine.md           the rules every reply is derived from, always in context
 lib/messaging/            the catalog, templates, window, transports, the one send path
 lib/jobs/                 the job kinds, each re-checking its own precondition

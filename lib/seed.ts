@@ -254,16 +254,25 @@ export async function resetWorld(): Promise<void> {
 /* ------------------------------------------------------------------------- *
  * Managing the world
  *
- * Signing a business up is the operator's job — the owner of Class Manager
- * creates a tenant, and a stranger messaging the number must never be able to.
- * That is a product decision, and `resolveInbound` returning `unresolved` for a
- * number matching no academy is it working, not a gap.
+ * Signing a business up USED to be the operator's job, and this comment used to
+ * say so: "the owner of Class Manager creates a tenant, and a stranger messaging
+ * the number must never be able to. That is a product decision, and
+ * `resolveInbound` returning `unresolved` for a number matching no academy is it
+ * working, not a gap."
  *
- * It does mean the only people who can make or unmake a tenant are the ones
- * running this repo, so they need it to be one command. Before these, the world
- * had exactly two states — everything, or nothing (`resetWorld`) — so testing a
- * second business meant wiping the first, and a mistyped roster row could only
- * be cleared by starting the whole afternoon again.
+ * 0039 reverses that decision deliberately, because the acquisition channel is
+ * about to be referral: one coach telling another *"just message this number and
+ * it'll run your classes"*. The person who arrives has no link, no prefilled
+ * text and no business to be a prospect of, so under the old rule the most
+ * valuable inbound this product can receive was the one branch that answered
+ * nothing. A stranger can now become a tenant, through the front desk
+ * (`lib/frontdesk/`), rate-limited per number rather than gated by a human.
+ *
+ * What has not changed is that these commands exist. The operator still needs to
+ * make and unmake tenants in one command: before them the world had exactly two
+ * states — everything, or nothing (`resetWorld`) — so testing a second business
+ * meant wiping the first, and a mistyped roster row could only be cleared by
+ * starting the whole afternoon again.
  * ------------------------------------------------------------------------- */
 
 /** Every auto-assigned test number in use, across all tenants. */
@@ -1196,6 +1205,14 @@ export type WorldAcademy = {
    * doors (`app.list_academies()`, `app.identity()`) has to change to carry it.
    */
   isSandbox: boolean
+  /**
+   * 0039 — this row is the arrivals hall of a WhatsApp number, not a business. Served
+   * for the same reason `isSandbox` is: the console must read the bit the server acts
+   * on rather than infer it from the name. Every count beside it — classes, players,
+   * coaches, sessions — is structurally zero and always will be, so a panel that renders
+   * it as an ordinary tenant reports an empty business where there is no business.
+   */
+  isFrontDesk: boolean
   upiHandle: string | null
   cancellationWindowHours: number
   clientReminderLeadHours: number
@@ -1297,7 +1314,7 @@ export async function worldState(): Promise<WorldState> {
     academyIds.map(async (academyId): Promise<WorldAcademy | null> => {
       const a = await withSession(svc(academyId), async (tx) => {
       const head = await tx`
-        select a.id, a.name, a.category, a.timezone, a.onboarding_state, a.is_sandbox, a.upi_handle, a.rail,
+        select a.id, a.name, a.category, a.timezone, a.onboarding_state, a.is_sandbox, a.is_front_desk, a.upi_handle, a.rail,
                a.cancellation_window_hours, a.client_reminder_lead_hours,
                a.morning_brief_at::text as morning_brief_at,
                a.evening_digest_at::text as evening_digest_at,
@@ -1384,6 +1401,7 @@ export async function worldState(): Promise<WorldState> {
       timezone: String(h.timezone),
       onboardingState: String(h.onboarding_state),
       isSandbox: Boolean(h.is_sandbox),
+      isFrontDesk: Boolean(h.is_front_desk),
       upiHandle: (h.upi_handle as string) ?? null,
       cancellationWindowHours: Number(h.cancellation_window_hours),
       clientReminderLeadHours: Number(h.client_reminder_lead_hours),
@@ -2995,6 +3013,13 @@ export type InboundResult =
       isNew: boolean
       messageId: string
       turn: TurnOutput | null
+      /**
+       * 0039 — this landed at a front desk, not in a business, so `academyId` above is
+       * an arrivals hall and not a tenant. Carried because every reader of this result
+       * would otherwise have to re-resolve the identity to find out, and a driver that
+       * cannot tell the two apart reports a stranger as a customer.
+       */
+      atFrontDesk: boolean
     }
   | { ok: false; unresolved: true; candidates: { academyId: string; name: string }[] }
 
@@ -3092,6 +3117,10 @@ export async function ingestInbound(input: {
   const { identity, isNew } = resolved
   const academyId = identity.academyId
   const contactId = identity.contact.id
+  // 0039 — the `visitor` role is the one carrier of "this is not a business". Read from
+  // the composed roles rather than from the academy row, so there is one place that
+  // decides it and every reader agrees with `runTurn` about which surface ran.
+  const atFrontDesk = identity.roles.includes('visitor')
   const idempotencyKey = input.waMessageId ? `inbound:${input.waMessageId}` : null
 
   const written = await withSession(svc(academyId), async (tx) => {
@@ -3146,6 +3175,7 @@ export async function ingestInbound(input: {
     return {
       ok: true, duplicate: true, academyId, contactId,
       personName: identity.person.full_name, isNew, messageId: written.messageId, turn: null,
+      atFrontDesk,
     }
   }
 
@@ -3163,6 +3193,7 @@ export async function ingestInbound(input: {
   return {
     ok: true, duplicate: false, academyId, contactId,
     personName: identity.person.full_name, isNew, messageId: written.messageId, turn,
+    atFrontDesk,
   }
 }
 

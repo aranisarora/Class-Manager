@@ -9,10 +9,13 @@
  *                    of their hats in one thread. Anything that returns a
  *                    single role is wrong.
  *
- *   resolveInbound   §10.1 routing on a shared number. A number known to
- *                    exactly one academy resolves on sight; an unknown number
- *                    matches the academy named in the prefilled text and
- *                    becomes a prospect; ambiguity returns candidates and asks.
+ *   resolveInbound   §10.1 routing on a shared number, and it answers only what rows
+ *                    can answer: does this number already belong to a business? One
+ *                    academy resolves on sight. None sends the person to the front
+ *                    desk (0039) as a `visitor`, where the product ASKS whether they
+ *                    want classes or run them — rather than the router deciding they
+ *                    are a parent because the prefilled text named a tenant.
+ *                    Several is still ambiguity, and still asks.
  *                    This is a functional requirement, not a security one —
  *                    RLS is what keeps the tenants apart.
  */
@@ -20,6 +23,9 @@
 import { now } from '@/lib/clock'
 import { unsafeQuery, withSession, type SessionCtx, type Tx } from '@/lib/db'
 import { formatPhone } from '@/lib/format'
+// 0039 — the funnel row is opened by the router, because arriving is the event, not
+// deciding. `lib/frontdesk/arrival.ts` imports nothing from here, so there is no cycle.
+import { openArrival } from '@/lib/frontdesk/arrival'
 import { isUuid } from '@/lib/ids'
 import type { Academy, Contact, Identity, Person, Role } from '@/lib/types'
 
@@ -157,8 +163,25 @@ export async function adminContactIds(academyId: string): Promise<string[]> {
   return rows.map((r) => r.contact_id).filter((id): id is string => Boolean(id))
 }
 
+
 // -----------------------------------------------------------------------------
 // §10.1 — routing a cold inbound on a shared number
+//
+// This section used to answer a question it had no business answering. An unknown
+// number arrived, `matchByName` read the prefilled text, and whichever academy it hit
+// got a brand-new `prospect` person — the router deciding, before anybody had spoken,
+// that this stranger was a parent. A number that matched nothing came back
+// `unresolved`, `ingestInbound` wrote no message row and ran no turn, and the person
+// got silence.
+//
+// Both halves are wrong for the same reason, and referral is what makes it expensive:
+// a coach telling another coach "just message this number and it'll run your classes"
+// sends someone whose opening line names no business at all. The most valuable inbound
+// the product can receive is the one that lands in the branch that answers nothing.
+//
+// So the router stops guessing. It answers exactly the question rows can answer —
+// *does this number already belong to a business?* — and hands everything else to the
+// front desk (0039, `lib/frontdesk/`), which asks.
 // -----------------------------------------------------------------------------
 
 export type AcademyCandidate = { academyId: string; name: string }
@@ -169,6 +192,8 @@ export type InboundResolution =
 
 type CandidatesJson = {
   sender_id: string | null
+  /** 0039 — where an unmatched number is about to be answered. Null before the first. */
+  front_desk_id: string | null
   matches: { academy_id: string; name: string; contact_id: string }[]
   academies: { academy_id: string; name: string }[]
 }
@@ -193,8 +218,23 @@ const GENERIC_WORDS = new Set([
   'batch', 'batches', 'team', 'group', 'india', 'hello', 'namaste',
 ])
 
-/** Case- and space-insensitive on the full name, then on any distinctive word. */
-function matchByName(text: string | undefined, academies: AcademyCandidate[]): AcademyCandidate[] {
+/**
+ * Case- and space-insensitive on the full name, then on any distinctive word.
+ *
+ * @mechanism matchAcademiesByName — the one name matcher, and it no longer decides
+ *   anything by itself. It used to BE the router: whichever academy it hit acquired a new
+ *   prospect before a word had been exchanged, so a stranger who typed "hi" reached nobody
+ *   and a stranger who typed "hi Ace" became Ace's parent whatever they had actually come
+ *   to say. Its result is now evidence handed to the front-desk turn, which is where the
+ *   judgement belongs. `GENERIC_WORDS` is unchanged and still load-bearing: without it
+ *   "Hi, is this the academy?" matches whichever tenant sorted first. Exported because
+ *   `find_business` matches with THIS function — a second copy is how the tool and the
+ *   router would come to disagree about who "Ace" is.
+ */
+export function matchAcademiesByName(
+  text: string | undefined,
+  academies: AcademyCandidate[],
+): AcademyCandidate[] {
   const tight = squash(text ?? '')
   if (!tight) return []
   const spaced = ` ${loose(text ?? '')} `
@@ -241,17 +281,55 @@ async function markInbound(academyId: string, contactId: string, profileName: st
   )
 }
 
-/** §10.1 step 1 — cold inbound, academy resolved, prospect person created. */
-async function createProspect(
+/**
+ * §10.1 step 1 — the person, in the business they are a prospect of.
+ *
+ * @mechanism prospectContactIn — find-or-create, in that order, and the order is the rule
+ *   §10.1 exists to enforce: *"the one thing the bot must not do is create a second
+ *   `person` for someone already in the roster."* An existing parent who arrives through a
+ *   prospect entry point — a QR at the court is scanned by existing parents more often
+ *   than by strangers — resolves to the person they already are and keeps their roster,
+ *   their children and their money. Matching is on the last ten digits, so
+ *   "+91 98765 43210" and "9876543210" are the same human. This used to be reachable only
+ *   from the router, which meant only the router could honour that rule; it is now the one
+ *   door into a business for everyone the front desk sends, so the rule holds on every
+ *   route into a tenant rather than on the one that happened to have it.
+ */
+export async function prospectContactIn(
   academyId: string,
   phoneE164: string,
   profileName: string | undefined,
   at: Date,
-): Promise<string | null> {
+): Promise<{ contactId: string; created: boolean } | null> {
   const name = (profileName ?? '').trim() || formatPhone(phoneE164)
 
-  const rows = await withSession({ role: 'service', academyId }, (tx) =>
-    unsafeQuery<{ id: string }>(
+  return withSession({ role: 'service', academyId }, async (tx) => {
+    const existing = await unsafeQuery<{ id: string }>(
+      tx,
+      `select id from contact
+        where academy_id = $1::uuid
+          and nullif(right(regexp_replace(phone_e164, '[^0-9]', '', 'g'), 10), '')
+            = nullif(right(regexp_replace($2, '[^0-9]', '', 'g'), 10), '')
+        order by is_primary desc, created_at asc
+        limit 1`,
+      [academyId, phoneE164],
+    )
+
+    if (existing[0]?.id) {
+      const contactId = String(existing[0].id)
+      await unsafeQuery(
+        tx,
+        `update contact
+            set last_inbound_at = $2::timestamptz,
+                profile_name    = coalesce(nullif($3, ''), profile_name),
+                state           = case when state = 'registered' then 'engaged' else state end
+          where id = $1::uuid`,
+        [contactId, at, profileName ?? ''],
+      )
+      return { contactId, created: false }
+    }
+
+    const rows = await unsafeQuery<{ id: string }>(
       tx,
       `with new_person as (
          insert into person (academy_id, full_name)
@@ -264,10 +342,51 @@ async function createProspect(
        on conflict (academy_id, phone_e164) do nothing
        returning id`,
       [academyId, name, phoneE164, profileName ?? '', at],
+    )
+
+    if (rows[0]?.id) return { contactId: String(rows[0].id), created: true }
+
+    // Lost a race with a concurrent inbound from the same number.
+    const again = await unsafeQuery<{ id: string }>(
+      tx,
+      `select id from contact where academy_id = $1::uuid and phone_e164 = $2`,
+      [academyId, phoneE164],
+    )
+    return again[0]?.id ? { contactId: String(again[0].id), created: false } : null
+  })
+}
+
+/**
+ * 0039 — the arrivals hall of this number, and this number's row in it.
+ *
+ * Both halves are one `security definer` call because both have to survive the same
+ * race: two messages from the same stranger, milliseconds apart, must not produce two
+ * front desks or two people. `app.front_desk_contact` does the find-or-create in SQL
+ * and re-reads on conflict, so this returns a contact id either way.
+ */
+async function frontDeskContact(
+  senderId: string,
+  phoneE164: string,
+  profileName: string | undefined,
+  at: Date,
+): Promise<{ frontDeskId: string; contactId: string; created: boolean } | null> {
+  const name = (profileName ?? '').trim() || formatPhone(phoneE164)
+
+  const rows = await withSession(BOOTSTRAP_CTX, (tx) =>
+    unsafeQuery<{ data: { front_desk_id: string; contact_id: string; created: boolean } | null }>(
+      tx,
+      'select app.front_desk_contact($1::uuid, $2, $3, $4, $5::timestamptz) as data',
+      [senderId, phoneE164, name, profileName ?? '', at],
     ),
   )
 
-  return rows[0]?.id ?? null
+  const data = rows[0]?.data
+  if (!data?.contact_id || !data?.front_desk_id) return null
+  return {
+    frontDeskId: String(data.front_desk_id),
+    contactId: String(data.contact_id),
+    created: data.created === true,
+  }
 }
 
 /**
@@ -276,13 +395,16 @@ async function createProspect(
  * `senderPhoneE164` is the number the message arrived ON — one number serves
  * many academies (§16), so it is what bounds the search.
  *
- * @mechanism resolveInbound — §10.1 routing on a shared number, and it asks rather than
- *   guesses: a number known to exactly one academy resolves on sight, a number known to
- *   several comes back as candidates for the caller to ask about, and an unknown number is
- *   matched against the academy named in the prefilled text and becomes a prospect. Matching
- *   skips `GENERIC_WORDS`, which is what stops "Hi, is this the academy?" routing to whichever
- *   tenant sorted first, and a prospect insert that loses a race re-reads instead of failing.
- *   Functional, not a security boundary — RLS is what keeps the tenants apart.
+ * @mechanism resolveInbound — §10.1 routing on a shared number, and it now answers only
+ *   the question rows can answer: does this number already belong to a business? A number
+ *   known to exactly one resolves on sight. A number known to none goes to the front desk
+ *   (0039) as a `visitor`, with a person, a contact, a transcript and a turn — where the
+ *   product ASKS whether they want classes or run them, instead of the router deciding they
+ *   are a parent because the prefilled text happened to name a tenant. That text is still
+ *   read, and is handed to the turn as evidence rather than spent as a routing decision.
+ *   Functional, not a security boundary — RLS is what keeps the tenants apart, and a front
+ *   desk owns nothing to keep apart.
+ *   Closes F-CE.
  */
 export async function resolveInbound(
   fromPhoneE164: string,
@@ -300,10 +422,13 @@ export async function resolveInbound(
   )
 
   const data = rows[0]?.data
+  const senderId = data?.sender_id ?? null
   const matches = data?.matches ?? []
   const academies: AcademyCandidate[] = (data?.academies ?? []).map((a) => ({ academyId: a.academy_id, name: a.name }))
 
-  // Known number, exactly one academy: resolve on sight.
+  // Known number, exactly one academy: resolve on sight. Front desks are excluded from
+  // `matches` by 0039, so a visitor who has since joined a business resolves THERE and
+  // never comes back to the desk they arrived at.
   if (matches.length === 1) {
     const hit = matches[0]
     await markInbound(hit.academy_id, hit.contact_id, profileName, at)
@@ -312,7 +437,17 @@ export async function resolveInbound(
     return { unresolved: true, candidates: dedupe(academies) }
   }
 
-  // Known number, several academies: ask rather than guess (§10.1).
+  /**
+   * Known number, several academies: ask rather than guess (§10.1) — and this is the
+   * one case that still produces silence, left exactly where it was.
+   *
+   * It is a different question from the front desk's. This person belongs to two
+   * businesses already, so "classes, or do you run them?" is the wrong thing to ask
+   * them, and the right thing — *which* of your businesses is this about? — needs an
+   * answer that STICKS, or a parent enrolled at two academies is interrogated on every
+   * message they send. That is its own design with its own state, and folding it in here
+   * would trade a silence nobody has hit for a regression in a path that works.
+   */
   if (matches.length > 1) {
     return {
       unresolved: true,
@@ -320,33 +455,31 @@ export async function resolveInbound(
     }
   }
 
-  // Unknown number: the prefilled text names the academy.
-  const named = matchByName(text, academies)
-  const target = named.length === 1 ? named[0] : academies.length === 1 ? academies[0] : null
-
-  if (!target) {
-    return { unresolved: true, candidates: dedupe(named.length > 1 ? named : academies) }
-  }
-
-  const contactId = await createProspect(target.academyId, fromPhoneE164, profileName, at)
-  if (!contactId) {
-    // Lost a race with a concurrent inbound from the same number.
-    const retry = await withSession(BOOTSTRAP_CTX, (tx) =>
-      unsafeQuery<{ data: CandidatesJson }>(tx, 'select app.inbound_candidates($1, $2) as data', [
-        fromPhoneE164,
-        senderPhoneE164,
-      ]),
-    )
-    const again = retry[0]?.data?.matches ?? []
-    if (again.length === 1) {
-      await markInbound(again[0].academy_id, again[0].contact_id, profileName, at)
-      const identity = await resolveIdentity(again[0].contact_id)
-      if (identity) return { identity, isNew: false }
-    }
+  // Unknown number. It belongs to no business, so it belongs to the number: the front
+  // desk takes it, and the turn that runs there asks which side they are on.
+  if (!senderId) {
+    // The message arrived on a number this deployment does not own. There is nothing to
+    // answer it with and nowhere to put it — the one case with no front desk to reach.
     return { unresolved: true, candidates: dedupe(academies) }
   }
 
-  const identity = await resolveIdentity(contactId)
+  const desk = await frontDeskContact(senderId, fromPhoneE164, profileName, at)
+  if (!desk) return { unresolved: true, candidates: dedupe(academies) }
+
+  // The funnel row, opened before the turn runs. A stranger who writes once and never
+  // answers is the most useful row in `arrival`, and it exists only if it is written
+  // here rather than when somebody finally decides something.
+  await openArrival({
+    senderId,
+    phoneE164: fromPhoneE164,
+    frontDeskId: desk.frontDeskId,
+    contactId: desk.contactId,
+    profileName,
+    firstText: text,
+    at,
+  })
+
+  const identity = await resolveIdentity(desk.contactId)
   if (!identity) return { unresolved: true, candidates: dedupe(academies) }
-  return { identity, isNew: true }
+  return { identity, isNew: desk.created }
 }

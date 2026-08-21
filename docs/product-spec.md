@@ -212,13 +212,33 @@ academy (
   sender_id                  uuid not null references sender(id),
   memory                     text,          -- §5. bounded hot set, not the record.
   prompt_cache_handle        text,
-  settings                   jsonb not null default '{}'
+  settings                   jsonb not null default '{}',
+  is_sandbox                 boolean not null default false,  -- 0030. scratch tenant; the emulator may fabricate against it
+  is_front_desk              boolean not null default false   -- 0039. §10.0. NOT a business
 )
 
 venue ( name text not null, address text, notes text )
+
+arrival (                                   -- 0039. GLOBAL, no academy_id — §10.0
+  sender_id              uuid not null references sender(id),
+  phone_e164             text not null,
+  front_desk_id          uuid not null references academy(id),
+  contact_id             uuid not null references contact(id),
+  profile_name           text,
+  first_text             text,              -- what they opened with, verbatim
+  asked_at               timestamptz,       -- null = their own words already said which side
+  decided_at             timestamptz,
+  outcome                text not null default 'undecided',  -- undecided | joined | founded | declined
+  destination_academy_id uuid references academy(id),        -- crosses tenants: why this table is global
+  unique (sender_id, phone_e164)
+)
 ```
 
 `academy` is the tenant. **The word "academy" appears nowhere a user can see** — §18.4.
+
+**One `academy` row per sender is not a tenant.** `is_front_desk` marks the arrivals hall of a WhatsApp number (§10.0): the row a person gets a person, a contact and a transcript in *before* they have said whether they want classes or run them. It carries no class, player, enrollment or money; it is excluded from every tenant enumeration; and it cannot initiate a message. Migration 0039 argues the trade — the alternative was four parallel tables and a second path to the wire, for the one conversation in the product that talks to a complete stranger.
+
+`arrival` is the funnel record, and it is the third deliberately global table after `sender` and `job`. It is global because `destination_academy_id` points out of whichever tenant the person ended up in, and a tenant-scoped row must never carry a foreign key across the boundary — RLS would make it unreadable from both ends.
 
 ### 6.2 People
 
@@ -276,6 +296,8 @@ memory_fact (                               -- §5. append-only. this is the rec
   retired_at   timestamptz
 )
 ```
+
+**Roles are hats and they compose.** `admin`, `coach`, `account_holder`, `player`, `prospect` — a senior player who coaches juniors is one person with a player row and a coach row, served in one thread. `visitor` (0039, §10.0) is the sixth and the only one that composes with nothing: it means there is no business here yet, and it is returned for any contact whose academy is a front desk.
 
 **Facts are never updated or deleted.** A correction writes a new row pointing at the one it supersedes; `academy.memory` and `person.memory` are rebuilt from the live set on a schedule. This makes "why does it think that?" answerable, which a mutable blob does not.
 
@@ -505,6 +527,8 @@ Every policy carries a regression test asserting cross-tenant and cross-role rea
 
 ### 7.1 Onboarding
 
+**How an admin arrives.** Either the vendor created the tenant, or — and this is the channel that matters — the admin messaged the number themselves and said they run classes, at the front desk (§10.0). A coach tells another coach; the friend writes in; a business exists a minute later with them as its admin and `onboarding_state = 'setup'`, and the ladder below starts in the same thread, in the next message. Nothing is sent to anybody else, and every value they give is one sentence away from being changed.
+
 The unavoidable cost of adoption is **data entry**. Reducing it is the highest-leverage work in the product.
 
 1. **The setup ladder** (§14.6) — business name, category, venues, operating pattern, cancellation window, asked in the chat. This was a one-screen form and the form is gone, so the cost to beat is the dozen small waits a naive ladder would spend: **assume what can be assumed and say so, take everything a sentence gives, and stop as soon as there is enough to create a class.** The rest is filled in when it matters. `set_up_business` is safe to call repeatedly, so a fact learned is a fact written.
@@ -652,13 +676,38 @@ Coaches leave often and new ones arrive. Routine operations, not exceptional one
 
 A fourth persona-phase cell, and the cheapest acquisition path in the product: the user initiates, so the window is open, free, and carries no template, tier or block cost.
 
+### 10.0 The front desk — an unknown number has not said what it is yet
+
+**A stranger is not necessarily a parent, and the product used to assume they were.** An unknown inbound was matched against the academy named in its prefilled text and became a `prospect` of whichever one it hit; a number that matched nothing was answered with silence. Both halves encode the same assumption, and it was true only while the sole entry point was a QR code at a court.
+
+**Referral is the channel that breaks it.** The way this product actually grows is one coach telling another *"just message this number and it'll run your classes"* — no link, no prefill, no academy named. Under the old shape the most valuable inbound the business can receive landed in the one branch that answered nothing.
+
+So an unknown number goes to **the front desk of the number it messaged**, not to a business:
+
+- One front desk per `sender`, created on the first cold inbound. It is an `academy` row carrying `is_front_desk` and it is **not a business** — no class, no roster, no money, excluded from every tenant enumeration. The trade is argued in full in migration 0039: as an `academy` row a visitor gets a person, a contact, a transcript, buttons, a turn record and the one send path with no parallel machinery at all.
+- The person is a **`visitor`** — a sixth role, returned for any contact whose academy is a front desk. Roles compose, so a front-desk arrival is `["prospect","visitor"]`: a prospect of the platform, not of a business.
+- Every arrival is a row (`arrival`), opened the moment somebody writes, settled when they go somewhere. **A stranger who wrote once, was asked, and never answered is the row this product could not previously produce**, and "how many referrals became businesses" is the first question the vendor will ask.
+
+**The desk asks exactly one question and holds no conversation of its own.** *Are you looking for classes, or do you run them?* — and only when their own words have not already answered it, which they usually have. Someone asking whether the beginners batch suits a nine-year-old is a parent; someone who says they coach badminton in Indiranagar is an owner. The prefilled text is still read; it is **evidence given to that turn** rather than a routing decision made before anyone speaks.
+
+**Then it hands over, and stops.** The conversation re-enters the business — the same message, answered from inside it, in the same thread, by something that holds the schedule, the fees and the roster. Two destinations:
+
+| They are | What happens | Then |
+|---|---|---|
+| Looking for classes | A prospect contact in that business (or the person they already were, if known) | §10.1 step 3 — the bot talks |
+| Running classes | A new tenant, with them as its admin, `onboarding_state = 'setup'` | §7.1 — the setup ladder |
+
+**Guards, and they are structural rather than instructions.** There is no "list the businesses" verb at any privilege, so the desk cannot recite this number's customer list to a stranger — it never holds one. Founding is not behind a tap, because consequence rather than row count decides a preview and founding moves no money, affects nobody else and destroys nothing; what protects the pooled number is a **rate limit per number per day**, since §16.1 shares quality rating, tier and blocks across every tenant on the sender. And the front desk **cannot initiate**: its `onboarding_state` is never `live`, so the send path suppresses anything that is not a solicited reply inside the visitor's own turn.
+
+**Still unresolved, deliberately:** a known number belonging to *several* businesses. That is a different question — *which of your businesses is this about?* — and it needs an answer that sticks, or a parent enrolled at two academies is interrogated on every message. It is left exactly where it was (§21).
+
 ### 10.1 Cold inbound
 
 A QR code at the court, a "Message us" link on a website or Instagram bio. **Assume this is always on.**
 
 **Routing.** The bot serves many academies on one number, so an inbound must resolve to *which* academy. This is a functional requirement, not a security one. The link carries prefilled text naming the academy — `wa.me/<number>?text=Hi Ace TT Academy` — and the bot matches on it. No token infrastructure.
 
-**The prefill is a hint, not a protocol.** It is editable, and people clear it and type "hi". When it is absent the bot asks which business, in one sentence, once (§10.1 has no fallback beyond that because none is needed).
+**The prefill is a hint, not a protocol.** It is editable, and people clear it and type "hi". When it is absent the bot asks — at the front desk (§10.0), where the question is *which side are you on* rather than *which business*, because the answer to the second is worthless until the first is known.
 
 **A known number that arrives through a prospect entry point is still a known number.** A QR at the court is scanned by existing parents more often than by strangers — for directions, for the schedule, because it is the poster on the wall. **Identity wins over entry point:** the contact resolves to their existing person, and they get the client surface, not `PR-WELCOME`. The one thing the bot must not do is create a second `person` for someone already in the roster, which is the failure this rule exists to prevent. An existing parent asking about a *different* child is a new `player` on the same account, never a new account.
 
@@ -666,7 +715,7 @@ A QR code at the court, a "Message us" link on a website or Instagram bio. **Ass
 
 **A conversation, not a wizard.** The most common real first message is *"my daughter is 14 and has played for three years, is your beginners class right for her?"* — and a scripted name → age → pick-a-class sequence has nowhere to put that. This is the highest-stakes conversation in the product, with a stranger, and it ends in one operation rather than being one:
 
-1. Cold inbound → academy resolved → `contact.state = 'prospect'`, `person` created
+1. Cold inbound → front desk (§10.0) → they are looking for classes → academy resolved → `contact.state = 'prospect'`, `person` created — or the person they already were, because §10.1's one prohibition is creating a second `person` for somebody already in the roster
 2. [`PR-WELCOME`] *"Hi Rajesh! I'm the class manager for Ace TT Academy."* → what's on offer → `[Book a free trial]` `[See the schedule]` `[Talk to Sharwin]`
 3. **The bot talks.** It holds the catalog, the schedule and which classes have room, so it answers what a parent actually asks — is this the right level, what does it cost, where is it, is there anything on Saturday, my son is left-handed does that matter. Whatever it learns along the way is what it needed to know
 4. When the conversation has produced a player and a class, it calls `book_trial(...)` — one transactional operation (§14.2.1) creating `account`, `player`, a trial `enrollment` and the booking, then telling the parent [`PR-TRIAL-CONFIRMED`]. **Auto-confirmed, no admin gate**
@@ -727,6 +776,10 @@ registered ──(first inbound)──> engaged
 ```
 
 `prospect` = arrived cold, no account yet. `registered` = created in onboarding, never messaged. `engaged` = `last_inbound_at` set; the window is open when `now() - last_inbound_at < 24h`.
+
+**A front-desk contact (§10.0) starts `prospect` too, and that is the right word rather than a compromise** — arrived cold, no account. What the state cannot say is *which* thing they are a prospect of, because a state describes the contact and the answer describes the academy the contact is in.
+
+**And note what this state machine does to `prospect`: the first inbound consumes it.** The trigger that stamps `last_inbound_at` moves `registered|prospect → engaged` on the same event, so `prospect` survives only between a contact being created and their opening message being stored — it is gone before the turn that answers them runs. Anything selected on `state = 'prospect'` is therefore selected for nobody from the second message onward. That is why `visitor` is a **role** keyed on the academy rather than a sixth state: roles compose, every consumer already reads them, and `is_front_desk` stays true for exactly as long as the conversation is at the desk. Where the arrival went is neither a state nor a role — it crosses tenants, so it lives on the global `arrival` row.
 
 ### 11.3 Coach
 
@@ -1119,6 +1172,8 @@ The idea was a rendering surface the bot linked into with a signed short-TTL JWT
 
 **This is the largest single business risk in the product, not a messaging detail.** It is why §16.3's per-tenant sender routing exists from day one at n=1, why the per-tenant quality proxies exist at all, and why there is no marketing category anywhere in §16.2. The mitigation is not care; it is being able to **move a tenant to their own number in a config change** on the day their behaviour, or their bad luck, starts costing everyone else.
 
+**The number now also has a front desk, and that is a new way to spend the pooled asset.** §10.0 makes "create a business" reachable by anyone who can send a WhatsApp message — which is the point, since referral is the channel — so it is rate-limited **per originating number per day**, and the desk itself can only ever *answer* (its `onboarding_state` is never `live`, so the send path suppresses anything unsolicited). Deliberately not capped per front desk: a distributed attack needs many real handsets, which is a far higher bar than a rate limit, and a genuinely viral referral day is the outcome the whole mechanism exists to produce.
+
 ### 16.2 Templates are categories, not messages
 
 Templates scale with **categories of unsolicited contact**, not with features. The ~35 catalog entries collapse to eight:
@@ -1286,4 +1341,5 @@ Each phase has an acceptance criterion. Do not start a phase before its predeces
 3. **Category scope at launch.** The model — classes, sessions, players, rates — generalizes past sport to music, dance and tuition without change. How much genericizing before tenant #2 rather than after is open. **"Academy" is the word that does not generalize, which is why it appears nowhere a user can see it.**
 4. **Model tiering — and it has already drifted, so decide it properly.** The presumed split was a cheaper model for clients and coaches, the strong one for admins. **That cuts against the product:** parents and coaches are ~95% of the humans this talks to and are where "it feels like a bot" gets decided, while the admin — who has menus and buttons — needs the model least. What is actually running is a different split: one model for every conversation, a stronger one for synthesis (`MODEL_MAIN` / `MODEL_SYNTH`). That is probably the right axis, and it happened without being decided. **Ratify it or change it against phase 2's cost data**, and if a per-persona split ever does happen, keep the strong model on first contact, the prospect conversation (§10.1), and anyone unhappy.
 5. **Children's data.** Every player in this system is a minor, and the product stores their names, attendance, coach notes on their progress, and their parents' numbers and payment records. India's DPDP Act treats children's personal data as a special category with its own consent requirements. **Nothing in this spec addresses it.** Get advice before tenant #2, not after — the answer shapes onboarding consent, retention, what a coach's note may say, and what leaves the country. Flagged here rather than guessed at.
-6. **Model-provider data residency — the one gate that was declared and then not met.** DeepSeek processes on servers in China under no DPA, and every turn sends it children's names, family phone numbers and payment context. The migration plan named a **written residency sign-off as a hard cutover gate**; cutover happened on 15 Aug 2026 without it. That is recorded here as a live gap, not a closed decision. It is the operational half of item 5 and inherits its deadline: settle it in writing before tenant #2, or move `MODEL_MAIN` to a provider that can be diligenced — the client speaks the OpenAI dialect, so that is a base-URL and model-name change, not a rewrite.
+6. **A number that belongs to several businesses at once, and still gets silence.** §10.0 fixed the unknown-number case and deliberately did not touch this one: a person known to two academies on the same sender resolves to neither, and the product says nothing. The front desk's question is the wrong one for them — they belong to both already — and the right one, *which of your businesses is this about?*, needs an answer that **sticks**, or a parent enrolled at two academies is interrogated on every message they send. That is its own state and its own design. Nobody has hit it yet (it needs one human on two rosters on one number); it becomes real the same week the referral channel does, because that is when one sender starts holding many businesses.
+7. **Model-provider data residency — the one gate that was declared and then not met.** DeepSeek processes on servers in China under no DPA, and every turn sends it children's names, family phone numbers and payment context. The migration plan named a **written residency sign-off as a hard cutover gate**; cutover happened on 15 Aug 2026 without it. That is recorded here as a live gap, not a closed decision. It is the operational half of item 5 and inherits its deadline: settle it in writing before tenant #2, or move `MODEL_MAIN` to a provider that can be diligenced — the client speaks the OpenAI dialect, so that is a base-URL and model-name change, not a rewrite.

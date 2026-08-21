@@ -1281,13 +1281,20 @@ async function main(): Promise<void> {
         ...(attached ? { mediaUrl: attached.dataUri, mediaMimeType: attached.mimeType } : {}),
         source: 'emulator',
       })
+      /**
+       * Since 0039 an UNKNOWN number is never unresolved — it goes to the front desk and
+       * is answered there. What is left is the one case §10.0 deliberately did not take:
+       * a number several businesses on this sender already know, where the question is
+       * which of them this is about and the product still says nothing (spec §21).
+       */
       if (out.unresolved) {
-        console.log(c.yellow('  unresolved — more than one academy could own this number:'))
+        console.log(c.yellow('  unresolved — this number is already known to more than one business:'))
         for (const cand of out.candidates ?? []) console.log(`    ${cand.name}  ${cand.academyId}`)
         break
       }
       const contactId = out.contactId ?? out.identity?.contact?.id
-      console.log(c.dim(`  resolved to contact ${contactId}${out.isNew ? ' (new)' : ''}`))
+      const desk = out.atFrontDesk ? ' · at the front desk, not in a business' : ''
+      console.log(c.dim(`  resolved to contact ${contactId}${out.isNew ? ' (new)' : ''}${desk}`))
       if (contactId) await showTurn(contactId, at, { full: has('full') })
       break
     }

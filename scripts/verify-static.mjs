@@ -604,18 +604,37 @@ const SPECIFIER_POSITION = /(?:\bfrom\s*|\brequire\s*\(\s*|\bimport\s*\(\s*|\bim
  * ------------------------------------------------------------------------- */
 
 const TOOLS_ARG = /\btools:\s*([^\n]*)/g
-const WHOLE_BLOCK = /^toolDecls\(\)\s*,?$/
+
+/**
+ * One name per surface, and each of them takes no arguments — which is the property
+ * the rule is actually about. A block that cannot be narrowed at the call site is a
+ * block that serialises byte-identically on every round, so the cache match walks past
+ * it instead of diverging there.
+ *
+ * `frontDeskToolDecls()` (0039) is the second entry, and it is not an exemption. The
+ * front desk runs its own complete, unfiltered block over its own stable prefix — five
+ * verbs, the same five every round, for every stranger on every number forever. What
+ * the rule forbids is a *narrowed* list, and a second surface with its own whole block
+ * is not one. Scoping this check to `lib/agent/` alone was what would have made it stop
+ * being a rule: a filtered call written in `lib/frontdesk/` tomorrow would have been
+ * invisible to it.
+ */
+const WHOLE_BLOCK = /^(?:toolDecls|frontDeskToolDecls)\(\)\s*,?$/
+const MODEL_CALL_DIRS = ['lib/agent/', 'lib/frontdesk/']
 
 {
   const violations = []
   for (const f of FILES) {
-    if (!f.path.startsWith('lib/agent/')) continue
+    if (!MODEL_CALL_DIRS.some((d) => f.path.startsWith(d))) continue
     for (const m of matches(TOOLS_ARG, f.code)) {
       if (WHOLE_BLOCK.test(m[1].trim())) continue
       violations.push(at(f, m.index))
     }
   }
-  rule('every model call in lib/agent declares the whole tool block — toolDecls(), unfiltered', violations)
+  rule(
+    'every model call in lib/agent and lib/frontdesk declares a whole tool block — toolDecls() or frontDeskToolDecls(), unfiltered',
+    violations,
+  )
 }
 
 /* ------------------------------------------------------------------------- *

@@ -146,6 +146,8 @@ export const ROLE_TONE: Record<string, string> = {
   account_holder: 'client',
   player: 'violet',
   prospect: 'warn',
+  // 0039 — at the front desk of a number, not in a business yet.
+  visitor: 'warn',
 }
 
 export const ROLE_SHORT: Record<string, string> = {
@@ -154,6 +156,7 @@ export const ROLE_SHORT: Record<string, string> = {
   account_holder: 'parent',
   player: 'player',
   prospect: 'prospect',
+  visitor: 'visitor',
 }
 
 export const STATE_TONE: Record<string, string> = {

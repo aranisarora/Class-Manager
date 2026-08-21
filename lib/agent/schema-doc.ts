@@ -87,7 +87,7 @@ export const SCHEMA_DOC = `# Schema
 Postgres. You author SQL against these tables directly.
 
 - Every table has: id uuid pk, created_at timestamptz.
-- Every table except academy, sender, job, sim_* also has academy_id uuid not null.
+- Every table except academy, sender, job, arrival, sim_* also has academy_id uuid not null.
 - **A column marked \`!\` is required and has no default: an INSERT that leaves it
   out is refused, and refused for the whole plan.** Everything unmarked is either
   nullable or defaulted, so leave it out and let the default stand.
@@ -162,7 +162,7 @@ nothing to try and nothing to learn by trying.
 | pending_request | admin · their own | - | - | - |
 | action | their own | - | their own | - |
 | row_snapshot | all | - | - | - |
-| job · audit_entry · turn · sender | - | - | - | - |
+| job · audit_entry · turn · sender · arrival | - | - | - | - |
 
 What the grid cannot say:
 

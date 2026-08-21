@@ -119,12 +119,10 @@ Three more, found while re-driving after the F-A/F-B fixes:
   more recently — it offered Arjun (Beginners) the Intermediate register. Driver bug,
   not product; `--session` works around it.
 
-Two items carried forward from the retired `NEXT.md`, still open and still verified:
+One item carried forward from the retired `NEXT.md`, still open and still verified
+(the other, *a genuinely unknown number is dropped without trace*, is **F-CE** and closed
+by the front desk — 0039, `lib/frontdesk/`, 21 Aug 2026):
 
-- **A genuinely unknown number is dropped without trace.** An inbound from a number no
-  academy knows writes no `message`, no `job`, no `audit_entry` — the lost enquiry is
-  undetectable by construction, on the acquisition path. Not serving a stranger and
-  keeping no record one arrived are different decisions; only the first was made.
 - **§14.8's automatic escalation has no runtime enforcement.** Refund, complaint and
   safety language are supposed to raise a human automatically; `handoff` sat at 0 calls
   in 464 turns and 0 again this pass. The refusal path already performs its own
