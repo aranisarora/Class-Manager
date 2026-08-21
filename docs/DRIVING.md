@@ -305,9 +305,16 @@ makes it a week whose money was invented too.
 ```bash
 npm run sim -- --world settled-tennis --events tennis-hard-week
 npm run sim -- --world multi-coach --events monsoon      # one scenario, any business
+npm run sim -- --events monsoon,flaky-phones             # they stack, left to right
 npm run sim -- --chaos 0.15                              # a messy week, no file at all
 npm run truth                                            # the world, beside what the product believes
 ```
+
+Scenarios **stack** and that is most of why a library is worth having: the weather, the phones
+and the school calendar are independent things that happen to one week, so four files that
+compose are fifteen weeks and four that do not are four. `events` concatenate, `chaos` rates
+overwrite by name left to right, and `--chaos` on the command line wins over every file — which
+is what you want when you are turning one dial on a scenario somebody else wrote.
 
 Six verbs — `absent`, `present`, `washout`, `away`, `lag`, `note` — and a seeded `chaos` block
 that rolls the first four for you. A verb exists only when the harness has to do something the

@@ -188,7 +188,7 @@ const { arrivals } = await import('./_arrivals')
  * can only learn by being told. Imported here for the same reason `arrivals` is:
  * it reads the database.
  */
-const { openEvents, readEventSpec, validateEventSpec } = await import('./_events')
+const { openEvents, readEventSpecs, validateEventSpec } = await import('./_events')
 const { BLANK_WORLD, describeConfig, makeBudget, recordedConfig, resolveConfig } =
   await import('./_drive-config')
 const { costInr, USD_INR } = await import('@/lib/pricing')
@@ -761,7 +761,7 @@ async function main(): Promise<void> {
   let eventSpec: EventSpec = {}
   let eventRef = '(nothing happens)'
   try {
-    const fromFlag = cfg.events ? readEventSpec(cfg.events) : { spec: {} as EventSpec, ref: '' }
+    const fromFlag = cfg.events ? readEventSpecs(cfg.events) : { spec: {} as EventSpec, ref: '' }
     eventSpec = {
       about: [plan.week?.about, fromFlag.spec.about].filter(Boolean).join(' · '),
       chaos: { ...(plan.week?.chaos ?? {}), ...(fromFlag.spec.chaos ?? {}), ...cfg.chaos },

@@ -12,6 +12,7 @@ invented money, and nothing downstream can tell.
 ```bash
 npm run sim -- --world settled-tennis --events tennis-hard-week
 npm run sim -- --world multi-coach --events monsoon
+npm run sim -- --events monsoon,flaky-phones         # they stack, left to right
 npm run sim -- --chaos 0.15                          # a messy week, no file at all
 npm run sim -- --events '{"chaos":{"absent":0.3}}'   # inline, for a one-off
 npm run truth                                        # what the world did, beside what the product believes
@@ -147,3 +148,42 @@ person in the world can see.
 
 The first four name nobody, which is what makes them portable — point them at any business.
 The fifth names real people and is checked against `worlds/settled-tennis.json`'s rows.
+
+## They stack
+
+```bash
+npm run sim -- --events monsoon,flaky-phones,exam-season
+```
+
+`events` concatenate; `chaos` rates **overwrite by name**, left to right, so a later file turns
+a rate up or down rather than adding to it. Two files each asking for a 0.2 absence rate mean
+0.2, not 0.4 — the only reading of *"and also this"* that stays true as the list grows.
+`exam-season,messy` gives you `messy`'s 0.18; `messy,exam-season` gives you `exam-season`'s 0.35.
+
+This is most of why a library is worth having. The weather, the phones and the school calendar
+are independent things that happen to the same week; four scenarios that compose are fifteen
+weeks, and four that do not are four. Inline JSON is the one form that does not stack, because
+a rate list has commas in it.
+
+The full order of precedence, lowest first:
+
+1. the world file's own `week` block
+2. each `--events` file, left to right
+3. `--chaos` on the command line
+
+So `--chaos` always wins, which is what you want when you are turning one dial on a scenario
+somebody else wrote.
+
+## What it cannot express
+
+Worth knowing before you plan a week around it.
+
+- **Day numbers are weekdays.** Day 1 is a Monday and `--days` stops at 7, because a day number
+  *is* the ISO weekday across the whole instrument. "A child misses three weeks running" is not
+  sayable; "a child misses both sessions this week" is.
+- **Two windows, 08:30 and 20:15.** A `note` or an `away` lands in one of them. Something that
+  has to happen at two in the afternoon lands in the evening window.
+- **An `absent` needs a real session.** A scenario about a class the business does not run needs
+  the *world* file to change, not this one.
+- **Events are a calendar, not a reaction.** You cannot say "if the product does X, then Y." The
+  week is fixed before it runs — which is what makes it reproducible, and is the trade.

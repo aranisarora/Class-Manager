@@ -150,6 +150,42 @@ export type EventSpec = {
  * ========================================================================== */
 
 /**
+ * Several references, stacked left to right — `monsoon,flaky-phones`.
+ *
+ * Layering is most of what makes a scenario library worth having: the weather,
+ * the phones and the school calendar are independent things that happen to the
+ * same week, and a library that could not stack them would need one file per
+ * COMBINATION. Four scenarios that compose are fifteen weeks; four that do not
+ * are four.
+ *
+ * `events` concatenate and `chaos` rates overwrite by name, so a later file
+ * turns a rate up or down rather than adding to it — two files each asking for a
+ * 0.2 absence rate mean 0.2, not 0.4, which is the only reading of "and also
+ * this" that stays true as the list grows.
+ *
+ * Inline JSON is never split, because a rate list has commas in it. It is also
+ * the one form that cannot be stacked, and that is the right trade: somebody
+ * writing JSON on a command line is writing one thing.
+ */
+export function readEventSpecs(ref: string): { spec: EventSpec; ref: string } {
+  const raw = ref.trim()
+  if (!raw || raw.startsWith('{')) return readEventSpec(raw)
+
+  const parts = raw.split(',').map((s) => s.trim()).filter(Boolean)
+  if (parts.length <= 1) return readEventSpec(raw)
+
+  const read = parts.map((p) => readEventSpec(p))
+  return {
+    spec: {
+      about: read.map((r) => r.spec.about).filter(Boolean).join(' · '),
+      chaos: Object.assign({}, ...read.map((r) => r.spec.chaos ?? {})) as Chaos,
+      events: read.flatMap((r) => r.spec.events ?? []),
+    },
+    ref: read.map((r) => r.ref).join(' + '),
+  }
+}
+
+/**
  * A name, a path or inline JSON — the same three `--world` takes, deliberately.
  *
  * Somebody who has learned one of these flags has learned the other. `monsoon`,
