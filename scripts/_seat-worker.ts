@@ -227,7 +227,23 @@ let pending: Seen[] = []
  * "yes" cannot resolve to an affordance from Tuesday.
  */
 async function buttonAction(title: string): Promise<string | null> {
-  const want = title.trim().toLowerCase()
+  /**
+   * The brackets come off first, because the phone is what put them on.
+   *
+   * `renderPhone` draws an affordance as `tap:  [ Make the change ]   [ Cancel ]`,
+   * so a person deciding to press one writes back what they can see — brackets
+   * and all. Matched literally, `[ make the change ]` is not `make the change`,
+   * the press resolves to nothing, and it goes as TEXT. Nothing throws and the
+   * turn looks ordinary; what is lost is the staged-plan commit, which this
+   * file's own header calls "the only path that reaches" it.
+   *
+   * Measured on the three blank weeks of 21 Aug 2026: 47 seat turns that said
+   * something, 3 resolved taps, and 2 presses silently downgraded — one of them
+   * Kavitha Reddy pressing `[ Make the change ]` on a staged date change that
+   * consequently never committed. The turn it produced reads as the product
+   * ignoring a confirmation, which is a fabricated defect.
+   */
+  const want = title.trim().replace(/^\[\s*/, '').replace(/\s*\]$/, '').trim().toLowerCase()
   if (!want) return null
   const rows = await q<any>(
     session.academyId,

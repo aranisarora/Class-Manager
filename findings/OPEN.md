@@ -1,6 +1,6 @@
 # What is open
 
-13 findings. This file is the source of truth for what is broken — hand-written, and short on
+14 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -30,6 +30,7 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-BV** | A window over `job` cannot answer "what ran in this turn", and never could | [detail](#f-bv--a-window-over-job-cannot-answer-what-ran-in-this-turn-and-never-could) |
 | **F-BY** | The context budget drops whole lookups from the model's prompt and leaves no mark | [detail](#f-by--the-context-budget-drops-whole-lookups-from-the-models-prompt-and-leaves-no-mark) |
 | **F-BZ** | A statement cannot say which turn sent it, so a drain cannot be recorded as the several turns it is | [detail](#f-bz--a-statement-cannot-say-which-turn-sent-it-so-a-drain-cannot-be-recorded-as-the-several-turns-it-is) |
+| **F-CA** | A staged plan is described in the past tense, so the owner is told a change was made while the buttons still ask whether to make it | [detail](#f-ca--a-staged-plan-is-described-in-the-past-tense-so-the-owner-is-told-a-change-was-made-while-the-buttons-still-ask-whether-to-make-it) |
 
 ---
 
@@ -473,3 +474,46 @@ answers *what did this job actually query* — and trade one blindness for anoth
 **The structural home** is `sql-trace.ts`: a statement should carry the turn that sent it, from
 the same `app.turn_id` the database already stamps on `message` and `audit_entry` for exactly
 this reason. The record-level split of a drain is correct only after that.
+
+### F-CA · A staged plan is described in the past tense, so the owner is told a change was made while the buttons still ask whether to make it
+
+Blue Lane Swim School, day 5 of `2026-08-21-04-38-sim-td2w`. Kavitha Reddy, who owns it, types
+*"aarav start date - change to 24 aug like ramesh asked"*. The reply opens:
+
+> **Aarav's Learn to Swim moved to 24 Aug** — this puts him on the August month (1500, full month
+> since it's monthly). Ramesh gets told once it's done.
+
+and carries the buttons `[ Make the change ]` `[ Cancel ]`.
+
+Both halves are in one message and they contradict each other. The sentence is in the **past
+tense** and reports a completed write; the affordances underneath it are asking permission to
+perform that write. The turn's own evidence settles which is true: **`changed: []`, `wrote: 0`,
+and not one `insert`, `update` or `delete` in its SQL.** Across the whole seven days the
+`enrollment` table took three inserts and **zero updates** — Aarav's start date was never moved
+at all.
+
+The trailing clause is the tell. *"Ramesh gets told once it's done"* is the model correctly
+holding that the thing is **not** done, in the same breath as a first sentence asserting it is.
+The staged state is understood; only the sentence about it is wrong.
+
+**Why this one costs money rather than patience.** The whole design of this seat is a person who
+reads the first line and acts on it — Kavitha's brief says so, and so does Rahul's, and it is the
+commonest real behaviour this repo has measured. A first line that says *moved* is a first line
+that ends the conversation. Kavitha's own stated red line is anything about money going wrong,
+and this is a billing date: believing it moved to 24 Aug means believing Ramesh owes a full
+August month. He does not, because nothing moved.
+
+This is not the model failing to know the state, so it is not addressable by telling it to be
+careful — it *had* the state and said the opposite in the previous clause. The home is wherever
+a staged plan renders its confirmation sentence: a plan that has not been committed cannot be
+allowed to describe itself with a completed verb, and the tense should be composed from the
+plan's status rather than written by the model.
+
+**A harness bug sat on top of this one and is fixed.** The next day Kavitha pressed
+`[ Make the change ]` and it did not commit either — but that was the instrument, not the
+product. `_seat-worker.buttonAction` matched the button title literally while `renderPhone`
+draws it as `[ Make the change ]`, so the press resolved to nothing and went as text. Two
+presses were lost that way across the three weeks of 21 Aug, and the brackets are now stripped
+before matching. **The product half above is untouched by that fix**: the day-5 overclaim
+happened on a turn where nothing was tapped at all.
+
