@@ -1,6 +1,6 @@
 # What is open
 
-16 findings. This file is the source of truth for what is broken — hand-written, and short on
+17 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -33,6 +33,7 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-CA** | A staged plan is described in the past tense, so the owner is told a change was made while the buttons still ask whether to make it | [detail](#f-ca--a-staged-plan-is-described-in-the-past-tense-so-the-owner-is-told-a-change-was-made-while-the-buttons-still-ask-whether-to-make-it) |
 | **F-CB** | R8 puts a sign on the go-live door and nothing puts a handle on it, so three businesses ran a week with every proactive path suppressed | [detail](#f-cb--r8-puts-a-sign-on-the-go-live-door-and-nothing-puts-a-handle-on-it-so-three-businesses-ran-a-week-with-every-proactive-path-suppressed) |
 | **F-CC** | A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule | [detail](#f-cc--a-commercial-term-nobody-agreed-to--first-class-is-free--volunteered-in-a-parenthetical-and-stated-as-the-businesss-own-rule) |
+| **F-CD** | A confirmation denies the write it is confirming, because its closing state is the state the turn STARTED in | [detail](#f-cd--a-confirmation-denies-the-write-it-is-confirming-because-its-closing-state-is-the-state-the-turn-started-in) |
 
 ---
 
@@ -662,4 +663,50 @@ confirmation is exactly where the model is composing "what happens next" out of 
 how a coaching business works. Whatever holds that tail has to be able to tell a rule read from a
 row from a rule the model finds plausible — and to say which it is. Volunteering commercial terms
 is not a thing to instruct against; it is a thing to source.
+
+### F-CD · A confirmation denies the write it is confirming, because its closing state is the state the turn STARTED in
+
+`2026-08-21-06-10-sim-x9hl`, day 4. Imran Qureshi gives his UPI handle, is offered a confirm
+button, and taps it. The whole reply:
+
+> Changed 1 setting for this business — setting the business up: Saved — Qureshi Cricket Coaching
+> is set up. **no UPI handle yet.**.
+
+The turn's own row images settle it:
+
+```
+academy:update    before.upi_handle: null  ->  after.upi_handle: "imranqureshi48@okhdfcbank"
+```
+
+Read back from the database after the run: `upi_handle = imranqureshi48@okhdfcbank`. **The write
+succeeded and the message announcing it says it did not.** `no UPI handle yet` is an exact
+description of the `before` image — of the world as it stood when the turn began — appended to
+the announcement of the change that ended it.
+
+That is the mechanism, and it is more useful than the instance. The closing state is composed
+from a snapshot taken at the top of the turn and rendered after the plan has committed, so **any
+confirmation whose subject is the same field the state blurb reports will contradict itself**, in
+the same message, every time. Nothing about this one is about UPI.
+
+The seams show in the string too — `setting the business up: Saved — … is set up. no UPI handle
+yet..`, two sentences spliced with a doubled full stop — which is what a concatenation of
+`(operation summary) + (business state)` looks like when nobody re-read it after the write.
+
+**This is F-CA's mirror image and belongs beside it.** F-CA says a change was made when it was
+not; this says a change was not made when it was. Both are one message disagreeing with the rows
+it just wrote, and both would be caught by the same discipline: what a confirmation says about
+the world has to be read *after* the transaction it is confirming, not before it.
+
+**The cost is trust, and it is asymmetric.** Imran's stated red line is being told something about
+money that he knows is wrong — *"one wrong number about money and you stop using it."* He came
+back the next morning with *"ye kya no upi handle likh raha hai maine confirm kiya tha kal"* —
+*why is it writing no UPI handle, I confirmed it yesterday* — and the evening after that, having
+been put right, with *"theek hai par dobara aisa mat karna"*: **fine, but don't do that again.**
+A false claim that something was saved costs the owner money later. A false claim that something
+was NOT saved costs the product its credibility immediately, and it does so while the system is
+working perfectly.
+
+The recovery was correct and is not the finding: *"Galti meri thi — wo line galat likh di thi.
+UPI handle set hai … Database mein confirm kar liya"* — it owned it, re-read the row, and said
+so.
 
