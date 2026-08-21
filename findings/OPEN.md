@@ -612,6 +612,35 @@ because the owner said a boy had paid and the model wrote the rows. So the damag
 that nothing the business does reaches anybody *on its own* — which is the thing the owner is
 paying for, and the thing they cannot see the absence of.
 
+**Correction, same day — "nothing proposes it" is too strong, and the swim run disproves it.**
+Above, this entry says going live never becomes a plan, so `needsPreview` never runs on it and no
+affordance is ever generated. In `2026-08-21-06-10-sim-8d2c` that is simply not what happened.
+Kavitha Reddy typed **"ok go live"**, and the product did exactly the right thing:
+
+> Here's what tapping go-live does: • Reminders switch on … • Your day opens with a *morning
+> brief* (7am) and closes with an *evening digest* (9pm) … • Billing is live for 1 Sep …
+> **Nothing has changed yet — this is the preview. Tap to confirm, and you're live.**
+
+A correct preview, with the blast radius spelled out and an affordance to accept it — which is
+`needsPreview` classifying a controls change exactly as its table says it should. The claim in the
+paragraph above is wrong and is retracted: the door has a handle, and it appears when the owner
+reaches for it.
+
+**What actually stopped it was that she had no turn left.** `d6-20:15` was her *last* admin
+window of the week — the schedule gave her eight and none on day 7 — so the preview was offered
+into a conversation that had already ended, and the academy closed at `roster`. Part of that is
+this harness rather than the product: `deriveSchedule` deals windows without knowing that a
+staged plan is waiting on one.
+
+So the finding narrows and survives. Across six weeks nothing went live. In five of them the
+product never proposed it. In the sixth the owner asked unprompted on day 6, was answered
+correctly, and ran out of week. What is left is **timing and insistence, not machinery**: R8
+states a constant that reads the same on day 1 and day 7, the model mentions it late and softly
+if at all, and a business whose owner would have said yes can still finish the week dark. A
+proposal that arrives in the last window is a proposal that arrives too late, and nothing in the
+product knows which window it is in.
+
+
 
 ### F-CC · A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule
 
@@ -705,6 +734,17 @@ been put right, with *"theek hai par dobara aisa mat karna"*: **fine, but don't 
 A false claim that something was saved costs the owner money later. A false claim that something
 was NOT saved costs the product its credibility immediately, and it does so while the system is
 working perfectly.
+
+**It happened twice, in two languages, in two different businesses.** `2026-08-21-06-10-sim-8d2c`,
+day 5 — Kavitha Reddy, in English: *"this says no UPI handle yet - did my upi actually get saved
+or not"*. The product's own account of it is the diagnosis above, arrived at independently:
+
+> Yes — it's saved. I read the file just now … That "no UPI handle yet" was **a stale note from
+> before your tap went through** — the confirmation did land, and the row now holds it.
+
+Two owners, two academies, two languages, the same field, the same stale sentence, and both of
+them stopped to ask whether their payment details had really been saved. That is the class, and
+it is not rare.
 
 The recovery was correct and is not the finding: *"Galti meri thi — wo line galat likh di thi.
 UPI handle set hai … Database mein confirm kar liya"* — it owned it, re-read the row, and said
