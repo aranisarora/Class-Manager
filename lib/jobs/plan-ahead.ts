@@ -460,8 +460,15 @@ export async function planAheadFor(academyId: string): Promise<number> {
       push('reconcile', nowAt, dedupe.reconcile(p.id, 1), { payment_id: p.id, n: 1 }, true)
     }
 
-    // -- §9.1 step 3: the non-clicker, contacted the first time there is a real
-    //    reason — a session within 48h. Staged from here, ten at a time.
+    // -- §9.1 step 2: the family invite, which the BOT sends. Every registered
+    //    contact this academy has never messaged, staged from here ten at a time.
+    //
+    //    This predicate must stay the same shape as `firstContactBatch`'s own
+    //    target query, and it moved with it: the 48-hour session bound is gone,
+    //    because the invite no longer waits for a near session to justify itself
+    //    — going live is the reason. An `exists` narrower than the handler's
+    //    query would leave families the handler is willing to invite with no job
+    //    that ever wakes to invite them.
     const [pending] = await tx<{ n: number }[]>`
       select count(*)::int as n
         from contact ct
@@ -475,9 +482,7 @@ export async function planAheadFor(academyId: string): Promise<number> {
              join player pl on pl.account_id = a.id and pl.active
              join enrollment e on e.player_id = pl.id
               and (e.ended_on is null or e.ended_on >= (app.now() at time zone ${tz})::date)
-             join session s on s.class_id = e.class_id and s.status = 'scheduled'
             where a.academy_id = ct.academy_id and a.holder_person_id = ct.person_id
-              and s.starts_at between app.now() and app.now() + interval '48 hours'
          )
     `
     if ((pending?.n ?? 0) > 0) {

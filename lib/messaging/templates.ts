@@ -257,7 +257,11 @@ export const TEMPLATES: Record<TemplateName, TemplateDef> = {
       'Task: {event}\nDetails: {detail}\n\n' +
       'Open this in your chat with them to read it all and reply there.',
     quickReply: 'Open',
-    covers: 'coming, nudge, register, invite check — CO-COMING, CO-NUDGE, CO-REGISTER, CO-INVITE-CONFIRM',
+    // CO-INVITE is why a coach can be reached at all before they have ever
+    // written in: the invite is now a bot-initiated send, so it is out of window
+    // by definition and this is the approval that carries it. No ninth template.
+    covers:
+      'the invite, coming, nudge, register, invite check — CO-INVITE, CO-COMING, CO-NUDGE, CO-REGISTER, CO-INVITE-CONFIRM',
     example:
       'Message from Sharwin Academy.\n\nTask: take the register for Beginners Batch\nDetails: 6:30pm today at Green Park, 11 players enrolled.\n\nOpen this in your chat with them to read it all and reply there.',
     exampleParams: {

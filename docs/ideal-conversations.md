@@ -155,17 +155,26 @@ acett@okhdfcbank
 
 > **Ace TT Academy is live and completely silent.** 38 players, four classes, sessions generated three weeks out, and not one parent knows I exist.
 >
-> Coaches first — they should know before the parents do. I'll write the invite, you forward it from your own number so it reads as coming from you.
+> Coaches first — they should know before the parents do. I'll message Arjun and Vikram myself; you don't have to forward anything.
 >
-> `[ Draft it ]`  `[ Not yet ]`
+> `[ Send them ]`  `[ Show me first ]`
 
-**Taps `[ Draft it ]`**
+**Taps `[ Send them ]`**
 
-> *Hi Arjun, I've moved Ace TT scheduling onto WhatsApp — you'll get your day, and mark attendance with a tap instead of texting me. Tap here to start: wa.me/…*
+> Sent to both. Arjun's:
 >
-> `[ Send as is ]`  `[ Edit ]`
+> *Hi Arjun — Sharwin added you as a coach at Ace TT Academy, and I handle the scheduling here. You're down for Beginners and Advanced. Tap below and I'll read them back with your pay rate before anything goes live.*
+> `[ See my classes ]`  `[ Not me ]`
+>
+> When they tap, I read their classes and their pay back to them and they confirm — that's what makes it live. If either hasn't by the time a session comes up, I'll tell you.
 
-**Taps `[ Send as is ]`** — WhatsApp opens his chat with Arjun, text prefilled, he sends. Then the same for Vikram.
+**◇ Instead — one of the numbers isn't on WhatsApp.**
+
+> Vikram's number didn't take the message — it isn't on WhatsApp. Here's his invite to forward from your own phone instead:
+>
+> *Hi Vikram — we've moved Ace TT Academy's scheduling onto WhatsApp. Tap this and send the message it fills in, and it'll set you up: wa.me/…*
+>
+> I can't see your forward, so he'll keep showing as not yet reached until he writes in.
 
 ---
 
@@ -266,25 +275,16 @@ sub junior is 10 to 11:30 now, we extended it last month
 **SHARWIN**
 ok let's tell the parents
 
-> Here's the invite. You send it, I follow behind.
+> I'll send them. 31 families, ten at a time, and I stop if anything looks wrong. Each one gets their own child's name and their own class — Latha's reads:
 >
-> *Hi — Ace TT Academy's class updates have moved to WhatsApp. Reminders, cancellations and fees all in one place. Tap here and it'll introduce itself: wa.me/…*
+> *Hi Latha — I'm the class manager for Ace TT Academy. Meera is with us in Beginners. Class updates, cancellations and the monthly bill come through this chat from now on.*
+> `[ See Meera's schedule ]`  `[ Stop these ]`
 >
-> `[ Send as is ]`  `[ Edit ]`
+> **Worth doing first:** drop a line in your parents' group saying this is coming and that it's from you. It costs you one message, nothing depends on who reads it, and it makes mine land warm.
+>
+> `[ Start sending ]`  `[ I'll post in the group first ]`
 
-**Taps `[ Send as is ]`**
-
-> Use a **broadcast list**, not a group — it lands as a normal one-to-one and nobody sees anyone else's number. Three taps:
->
-> 1. Chats → ⋮ → New broadcast
-> 2. Select all 31 families
-> 3. Paste and send
->
-> I'll go out behind you in batches of ten, and stop if anything looks wrong.
->
-> `[ Done, start ]`
-
-**Taps `[ Done, start ]`**
+**Taps `[ Start sending ]`**
 
 ## 9:26 am · 📱 Sharwin
 
@@ -1080,7 +1080,7 @@ also my daughter wants to try, she's 8
 
 Thirty-one families, two coaches, four classes, one number.
 
-Over five weeks he filled in one form, forwarded two invites, corrected nine register rows, fixed two phone numbers, confirmed two payments, approved one timetable correction and answered about six questions.
+Over five weeks he filled in one form, forwarded one invite — to the one number that wasn't on WhatsApp — corrected nine register rows, fixed two phone numbers, confirmed two payments, approved one timetable correction and answered about six questions.
 
 Everything else — the reminders, the registers, 52 sessions, a cover claim at ninety minutes' notice, a resignation with eleven sessions hanging off it, a time change he got wrong and its correction to exactly the fourteen people who'd been told, and a fee chase that stopped the moment it was explained — happened without him.
 
