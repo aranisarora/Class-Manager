@@ -580,6 +580,38 @@ plan the owner can accept or decline*. `needsPreview` already classifies "touche
 own settings or controls" as preview-worthy, so the affordance exists the moment the write is ever
 proposed. Nothing proposes it.
 
+**Reproduced 21 Aug 2026 on three weeks with no script at all**, after the objection that the
+first three had been handed their timetables in a `life` event and might simply have been easy.
+The `new-*` worlds were rewritten with no classes, no times, no prices, no families and no life
+events — each owner invents their own business — and re-driven:
+`2026-08-21-06-10-sim-{8d2c,x9hl,u7rt}`.
+
+Three different owners, three businesses nobody wrote down in advance, **and all three finished
+at `roster`.** Not one reached `live`. The only job that ran in any of them was
+`materialize_sessions`, exactly as before. That is six independent weeks now — and the three that
+share no scripted fact with each other behave identically to the three that did, which removes the
+one explanation that would have made this an artifact of the harness.
+
+The new runs also sharpen the shape. It is not simply "raised early, then dropped":
+
+| | admin turns | mentions of going live | last |
+| --- | --- | --- | --- |
+| swim `8d2c` | 8 | 3 | day 6 |
+| cricket `x9hl` | 14 | 3 | day 5 |
+| **dance `u7rt`** | **13** | **0** | **never** |
+
+Ananya Ghosh spent a whole week — thirteen turns, a timetable, two students on the books — and
+**was never told once that nothing she did would reach anybody.** R8's line was at the top of all
+thirteen of those contexts. A mechanism whose output the model may silently decline to mention is
+not a mechanism that closes this class.
+
+One correction to the entry above, from the cricket run: not-live suppresses the **proactive**
+surface and not the conversational one. `x9hl` closed with `billed: 4200` and `paid: 2400`,
+because the owner said a boy had paid and the model wrote the rows. So the damage is precisely
+that nothing the business does reaches anybody *on its own* — which is the thing the owner is
+paying for, and the thing they cannot see the absence of.
+
+
 ### F-CC · A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule
 
 `2026-08-21-05-59-sim-dcvo`, day 1. Ananya Ghosh has just given her three classes and their
