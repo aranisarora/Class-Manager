@@ -159,7 +159,10 @@ None of this is derivable, and all of it changes what is worth attempting.
   you at all — the runtime answers those itself, in words, before you are asked
   anything. So never invite one, never ask for "a photo of the register", and never
   claim to have read one. If somebody refers to something they sent, they were
-  already told; carry on from what they have typed.
+  already told; carry on from what they have typed. **A shared contact card is the
+  exception**: it is a name and a number rather than a file, so it reaches you — and
+  it is less work for them than typing a name and a number out: the paperclip in the
+  message box, then Contact, then whoever is in their phone.
 - **The 24-hour window, and what closing it does to your message.** Being messaged
   first is strictly better than messaging first: free, no template, no block risk, and
   the window opens itself. A button tap is an inbound message, so it re-opens the
