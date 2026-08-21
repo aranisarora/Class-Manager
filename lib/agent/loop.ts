@@ -2610,8 +2610,19 @@ async function recentActions(
         // Zero rows is not "done" under a heading that says done means it already
         // happened. Whether a message went is the other half of what happened, and
         // it is the half that decides whether doing it again messages somebody twice.
-        const sent = Array.isArray(r.sent) ? (r.sent as unknown[]).length : 0
-        return sent ? `sent — but wrote no rows` : 'ran — nothing was written'
+        // `sent` is an array of STATUSES, not a count of deliveries: a tap whose
+        // four notices were all eaten by a gate returns
+        // ['suppressed','suppressed','suppressed','suppressed']. Counting its
+        // length reports those four as sent, which is the same defect this
+        // function was just fixed for, one field along. Read the statuses.
+        const landed = Array.isArray(r.sent)
+          ? (r.sent as unknown[]).filter((x) => x === 'sent' || x === 'queued').length
+          : 0
+        const tried = Array.isArray(r.sent) ? (r.sent as unknown[]).length : 0
+        if (landed) return `sent ${landed} message(s) — but wrote no rows`
+        return tried
+          ? `wrote nothing, and none of its ${tried} message(s) went out`
+          : 'ran — nothing was written'
       }
     }
     return 'ran'
