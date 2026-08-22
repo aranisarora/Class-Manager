@@ -88,3 +88,29 @@ entry here that is expected to resolve one way or the other rather than stand.
 *A finding leaves this file the same way it leaves [`OPEN.md`](./OPEN.md): by growing a mechanism
 tagged `@mechanism … Closes F-XX` in `lib/`, which `npm run check:mechanisms` refuses to accept
 while the ledger still calls the finding open.*
+
+### F-CR (second half) — a coach's rate is NOT backdated to when the arrangement started
+
+**Decided 22 Aug 2026, by the owner, after the thirty-day drive.**
+
+`app.pay_on` has no row before a coach's first `rate_period`, and 0043's trigger stamps that row
+with the WRITE date — so a coach entered on 6 Sep has no rate for the sessions he worked on the 1st
+and the 4th. Arjun Shetty coached eight sessions in September and ₹1,600 of his ₹4,800 had nothing
+to price against.
+
+Three shapes were put up. **The one chosen is the one already shipped:** `unpricedWork` keeps the
+unpriced sessions rather than dropping them on `if (amount <= 0) continue`, records the gap in the
+run, and escalates it to the admin — naming the sessions and the rate now in force, and asking.
+
+Rejected, and why:
+
+- **Backdating `set_rate`'s `effective_from` to the coach's start date.** Fewer exchanges, and the
+  product would be deciding what the owner agreed to. It also back-prices at today's rate, which is
+  wrong the moment a rate has ever changed.
+- **Pricing the earlier work at the current rate and reporting it afterwards.** No exchange at all,
+  and it states a number nobody agreed to. That is precisely how F-CL happened — the same money,
+  overstated, by a guess.
+
+The rule this settles, and it is worth stating generally: **the product may refuse to answer a
+money question and must not invent an answer to one.** An exchange with the owner is cheap; a
+number he never agreed to is not.

@@ -1,6 +1,6 @@
 # What is open
 
-24 findings. This file is the source of truth for what is broken — hand-written, and short on
+25 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -39,6 +39,7 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-DI** | A read result keeps the model's own column alias, so a mislabel becomes durable and is built into a write five turns later | [detail](#f-di--a-read-result-keeps-the-models-own-column-alias-so-a-mislabel-becomes-durable-and-is-built-into-a-write-five-turns-later) |
 | **F-DV** | The seat COULD always press a button and was never told so, so every mechanism behind a tap was measured at a fifteenth of its rate | [detail](#f-dv--the-seat-could-always-press-a-button-and-was-never-told-so-so-every-mechanism-behind-a-tap-was-measured-at-a-fifteenth-of-its-rate) |
 | **F-DY** | A persona brief asserts a history the world never builds, so the model is argued out of a correct read of its own database | [detail](#f-dy--a-persona-brief-asserts-a-history-the-world-never-builds-so-the-model-is-argued-out-of-a-correct-read-of-its-own-database) |
+| **F-EB** | A person taps when ONE thing is waiting and types when several are, and several things reach one person from DIFFERENT paths between two looks at a phone | [detail](#f-eb--a-person-taps-when-one-thing-is-waiting-and-types-when-several-are-and-several-things-reach-one-person-from-different-paths-between-two-looks-at-a-phone) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-DS** | A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn | [detail](#f-ds--a-staged-plan-can-only-be-committed-by-tapping-it-an-owner-who-answers-go-ahead-in-words-is-re-staged-instead-because-the-plan-handle-does-not-survive-the-turn) |
 
@@ -960,3 +961,37 @@ new tenant's clock. That is the enabling shape: it lets the model be RIGHT about
 instead of being punished for reading an empty table correctly. The deleted `_world-spec.ts`
 fixtures wrote exactly this kind of history, so the shape is not new.
 
+### F-EB · A person taps when ONE thing is waiting and types when several are, and several things reach one person from DIFFERENT paths between two looks at a phone
+
+**Measured twice, on the two runs in which the harness could press a button at all.**
+
+`2026-08-22-14-36-sim-l3a1`: one message with one card waiting → tapped, 5 of 6. More than one
+message waiting → typed, 3 of 3, never tapped.
+`2026-08-22-14-58-sim-yy3z`, after `merged` shipped: one message with one card → tapped, 5 of 6.
+More than one message → typed, 3 of 3, never tapped. Stacked CARDS went 1 → 0.
+
+The law is stable across both runs and it is the product's central affordance failing exactly when
+the product is busiest.
+
+**The first diagnosis was wrong and `merged` was wrongly credited with closing this.** It fired
+zero times on yy3z — no `superseded` rows at all — because the premise behind it was false: the
+run's 67 watches were minted by **31 different contacts**, almost every one holding exactly one, so
+two watches for a single person are rare and two of them due in the same tick rarer still. The
+mechanism is correct and cheap and it stays for the case it does cover; it is not this.
+
+**The true cause is that the pile is CROSS-PATH.** What Rahul actually held on day 5 was three
+messages, none of them a stacked watch: a reply from his own turn ("Got the structure down…"), an
+escalation about Farah waiting on a price, and an escalation about Divya's daughter needing to be
+linked. Three code paths, three sends, one screen. Each was individually right.
+
+**Where it lives, and why the obvious home is closed.** `send` is the only layer that sees every
+outbound to one contact, and it "has no queue of its own" — the same sentence that defeated the
+quiet-hours retry in F-CK, and for the same reason: inventing a queue there puts a second scheduler
+beside the real one. So the shape has to be either a merge window owned by the JOBS layer that
+knows about more than `agent_task`, or an ordering rule that lets a turn about to send an
+escalation see that two others are already unread on that screen. `clientReminder`'s merge is the
+precedent for the first and it is per-(session, player), which is exactly the narrowness this needs
+generalising past.
+
+**Do not fix it by sending less.** Every one of those three messages was worth sending, and the
+person answered all three — in prose, which is the cost being measured.

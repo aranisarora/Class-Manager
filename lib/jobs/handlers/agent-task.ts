@@ -73,7 +73,15 @@ export async function agentTask(job: Job): Promise<void> {
    *
    *   `running` as well as `pending`, because the runner claims the whole due batch before
    *   any handler starts and same-tick siblings are the common case.
-   *   Closes F-EB.
+   *
+   *   **It is NOT the fix for F-EB and was wrongly credited with it.** Driven on
+   *   `2026-08-22-14-58-sim-yy3z` it fired ZERO times, and the reason is that the premise
+   *   behind that credit was wrong: 67 watches across the run were minted by 31 DIFFERENT
+   *   contacts, almost every one of them holding exactly one, so two watches for one person
+   *   are rare and two of them due together rarer still. The pile on an owner's phone is not
+   *   stacked watches — it is a reply from his own turn, an escalation about one parent and
+   *   an escalation about another, arriving from three different paths. This still earns its
+   *   place for the case it does cover, and F-EB is open again with the true cause.
    */
   const merged = await withInfra(async (tx) => {
     const siblings = await tx<{ id: string; payload: Record<string, unknown> }[]>`
