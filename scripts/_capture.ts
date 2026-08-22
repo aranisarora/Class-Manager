@@ -121,8 +121,24 @@ import { TURNS_LOG, deriveRun, readRecord, readTurns, writeRecord } from './_der
 
 type SqlRecord = import('@/lib/agent/sql-trace').SqlRecord
 
+/**
+ * The wire shape of a turn, and the row-to-object mapping under it, live in
+ * `lib/turn-record.ts` and are shared with production's own reader.
+ *
+ * The QUERIES stay here and are deliberately not shared: this file reads a cursor
+ * WINDOW and keeps rows whose `turn_id` is null — standing jobs, seeds, repairs —
+ * which a lookup by turn id cannot see by definition. Two readers, two questions.
+ * What must not be two is the shape, which is exactly the pair ARCHITECTURE.md's
+ * trap list means by "two authors of one truth".
+ */
+export type { Outbound, Changed } from '@/lib/turn-record'
+
+type Outbound = import('@/lib/turn-record').Outbound
+type Changed = import('@/lib/turn-record').Changed
+
 const { captureSql } = await import('@/lib/agent/sql-trace')
 const { captureFullTrace } = await import('@/lib/agent/turn-trace')
+const { mapOutbound, mapChanged } = await import('@/lib/turn-record')
 
 /**
  * One round of the loop, exactly as the flight recorder stored it.
@@ -152,83 +168,6 @@ export type Round = {
 }
 
 /** One message that reached — or was stopped from reaching — a phone. */
-export type Outbound = {
-  to: string | null
-  body: string
-  buttons: string[]
-  /**
-   * The other two things a person can tap, which this record used to drop.
-   *
-   * The product ships three affordances — quick-reply buttons, a list menu
-   * (`payload.list.sections[].rows`) and a link (`payload.link`) — and
-   * `renderPhone` shows all three, because all three are taps on a real phone.
-   * Only `buttons` was ever stored, so a reply whose only affordance was a list
-   * came back as `buttons: []`: indistinguishable from a wall of text with
-   * nothing to tap.
-   *
-   * That matters beyond tidiness. **F-BC's headline measurement — 7 of 27
-   * turn-composed messages carrying a tappable button, 0 across 6 messages to
-   * families — is computed on `buttons` alone**, so it is a floor rather than a
-   * count, and the finding's number has to be re-measured now that the other two
-   * are recorded. Whether the conclusion moves is a question for the re-run; the
-   * instrument's job is to stop making it unanswerable.
-   */
-  listButton?: string | null
-  listRows?: string[]
-  link?: string | null
-  status: string
-  /** `turn`, `job`, `tap` or `system` — what put it on the wire (0032). */
-  origin: string | null
-  suppressedReason: string | null
-  /**
-   * The turn the DATABASE stamped on this message (0019), so a drain's messages
-   * can be told apart by which handler sent them. Null for a standing job, a
-   * seed or a repair — rows that belong to nobody's turn.
-   */
-  turnId?: string | null
-}
-
-/**
- * One row this turn changed, as the database itself photographed it.
- *
- * WHY THIS IS READ RATHER THAN RECONSTRUCTED
- * -----------------------------------------------------------------------------
- * `sql` records what the model SENT, and for a write that is all it records: a
- * write is stored with its statement and its `rowCount` and never with its rows
- * (`plan.ts`), because `captureSql({rows: true})` fills `rows` on the read path
- * only. Measured on `2026-08-20-18-00-sim-s71s`: 266 of 268 reads kept their
- * rows and 0 of 16 writes did. So the record could say that one row changed and
- * never what it was, or became — which is the question every money finding in
- * `findings/` turns out to be asking.
- *
- * The answer was already in the database. `0005_audit.sql` puts an
- * after-insert-or-update-or-delete trigger on every audited table, and it writes
- * `row_snapshot(audit_id, table_name, pk, op, before, after)` — full images,
- * both sides, per row. `lib/audit.ts` reads it to build an undo; nothing else
- * ever did. This turn's own rows are reachable by joining it to `audit_entry`,
- * which `_capture` was already querying, for a `count(*)`.
- *
- * Nothing is added to the product's schema to serve this. F-BV considered a
- * `ran_at` column for the queue's sake and refused it on the grounds that an
- * instrument does not get to shape the tables it measures; reading a table that
- * the product maintains for its own reasons is the other side of that rule.
- */
-export type Changed = {
-  /** The table the trigger fired on. */
-  table: string
-  /** The row's id, where it has one — `row_snapshot.pk` is nullable. */
-  pk: string | null
-  op: 'insert' | 'update' | 'delete'
-  /** The row before, `null` on an insert. */
-  before: unknown | null
-  /** The row after, `null` on a delete. */
-  after: unknown | null
-  /** The audit entry these images hang off, so several rows group into one act. */
-  auditId: string
-  /** What that act said it was for, as the writer stated it. */
-  intent: string | null
-}
-
 /**
  * One turn, with everything that happened because of it.
  *
@@ -984,25 +923,7 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
         order by m.created_at asc`,
     )
 
-    const out: Outbound[] = messages.map((m: any) => {
-      // Read exactly as `_seat.renderPhone` reads it, so what the record calls an
-      // affordance and what the person could actually tap are the same list.
-      const p = m.payload ?? {}
-      return {
-        to: m.to ?? null,
-        body: String(m.body ?? ''),
-        buttons: Array.isArray(p.buttons) ? p.buttons.map((b: any) => String(b?.title ?? '')) : [],
-        listButton: p.list?.buttonText ? String(p.list.buttonText) : null,
-        listRows: Array.isArray(p.list?.sections)
-          ? p.list.sections.flatMap((sec: any) => (sec?.rows ?? []).map((r: any) => String(r?.title ?? '')))
-          : [],
-        link: p.link?.title ? String(p.link.title) : null,
-        status: String(m.status ?? ''),
-        origin: m.origin ?? null,
-        suppressedReason: m.suppressed_reason ?? null,
-        turnId: m.turn_id ?? null,
-      }
-    })
+    const out: Outbound[] = messages.map((m: any) => mapOutbound(m))
 
     /**
      * What changed, both sides, and the count in one pass.
@@ -1026,17 +947,7 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
         order by a.created_at asc, s.seq asc`,
     )
 
-    const changed: Changed[] = audited
-      .filter((r: any) => r?.table_name)
-      .map((r: any) => ({
-        table: String(r.table_name),
-        pk: r.pk ?? null,
-        op: String(r.op) as Changed['op'],
-        before: r.before ?? null,
-        after: r.after ?? null,
-        auditId: String(r.audit_id),
-        intent: r.intent ?? null,
-      }))
+    const changed: Changed[] = mapChanged(audited)
 
     const wrote = new Set(audited.map((r: any) => String(r.audit_id))).size
 

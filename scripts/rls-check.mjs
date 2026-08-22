@@ -58,6 +58,84 @@ const audit = await sql.begin(async (tx) => {
 console.log('\nRLS enabled on every table')
 report(audit.length === 0, 'no table has RLS disabled', audit.map((r) => r.tbl).join(', '))
 
+// --- the cross-tenant doors are shut to the model's own roles (F-CO) --------------------
+//
+// This runs BEFORE the two-academy gate below, deliberately: it is the one check here
+// that does not need a cast, and it is the check whose absence cost the most. On
+// 22 Aug 2026 all thirty-nine `security definer` functions in schema `app` were
+// executable by cm_readonly — the role the `read` tool runs as — so `select * from
+// app.list_academies()` was a legal `read` and answered with every tenant on the
+// deployment. 0007's own header said the opposite in prose, and nothing anywhere
+// compared the prose to the grants.
+//
+// `revoke all ... from public` was never enough: `alter default privileges in schema
+// app grant execute on functions to cm_service, cm_user, cm_readonly` (0006_grants.sql)
+// hands every function created afterwards an EXPLICIT grant to all three, and revoking
+// PUBLIC does not touch it. So the property has to be asserted rather than assumed —
+// and asserted as a DEFAULT-CLOSED rule, because the failure mode is somebody adding a
+// ninth door and no test noticing.
+//
+// A `security definer` function in schema `app` runs as the table owner and therefore
+// bypasses RLS entirely. Any such function the model can execute is a hole in the only
+// security boundary the product has. The ones listed here are the ones RLS POLICIES
+// call — they must stay reachable or every policy breaks — and everything else must be
+// unreachable. A new function is refused by name until somebody says which it is.
+const POLICY_HELPERS = new Set([
+  // read by policies, on every row, for every role
+  'now', 'now_for', 'today', 'academy_id', 'person_id', 'contact_id',
+  'is_admin', 'is_solo', 'sees_money',
+  'my_coach_id', 'my_player_ids', 'my_account_ids', 'my_session_ids',
+  'session_is_covered', 'effective_rate', 'account_balance',
+  'dial_code', 'normalize_phone', 'name_key', 'identity', 'lane_for',
+  'day_name', 'clock_label', 'slot_label', 'local_clock', 'local_label',
+  'record_rate_period', 'rls_audit', 'next_event_at',
+  // trigger bodies: they cannot be called by hand at all — Postgres refuses a
+  // direct call with "can only be called as a trigger" — so a grant on one is
+  // noise rather than a door.
+  'snapshot_row', 'begin_audit', 'stamp_job_lane', 'touch_contact_inbound',
+  'contact_normalize_phone', 'adopt_existing_name', 'attendance_enqueue_outcome',
+  'activate_admin_coach', 'activate_coach_on_admin',
+  'materialize_on_slot_change', 'materialize_on_class_change',
+  'guard_go_live', 'is_placeholder_phone', 'stamp_message_status_seq',
+  // claimed by the beat under an infra session, never by a person's session
+  'claim_jobs', 'enqueue_job',
+])
+
+const reachable = await sql.begin(async (tx) => {
+  await tx.unsafe('set local role cm_service')
+  return tx`
+    select p.proname,
+           bool_or(has_function_privilege('cm_user',     p.oid, 'execute')) as u,
+           bool_or(has_function_privilege('cm_readonly', p.oid, 'execute')) as r
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'app' and p.prosecdef
+     group by p.proname
+     having bool_or(has_function_privilege('cm_user',     p.oid, 'execute'))
+         or bool_or(has_function_privilege('cm_readonly', p.oid, 'execute'))
+     order by 1`
+})
+
+console.log('\nCross-tenant doors are shut to the model (F-CO)')
+const undeclared = reachable.map((f) => f.proname).filter((n) => !POLICY_HELPERS.has(n))
+report(
+  undeclared.length === 0,
+  'no security-definer function in schema app is reachable by cm_user/cm_readonly unless a policy needs it',
+  undeclared.length
+    ? `reachable and not a policy helper: ${undeclared.join(', ')} — revoke it, or add it to POLICY_HELPERS and say why`
+    : '',
+)
+
+// The one that actually happened, asserted directly rather than only by the rule above.
+// The GUC is irrelevant here on purpose: a `security definer` function runs as the
+// table owner and ignores it entirely. What is under test is the GRANT.
+const doorProbe = await asUser('00000000-0000-0000-0000-000000000000', '', '',
+  'select count(*)::int as n from app.list_academies()')
+report(
+  !!doorProbe.error || Number(doorProbe[0]?.n ?? 0) === 0,
+  'a user session cannot enumerate the tenants on this deployment',
+  Array.isArray(doorProbe) ? `app.list_academies() returned ${doorProbe[0]?.n} rows to cm_user` : '',
+)
+
 // --- gather the cast --------------------------------------------------------------------
 // The one legitimate cross-tenant read in the product, through the named door (0007).
 const academies = await sql.begin(async (tx) => {

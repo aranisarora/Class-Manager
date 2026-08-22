@@ -25,6 +25,10 @@ export async function GET(req: Request): Promise<Response> {
       let closed = false
       let polling = false
       let cursor: string | null = sinceParam
+      // The status half of the poll cursors on `message.status_seq` — a counter, not
+      // a time (0044 section 2). Null means "first poll": the door answers with the
+      // newest window, exactly as the old top-sixty re-read did, and cursors after.
+      let statusCursor: number | null = null
       let lastOffsetMs: number | null = null
       // messageId -> the status already pushed, so a status change emits once.
       const pushedStatus = new Map<string, string>()
@@ -61,8 +65,9 @@ export async function GET(req: Request): Promise<Response> {
         if (closed || polling) return
         polling = true
         try {
-          const result = await pollWorld({ cursor })
+          const result = await pollWorld({ cursor, statusCursor })
           cursor = result.cursor
+          statusCursor = result.statusCursor
 
           for (const ev of result.events) {
             emit(ev.type, ev)

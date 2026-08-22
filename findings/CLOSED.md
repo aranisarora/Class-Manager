@@ -1,6 +1,6 @@
 # Closed
 
-45 findings, retired. Kept as one line each for two reasons and no others:
+47 findings, retired. Kept as one line each for two reasons and no others:
 
 **A closed finding is a regression test.** `npm run findings` cross-references these codes against
 the instruments to answer the one question nothing else could — *which of the things that have
@@ -61,3 +61,5 @@ this is only the receipt. The full narrative for everything before 20 Aug 2026 i
 | **F-CJ** | A rate change is destructive, so it re-prices sessions that already ran — and the parent was told the opposite of the row | 22 Aug 2026, by `rate_period` and `app.rate_on` (0043) — the rate carries the day it starts, `rosterOf` resolves it as of the session's own date, and `setRate` makes "from the 1st" a row rather than a sentence |
 | **F-CL** | Coach pay is frozen a month late, so a raise typed mid-month reprices the month it was typed in | 22 Aug 2026, by `coachMonthLines` reading `app.pay_on` for the period and `coach_pay.amount_then` per line (0043) |
 | **F-CM** | Restructuring a package resizes every package already sold | 22 Aug 2026, by freezing `rate_count` onto the `tally_line` that opens a pack and sizing from it in `packageState` (0043) |
+| **F-CO** | Every cross-tenant `security definer` door was executable by the model's own role, so a single `read` could enumerate all twelve tenants and return every contact's name and phone — the one security boundary, open, while 0007 stated in prose that it was shut | 22 Aug 2026, by revoking them from cm_user and cm_readonly (0044) — `revoke all … from public` never removed the grant `alter default privileges` (0006) hands out |
+| **F-CP** | The live console cost one transaction per tenant per surface per tick, and a transaction is four round trips — so watching a world in which nothing was happening moved 5.29 GB in nine days and put a free-plan organisation over its whole monthly egress quota | 22 Aug 2026, by one door (0044, `app.emulator_poll`) and a status cursor with no clock in it (`message.status_seq`) |
