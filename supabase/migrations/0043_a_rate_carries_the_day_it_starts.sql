@@ -578,10 +578,10 @@ create or replace view public.class_roster with (security_invoker = true) as
          case when e.rate_amount is not null then 'enrolment' else 'class' end
                                                   as rate_source,
          -- appended by 0043
-         nr.amount                                as next_rate_amount,
-         nr.unit                                  as next_rate_unit,
-         nr.cnt                                   as next_rate_count,
-         nx.d                                     as next_rate_from
+         nxt.amount                               as next_rate_amount,
+         nxt.unit                                 as next_rate_unit,
+         nxt.cnt                                  as next_rate_count,
+         nxt.d                                    as next_rate_from
     from class cl
     join academy ac on ac.id = cl.academy_id
     join enrollment e on e.class_id = cl.id and e.academy_id = cl.academy_id
@@ -597,7 +597,17 @@ create or replace view public.class_roster with (security_invoker = true) as
     ) nx on true
     left join lateral (
       select * from app.rate_on(e.id, nx.d) where nx.d is not null
-    ) nr on true;
+    ) nr on true
+    -- A change is only a change for THIS player if it moves THEIR number. A
+    -- class rise does not reach an enrolment that states its own rate — that is
+    -- what rate_source = 'enrolment' means — and advertising a date beside an
+    -- unchanged amount would be a sentence the model could not use.
+    left join lateral (
+      select nr.amount, nr.unit, nr.cnt, nx.d
+       where nr.amount is distinct from coalesce(e.rate_amount, cl.rate_amount)
+          or nr.unit   is distinct from coalesce(e.rate_unit,   cl.rate_unit)
+          or nr.cnt    is distinct from coalesce(e.rate_count,  cl.rate_count)
+    ) nxt on true;
 
 grant select on public.class_roster to cm_service, cm_user, cm_readonly;
 
@@ -634,10 +644,10 @@ create or replace view public.class_offering with (security_invoker = true) as
          sl.slots,
          co.coaches,
          -- appended by 0043
-         nr.amount   as next_rate_amount,
-         nr.unit     as next_rate_unit,
-         nr.cnt      as next_rate_count,
-         nx.d        as next_rate_from
+         nxt.amount  as next_rate_amount,
+         nxt.unit    as next_rate_unit,
+         nxt.cnt     as next_rate_count,
+         nxt.d       as next_rate_from
     from class cl
     join academy ac on ac.id = cl.academy_id
     left join venue v on v.id = cl.venue_id
@@ -672,7 +682,13 @@ create or replace view public.class_offering with (security_invoker = true) as
     ) nx on true
     left join lateral (
       select * from app.class_rate_on(cl.id, nx.d) where nx.d is not null
-    ) nr on true;
+    ) nr on true
+    left join lateral (
+      select nr.amount, nr.unit, nr.cnt, nx.d
+       where nr.amount is distinct from cl.rate_amount
+          or nr.unit   is distinct from cl.rate_unit
+          or nr.cnt    is distinct from cl.rate_count
+    ) nxt on true;
 
 grant select on public.class_offering to cm_service, cm_user, cm_readonly;
 

@@ -862,6 +862,7 @@ const SINGULARS: Record<string, string> = {
   // leak the outbound lint refuses — completing these maps is the fix, not a rewrite
   // on the way out.
   coach_ledger: 'pay line',
+  rate_period: 'rate change',
   contact: 'phone number',
   account: 'family account',
   session_coach: 'coach assignment',
@@ -893,6 +894,7 @@ const PLURALS: Record<string, string> = {
   attendance: 'attendance marks',
   tally_line: 'charges',
   coach_ledger: 'pay lines',
+  rate_period: 'rate changes',
   session_coach: 'coach assignments',
   class_coach: 'coach assignments',
   class_slot: 'weekly slots',
@@ -2142,7 +2144,7 @@ async function recordAudit(
  * ------------------------------------------------------------------------- */
 
 /** §14.2 "money-touching — tally lines, adjustments, payments". */
-const MONEY_TABLES = new Set(['payment', 'tally_line'])
+const MONEY_TABLES = new Set(['payment', 'tally_line', 'rate_period'])
 /** The business's own controls: its settings, its number's credentials, who is an admin. */
 const CONTROL_TABLES = new Set(['academy', 'sender', 'academy_admin'])
 /**

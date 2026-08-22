@@ -359,6 +359,53 @@ try {
   assert('re-typing the same price is not a new period', Number(noop.n) === 2, noop)
   assert('and the day carries the last number typed', Number(noop.top) === 1300, noop)
 
+  // set_rate with a FUTURE date writes the row and leaves the column alone: a
+  // row dated ahead is not a claim about now. This is the half F-AW kept
+  // promising through a job kind that did not exist.
+  const soon = String((await one(`select (${TODAY} + 30)::text as d`)).d).slice(0, 10)
+  const built = await OPERATIONS.set_rate.build(
+    ctx as any,
+    { subject_kind: 'class', subject_id: cls.id, amount: 1500, effective_from: soon },
+    { person: { id: ravi.id } } as any,
+  )
+  for (const step of built as any[]) {
+    if (typeof step.write === 'string') await exec(step.write)
+  }
+  const after = await one(`select cl.rate_amount::text as col,
+                                  (app.rate_on('${enr.id}'::uuid, ${TODAY})).amount::text as today_rate
+                             from class cl where cl.id = '${cls.id}'::uuid`)
+  assert('a future rate does not move the column', num(after.col) === 1300, after)
+
+  const sched = await one(`select amount::text as amount, standing, effective_from::text as f
+                             from rate_history
+                            where subject_id = '${cls.id}'::uuid and standing = 'scheduled'`)
+  assert('and rate_history calls it scheduled', num(sched.amount) === 1500, sched)
+
+  // The class rose, but this enrolment states its own rate, so nothing changes
+  // for THIS player and the roster must not advertise a date beside an unchanged
+  // number. That is what rate_source = 'enrolment' means.
+  const nextCol = await one(`select next_rate_amount::text as amt, next_rate_from::text as f, rate_source
+                               from class_roster where enrollment_id = '${enr.id}'::uuid`)
+  assert('a class rise does not reach an enrolment on its own rate', nextCol.amt === null, nextCol)
+  assert('and no change date is advertised to them', nextCol.f === null, nextCol)
+
+  // At the class grain it IS a change, and it is a column there.
+  const offer = await one(`select next_rate_amount::text as amt, next_rate_from::text as f
+                             from class_offering where class_id = '${cls.id}'::uuid`)
+  assert('the class offering carries the rise as a column', num(offer.amt) === 1500, offer)
+  assert('with the date it starts', String(offer.f ?? '').slice(0, 10) === soon, offer)
+
+  // The note is the sentence the product could not say. It has to name the date
+  // AND what does not move, from rows.
+  const noteStep = (built as any[]).find((x) => typeof x.note === 'string')
+  assert(
+    'the note names the date and what does not move',
+    typeof noteStep?.note === 'string'
+      && /1,500/.test(noteStep.note)
+      && /adjustment/.test(noteStep.note),
+    noteStep,
+  )
+
   console.log('')
   if (failures === 0) {
     console.log('  Money is priced at the rate in force when it was earned.')
