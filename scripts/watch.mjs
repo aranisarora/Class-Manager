@@ -288,6 +288,43 @@ function evaluate(turns) {
         `recorded done regardless. Every count in this run treats those turns as quiet ones.`,
     )
 
+  /**
+   * A seat the database cannot support, which is the drive arguing with itself.
+   *
+   * `_world-file.ts` builds a sender, a front desk and one contact each — no
+   * academy, no classes, nobody enrolled — on the argument that *"a brief cannot
+   * contradict a database that does not exist yet"*. It can, and one does:
+   * `worlds/ace-tennis.json` seats Divya Rao as a `client` and tells her *"your
+   * daughter Anika has been going to the evening batch for about a year"*. She
+   * wrote on day 1 of `b8xo`, was told truthfully that nothing is set up on this
+   * number, and left on day 2 — *"wrong number then, sorry."*
+   *
+   * That is the harness losing a seat, not the product losing a customer, and it
+   * was read as the second: a commit the same evening cited her departure as
+   * evidence that customers were arriving before the business and built a
+   * standing job to tell owners about them. F-DY has been open the whole time.
+   *
+   * So this asks the cheap structural version — is there a row anywhere that
+   * could make this person what they were told they are — and asks it early
+   * enough to stop the run rather than after.
+   */
+  const seatRoles = (() => {
+    try {
+      return JSON.parse(readFileSync(join(run, 'session.json'), 'utf8')).roster ?? []
+    } catch {
+      return []
+    }
+  })()
+  const NEEDS = { client: 'enrollment', coach: 'coach' }
+  const unbacked = seatRoles.filter((p) => NEEDS[p.role] && !tables.has(NEEDS[p.role]))
+  if (unbacked.length && day >= DUE.roster)
+    trip(
+      'brief-unbackable',
+      `day ${day} and ${unbacked.map((p) => `${p.name} is seated as a ${p.role} with no ${NEEDS[p.role]} row`).join('; ')}. ` +
+        `Their brief describes a relationship to this business that no row in it supports, so every turn they take ` +
+        `is against a product that cannot answer them — and whatever they do next is the harness's doing, not the product's.`,
+    )
+
   if (suppressed.length >= 5)
     trip(
       'suppressed',
