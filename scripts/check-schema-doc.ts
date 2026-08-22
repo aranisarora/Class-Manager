@@ -70,6 +70,10 @@ const NOT_INSERTABLE = new Set([
   'message',
   'action',
   'memory_fact',
+  // Written by the trigger on an ordinary rate UPDATE, and by set_rate for a
+  // future date. A num_nonnulls CHECK over three nullable ids is a plan-losing
+  // trap for a composed INSERT, and there is nothing the model needs it for.
+  'rate_period',
   'pending_request',
   'row_snapshot',
   'academy', // update-only: there is no route that creates a second one
@@ -150,7 +154,7 @@ function parseViewMentions(doc: string): { schema: string; name: string }[] {
   // list is the check, and a name missing from it passes vacuously rather than
   // failing loudly. Add the name here in the same change that adds the view.
   for (const m of doc.matchAll(
-    /\b(app\.)?(session_roster|session_coverage|unmarked_billable_session|coach_public|coach_directory|class_coach_public|class_offering|class_roster|account_standing|account_ledger|coach_pay|person_directory|session_detail)\b/g,
+    /\b(app\.)?(session_roster|session_coverage|unmarked_billable_session|coach_public|coach_directory|class_coach_public|class_offering|class_roster|account_standing|account_ledger|coach_pay|person_directory|session_detail|rate_history)\b/g,
   )) {
     out.push({ schema: m[1] ? 'app' : 'public', name: m[2] as string })
   }

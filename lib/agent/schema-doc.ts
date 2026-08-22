@@ -155,6 +155,7 @@ nothing to try and nothing to learn by trying.
 | attendance | admin · family, their own · coach, their sessions | admin · coach, their sessions | admin · coach, their sessions | admin |
 | tally_line · payment | admin · family, their own accounts | admin | admin | admin |
 | coach_ledger | admin · coach, their own | admin | admin | - |
+| rate_period | admin · coach, their own pay · family, their own enrolments · class rates, anyone | - | - | - |
 | business_rule | admin · the shared ones | admin | admin | - |
 | comm_preference | admin · their own | admin · their own | admin · their own | - |
 | memory_fact | admin · their own person facts | - | - | - |
@@ -351,7 +352,10 @@ tally_line(account_id! uuid, player_id uuid null, class_id uuid null, period! da
   /* 1st of the billing month */, kind! text
   'session|monthly|term|package|adjustment', description! text /* shown verbatim
   to the parent */, amount! numeric /* negative = credit */, session_id uuid,
-  reason text, approved_by uuid -> person, dedupe_key text)
+  reason text, approved_by uuid -> person, dedupe_key text,
+  rate_amount numeric, rate_unit text, rate_count int /* the terms this line was
+  computed at, frozen. A later raise cannot reprice it, and on a package line
+  rate_count is THAT PACK'S size, not the class's current one. */)
   -- unique(session_id, player_id) where session_id is not null
   -- unique(academy_id, dedupe_key) where dedupe_key is not null
   -- dedupe_key is billing IDENTITY, so a retry cannot double-charge. Set it on
@@ -368,6 +372,17 @@ tally_line(account_id! uuid, player_id uuid null, class_id uuid null, period! da
 payment(account_id! uuid, amount! numeric, rail! text 'rail1|rail2', method text, reference text
   /* UPI ref / UTR */, status! text 'requested|confirmed|failed', requested_at tstz,
   confirmed_at tstz, confirmed_by uuid -> person, evidence_url text)
+
+rate_period(subject_kind text 'enrollment|class|coach', subject_id uuid,
+  amount numeric, unit text, rate_count int, effective_from! date /* the day it
+  STARTS APPLYING — not the day it was typed; created_at is that */, note text)
+  -- READ ONLY, and you do not need to write it. A rate change starting NOW is
+  -- an ordinary  update enrollment set rate_amount = ...  exactly as before — the row here is
+  -- written for you, BY the row. A change starting LATER is the set_rate
+  -- operation, and it is the only way to say "from September" and have it be true.
+  -- Read it through app.rate_on / app.pay_on, or the rate_history view. Do not
+  -- hand-roll the lookup: enrolment falls back to class for amount, unit and count
+  -- INDEPENDENTLY, and each of those has its own dated history under it.
 
 ## Messaging, actions, views, jobs, audit
 
@@ -432,7 +447,21 @@ and legacy rates without a schema branch. class_roster has it resolved per
 player already, and its rate_source says which side answered;
 app.effective_rate(enrollment_id) resolves a single one.
 
+**A rate also has a date, and the date is the point.** Those columns are the rate
+in force NOW. What it was on any other day is app.rate_on(enrollment_id, that day)
+and app.pay_on(coach_id, that day), and **pricing something that already happened
+uses the day it happened**: a session that ran at 900 bills 900 however many
+raises have landed since. A change that starts later is a row waiting —
+class_roster and class_offering carry next_rate_amount and next_rate_from, so "is
+it going up" is a column and not a calculation, and rate_history is the whole
+story with standing = past | current | scheduled. To make one, use set_rate; a
+plain update takes effect immediately and there is nowhere in it to put a date.
+
 **Billing rules, complete — all four rate units:**
+- Every one of these prices at the rate in force ON THE DAY THE THING WAS EARNED
+  — the session's own date for per_session, the 1st of the period for per_month
+  and per_term, the day the pack opened for per_package — and the line then
+  carries that rate in rate_amount/rate_unit/rate_count and does not move again.
 - per_session: a 'session' line when attendance is marked present, late or
   absent. NOT for cancelled_timely.
 - per_month: one 'monthly' line per period per active enrollment, on the 1st.
@@ -440,8 +469,9 @@ app.effective_rate(enrollment_id) resolves a single one.
 - per_term: the same, one 'term' line every rate_count months. Term and quarterly
   fees differ from monthly in exactly this and nothing else.
 - per_package: one 'package' line when a package opens; sessions consume it on the
-  per_session rule; after rate_count sessions the next session opens a new package
-  and writes the next line. The count remaining rides on the tally.
+  per_session rule; after THAT PACK'S OWN rate_count — tally_line.rate_count on the
+  line that opened it, not the class's current one — the next session opens a new
+  package and writes the next line. The count remaining rides on the tally.
 - The cancellation window carries money meaning only for per_session. For the
   other three it is a headcount signal to the coach.
 - An adjustment is ONE primitive: kind='adjustment', a negative amount, a reason
@@ -479,7 +509,8 @@ than a near-miss.
 **The offer — what the business sells.**
 
   class_offering(academy_id, class_id, class_name, active, starts_on, ends_on,
-  standing, rate_amount, rate_unit, rate_count, venue_id, venue_name,
+  standing, rate_amount, rate_unit, rate_count, next_rate_amount, next_rate_from,
+  venue_id, venue_name,
   venue_address, slot_count, schedule_label, slots, coaches)
   -- One row per class: what it costs, where it is, who is named on it, and when
   -- it runs with the weekly slots ALREADY RENDERED — schedule_label is
@@ -524,7 +555,8 @@ than a near-miss.
 
   class_roster(academy_id, class_id, class_name, enrollment_id, is_trial,
   started_on, player_id, player_name, account_id, account_holder, rate_amount,
-  rate_unit, rate_count, ended_on, standing, player_active, rate_source)
+  rate_unit, rate_count, ended_on, standing, player_active, rate_source,
+  next_rate_amount, next_rate_unit, next_rate_count, next_rate_from)
   -- Who is on a class's register, in every tense, and what each is actually
   -- paying: the rate columns are the effective rate, already resolved.
   -- standing is upcoming | current | ended — FILTER ON IT, never on dates. It
@@ -533,6 +565,10 @@ than a near-miss.
   -- and "ended_on is null" is the right test for today and wrong for any other
   -- day. An enrolment starting next week is here as 'upcoming' rather than
   -- missing, which is what makes "is he in the class or not" answerable.
+  -- next_rate_amount and next_rate_from are a change already on file for THIS
+  -- player, null when there is none — so "is it going up" is a column and not a
+  -- calculation. A class rise does not reach an enrolment that states its own
+  -- rate, and these stay null when it does not.
   -- rate_source is 'enrolment' or 'class' — which side the fallback took, and
   -- so whether a price was written down for this player or merely inherited.
   -- That is how you check that "everyone already in it stays on the old rate"
@@ -621,7 +657,7 @@ than a near-miss.
 
   coach_pay(academy_id, coach_id, coach_name, session_id, class_id, class_name,
   starts_at, local_start, session_status, coach_state, pay_unit, pay_amount,
-  session_hours, worked, amount_for_session)
+  session_hours, worked, amount_for_session, pay_amount_then, amount_then)
   -- One row per coach per session they are named on. Inherits the reader, so a
   -- coach reads their own pay and no one else's and the admin reads all of it —
   -- which is what makes "what have I earned" and "what do I pay them" one
@@ -630,6 +666,9 @@ than a near-miss.
   -- Not that a register was marked, and never status='scheduled', which is true
   -- only of sessions that have NOT happened — counting on it reports a month of
   -- work as none.
+  -- amount_for_session is at the rate they are on NOW and is the right number for
+  -- the OPEN month. amount_then is at the rate in force the day it was worked, and
+  -- that is what a closed month is written from.
   -- amount_for_session is NULL on a per_month coach: they are owed the same
   -- whatever the register says, so sessions × rate is a number nobody is owed.
   -- Also NULL when pay_amount is, which is "not tracked" and a real state.
@@ -648,6 +687,15 @@ than a near-miss.
   -- A rate agreed in advance is a row written early — a September line can exist in
   -- August, and the close finds it by dedupe_key and leaves it alone.
   -- Append-only. A correction is an 'adjustment' row, as on tally_line.
+
+  rate_history(academy_id, subject_kind 'enrollment|class|coach', subject_id,
+  subject_label, amount, unit, rate_count, effective_from, effective_to, standing,
+  note, stated_at, stated_by_name)
+  -- One row per time a price actually MOVED, for an enrolment, a class or a coach.
+  -- standing is past|current|scheduled — filter on that word, never on date
+  -- arithmetic, and never rebuild effective_to with a window function of your own.
+  -- A rate stated on a CLASS applies to every enrolment that has not stated its
+  -- own, which is the same fallback class_roster.rate_source names.
 
 ## What follows what — the consequences a row carries
 
@@ -699,6 +747,13 @@ app.local_label(at timestamptz) -> text   -- "Mon 18 Aug, 6:30 pm", this academy
 app.local_clock(at timestamptz) -> text   -- "6:30 pm"
 app.session_is_covered(session_id uuid) -> boolean
 app.effective_rate(enrollment_id uuid) -> table(amount numeric, unit text, cnt int)
+  -- the rate in force NOW. unchanged, and still the right call for "what does
+  -- this cost".
+app.rate_on(enrollment_id uuid, on date) -> table(amount numeric, unit text, cnt int)
+  -- the same answer for any day. Pricing something that ALREADY HAPPENED uses the
+  -- day it happened — the session's own date, the period being billed — never today.
+app.pay_on(coach_id uuid, on date) -> table(amount numeric, unit text)
+app.today(academy_id uuid) -> date        -- today in this academy's own zone
 app.account_balance(account_id uuid, null) -> numeric
   -- the running balance, same number as account_standing.balance. NULL means no
   -- such account is visible to you, never zero. A non-null period is refused

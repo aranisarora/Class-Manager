@@ -81,6 +81,7 @@ prose.
 | `build-mechanisms.ts` | `npm run mechanisms` writes `docs/MECHANISMS.md` from the `@mechanism` tags in `lib/`; `npm run check:mechanisms` fails when the two diverge. The index an analysis agent reads *instead of* the brain — 2k tokens against 209k. A `Closes F-XX` clause is checked against the ledger. |
 | `check-attendance-bills.ts` | F-BA: does an attendance row imply the money it owes? |
 | `check-partial-period.ts` | F-I: does "Always pro-rate" pro-rate anything? |
+| `check-rate-history.ts` | F-CJ/F-CL/F-CM: is money priced at the rate in force when it was earned? Crosses a month boundary and a period billed a quarter late — the two marks a seven-day drive cannot reach. |
 | `check-roster-scale.ts` | F-R: where does `app.session_roster` stop answering? |
 | `check-lint.mts` | Does the lint pass leave a correct message alone? |
 | `check-repair.mts` | Does anything machine-shaped survive to a person's screen? |

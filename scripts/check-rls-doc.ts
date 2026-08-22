@@ -107,6 +107,7 @@ const VIEW_CLAIMS: { schema: string; name: string; invoker: boolean }[] = [
   { schema: 'public', name: 'account_standing', invoker: true },
   { schema: 'public', name: 'account_ledger', invoker: true },
   { schema: 'public', name: 'coach_pay', invoker: true },
+  { schema: 'public', name: 'rate_history', invoker: true },
   { schema: 'public', name: 'person_directory', invoker: true },
   // The exceptions, and the block says so: every coach in the business, and the
   // whole class-to-coach map, to anybody who asks — with no pay column on
