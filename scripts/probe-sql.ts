@@ -467,6 +467,44 @@ const CASES: Case[] = [
            from account a limit 1`,
     ],
   },
+
+  /* --- tier 6: a rate has a date now (0043) ----------------------------- */
+  {
+    id: 'rate-as-of',
+    finding: 'F-CJ',
+    tier: 6,
+    persona: 'admin',
+    text: 'that one-to-one I put up last month — what was it costing before I raised it?',
+    probes:
+      'the whole point of app.rate_on(enrollment_id, date). The hand-written version is a lateral ' +
+      'over rate_period ordered by effective_from with a date predicate, TWICE — enrolment then ' +
+      'class — because amount, unit and count each fall back independently. Reading ' +
+      'enrollment.rate_amount answers today and is the defect F-CJ is: it told the owner one number ' +
+      'and the parent who pays the other, four minutes apart.',
+  },
+  {
+    id: 'pay-for-a-closed-month',
+    finding: 'F-CL',
+    tier: 6,
+    persona: 'admin',
+    text: 'what did I actually owe the coach for last month?',
+    probes:
+      'coach_ledger if the month has closed, and coach_pay.amount_then if it has not — never ' +
+      'amount_for_session, which multiplies by the rate they are on NOW. A raise typed mid-month ' +
+      'used to reprice everything already worked, so the two columns are deliberately both there ' +
+      'and deliberately named apart.',
+  },
+  {
+    id: 'pack-remaining-after-a-resize',
+    finding: 'F-CM',
+    tier: 6,
+    persona: 'admin',
+    text: 'how many classes has she got left on her pack?',
+    probes:
+      "the size is on the tally_line that OPENED the pack — that pack's own rate_count — not on the " +
+      'class, which may have been restructured since. Reading class.rate_count silently resizes ' +
+      'every pack already sold, in whichever direction the owner moved it.',
+  },
 ]
 
 /* ------------------------------------------------------------------------- *
