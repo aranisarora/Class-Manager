@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-199 mechanisms · 30 findings closed by one · 24 findings still open
+199 mechanisms · 30 findings closed by one · 23 findings still open
 
 ## The scan
 
@@ -503,11 +503,11 @@ One line each. Find a candidate here, then read its entry below.
 
 - **`openArrival`** — `lib/frontdesk/arrival.ts:92`  
   the funnel row is written when the stranger ARRIVES, not when they decide, and that ordering is the whole point: the row nobody can reconstruct afterwards is the person who wrote once, was asked, and never came back. Idempotent on `(sender_id, phone_e164)`, so a second message from the same number is the same arrival — and `first_text` keeps the FIRST one, because what somebody opened with is what says whether the product had to ask at all.
-- **`frontDeskTail`** — `lib/frontdesk/context.ts:86`  
+- **`frontDeskTail`** — `lib/frontdesk/context.ts:96`  
   states the two facts the model would otherwise reconstruct from the conversation, which is where the false-confirmation class comes from: whether the question has ALREADY been put on this person's screen (`arrival.asked_at`, so a silent visitor is not interrogated a second time), and whether their own words name a business on this number. The second is what `matchAcademiesByName` used to spend as a routing decision before anyone had spoken; here it is evidence, carrying the id the tool needs, and it names only businesses THEIR OWN TEXT named — the model is never handed the customer list, because no tool and no block gives it one.
-- **`whatThisNumberIs`** — `lib/frontdesk/context.ts:118`  
+- **`whatThisNumberIs`** — `lib/frontdesk/context.ts:128`  
   when exactly ONE business runs on this number, the desk is told its name and its id, so `join_business` is reachable for somebody who cannot name it. Above one, the count stands alone as before.
-- **`answeredSinceAsked`** — `lib/frontdesk/context.ts:182`  
+- **`answeredSinceAsked`** — `lib/frontdesk/context.ts:192`  
   this says WHEN they were asked and sends the model to the thread; it no longer asserts that they never answered.
 - **`carryOpeningMessage`** — `lib/frontdesk/route.ts:71`  
   the words that brought this person here, written into the business they were handed to, as the first row of its thread. Without it the tenant's transcript opens on the bot answering a question nobody in that academy can see it being asked, and `recentHistory` renders a one-sided conversation for as long as the thread lasts — the shape that makes a model re-introduce itself to somebody it is mid-sentence with. The front desk keeps its own copy: that one is the arrival record and answers a different question. `idempotencyKey` is derived from the destination contact and the text, so a hand-over retried after a crash carries the opening line once rather than twice.
@@ -671,6 +671,6 @@ One line each. Find a candidate here, then read its entry below.
 
 ## Still open
 
-No mechanism claims 24 findings. They are listed in
+No mechanism claims 23 findings. They are listed in
 [`../findings/OPEN.md`](../findings/OPEN.md), which is generated from the ledger and is the
 one place that list lives.

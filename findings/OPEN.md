@@ -1,6 +1,6 @@
 # What is open
 
-24 findings. This file is the source of truth for what is broken — hand-written, and short on
+23 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -38,7 +38,6 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-CR** | A rate that begins after the work was done silently unpays it, and nothing says so | [detail](#f-cr--a-rate-that-begins-after-the-work-was-done-silently-unpays-it-and-nothing-says-so) |
 | **F-DH** | `pre_launch` suppresses a plan-staged message to a COACH about their own work, and nothing tells anyone it did | [detail](#f-dh--pre_launch-suppresses-a-plan-staged-message-to-a-coach-about-their-own-work-and-nothing-tells-anyone-it-did) |
 | **F-DI** | A read result keeps the model's own column alias, so a mislabel becomes durable and is built into a write five turns later | [detail](#f-di--a-read-result-keeps-the-models-own-column-alias-so-a-mislabel-becomes-durable-and-is-built-into-a-write-five-turns-later) |
-| **F-DO** | A stranger's commonest first question — what does this cost — has no answer anywhere in the product | [detail](#f-do--a-strangers-commonest-first-question--what-does-this-cost--has-no-answer-anywhere-in-the-product) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-DS** | A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn | [detail](#f-ds--a-staged-plan-can-only-be-committed-by-tapping-it-an-owner-who-answers-go-ahead-in-words-is-re-staged-instead-because-the-plan-handle-does-not-survive-the-turn) |
 
@@ -820,36 +819,6 @@ still what the model reasons from.
 **Where it lives:** `modelQuery` (lib/db.ts) is the one chokepoint every model read passes.
 Note the trap: a regex that judges the model's SQL is the pattern-matching-prose failure this
 repo has paid for repeatedly. Provenance carried from the statement, not inferred from it.
-
-### F-DO · A stranger's commonest first question — what does this cost — has no answer anywhere in the product
-
-**Saw:** across three 3-day drives on `ace-tennis`, the owner-to-be opened with a price
-question every single time and was never once answered. `2026-08-22-12-25-sim-bqc0` d1:
-*"how much and wat all does this actually do"* → the routing question. `2026-08-22-13-20-sim-67ai`
-d1: *"how much is this"* → the routing question; d3, after founding: *"rahul menon tennis, tennis
-coaching. wat does this cost i asked already"*. Farah Sheikh opened with *"price for two kids?"*
-and *"fees for two kids how much"* on two separate runs. Rahul's own persona brief names it as his
-rule — cut straight to price before anything else — and it is what a real referral does too.
-
-**Root:** the desk holds no facts by construction (`FRONT_DESK_PREFIX`: *"You hold no schedule, no
-fees, no roster and no data about any business"*), and its escape hatch is *"a question you cannot
-answer is a reason to hand over"* — which works for a question about a BUSINESS and not for one
-about this product. `docs/product-spec.md` names no price for the product anywhere, so there is
-nothing to say even if there were somewhere to say it. Once handed over, a tenant turn answers it
-well — *"I don't hold a price for this product itself — that's the terms you signed up under"*
-(`2026-08-22-12-47-sim-s4hg`) — but that is after founding, which is exactly the decision the
-question is gating.
-
-**Blast radius:** the referral channel §10.0 exists to serve is the one this loses. A person who
-asks the price twice and is asked a routing question back both times has learned the thing does
-not answer questions.
-
-**Where it lives:** not a mechanism until somebody decides what the answer IS — this is a business
-decision, not an engineering one, and inventing a number in the prefix would be the product
-telling a customer something nobody has agreed. Two honest shapes once it is decided: a fact in
-the desk's stable prefix (it is byte-identical for every stranger, which is exactly what a price
-is), or a `sender`-level column if it differs per number. Until then the desk should say plainly
-that it cannot quote one and hand over — and that sentence has no home either.
 
 ### F-DP · The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it
 
