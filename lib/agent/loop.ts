@@ -3328,12 +3328,38 @@ export async function runAgentTask(job: Job): Promise<void> {
   if (minted.length && !minted.some((r) => identity.roles.includes(r))) return
   if (!identity.roles.length) return
 
+  /**
+   * One context statement, or SEVERAL when watches were merged.
+   *
+   * `merged` (lib/jobs/handlers/agent-task.ts) carries every outstanding watch for
+   * one person into a single turn, and each of them may have brought its own SELECT.
+   * `proposeGoLive`'s numbers are deliberately rows rather than a claim in the instruction
+   * — read under the minter's own RLS at run time, so they are current rather than frozen
+   * at plan time — and a merge that ran only the first one would turn every other watch's
+   * evidence back into a sentence nobody could check.
+   */
+  const contexts: string[] = Array.isArray(payload.context)
+    ? payload.context.filter((q: unknown): q is string => typeof q === 'string' && q.trim().length > 0)
+    : payload.context
+      ? [String(payload.context)]
+      : []
   let queryResults: unknown = undefined
-  if (payload.context) {
-    const res = await modelQuery(sessionOf(identity), String(payload.context))
+  if (contexts.length === 1) {
+    const res = await modelQuery(sessionOf(identity), contexts[0])
     queryResults = res.error
       ? { error: res.error }
       : { rowCount: res.rowCount, truncated: res.truncated, rows: res.rows.slice(0, 200) }
+  } else if (contexts.length > 1) {
+    const many: unknown[] = []
+    for (const q of contexts.slice(0, 6)) {
+      const res = await modelQuery(sessionOf(identity), q)
+      many.push(
+        res.error
+          ? { error: res.error }
+          : { rowCount: res.rowCount, truncated: res.truncated, rows: res.rows.slice(0, 100) },
+      )
+    }
+    queryResults = many
   }
 
   // An ordinary turn from here. Deciding to do nothing is success: a task that

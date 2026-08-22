@@ -1,6 +1,6 @@
 # What is open
 
-25 findings. This file is the source of truth for what is broken — hand-written, and short on
+24 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -39,7 +39,6 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-DI** | A read result keeps the model's own column alias, so a mislabel becomes durable and is built into a write five turns later | [detail](#f-di--a-read-result-keeps-the-models-own-column-alias-so-a-mislabel-becomes-durable-and-is-built-into-a-write-five-turns-later) |
 | **F-DV** | The seat COULD always press a button and was never told so, so every mechanism behind a tap was measured at a fifteenth of its rate | [detail](#f-dv--the-seat-could-always-press-a-button-and-was-never-told-so-so-every-mechanism-behind-a-tap-was-measured-at-a-fifteenth-of-its-rate) |
 | **F-DY** | A persona brief asserts a history the world never builds, so the model is argued out of a correct read of its own database | [detail](#f-dy--a-persona-brief-asserts-a-history-the-world-never-builds-so-the-model-is-argued-out-of-a-correct-read-of-its-own-database) |
-| **F-EB** | A person taps when ONE thing is waiting and types when several are, and the product stacks asks between windows — so the go-live button was offered three times, with a live card on the phone, and never pressed | [detail](#f-eb--a-person-taps-when-one-thing-is-waiting-and-types-when-several-are-and-the-product-stacks-asks-between-windows--so-the-go-live-button-was-offered-three-times-with-a-live-card-on-the-phone-and-never-pressed) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-DS** | A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn | [detail](#f-ds--a-staged-plan-can-only-be-committed-by-tapping-it-an-owner-who-answers-go-ahead-in-words-is-re-staged-instead-because-the-plan-handle-does-not-survive-the-turn) |
 
@@ -961,43 +960,3 @@ new tenant's clock. That is the enabling shape: it lets the model be RIGHT about
 instead of being punished for reading an empty table correctly. The deleted `_world-spec.ts`
 fixtures wrote exactly this kind of history, so the shape is not new.
 
-### F-EB · A person taps when ONE thing is waiting and types when several are, and the product stacks asks between windows — so the go-live button was offered three times, with a live card on the phone, and never pressed
-
-**This is the first run in which the harness could press a button at all** (F-DV), so it is the
-first honest measurement of the affordance. `2026-08-22-14-36-sim-l3a1`, 7 days, every window in
-which anything arrived:
-
-| what was waiting | what the person did |
-| --- | --- |
-| 1 message, 1 card | **tapped** — 5 of 6 |
-| more than 1 message | **typed** — 3 of 3, never tapped |
-
-Day 4: three messages waiting, one card → typed. Day 5: two → typed. Day 6: four messages and TWO
-cards → typed. The single `say` against a lone card is Rahul answering "what do you call it?" past
-a `[No name yet]` button he had a name for, which is correct behaviour.
-
-**The go-live offer is the casualty and the product did everything else right.** `no-timetable-0`
-fired, the owner gave a timetable, three classes and thirty sessions landed, and `go-live-0` /
-`go-live-1` put a real card on his phone — in window, solicited, plain text, buttons intact,
-status `sent`. Twice. It was never pressed, and his own reasoning says why each time. Day 5:
-*"I don't want it going live with Priya locked into a Saturday slot she just told me she can't do,
-so I'm correcting the timetable before hitting go live"* — a correct refusal, and the product had
-given him no way to do both. Day 6: *"three things stacked up waiting on me so just clearing them
-all in one go while im between things, not stopping to fix typing."* Four messages, two cards, one
-typed paragraph answering all of them.
-
-**So the ask surface is competing with itself.** Each job is individually right — the timetable
-chase, the coach match, the go-live offer, the parent waiting on a price — and each mints its own
-card in its own message. Between two looks at a phone they become a pile, and a pile is answered in
-prose. This is also why F-DS bites hardest exactly here: consent arrives in words *because* several
-things are outstanding, and there is no door.
-
-**Where it lives, and the shape already exists.** `clientReminder` (lib/jobs/handlers/client.ts)
-solves the same problem for families in as many words — *"the jobs stay one per (session, player)
-for idempotency and MERGE at send time"* — so the pattern is established and it is a merge, not a
-cap. The admin surface has no equivalent: `adminsIn` decides who to tell and nothing decides
-whether four things become four messages. The enabling shape is one card carrying the outstanding
-decisions rather than four carrying one each — WhatsApp allows three buttons or a list — and NOT a
-frequency cap, which would silence a true thing to protect a person from a pile the product made.
-
-Do not fix this by sending less. Every one of those four messages was worth sending.

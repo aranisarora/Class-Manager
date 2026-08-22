@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-207 mechanisms · 32 findings closed by one · 24 findings still open
+208 mechanisms · 32 findings closed by one · 24 findings still open
 
 ## The scan
 
@@ -203,6 +203,7 @@ One line each. Find a candidate here, then read its entry below.
 **`lib/jobs/handlers/`**  
 `newsSince` — a cheap deterministic census gates the most expensive model call in the product:  
 `runSynthesis` — the morning brief and the evening digest are ORDINARY turns opened by a job, so they share the cached prefi…  
+`merged` — the first watch to fire for a person carries every other watch outstanding for them into ONE turn and super…  
 `clientReminder` — the jobs stay one per (session, player) for idempotency and MERGE at send time:  
 `clientSessionTrouble` — the only client-facing job that speaks about a session, and it speaks only when it carries something the pa…  
 `clientOutcome` — one recap per family per session:  
@@ -589,6 +590,8 @@ One line each. Find a candidate here, then read its entry below.
   a cheap deterministic census gates the most expensive model call in the product: an empty census opens no turn and sends nothing, so cost scales with events rather than with days. The calendar trigger it replaced composed 56 briefs for a business that received 36 messages in a month, paying eleven queries and a synthesis call each time for the model to conclude there was nothing to say. The window runs from the last brief of THIS kind that actually went out (`suppressed_reason is null`), not from midnight, so a day the brief stayed silent does not drop its news on the floor.
 - **`runSynthesis`** — `lib/jobs/handlers/admin.ts:329`  
   the morning brief and the evening digest are ORDINARY turns opened by a job, so they share the cached prefix (a hit costs 3.2% of a miss), they have tools, and they are recorded, guarded and result-honest for free. The bespoke path could not share the prefix at all, which is how the two most expensive calls of the day came to cost 3.5× the entire human conversation — and how the two calls with the widest reach became the two with no record of why they said anything. Being fed rows it could not verify or widen is how a digest once told the solo coach it thought "coaches aren't marking after sessions", about himself.
+- **`merged`** — `lib/jobs/handlers/agent-task.ts:62`  
+  the first watch to fire for a person carries every other watch outstanding for them into ONE turn and supersedes their jobs in the same transaction, which is `clientReminder`'s shape one surface along — *"the jobs stay one per (session, player) for idempotency and MERGE at send time"* — and for the same reason: the ideal's "you'll get one message, not two" was shipping as four.
 - **`clientReminder`** — `lib/jobs/handlers/client.ts:32`  
   the jobs stay one per (session, player) for idempotency and MERGE at send time: the first sibling to fire carries the others in one body and cancels their jobs in the same transaction, targeting 'running' as well as 'pending' because the runner claims the whole due batch before any handler starts and same-batch siblings — the common case, identical `run_at` — would otherwise never merge at all. Without it the ideal's own "you'll get one message, not two" shipped as two to the same mother, seconds apart, twice a week.
 - **`clientSessionTrouble`** — `lib/jobs/handlers/client.ts:161`  
