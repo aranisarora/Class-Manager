@@ -450,6 +450,13 @@ export type EventsRuntime = {
   forWindow: (day: number, window: Window) => WindowEffects
   /** Somebody who joined mid-week can still be named by an event. */
   admit: (people: Person[]) => Promise<void>
+  /**
+   * Somebody who gave up. Nothing is rolled for them again.
+   *
+   * Called by the driver the moment a seat answers `giveup`, so the very next window
+   * stops inventing a life for a person who is no longer in the run.
+   */
+  depart: (key: string) => void
   /** The world's own account of the week, for `truth.json`. */
   truth: () => {
     ref: string
@@ -499,6 +506,14 @@ export async function openEvents(o: {
     for (const p of people) keyByName.set(p.name.trim().toLowerCase(), p)
   }
   admit(o.people)
+
+  /**
+   * Seat keys of people who have left the run. `keyByName` deliberately keeps them —
+   * an event file may still name somebody who walked out on day 5, and dropping them
+   * from the map would turn a written line into an "unknown name" error at validation
+   * time, days after the fact.
+   */
+  const departed = new Set<string>()
 
   const sessions: SessionTruth[] = []
   const fired: Fired[] = []
@@ -887,7 +902,27 @@ export async function openEvents(o: {
       }
     }
 
+    /**
+     * @mechanism departed — chaos is not rolled for somebody who has left the run,
+     *   retiring the class of defect where the record of a week describes people who
+     *   were not in it. `giveup` is a first-class seat action and a persona who takes it
+     *   is never seated again; nothing here knew that, so the roll kept going. On the
+     *   30-day run of 22 Aug 2026 divya-rao and farah-sheikh both gave up on day 5, were
+     *   correctly never driven after it, and between them account for 17 of the 45 chaos
+     *   events `truth.json` records — dated days 10 to 30, every one of them a fact
+     *   about nobody. A reader counting "how messy was this week" counted a third again
+     *   more weather than the week actually had.
+     *
+     *   Skipped BEFORE the roll rather than filtered after it, which is the shape that
+     *   would matter if `coin` were a stream. It is not — it is a pure hash of
+     *   (seed, verb, day, window, seat key), so a roll not taken is not a roll stolen
+     *   from anybody else, and that is exactly what makes this safe to add to a seeded
+     *   run: everybody still present rolls precisely what they rolled before, and two
+     *   `--seed`-matched arms that diverge on WHEN somebody gives up no longer diverge on
+     *   the weather of everyone who stayed.
+     */
     for (const p of keyByName.values()) {
+      if (departed.has(p.key)) continue
       if ((chaos.quiet ?? 0) > 0 && !skip.has(p.key)) {
         if (coin(o.seed, ['quiet', day, window, p.key]) < chaos.quiet!) {
           skip.set(p.key, 'did not pick the phone up')
@@ -985,6 +1020,9 @@ export async function openEvents(o: {
     about: o.spec.about ?? '',
     openDay,
     forWindow,
+    depart: (key) => {
+      departed.add(key)
+    },
     admit: async (people) => {
       admit(people)
       // Somebody who arrived this week can be a coach or a parent too, and the

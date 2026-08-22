@@ -980,9 +980,44 @@ export async function coachMonthLines(job: Job): Promise<void> {
     if (rows.length === 0) skip('nothing worked in this period')
 
     let total = 0
+    /**
+     * Worked sessions this month that CANNOT be priced, kept rather than skipped.
+     *
+     * @mechanism unpricedWork — a worked session whose rate cannot be resolved is
+     *   collected and reported instead of being dropped by `continue`. `app.pay_on`
+     *   answers with the rate in force ON the session, and there is no row before the
+     *   coach's first `rate_period` — so a session worked BEFORE the coach was written
+     *   into the system prices to null, `num()` makes that 0, and the guard below sent
+     *   it silently to the floor. Nothing wrote a line, nothing raised anything, and the
+     *   month closed looking complete.
+     *
+     *   That is the exact shape 0043 was merged to fix from the other end. F-CL was this
+     *   month OVERSTATED — a raise on the 25th repricing everything already worked — and
+     *   the freeze that corrected it overshot into silence: a rate that begins after the
+     *   work was done now unpays it instead of overpaying it. Backdating is not an edge
+     *   case here, it is the ordinary way a business arrives: the owner enters a coach who
+     *   has already been teaching for weeks.
+     *
+     *   Measured on `2026-08-22-08-13-sim-7bo8`. Arjun Shetty's coach `rate_period` begins
+     *   2026-09-06, the day he was written in; the sessions he actually worked on 1 and 4
+     *   September price to null. Rs 1,600 of the Rs 4,800 the product told him and told his
+     *   owner he was owed would have gone at month close with nothing recording that it
+     *   did. The enrolment rate_periods in the same run were correctly dated 1 Sep though
+     *   written on the 14th, so the same trigger honours a stated start date for a family
+     *   and takes the write date for a coach — and the coach is the only party who loses
+     *   money to the difference.
+     *
+     *   This does NOT invent a price. Guessing one is how F-CL happened. It writes no
+     *   line, records the gap in the run, and puts it in front of the admin, because what
+     *   a coach is owed for work nobody priced is a decision a person makes.
+     */
+    const unpricedWork: { label: string; sessionId: string }[] = []
     for (const r of rows) {
       const amount = num(r.amount_for_session)
-      if (amount <= 0) continue
+      if (amount <= 0) {
+        unpricedWork.push({ label: `${r.class_name} — ${r.local_start}`, sessionId: r.session_id })
+        continue
+      }
       total += amount
       await tx`
         insert into coach_ledger
@@ -1004,7 +1039,34 @@ export async function coachMonthLines(job: Job): Promise<void> {
         on conflict (academy_id, dedupe_key) do nothing
       `
     }
-    note(`${firstName(coach.full_name)}: ${monthName} ${rows.length} session(s), ${formatINR(total)}`)
+    note(
+      `${firstName(coach.full_name)}: ${monthName} ${rows.length} session(s), ${formatINR(total)}` +
+        (unpricedWork.length ? ` — ${unpricedWork.length} NOT PRICED (no rate in force when they ran)` : ''),
+    )
+
+    if (unpricedWork.length) {
+      // The admin, not the coach. The coach knowing the number is broken helps nobody
+      // until somebody with the authority to set a rate has decided what it should be —
+      // and telling them first is how a person finds out they are underpaid from a
+      // machine. `is_admin` is exempt from the pre_launch gate, so this is one of the few
+      // things that reaches anybody while a business is still in setup, which is exactly
+      // when backdated work is entered.
+      const adminRows = (await admins(tx, academyId)).filter((a) => a.contact_id)
+      const shown = unpricedWork.slice(0, 4).map((u) => `• ${u.label}`).join('\n')
+      const more = unpricedWork.length > 4 ? `\n…and ${unpricedWork.length - 4} more.` : ''
+      for (const a of adminRows) {
+        await composeAndSend(serviceCtx(academyId), {
+          toContactId: a.contact_id as string,
+          isEscalation: true,
+          body:
+            `${firstName(coach.full_name)}'s ${monthName} is closed, and ${unpricedWork.length} session(s) ` +
+            `they worked are NOT on it — there was no pay rate on file covering the day each one ran, ` +
+            `so I have nothing to price them at and I will not guess.\n\n${shown}${more}\n\n` +
+            `Everything else came to ${formatINR(total)}. Tell me what these are worth and I will add ` +
+            `them, or set their rate from the date they started and I will work it out.`,
+        })
+      }
+    }
   })
 }
 

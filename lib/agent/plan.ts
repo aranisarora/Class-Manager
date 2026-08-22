@@ -130,12 +130,24 @@ export type MessageStep = {
  *                           least this many rows. This is how `claim_cover`
  *                           gets first-tap-wins out of the database rather
  *                           than out of the model's memory.
+ *   - `write.guard`       — this statement asks a question rather than making a change, so
+ *                           `assertSomethingChanged` must not count it among the writes a
+ *                           plan claimed to make. Without it a plan of one guard plus
+ *                           messages aborts as CHANGED_NOTHING — the guard is a `write`
+ *                           step by shape and a read by intent, and only the author knows
+ *                           which. Operation-authored only, like `because` beside it.
+ *   - `write.because`     — the sentence a `requireRows` abort should say. Without it
+ *                           the reader gets "a step needed 1 row(s) and matched 0",
+ *                           which names the shape of the failure and not the failure.
+ *                           Operation-authored only: the model's `PlanStepSchema`
+ *                           allows `write` alone and zod strips the rest, so this
+ *                           cannot be set from a payload.
  *   - `note`              — a summary fragment. Executes nothing; it is how an
  *                           operation contributes "all of Saturday Advanced,
  *                           moving to 8:30" to the §14.2 sentence.
  */
 export type PlanStep =
-  | { write: string; service?: boolean; requireRows?: number }
+  | { write: string; service?: boolean; requireRows?: number; because?: string; guard?: boolean }
   | { operation: { name: OperationName; args: Record<string, unknown> } }
   | {
       adjust: {
@@ -361,12 +373,13 @@ export async function identityFor(ctx: SessionCtx): Promise<Identity> {
  *
  * @mechanism assertIdsExist — every id-shaped argument to an operation is read back before
  *   the transaction opens, against the table its NAME implies (`coach_id` is a coach), under
- *   the caller's own session. A well-formed uuid that matches no row is indistinguishable
- *   everywhere downstream from one that does, so without this the operation looks it up,
- *   finds nothing, falls back to its placeholder and returns `ok: true` — an invite addressed
- *   to "Hi them" and a coach whose status never moved. One chokepoint rather than a check per
- *   operation, and running under the caller's session makes "no such row" and "not yours to
- *   see" the same answer, which is the answer RLS is entitled to give.
+ *   the caller's own session — and at any depth, so `mark_attendance`'s `entries[].player_id`
+ *   is checked exactly like its top-level `session_id`. A well-formed uuid that matches no row
+ *   is indistinguishable everywhere downstream from one that does, so without this the
+ *   operation looks it up, finds nothing, falls back to its placeholder and returns `ok: true`
+ *   — an invite addressed to "Hi them" and a coach whose status never moved. One chokepoint
+ *   rather than a check per operation, and running under the caller's session makes "no such
+ *   row" and "not yours to see" the same answer, which is the answer RLS is entitled to give.
  *
  * The invented uuid is the oldest failure in this product and the one that reads most
  * like success. Watched live, minutes after it was supposedly fixed: the admin tapped
@@ -386,6 +399,27 @@ export async function identityFor(ctx: SessionCtx): Promise<Identity> {
  * It runs under the caller's own session, so "no such row" and "not yours to see" are
  * the same answer, which is the answer RLS is entitled to give. And it is a read, before
  * the transaction opens, so it costs nothing when it passes.
+ *
+ * **It walks the whole argument, because the top level is not where the ids are.** The
+ * first version read `Object.entries(args)` once and stopped. That covers every operation
+ * whose ids are scalars and none of the ones that carry a list of them, and the shape that
+ * got through is the register: `mark_attendance` takes `{ session_id, entries: [{ player_id,
+ * status }] }`, so the session was read back and the players never were. Day 24 of the month
+ * drive, the model passed two PERSON ids as `player_id`s — the two humans exist, their player
+ * rows have different ids — and Postgres answered `attendance_player_id_fkey`, which names a
+ * constraint and no repair. The sentence this guard throws IS the repair, verbatim: *"read it
+ * back first — select pl.id, p.full_name from player pl join person p on p.id = pl.person_id"*.
+ * It simply never got asked.
+ *
+ * So the walk descends arrays and objects and matches `ID_ARG_TABLES` on the LEAF key name,
+ * which is where the argument's name-is-its-table rule actually holds — `entries` says nothing
+ * about a table, `player_id` says everything. An array does not rename what is inside it, so
+ * `player_id: [a, b]` and `entries: [{ player_id }]` are the same walk. Bounded two ways
+ * (`ID_ARG_MAX_DEPTH`, `ID_ARG_MAX_CHECKS`), because an operation's arguments are a schema and
+ * not a graph, and a pre-flight read that runs before every plan must never be the thing that
+ * hangs one. Bounded a third way in cost: one `in (…)` per TABLE rather than one statement per
+ * id, since a register for twenty players would otherwise be twenty round trips in front of a
+ * coach who is waiting.
  */
 const ID_ARG_TABLES: Record<string, string> = {
   academy_id: 'academy',
@@ -402,51 +436,278 @@ const ID_ARG_TABLES: Record<string, string> = {
   audit_id: 'audit_entry',
 }
 
+/**
+ * How deep into an operation's arguments the walk goes. An operation's params are a zod
+ * object, so the real shapes bottom out at two or three — this is the guard against a
+ * cyclic or absurd argument turning a pre-flight read into a hang, not a real limit.
+ */
+const ID_ARG_MAX_DEPTH = 8
+
+/** And how many distinct id positions one operation may make it look at. */
+const ID_ARG_MAX_CHECKS = 250
+
+/** One id-shaped argument, and the path that says WHERE in the argument it was found. */
+type IdCheck = { path: string; table: string; value: string }
+
+/**
+ * Every id-shaped leaf in an operation's arguments, at any depth.
+ *
+ * `key` is the name the leaf was reached under and `path` is the whole route to it —
+ * `entries[3].player_id` rather than `player_id`, because "which one" is the first thing
+ * anybody reading the refusal has to know when the register is twenty lines long.
+ */
+function collectIdArgs(node: unknown, key: string, path: string, depth: number, out: IdCheck[]): void {
+  if (out.length >= ID_ARG_MAX_CHECKS || depth > ID_ARG_MAX_DEPTH) return
+  if (Array.isArray(node)) {
+    // An array does not rename what is inside it: `player_id: [a, b]` keeps the key, and
+    // `entries: [{ player_id }]` finds its own on the way down.
+    for (let i = 0; i < node.length; i++) collectIdArgs(node[i], key, `${path}[${i}]`, depth + 1, out)
+    return
+  }
+  if (node && typeof node === 'object') {
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+      collectIdArgs(v, k, path ? `${path}.${k}` : k, depth + 1, out)
+    }
+    return
+  }
+  const table = ID_ARG_TABLES[key]
+  if (!table) return
+  // A subquery resolves inside the transaction against rows an earlier step made,
+  // so there is nothing here to check yet — the plan itself is the check.
+  if (typeof node !== 'string' || !UUID_ARG_RE.test(node)) return
+  out.push({ path, table, value: node })
+}
+
+/** The read that hands the model the id it should have used, per table. */
+function readBackFor(table: string): string {
+  if (table === 'coach') return 'select c.id, p.full_name from coach c join person p on p.id = c.person_id'
+  if (table === 'player') return 'select pl.id, p.full_name from player pl join person p on p.id = pl.person_id'
+  return `select id, name from ${table}`
+}
+
 async function assertIdsExist(ctx: SessionCtx, operation: string, args: unknown): Promise<void> {
   if (!args || typeof args !== 'object') return
-  const checks: { key: string; table: string; value: string }[] = []
-  for (const [key, raw] of Object.entries(args as Record<string, unknown>)) {
-    const table = ID_ARG_TABLES[key]
-    if (!table) continue
-    for (const value of Array.isArray(raw) ? raw : [raw]) {
-      // A subquery resolves inside the transaction against rows an earlier step made,
-      // so there is nothing here to check yet — the plan itself is the check.
-      if (typeof value !== 'string' || !UUID_ARG_RE.test(value)) continue
-      checks.push({ key, table, value })
-    }
-  }
+  const checks: IdCheck[] = []
+  collectIdArgs(args, '', '', 0, checks)
   if (!checks.length) return
 
-  const missing: string[] = []
+  // Grouped by table and asked once each. The same id can appear at several paths — a
+  // player who is also being marked timely — and the database only needs telling once.
+  const wanted = new Map<string, Set<string>>()
+  for (const c of checks) {
+    const set = wanted.get(c.table) ?? new Set<string>()
+    set.add(c.value.toLowerCase())
+    wanted.set(c.table, set)
+  }
+
+  const present = new Map<string, Set<string>>()
   await withSession(ctx, async (tx) => {
-    for (const c of checks) {
+    for (const [table, ids] of wanted) {
       const rows = (await tx.unsafe(
-        `select 1 from ${c.table} where id = ${uid(c.value)} limit 1`,
-      )) as unknown as unknown[]
-      if (!rows.length) missing.push(`${c.key} ${c.value} is not a ${c.table} you can see`)
+        `select id from ${table} where id in (${[...ids].map((v) => uid(v)).join(', ')})`,
+      )) as unknown as { id: string }[]
+      present.set(table, new Set(rows.map((r) => String(r.id).toLowerCase())))
     }
   })
-  if (missing.length) {
-    // The query that answers it, named. Without this the model's next move — watched —
-    // was to ask the admin to "confirm Ravi Menon's coach ID", which is a uuid, in a
-    // WhatsApp message, to somebody who has never seen one.
-    const reads = [...new Set(checks.filter((c) => missing.some((m) => m.startsWith(c.key))).map((c) => c.table))].map(
-      (t) =>
-        t === 'coach'
-          ? 'select c.id, p.full_name from coach c join person p on p.id = c.person_id'
-          : t === 'player'
-            ? 'select pl.id, p.full_name from player pl join person p on p.id = pl.person_id'
-            : `select id, name from ${t}`,
-    )
-    throw new Error(
-      `${operation}: ${missing.join('; ')}. Read it back first — ${reads.join(' · ')} — and use the id that comes ` +
-        'out. Never a uuid you have not read, and never ask a person for one. If you meant a row an earlier step ' +
-        'in this same plan creates, write it as `(select id from … )` instead.',
-    )
+
+  const missing = checks.filter((c) => !present.get(c.table)?.has(c.value.toLowerCase()))
+  if (!missing.length) return
+
+  // One sentence per id that is actually absent, not per position it appears in, and
+  // clipped: a register whose whole roster is wrong should say so in a line the model
+  // can act on, not in forty of them.
+  const seen = new Set<string>()
+  const said: string[] = []
+  for (const c of missing) {
+    const k = `${c.table}|${c.value.toLowerCase()}`
+    if (seen.has(k)) continue
+    seen.add(k)
+    if (said.length < 8) said.push(`${c.path} ${c.value} is not a ${c.table} you can see`)
   }
+  const more = seen.size - said.length
+
+  // The query that answers it, named. Without this the model's next move — watched —
+  // was to ask the admin to "confirm Ravi Menon's coach ID", which is a uuid, in a
+  // WhatsApp message, to somebody who has never seen one.
+  const reads = [...new Set(missing.map((c) => c.table))].map(readBackFor)
+  throw new Error(
+    `${operation}: ${said.join('; ')}${more > 0 ? ` (and ${more} more)` : ''}. Read it back first — ` +
+      `${reads.join(' · ')} — and use the id that comes out. Never a uuid you have not read, and never ask a ` +
+      'person for one. If you meant a row an earlier step in this same plan creates, write it as ' +
+      '`(select id from … )` instead.',
+  )
 }
 
 const UUID_ARG_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** A step in one short phrase, for a refusal that has to name the steps it took with it. */
+function describeStep(step: PlanStep): string {
+  if ('operation' in step) return `operation ${step.operation.name}`
+  if ('write' in step) {
+    const t = tableOf(step.write)
+    return t ? `${t.op} on ${t.table}` : `write ${step.write.replace(/\s+/g, ' ').trim().slice(0, 60)}`
+  }
+  if ('adjust' in step) {
+    // Rupees, because everything about money in this product is rupees, and a bare
+    // number in a sentence the model re-plans from is a number without a currency.
+    const a = step.adjust
+    return `${a.amount < 0 ? 'credit' : 'charge'} of ₹${Math.abs(a.amount)}`
+  }
+  if ('message' in step) {
+    return `message to ${step.message.to_contact_id ?? step.message.to_person_id ?? 'nobody'}`
+  }
+  if ('schedule' in step) return `schedule ${step.schedule.kind} for ${step.schedule.run_at}`
+  return 'note'
+}
+
+/**
+ * The one shape in which a later step can depend on an earlier one, and the repo already
+ * names it: `assertIdsExist` tells the model that a row an earlier step in the same plan
+ * creates must be written `(select id from … )`. Ids are otherwise passed in as arguments,
+ * which means they were read before the plan was composed and no step made them.
+ */
+const REFERS_TO_EARLIER_ROW = /\(\s*select\b/i
+
+function refersToEarlierRow(step: PlanStep): boolean {
+  if ('write' in step) return REFERS_TO_EARLIER_ROW.test(step.write)
+  if ('operation' in step) return REFERS_TO_EARLIER_ROW.test(JSON.stringify(step.operation.args ?? {}))
+  if ('schedule' in step) return REFERS_TO_EARLIER_ROW.test(JSON.stringify(step.schedule.payload ?? {}))
+  return false
+}
+
+/**
+ * Which of the plan's other steps this refusal actually took with it, and which it merely
+ * cancelled.
+ *
+ * Conservative in the one direction that matters: "would have run" is a claim the model
+ * will act on by re-sending the step, so anything the runtime cannot be sure about is
+ * reported as blocked instead. Two things are not sure — another call to the SAME operation
+ * (it meets the same gate and gets the same answer), and a later step written as
+ * `(select …)`, which is by construction a reference to a row an earlier step was going to
+ * make and might have been this one.
+ */
+function partitionAround(
+  steps: PlanStep[],
+  refusedIndex: number,
+  refusedOp: string,
+): { independent: string[]; blocked: string[] } {
+  const independent: string[] = []
+  const blocked: string[] = []
+  for (let i = 0; i < steps.length; i++) {
+    if (i === refusedIndex) continue
+    const step = steps[i] as PlanStep
+    const label = `step ${i + 1} (${describeStep(step)})`
+    const sameGate = 'operation' in step && step.operation.name === refusedOp
+    if (sameGate || (i > refusedIndex && refersToEarlierRow(step))) blocked.push(label)
+    else independent.push(label)
+  }
+  return { independent, blocked }
+}
+
+/**
+ * Long enough for the longest refusal any gate actually writes — `assertIdsExist`'s repair
+ * sentence names eight ids and the query that reads them back, and truncating THAT would
+ * reintroduce the defect one layer along. Short enough that a zod dump of a mis-shaped
+ * argument, which is JSON and can run to pages, does not become the turn's context.
+ */
+const REFUSAL_CHARS = 1200
+
+function renderRefusal(p: {
+  stepIndex: number
+  total: number
+  operation: string
+  refusal: string
+  independent: string[]
+  blocked: string[]
+}): string {
+  const said = p.refusal.length > REFUSAL_CHARS ? `${p.refusal.slice(0, REFUSAL_CHARS)}…` : p.refusal
+  const parts = [
+    `step ${p.stepIndex + 1} of ${p.total} (operation ${p.operation}) refused: ${said}`,
+    'Nothing was written and no other step was even attempted — an operation is built before the transaction ' +
+      'opens, so this is a rejection of the plan, not a rollback of it. The rest of the work is still to do.',
+  ]
+  parts.push(
+    p.independent.length
+      ? `These did not depend on it and would have run: ${p.independent.join('; ')}. Send them again as a plan ` +
+          `without step ${p.stepIndex + 1}, and drop only the ones that made sense solely because of it.`
+      : 'No other step in the plan was independent of it.',
+  )
+  if (p.blocked.length) {
+    parts.push(
+      `Do not simply re-send these as they stand: ${p.blocked.join('; ')} — they either meet the same gate or ` +
+        'refer to a row an earlier step in this plan was going to make.',
+    )
+  }
+  return parts.join(' ')
+}
+
+/**
+ * What a plan lost when one step's own gate refused it, itemised.
+ *
+ * @mechanism StepRefused — an operation's gate throwing during expansion is reported as an
+ *   itemised rejection — which step of how many, which operation, what it actually said, and
+ *   which of the plan's other steps did not depend on it and would have run — instead of the
+ *   bare `e.message` that named none of those. Expansion runs OUTSIDE the transaction, before
+ *   `withRollback`/`withSession` open, so nothing was written and no sibling step was even
+ *   attempted: "a plan is one transaction" is not what costs the surviving steps, the
+ *   reporting is, and a model that cannot see which step blocked cannot re-stage the work it
+ *   was always allowed to do.
+ *
+ * **The atomicity argument does not apply here, and it was quietly doing all the work.** A
+ * refusal inside `runSteps` is a rollback: statements ran, rows moved, and taking the whole
+ * plan back is the guarantee this file exists to provide. A refusal inside `expand` is not
+ * that. `expand` is called on the line ABOVE `withRollback` in `previewPlan` and above
+ * `withSession` in `executePlan`. When `send_invite`'s gate throws — *"nothing reaches a
+ * family until this academy is live, and it is 'setup'"* — no transaction has opened, no
+ * statement has run, and the other steps have not been looked at. They are lost to
+ * compilation, not to consistency.
+ *
+ * **What that cost, in one business.** Day 24 of the month drive, turn 165: the owner's plan
+ * was two `send_invite`s, three `mark_attendance`s and a coach pay line. The invite gate
+ * threw and took the coach's pay and three registers with it. The model was handed one
+ * sentence with no step in it, so it could not tell the owner which half had failed, and it
+ * could not re-send the half that was fine. It happened again on 25 and again on 26, and at
+ * turn 182 it apologised with a confident, wrong root cause covering all three. The owner
+ * left: *"this hasnt worked three times now and arjun still hasnt been paid. forget it im
+ * calling him myself and sorting this on paper."*
+ *
+ * **This does not make a plan partially execute, and it must not.** Deciding which steps to
+ * keep is the author's call, not the runtime's — the runtime cannot know that the message
+ * announcing the invite is a lie once the invite is gone. So it states the facts it holds
+ * with certainty and hands the re-staging back to the model, which is the layer that knows
+ * what the plan meant.
+ *
+ * The itemisation lives in the Error's own `message` rather than only in `failed()`, because
+ * a bare `e.message` is exactly how this failure was reported — anything that logs the throw,
+ * anywhere, gets the whole account rather than the first clause of it.
+ */
+export class StepRefused extends Error {
+  readonly code = 'STEP_REFUSED'
+  /** Zero-based into the plan's own step array; rendered one-based, the way a person counts. */
+  readonly stepIndex: number
+  readonly operation: OperationName
+  /** What the gate said, on its own, unwrapped. */
+  readonly refusal: string
+  readonly independent: string[]
+  readonly blocked: string[]
+
+  constructor(p: {
+    stepIndex: number
+    total: number
+    operation: OperationName
+    refusal: string
+    independent: string[]
+    blocked: string[]
+  }) {
+    super(renderRefusal(p))
+    this.name = 'StepRefused'
+    this.stepIndex = p.stepIndex
+    this.operation = p.operation
+    this.refusal = p.refusal
+    this.independent = p.independent
+    this.blocked = p.blocked
+  }
+}
 
 async function expand(
   ctx: SessionCtx,
@@ -456,15 +717,49 @@ async function expand(
 ): Promise<PlanStep[]> {
   const out: PlanStep[] = []
   let id = identity
-  for (const step of steps) {
+  for (let index = 0; index < steps.length; index++) {
+    const step = steps[index] as PlanStep
     if ('operation' in step) {
       if (depth >= 4) throw new Error('plan: operations nested too deep')
       const def = OPERATIONS[step.operation.name]
       if (!def) throw new Error(`plan: unknown operation "${step.operation.name}"`)
       id ??= await identityFor(ctx)
-      const args = def.params.parse(step.operation.args ?? {})
-      await assertIdsExist(ctx, step.operation.name, args)
-      const built = await def.build(ctx, args, id)
+      let produced: PlanStep[]
+      /**
+       * The whole expansion of ONE step is inside the try, not just `def.build`: a
+       * zod refusal of the arguments, an `assertIdsExist` miss and a gate the
+       * operation enforces itself are the same event from the plan's side — this
+       * step could not be compiled, and every other step is collateral. A nested
+       * operation refusing is the same event too, one level down, which is why the
+       * recursive call is in here with the rest.
+       */
+      try {
+        const args = def.params.parse(step.operation.args ?? {})
+        await assertIdsExist(ctx, step.operation.name, args)
+        const built = await def.build(ctx, args, id)
+        produced = await expand(ctx, built, depth + 1, id)
+      } catch (e) {
+        /**
+         * Only the plan's own level can name the steps that were lost, so a nested
+         * frame rethrows untouched and lets `depth === 0` do the accounting — the
+         * index it holds is into the OPERATION's built steps, which the model never
+         * wrote and cannot re-stage. The inner refusal survives as the message.
+         *
+         * A `PlanAbort` passes straight through in either case: `hintFor` keys off
+         * its `code` to buy the service-role re-run that says which kind of nothing
+         * happened, and wrapping it would spend that diagnosis to gain a step number.
+         */
+        if (depth > 0 || e instanceof PlanAbort) throw e
+        const around = partitionAround(steps, index, step.operation.name)
+        throw new StepRefused({
+          stepIndex: index,
+          total: steps.length,
+          operation: step.operation.name,
+          refusal: e instanceof Error ? e.message : String(e),
+          independent: around.independent,
+          blocked: around.blocked,
+        })
+      }
       /**
        * Steps an OPERATION produced are the runtime's own intent, and are marked
        * so `resolveContact` may address them to somebody the caller cannot see.
@@ -476,9 +771,9 @@ async function expand(
        * `PlanStepSchema` strips unknown keys from anything the model writes, so
        * this flag cannot be smuggled in from a plan.
        */
-      out.push(...(await expand(ctx, built, depth + 1, id)).map(
-        (s) => ('message' in s ? { ...s, message: { ...s.message, fromOperation: true } } : s),
-      ))
+      out.push(
+        ...produced.map((s) => ('message' in s ? { ...s, message: { ...s.message, fromOperation: true } } : s)),
+      )
     } else {
       out.push(step)
     }
@@ -698,7 +993,7 @@ async function runSteps(
          */
         throw new PlanAbort(
           'PRECONDITION_FAILED',
-          `a step needed ${step.requireRows} row(s) and matched ${n}`,
+          step.because ?? `a step needed ${step.requireRows} row(s) and matched ${n}`,
         )
       }
       continue
@@ -1128,7 +1423,16 @@ function emptyState(): RunState {
  */
 function assertSomethingChanged(expanded: PlanStep[], diffs: TableDiff[]): void {
   if (diffs.some((d) => d.count > 0)) return
-  const changers = expanded.filter((s) => 'write' in s || 'adjust' in s)
+  /**
+   * A guard is a `write` by shape and a read by intent, and only its author knows which.
+   * `send_invite`'s live-check is one `select`; counting it as a write made a plan of
+   * "check we are live, then message four families" abort as CHANGED_NOTHING, because
+   * messages produce no diff and the select produces no rows to diff. Excluded by an
+   * explicit flag rather than by looking at the SQL: a regex over a statement to decide
+   * whether it changes anything is the pattern-matching-prose failure this repo has paid
+   * for repeatedly, and the author already knows the answer at the moment it writes it.
+   */
+  const changers = expanded.filter((s) => ('write' in s && !s.guard) || 'adjust' in s)
   if (!changers.length) return
   throw new PlanAbort(
     'CHANGED_NOTHING',
@@ -1546,6 +1850,13 @@ function failed(state: RunState, e: unknown, hint?: string | null): PlanResult {
     totalRows: 0,
     stagedMessages: [],
     scheduled: [],
+    /**
+     * The summary stays the plain sentence for a `StepRefused` too, and deliberately.
+     * The itemisation is plan-builder internals — step numbers, operation names, a list
+     * of siblings — and this field is the one that has reached a phone verbatim before
+     * (see `buildSummary`, where the empty-write line was removed for exactly that).
+     * The model reads `error`; a person must never be handed a step index.
+     */
     summary: 'Nothing was changed and nobody was messaged.',
     // A plan that rolled back put nobody anywhere, and changed nothing for
     // anybody to be told about.
@@ -1553,7 +1864,16 @@ function failed(state: RunState, e: unknown, hint?: string | null): PlanResult {
     untold: [],
     emptyWrites: state.emptyWrites,
     unaddressed: state.unaddressed,
-    error: (e instanceof PlanAbort ? `${e.code}: ${message}` : message) + (hint ? ` — ${hint}` : ''),
+    /**
+     * `StepRefused` carries its own itemisation in `message` — which step of how many,
+     * what the gate said, and which siblings would have run — so it is prefixed with its
+     * code the way a `PlanAbort` is and otherwise passed through whole. Clipping or
+     * re-summarising it here would restore the defect it exists to retire: the model read
+     * one opaque sentence, could not tell which of six steps blocked, and apologised for
+     * the wrong cause three days running.
+     */
+    error: (e instanceof PlanAbort || e instanceof StepRefused ? `${e.code}: ${message}` : message) +
+      (hint ? ` — ${hint}` : ''),
   }
 }
 

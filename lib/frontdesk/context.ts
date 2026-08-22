@@ -62,12 +62,14 @@ by something that knows the schedule, the fees and the roster. Anything you were
 to say after it is a second message they did not need and probably a contradiction of
 the one they are about to receive. Call the tool and stop.
 
-A round in which you call no tool is you speaking to them, and it is the only way you
-speak. Text you write alongside a tool call is a note to yourself and nobody reads it.
+You speak by calling reply, and that is the only way you speak. Text you write anywhere
+else — beside a tool call, or in a round that calls nothing — is a note to yourself and
+reaches nobody.
 
-You are on WhatsApp. Plain text, no markdown headings, no links. You may offer up to
-three short buttons and they cost nothing; a person on a phone with one hand taps
-rather than types.
+You are on WhatsApp. Plain text, no markdown headings, no links. reply carries up to
+three short buttons and they cost nothing. The one question you are here to ask has two
+answers, so it has two buttons: a person on a phone with one hand taps rather than types,
+and a question somebody has to type the answer to is one many of them never answer at all.
 
 The people on the other side of this are running a business between classes, or trying
 to find somewhere for their child on a Tuesday evening. They did not read anything and
@@ -94,7 +96,8 @@ export function frontDeskTail(o: {
   identity: Identity
   arrival: Arrival | null
   named: AcademyCandidate[]
-  businessCount: number
+  /** Every business on this sender. Named to the model only when there is exactly one. */
+  businesses: AcademyCandidate[]
   atIso: string
 }): string {
   const lines: string[] = []
@@ -111,13 +114,51 @@ export function frontDeskTail(o: {
 
   lines.push('')
   lines.push('# What this number is')
-  lines.push(
-    o.businessCount === 0
-      ? 'No business is set up on this number yet. Nobody can be handed over to one, so the only destination that exists is starting one.'
-      : o.businessCount === 1
-        ? 'One business is run from this number.'
-        : `${o.businessCount} businesses are run from this number.`,
-  )
+  /**
+   * @mechanism whatThisNumberIs — when exactly ONE business runs on this number, the desk
+   *   is told its name and its id, so `join_business` is reachable for somebody who cannot
+   *   name it. Above one, the count stands alone as before.
+   *
+   *   The block used to be a bare count in every case, and the count is not something a
+   *   hand-over can be built from: `join_business` takes an academy id, `matchAcademiesByName`
+   *   only produces one from words the VISITOR used, and a customer of a business does not
+   *   generally know the string its owner typed into `start_business`. So a number with a
+   *   business on it and a visitor who could not name it had no reachable destination at
+   *   all, and the desk's only truthful move was to say it had nothing.
+   *
+   *   That is what it did. On `2026-08-22-08-13-sim-7bo8`, Divya Rao — whose daughter had
+   *   attended the evening batch for a year — wrote *"joining, my daughter anika is in the
+   *   evening batch already jus need timing for tonight"* on day 2 and was answered *"This
+   *   number doesn't hold any class schedule right now… That sounds like it may be a
+   *   different number than the one your daughter's class actually uses."* The business was
+   *   founded on this number on day 3 and she was never handed to it. On day 5 she wrote
+   *   *"wrong number sorry"* and left. Farah Sheikh left the same morning. They were the
+   *   only two customers in the world and the desk answered every one of their eight turns.
+   *
+   *   Naming the single business is not the tenant enumeration this block's own header
+   *   comment refuses, and the distinction is the count itself. Enumeration is learning
+   *   WHICH businesses share a number; with one business there is nothing to enumerate, and
+   *   the fact disclosed — that this number belongs to that business — is the answer to
+   *   "whose number have I dialled", asked by someone who has already dialled it. Above one
+   *   the refusal stands unchanged, because there the set is exactly what must not be read
+   *   out, and the model still has only what their own words named.
+   */
+  const whatThisNumberIs = ((): string => {
+    if (o.businesses.length === 0) {
+      return 'No business is set up on this number yet. Nobody can be handed over to one, so the only destination that exists is starting one.'
+    }
+    if (o.businesses.length === 1) {
+      const only = o.businesses[0]
+      return (
+        `One business is run from this number: ${only.name} (id ${only.academyId}). ` +
+        'It is the only destination a hand-over can have, so you do not need them to name it — if they are ' +
+        'looking for classes, or already have a child in one, that is where they belong. Ask whether that is ' +
+          'the one they mean and hand them over; do not tell somebody this number holds nothing.'
+      )
+    }
+    return `${o.businesses.length} businesses are run from this number.`
+  })()
+  lines.push(whatThisNumberIs)
 
   lines.push('')
   lines.push('# What they have already said')
@@ -137,11 +178,29 @@ export function frontDeskTail(o: {
     lines.push('Their words name no business on this number.')
   }
 
-  if (o.arrival?.askedAt) {
+  /**
+   * @mechanism answeredSinceAsked — this says WHEN they were asked and sends the model to
+   *   the thread; it no longer asserts that they never answered.
+   *
+   *   `arrival.asked_at` is stamped the first time the desk puts the question on their
+   *   screen and is never cleared, so the old sentence — "they have not answered it" —
+   *   became permanently true-shaped and permanently unverified. It is a claim about the
+   *   messages, made by a block that never reads them, while the messages themselves are
+   *   right there in the same request.
+   *
+   *   Divya Rao was asked on day 1 and answered on day 2 (*"joining, my daughter anika is
+   *   in the evening batch already"*). For the rest of her life at this desk the model was
+   *   told she had not answered. It is the "unstamped past" trap from ARCHITECTURE, in the
+   *   one block whose whole job is to stop the desk asking a second time.
+   */
+  const answeredSinceAsked = o.arrival?.askedAt ?? null
+  if (answeredSinceAsked) {
     lines.push('')
     lines.push(
-      'You have already asked this person which they are, and they have not answered it. ' +
-        'Asking again is the second time they have been asked the same question.',
+      `You put that question to this person at ${answeredSinceAsked.toISOString()}, and it is still on their ` +
+        'screen. Anything they have said since is in the thread above — read it before asking again. If they ' +
+        'have already told you, in any words, whether they are looking for classes or run them, that is the ' +
+        'answer and asking a second time is how somebody decides this number is a waste of their time.',
     )
   }
 

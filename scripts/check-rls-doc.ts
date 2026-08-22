@@ -36,11 +36,32 @@
  *   - The four views the grid makes a claim about really do run the way it says:
  *     security_invoker for the three that inherit the reader, definer for
  *     coach_public, which is the whole reason it exists.
+ *   - Named policies CONTAIN the clause that makes them safe
+ *     (`requiredPolicyClauses`). Everything above this line asks whether a
+ *     policy EXISTS and whether the grid's wording matches its shape. None of it
+ *     asks whether the policy says the thing it was written to say.
  *
  * WHAT IT DOES NOT CHECK: prose. Whether "their own family's" is the right
  * description of a five-clause EXISTS is a reading, not a query — same rule as
  * check-schema-doc. What is machine-decidable is checked here; the rest is
  * reviewed by a human, which is what the second direction of each check is for.
+ *
+ * A MIGRATION CAN BE IN THE REPO AND NOT IN THE DATABASE, and on 22 Aug 2026 two
+ * of them were: 0008_family_privacy.sql and 0028_rls_once_per_statement.sql had
+ * been committed, reviewed and referenced for weeks, and `app.my_coach_id()`
+ * appeared in exactly zero live policies. All fifty-five were still 0003's form,
+ * which is the form with no family privacy in it — any parent could read any
+ * classmate's player, person, enrollment and attendance rows. This check printed
+ * "The permission grid agrees with pg_policies" on that database, both before the
+ * repair and after it, because every question it asked was answered the same way
+ * either side of the hole: the policies existed, they mentioned the same helpers
+ * the grid's words demand, and their shape was unchanged. Nothing here compared a
+ * policy to what the policy is FOR.
+ *
+ * That is the class `requiredPolicyClauses` retires, and the reason it is a
+ * table of substrings rather than a rule: what makes a policy safe is a specific
+ * clause somebody wrote a migration to add, and the only durable record of which
+ * clause that was is the one written down beside the assertion.
  *
  * Exit code 1 on any divergence, so it can gate a commit.
  */
@@ -120,6 +141,44 @@ const VIEW_CLAIMS: { schema: string; name: string; invoker: boolean }[] = [
   { schema: 'public', name: 'class_coach_public', invoker: false },
 ]
 
+/**
+ * @mechanism requiredPolicyClauses — named policies must CONTAIN the clause that
+ *   makes them safe, retiring the class of defect where a migration is in the repo
+ *   and not in the database and every gate still reports success. Presence of a
+ *   policy is not the property anybody cares about: `player_cm_user_select` existed
+ *   throughout, in 0003's form, and 0003's form lets a parent read the whole
+ *   academy's children. What was missing was one clause, and a check that never
+ *   names a clause cannot miss one.
+ *
+ *   Each row is a policy that only does its job because of a specific expression,
+ *   and the expression's own name. The needle is the BARE helper name, never a
+ *   whole call: pg_policies renders a policy back through the planner, so the same
+ *   source appears as `app.my_coach_id()` where 0003 wrote it inline and as
+ *   `( SELECT app.my_coach_id() AS my_coach_id)` where 0028 wrapped it to make it
+ *   run once per statement instead of once per row. Both are the same guarantee.
+ *   `flatten` takes the rest — case, line breaks, the spaces Postgres puts inside
+ *   its own parentheses — so a reformatting of the catalog output is not a red run.
+ *
+ *   Add a row here whenever a migration exists to put a clause INTO a policy. The
+ *   row is what makes that migration's absence visible; without one, an unapplied
+ *   migration is indistinguishable from an applied one.
+ */
+const requiredPolicyClauses: { policy: string; contains: string[]; why: string }[] = [
+  // 0008, reapplied as 0046. Before it, each of these four read
+  // "academy_id = app.academy_id()" and nothing else for a coach — so the coach
+  // branch was the whole tenant, and the family branch had no coach half to sit
+  // beside. `my_coach_id` is the clause that narrows a coach to their own
+  // sessions' people, and it is what its absence let every parent read.
+  { policy: 'player_cm_user_select', contains: ['my_coach_id'], why: "a coach's own roster, and no other family's children" },
+  { policy: 'person_cm_user_select', contains: ['my_coach_id'], why: "a coach's own roster, and no other family's people" },
+  { policy: 'enrollment_cm_user_select', contains: ['my_coach_id'], why: "a coach's own classes, and no other family's enrolments" },
+  { policy: 'attendance_cm_user_select', contains: ['my_coach_id'], why: "a coach's own sessions, and no other family's attendance" },
+]
+
+/** Case, line breaks and the spaces Postgres prints inside its own parentheses, removed. */
+const flatten = (e: string): string =>
+  e.toLowerCase().replace(/\s+/g, ' ').replace(/\(\s+/g, '(').replace(/\s+\)/g, ')')
+
 type Cell = { text: string; none: boolean }
 type Row = { tables: string[]; cells: Record<Verb, Cell>; line: number }
 
@@ -185,6 +244,39 @@ for (const p of policies) {
   for (const v of verbs) {
     const key = `${p.tablename}.${v}`
     byTableVerb.set(key, [...(byTableVerb.get(key) ?? []), p.expr])
+  }
+}
+
+/**
+ * Asked of every policy on the table, not only the ones cm_user can reach,
+ * because a required clause is a property of the policy that was written — and a
+ * policy that has lost its role list is a different failure that the grid's own
+ * checks below will report in their own words.
+ */
+const namedPolicies = await q<{ policyname: string; tablename: string; expr: string }>(`
+  select policyname, tablename,
+         coalesce(qual,'') || ' ' || coalesce(with_check,'') as expr
+    from pg_policies
+   where schemaname = 'public'`)
+const exprByPolicy = new Map(namedPolicies.map((p) => [p.policyname, flatten(p.expr)]))
+
+for (const need of requiredPolicyClauses) {
+  const expr = exprByPolicy.get(need.policy)
+  if (expr === undefined) {
+    problems.push(
+      `policy ${need.policy} does not exist — it is the policy that gives ${need.why}, ` +
+        `so the migration that writes it has not reached this database`,
+    )
+    continue
+  }
+  for (const clause of need.contains) {
+    if (expr.includes(flatten(clause))) continue
+    problems.push(
+      `policy ${need.policy} exists and does NOT contain "${clause}" — it is supposed to give ` +
+        `${need.why}, and without that clause it gives the whole academy instead. ` +
+        `Check which migrations this database actually has: the policy being present ` +
+        `proves only that some OLDER migration wrote it.`,
+    )
   }
 }
 
@@ -300,7 +392,9 @@ for (const p of [...new Set(problems)].sort()) console.log(`    ${p}`)
 console.log(
   c.dim(
     `\n  Each of these is a round the model spends discovering what it was told wrong.\n` +
-      `  Fix lib/agent/schema-doc.ts if the grid is stale, or the migration if the policy is.\n`,
+      `  Fix lib/agent/schema-doc.ts if the grid is stale, or the migration if the policy is.\n` +
+      `  A missing REQUIRED CLAUSE is neither: it is a migration this database never got.\n` +
+      `  Ask it what it has — the repo having the file proves nothing about the server.\n`,
   ),
 )
 process.exit(1)

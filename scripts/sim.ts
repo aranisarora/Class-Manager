@@ -902,6 +902,7 @@ async function main(): Promise<void> {
     openDay: async () => {},
     forWindow: () => ({ today: {}, skip: new Map(), lag: new Map() }),
     admit: async () => {},
+    depart: () => {},
     truth: () => ({ ref: eventRef, about: '', seed: cfg.seed, chaos: {}, sessions: [], fired: [] }),
   }
   let events: EventsRuntime = INERT
@@ -1349,6 +1350,12 @@ async function main(): Promise<void> {
         seatSpend.moves += 1
         if (told.action === 'giveup') {
           gone.add(key)
+          // Told to the world as well as to the schedule. `gone` stops them being
+          // DEALT a window; it does not stop the world rolling weather at them, and
+          // for thirty days it did exactly that — a third of the chaos in the last
+          // run's `truth.json` was rain falling on two people who had walked out on
+          // day 5. The record of a week has to be a record of the people in it.
+          events.depart(key)
           departures.push({ persona: key, day, window: w, say: told.say })
         }
         const what =

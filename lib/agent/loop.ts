@@ -14,7 +14,7 @@ import { now, inZone } from '@/lib/clock'
 import { newId } from '@/lib/ids'
 import { env } from '@/lib/env'
 import { resolveIdentity } from '@/lib/identity'
-import { runFrontDeskTurn, type Handover } from '@/lib/frontdesk'
+import { runFrontDeskTurn, type FrontDeskRun, type Handover } from '@/lib/frontdesk'
 import { consumeAction, type ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { bodyWithSharedContacts, type SharedContact } from '@/lib/messaging/contact-card'
@@ -22,7 +22,7 @@ import { LIMITS, type SendOutcome } from '@/lib/messaging/types'
 import type { Identity, Job, Role } from '@/lib/types'
 import { generate, type Msg } from './deepseek'
 import { stablePrefix, variableTail } from './context'
-import { proseViolations, violationMessage } from './lint'
+import { proseViolations, structuralViolation, violationMessage } from './lint'
 import { traceabilityNote } from './traceability'
 import { fullTraceOn } from './turn-trace'
 import { captureSql, currentSql, type SqlRecord } from './sql-trace'
@@ -223,12 +223,27 @@ async function runTurnBody(input: TurnInput, turnId: string): Promise<TurnOutput
     if (input.actionId) {
       const consumed = await consumeAction(session, input.actionId, input.contactId)
       if (!consumed.ok) {
-        outcomes.push(
-          await composeAndSend(session, {
-            toContactId: identity.contact.id,
-            body: TAP_REFUSAL[consumed.reason],
-          }),
-        )
+        // The refusal becomes a fact the turn carries, and the turn runs. `TAP_REFUSAL`
+        // is still the floor underneath it — `backstop` below — reached only if the
+        // model produces nothing at all, which is the same deal every other exit gets.
+        // See `refusedTapBlock` for why this is not a §2.2 inference.
+        tap = {
+          op: 'refused',
+          intent: consumed.intent ?? '',
+          ok: false,
+          neverRan: true,
+          refusalReason: consumed.reason,
+          account: { tap: 'refused', reason: consumed.reason, ran: false, changed: [] },
+          backstop: TAP_REFUSAL[consumed.reason],
+        }
+        goToModel = true
+        trace.push({
+          round: 0,
+          name: `tap:refused:${consumed.reason}`,
+          ms: 0,
+          args: evidence({ actionId: input.actionId, intent: consumed.intent ?? null }, 2000),
+          result: { ran: false },
+        })
       } else if (consumed.payload.kind === 'reply') {
         // The only kind that re-enters the model: it replays as if the user
         // typed it.
@@ -354,7 +369,7 @@ async function runTurnBody(input: TurnInput, turnId: string): Promise<TurnOutput
       outputTokens = fd.outputTokens
       cachedTokens = fd.cachedTokens
       replyText = [replyText, fd.replyText].filter((s) => s.trim()).join('\n\n')
-      trace = [...trace, ...fd.trace]
+      trace = [...trace, ...frontDeskTrace(fd)]
       rounds = fd.rounds
       if (fd.error) error = fd.error
       handover = fd.handover
@@ -621,7 +636,19 @@ type TapNarration = {
    */
   backstop: string
   /** The plan itself, for seeding the turn's tool context with what it already did. */
-  res: Awaited<ReturnType<typeof executePlan>>
+  res?: Awaited<ReturnType<typeof executePlan>>
+  /**
+   * Set when the tap was refused AT THE GATE and the payload therefore never ran.
+   *
+   * A third case, and it is not the same as `ok: false`. That one means the plan RAN and
+   * the database rolled it back; this one means `consumeAction` would not claim the row —
+   * expired, already used, or gone — so there is no transaction, no diff and no `res` to
+   * seed from. The two were collapsed for the life of the product, and the collapse is
+   * why the gate refusal never reached a model at all.
+   */
+  neverRan?: true
+  /** Which refusal, for the model to read. Never shown as-is. */
+  refusalReason?: 'expired' | 'already_used' | 'wrong_contact' | 'missing'
 }
 
 /** What running a tapped payload produced, for the caller that has to record it. */
@@ -1126,8 +1153,63 @@ function projectTrace(trace: ToolTrace[], mode: 'stored' | 'full'): ToolTrace[] 
  *   read back from the transaction's own before/after images after it committed,
  *   which is precisely what F-CD's stale blurb was not.
  */
+/**
+ * @mechanism refusedTapBlock — a tap refused AT THE GATE opens an ordinary turn and
+ *   arrives here as a stated fact, instead of ending the turn with a fixed sentence.
+ *
+ *   The doc-comment above `TAP_REFUSAL` has said for a long time that "a refused tap now
+ *   opens an ordinary turn instead, where the model reads the actual refusal, can take
+ *   another route, and answers in this conversation's own terms". That was true of a tap
+ *   whose plan RAN and was rolled back, and false of a tap the gate would not claim:
+ *   `goToModel` is initialised to `!input.actionId`, and the `!consumed.ok` branch never
+ *   set it back, so the turn ended on a constant. Comment and code disagreeing about a
+ *   refusal is the shape F-R already paid for once, at `tools.ts:1901`.
+ *
+ *   What it cost, on `2026-08-22-08-13-sim-7bo8` turn 69 — the run's pivotal turn. The
+ *   owner tapped `[Add them]`, the button he had been handed the previous morning, and
+ *   got "That button has expired — tell me what you'd like and I'll sort it out." Zero
+ *   rounds, zero reads, Rs 0.00, 4.4 seconds. The action row was still there, still
+ *   holding the whole plan; nothing read it. Setup restarted and took four more days,
+ *   and every later failure in that month compounds from it. A tap is the most certain
+ *   input this product ever gets — one unambiguous byte of intent — and it was answered
+ *   with a blank prompt asking the person to type the whole thing again.
+ *
+ *   §2.2 is not in the way. It forbids the runtime INFERRING at tap time: no model may
+ *   decide what a stored payload does. Nothing here decides anything — the payload did
+ *   not run and will not run. This is the turn AFTER the refusal, which ANATOMY's own
+ *   split already licenses: the write is a tap, the sentence is a turn.
+ */
+function refusedTapBlock(tap: TapNarration, tapped: string): string {
+  const why =
+    tap.refusalReason === 'expired'
+      ? 'it had expired — it was minted earlier in this conversation and its window has closed'
+      : tap.refusalReason === 'already_used'
+        ? 'it had already been used, so whatever it carried has been dealt with once already'
+        : tap.refusalReason === 'wrong_contact'
+          ? 'it was not theirs to tap'
+          : 'there is no record of it any more'
+  const what =
+    tap.refusalReason === 'wrong_contact'
+      ? ''
+      : tap.intent
+        ? `\n\nWhat that button was going to do, in the words it was minted with: ${tap.intent}`
+        : '\n\nThe payload behind it cannot be read, so you do not know what it was going to do.'
+  return (
+    `# They tapped ${tapped}, and it did not go through\n\n` +
+    `Nothing ran and nothing changed — ${why}. They have not been told any of this yet; ` +
+    `you are the first thing that will speak to them about it.${what}\n\n` +
+    `They did the one thing they were asked to do. Do not make them type it out again: say plainly ` +
+    `that the button had gone stale, and put it back in front of them — re-stage the same thing and ` +
+    `offer a fresh confirmation if that is still what they want, or ask the single question you need ` +
+    `if something has changed since. Do not describe any of it as done.`
+  )
+  }
+
 function tapBlock(tap: TapNarration, label: string | undefined): string {
   const tapped = label?.trim() ? `**${label.trim()}**` : `a button carrying \`${tap.op}\``
+
+  if (tap.neverRan) return refusedTapBlock(tap, tapped)
+
   const head = tap.ok
     ? `# They tapped ${tapped}, and it has already run\n\n`
       + `That button carried ${tap.op === 'steps' ? 'a plan' : `\`${tap.op}\``} minted earlier in this `
@@ -1215,7 +1297,7 @@ async function modelTurn(
    * turn actually holds, rather than reading as invented.
    */
   if (tap) {
-    seedFromCommitted(toolCtx, tap.op, tap.res)
+    if (tap.res) seedFromCommitted(toolCtx, tap.op, tap.res)
     toolCtx.evidence?.push(toolContent(tap.account))
   }
   /**
@@ -1402,6 +1484,14 @@ async function modelTurn(
   let rounds = 0
   let forcedError: string | undefined
   /**
+   * Whether this turn has already been handed its one extra round for having answered
+   * in words while touching nothing. Once, never twice — see `answeringIsNotDoing`.
+   */
+  let saidNothingDone = false
+  /** The round `saidNothingDone` granted, and the draft held across it. */
+  let grantedRound = -1
+  let heldProse: string | undefined
+  /**
    * Whether the trailing text is the RUNTIME's sentence rather than the model's.
    *
    * True only on the apology ladder below — the three fixed sentences and the tap
@@ -1472,7 +1562,21 @@ async function modelTurn(
      * exists for precisely that state.
      */
     const prose = res.text ?? ''
-    if (!res.functionCalls.length) text = prose
+    /**
+     * …and the round `saidNothingDone` grants is the second way that assignment can be
+     * made false, discovered by the drive that shipped it.
+     *
+     * That round is the RUNTIME asking a question, so the model's prose in it answers the
+     * runtime and not the person — the same distinction `flattenToolTurns` keeps in the
+     * other direction. Left to the line below it overwrote the answer the previous round
+     * had written, and on `2026-08-22-12-47-sim-s4hg` the first message a newly founded
+     * business ever received was *"My clarifying question has already gone out — Rahul now
+     * needs to answer which he meant. Nothing for me to act on until he does."* — the note,
+     * in the third person, in place of the good reply it had drafted one round earlier.
+     * So the draft is HELD across the granted round and restored if that round calls
+     * nothing, which is also what makes the runtime's sentence below true when it says so.
+     */
+    if (!res.functionCalls.length) text = round === grantedRound && heldProse ? heldProse : prose
 
     // Every round leaves a record, not just the ones that went wrong. What the
     // model wrote, what it reached for, what it stopped for and what it spent —
@@ -1514,7 +1618,83 @@ async function modelTurn(
           : undefined,
     })
 
-    if (!res.functionCalls.length) break
+    /**
+     * The model stopped calling tools. That is not the same fact as the work being done,
+     * and for the whole life of this line the loop has treated them as one.
+     *
+     * Everything the turn knows about itself is supply-side. `turnState` counts rows
+     * written, messages landed and plans waiting on a tap; the other exit below asks
+     * whether this person was answered and whether anything is half-done, where
+     * "half-done" is `pendingPlans.size === 0` — a plan the model itself started. There
+     * is no term anywhere for work never begun, so a round that answers in words and
+     * touches nothing ends the turn here, unconditionally, with four of five rounds
+     * unspent.
+     *
+     * Reflection is then the first round in the turn shown the FINISHED turn, and it is
+     * the one round forbidden to act. On `2026-08-22-08-13-sim-7bo8` it reached for a
+     * third tool in 5 of 40 reflection rounds and every one was dropped. Turn 29 is the
+     * shape: Rahul said *"so add them as coaches then"*, round 1 explained the three pay
+     * units and called nothing, the turn ended here having spent ₹0.55 and changed no
+     * row, and nine seconds later reflection wrote *"the user explicitly said add them as
+     * coaches then. So let me do it"* and composed the four correct inserts, into a round
+     * that runs after the send and may not have them. Setup restarted and took four more
+     * days. The runtime built the round with the best vantage point and made it the only
+     * powerless one — so the fix belongs HERE, before anything has been said, and not in
+     * `REFLECT_TOOLS`, where a write would land behind a reply that already described a
+     * different turn.
+     *
+     * @mechanism saidNothingDone — a round that answers in words while the turn has
+     *   touched NOTHING does not end the turn. It costs one round, once (`saidNothingDone`),
+     *   (the flag this is named for) and only where the model called no tool at all this turn — not a turn that read and
+     *   then answered, which has looked at something. The runtime states its own emptiness
+     *   rather than guessing at intent: `consumeAction` is the one path with no model in it
+     *   and this is the same discipline, so the round says what is true (nothing changed)
+     *   and leaves what it means (was a change asked for?) to the only thing that can read
+     *   the sentence. Calling nothing again is the correct answer to a question and exits on
+     *   the next pass, which is what the round C30 removed used to do for no reason at all.
+     *
+     *   Sized before it was built, over the thirty-day drive: 6 of 41 brain turns called no
+     *   tool at all and 5 of those changed no row, so this fires about five times a month at
+     *   roughly ₹0.10 a round — 1.5% of a ₹33.77 run. The five are `d4-08:30-rahul-menon`
+     *   (the miss above), `d19-08:31`, `d25-20:16-rukmini-sarangi`, `d28-08:31` and
+     *   `d26-08:30-rahul-menon`, which is the turn the owner left on: *"This hasnt worked
+     *   three times now and arjun still hasnt been paid"*, answered honestly and with no
+     *   attempt at the one write that would have answered him.
+     *   Closes F-DK.
+     */
+    if (!res.functionCalls.length) {
+      const untouched =
+        toolCalls === 0 &&
+        !tap &&
+        input.source !== 'job' &&
+        (toolCtx.executed?.length ?? 0) === 0 &&
+        toolCtx.pendingPlans.size === 0
+      if (untouched && !saidNothingDone && prose.trim() && round < MAX_TOOL_ROUNDS - 1) {
+        saidNothingDone = true
+        grantedRound = round + 1
+        heldProse = prose
+        messages.push(res.assistant)
+        messages.push({
+          role: 'user',
+          content:
+            '[Your message is written and HELD, not sent — it goes as it stands the moment you call nothing, ' +
+            'and you do not need to write it again. This round is mine, not theirs: nothing you type in it ' +
+            'reaches anybody. You have called no tool this turn, so nothing in this business has been read ' +
+            'and no row has changed. If what they asked for was a CHANGE, it has not happened — make it now, ' +
+            'or stage it and put it behind a button, and your held message goes out with it. If they asked a ' +
+            'question you have already answered, call nothing and it ships. ' +
+            `${turnState(toolCtx)}]`,
+        })
+        trace.push({
+          round: rounds,
+          name: '(answered in words, nothing done — one round to act)',
+          ms: 0,
+          args: evidence(prose, 2000),
+        })
+        continue
+      }
+      break
+    }
 
     // Echo the assistant message back verbatim — `reasoning_content` included,
     // as the API's history contract asks.
@@ -1897,8 +2077,34 @@ async function modelTurn(
    * the model's deliberation — "I will stay quiet until Wednesday", watch bookkeeping,
    * "no follow-up is needed" — as real messages (findings-archive.md F-B). Discarded,
    * with a trace entry so a drive can still see what the model was thinking.
+   *
+   * @mechanism stagedTapAwaitingThem — a job turn's trailing prose is discarded UNLESS the
+   *   turn staged a confirmation somebody has to tap. Deliberation is not an offer: F-B's
+   *   discard is about a job narrating itself, and it stays. But a staged plan is the one
+   *   thing a job can produce that REQUIRES a sentence, because the button is minted onto
+   *   the trailing message and nothing else on this path can carry it. Discarding the prose
+   *   discards the offer with it, silently, and the job records as done.
+   *
+   *   This is an ORDERING defect, which is the class ANATOMY exists to catch:
+   *   `pendingConfirmation` was computed ~50 lines BELOW this discard, so the one fact that
+   *   decides whether the prose is disposable was not yet in hand when it was disposed of.
+   *   It is pure — it reads `pendingMeta`/`pendingPlans` and builds a string — so hoisting
+   *   it costs nothing and calling it twice is the same as calling it once.
+   *
+   *   What it cost, on `2026-08-22-08-13-sim-7bo8`: `proposeGoLive` fired on day 22 exactly
+   *   as designed, and the model composed the offer it was asked for — *"Six sessions have
+   *   already run with nobody told … Going live is one tap on your side — nothing switches
+   *   on until you press it."* — with a plan staged behind it. `sent=0`. It was discarded
+   *   here. The second attempt on day 29 reached the owner only as an escalation template
+   *   with `buttons: []`, three days after he had given up and left. The owner was never
+   *   once offered a go-live tap in thirty days, the business finished at
+   *   `onboarding_state='setup'`, no family was ever contacted and the coach was never paid.
+   *   The agent_task instruction that job carries says, in its own words, *"stage a plan …
+   *   and put it behind a button they tap"* — the runtime was throwing away the only half
+   *   of that it cannot do without the model.
    */
-  if (text.trim() && !spoke() && input.source === 'job') {
+  const stagedTapAwaitingThem = pendingConfirmation(toolCtx)
+  if (text.trim() && !spoke() && input.source === 'job' && !stagedTapAwaitingThem) {
     trace.push({ round: rounds, name: '(job turn: trailing prose discarded, tools are how a job speaks)', ms: 0, args: evidence(text, 2000) })
     text = ''
   }
@@ -1947,7 +2153,11 @@ async function modelTurn(
      * which is the same round of grace the `reply` tool gives — reached here by
      * asking again rather than by rewriting.
      */
-    const pending = pendingConfirmation(toolCtx)
+    // Hoisted to `staged` above, where the job-turn discard needs it. One call, one
+    // answer: two reads of `pendingMeta` either side of a mutation is exactly the
+    // "two authors of one truth" shape, and the discard's whole correctness rests on
+    // this being the same fact it tested.
+    const pending = stagedTapAwaitingThem
     const totalRows = [...(toolCtx.pendingMeta?.values() ?? [])]
       .filter((m) => m.needsConfirm)
       .reduce((n, m) => n + m.totalRows, 0)
@@ -2021,6 +2231,29 @@ async function modelTurn(
         if (rewritten && !proseViolations(rewritten, identity).length) outgoing = rewritten
       } catch {
         /* the draft still goes; a failed repair must not become silence */
+      }
+
+      /**
+       * …unless the draft is not prose at all. See `structuralViolation` in
+       * `lib/agent/lint.ts` for the argument and for what it cost. "A failed repair must
+       * not become silence" holds — this does not go quiet, it says one true sentence in
+       * the runtime's own voice, which is the same floor the recovery ladder stands on
+       * twenty lines above. `runtimeAuthored` is set so the R10 note and the reflection
+       * preamble both know the words that went out were not the model's.
+       */
+      const stillStructural = structuralViolation(proseViolations(outgoing, identity))
+      if (stillStructural) {
+        trace.push({
+          round: rounds,
+          name: '(trailing message withheld: machinery, and the repair did not fix it)',
+          ms: 0,
+          args: evidence({ violation: stillStructural, draft: outgoing }, 2000),
+        })
+        outgoing = tap
+          ? tap.backstop
+          : "I worked that out but couldn't get it into a sendable message — that's mine, not yours. "
+            + 'Ask me again and I will put it plainly.'
+        runtimeAuthored = true
       }
     }
 
@@ -2194,10 +2427,43 @@ async function modelTurn(
       // two were not already refusing.
       toolCtx.repliedTo?.add(identity.contact.id)
 
+      /**
+       * @mechanism reflectionOpening — the reflection preamble is DERIVED from
+       *   what reached the asker, not asserted over it. It opened with the flat sentence
+       *   "The reply has gone and nobody is waiting" on every turn that reached this
+       *   round, including turns where the model's own `reply` had been REFUSED and the
+       *   runtime had sent something else in its place.
+       *
+       *   That is not a small inaccuracy: reflection is the round where the model works
+       *   out what the turn actually did, and it was being handed a false premise about
+       *   the one fact that decides whether anything is still owed. Measured on
+       *   `2026-08-22-08-13-sim-7bo8`, 18 of 44 brain turns spent this round litigating
+       *   whether they had already spoken. Turn 56: *"it seems the runtime is telling me
+       *   that a reply was already sent. But I haven't composed one. This is odd."*
+       *   Turn 102: *"So actually I already replied this turn? … Let me just produce my
+       *   reply text since that's what ships"* — and producing plain text instead of
+       *   calling `reply` is the exact path that put a raw tool-call envelope on a
+       *   parent's phone in turn 172.
+       *
+       *   `spoke()` is the same predicate the exits use (ANATOMY stage 4, item 1: what
+       *   reached the ASKER's phone), so this sentence and the recovery ladder can no
+       *   longer disagree about whether the person was answered. Where the model's own
+       *   draft was replaced on the way out, say so plainly rather than let "the reply"
+       *   stand for a body it never wrote.
+       */
+      const answered = spoke()
+      const reflectionOpening = answered
+        ? runtimeAuthored
+          ? 'Something reached them, but it was not the message you wrote — the runtime sent its own ' +
+            'sentence because yours could not go as written. Do not treat your draft as delivered.'
+          : 'The reply has gone and nobody is waiting.'
+        : 'NOTHING reached them this turn. Whatever you drafted did not arrive, so do not record it as ' +
+          'said or promise anything on the strength of it.'
+
       messages.push({
         role: 'user',
         content:
-          '[The reply has gone and nobody is waiting. Two questions are left open; anything not listed ' +
+          `[${reflectionOpening} Two questions are left open; anything not listed ` +
           'here was handled during the turn and must not be repeated. "Neither" is the common and correct ' +
           'answer, and calling nothing at all is the system working. Only ' +
           REFLECT_TOOLS.map((t) => '`' + t + '`').join(' and ') +
@@ -2367,6 +2633,75 @@ async function modelTurn(
  * Flattening keeps every fact and loses only the encoding. "Everything the turn learned
  * is already sitting in `contents`" is the comment above; this is what makes it true.
  */
+/**
+ * @mechanism frontDeskTrace — the front desk's turn is rendered into trace rows by the
+ *   SAME author that renders a tenant turn's, so `(context)` and `(model)` exist on both
+ *   and one set of caps governs both. `lib/frontdesk/turn.ts` hands back plain data
+ *   (`FrontDeskRecord`) rather than rows, because it cannot import `evidence` or the
+ *   markers from this file without closing an import cycle — so the shape lives here,
+ *   once, instead of being copied there and drifting.
+ *
+ *   What it retires: the desk ran the model and recorded none of it. Its `run.trace`
+ *   was only ever pushed to from inside `for (const call of gen.functionCalls)`, so a
+ *   round that answered a person in PROSE — which is every round that answers a
+ *   stranger — wrote nothing at all. Measured on `2026-08-22-08-13-sim-7bo8`: 16 desk
+ *   turns, 0 with a `(model)` row, 0 with a `(context)` row, and `turn_record` rows
+ *   averaging 121 bytes against 45,280 for the 45 tenant turns. An empty row that
+ *   exists is worse than an absent one — it reads as coverage, and the judge scored 45
+ *   of 218 turns without ever being able to see the eight in which this product lost
+ *   both of the customers it started with.
+ *
+ *   The desk also clipped its own tool rows with a literal `.slice(0, 2000)`, which
+ *   `captureFullTrace` could not lift because the value arrived already short. Those
+ *   values come through whole now and are wrapped here, so the cap is the one every
+ *   other tool row gets and `PROBE_FULL_TRACE` reaches the desk for the first time.
+ */
+function frontDeskTrace(fd: FrontDeskRun): ToolTrace[] {
+  const out: ToolTrace[] = [
+    {
+      round: 0,
+      name: CONTEXT_MARKER,
+      ms: 0,
+      args: {
+        prefix: { chars: fd.record.prefixChars, head: '(front desk — byte-identical for every stranger)' },
+        tail: fd.record.tail,
+        said: fd.record.said || null,
+        history: fd.record.historyCount,
+      },
+    },
+  ]
+  // The model's round, then the calls it made in that round — the order a tenant turn
+  // reads in, so one reader renders both without knowing which path produced it.
+  const toolRows = fd.trace
+  for (const r of fd.record.rounds) {
+    out.push({
+      round: r.round,
+      name: TRACE_MARKER,
+      ms: r.ms,
+      args: r.prose ? evidence(r.prose, 4000) : { returnedNothing: true },
+      ...(r.reasoning ? { reasoning: evidence(r.reasoning, REASONING_TRACE_CAP) } : {}),
+      result: {
+        in: r.promptTokens,
+        cached: r.cachedTokens,
+        out: r.outputTokens,
+        calls: r.calls,
+        finish: r.finish ?? 'unknown',
+      },
+    })
+    for (const t of toolRows.filter((t) => t.round === r.round)) {
+      out.push({ ...t, args: evidence(t.args, 4000), result: evidence(t.result, 4000) })
+    }
+  }
+  // A tool row whose round never made it into `record.rounds` — a `generate` that threw
+  // after its calls were traced, say. Recorded rather than dropped: the turns worth
+  // reading are the ones that went wrong.
+  const seen = new Set(fd.record.rounds.map((r) => r.round))
+  for (const t of toolRows.filter((t) => !seen.has(t.round))) {
+    out.push({ ...t, args: evidence(t.args, 4000), result: evidence(t.result, 4000) })
+  }
+  return out
+}
+
 function flattenToolTurns(messages: Msg[]): Msg[] {
   const names = new Map<string, string>()
   const out: Msg[] = []
@@ -2385,7 +2720,30 @@ function flattenToolTurns(messages: Msg[]): Msg[] {
       // The reasoning is deliberately dropped rather than flattened. It belongs to
       // the call it was emitted with, the call is gone, and it was never something
       // to answer from — the results below are.
-      out.push({ role: 'assistant', content: [said, ...lines].filter(Boolean).join('\n') })
+      //
+      // @mechanism flattenToolTurns — a flattened tool CALL is narrated in
+      //   the runtime's voice, never in the model's. A call is something the model DID;
+      //   only `content` is something it SAID. This function already draws that line for
+      //   the other half — a tool RESULT goes out as `role: 'user'`, `[name came back: …]`
+      //   — and put the call itself into `role: 'assistant'`, so the flattened history
+      //   claimed the model had uttered `[you called reply with {"body": …}]`.
+      //
+      //   Both callers of this function are TOOLLESS rounds (the recovery round and the
+      //   repair round). A model with no tools, shown that as its own last utterance and
+      //   asked to speak, reproduces it — which is not a hallucination, it is the harness
+      //   handing back its own rendering and calling it speech. On
+      //   `2026-08-22-08-13-sim-7bo8` turn 172 that string reached a paying parent on his
+      //   first contact, escaped newlines and all: the model had done exemplary work
+      //   (five reads, correctly scoped to his own child), its `reply` was refused for an
+      //   unrelated reason, the recovery round echoed this rendering back, the repair
+      //   round echoed it again, and the ladder sent the original.
+      //
+      //   Nothing is withheld by the change: the model is still told exactly what it
+      //   called and with what. It is told in the second person by the runtime, in the
+      //   same shape and the same voice as the results it is already told about, so there
+      //   is no utterance of its own to copy.
+      if (said) out.push({ role: 'assistant', content: said })
+      if (lines.length) out.push({ role: 'user', content: lines.join('\n') })
       continue
     }
     if (m.role === 'tool') {

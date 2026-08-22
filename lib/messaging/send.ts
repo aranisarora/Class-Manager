@@ -1017,14 +1017,54 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
         [...(msg.subjectPersonIds ?? [])].sort().join('+') ??
         row.contact_id
       const question = (msg.confirmation?.question ?? msg.body ?? '').slice(0, 500)
-      await tx`
+      /**
+       * The question and the BUTTON that answers it retire together, or the state is
+       * split — and a split state is the shape 0016 already exists to kill, one level up.
+       *
+       * This statement was retiring the question alone. The card it was printed on stayed
+       * tappable for its full lifetime, so a re-ask left the owner holding two live
+       * `[Do it]` buttons for one decision, the older one describing a version of the plan
+       * they had already corrected, while `standing()` correctly reported only the newer
+       * question. Driven on `2026-08-22-13-29-sim-8528`: the owner gave a timetable on day
+       * 5, added the Saturday squad and Arjun on day 6, and both cards were live and
+       * identical-looking at the end of the run — `expired_reason` null on each.
+       *
+       * The subject is the one computed above and not a second notion of sameness. A
+       * button-side key of its own (`subjectKeyOf`) answers a different and narrower
+       * question — what a payload WRITES — and it missed this pair precisely because the
+       * corrected plan wrote two more tables than the plan it replaced. Whether two asks
+       * are the same ask is already decided here, once, and this makes the affordance obey
+       * the decision instead of outliving it.
+       *
+       * @mechanism staleAsks — retiring an unanswered question also retires the buttons
+       *   on the message that asked it, in the same statement-pair and on the same subject,
+       *   so a re-ask can never leave an earlier version of the same decision tappable. The
+       *   narrowness is inherited rather than invented: only a message that actually wrote a
+       *   `pending_request` is reached, which `isConfirmationRequest` already limits to asks
+       *   somebody has to answer, so a reminder card pairing `[I'll be there]` with `[Can't
+       *   make it]` is untouched exactly as it is by 0016.
+       *   Closes F-DR.
+       */
+      const staleAsks = await tx<{ message_id: string | null }[]>`
         update pending_request
            set resolved_at = app.now(), resolution = 'superseded'
          where academy_id = ${row.academy_id}
            and contact_id = ${row.contact_id}
            and kind = ${kind}
            and subject = ${subject || row.contact_id}
-           and resolved_at is null`
+           and resolved_at is null
+        returning message_id`
+      const staleMessageIds = staleAsks.map((r) => r.message_id).filter((id): id is string => Boolean(id))
+      if (staleMessageIds.length) {
+        await tx`
+          update action
+             set expires_at = app.now(),
+                 expired_reason = 'superseded_ask'
+           where academy_id = ${row.academy_id}
+             and message_id = any (${staleMessageIds}::uuid[])
+             and consumed_at is null
+             and (expires_at is null or expires_at > app.now())`
+      }
       /**
        * **`expires_at` was left NULL on every row, and that made the sweep dead
        * code.** `plan-ahead.ts` resolves stale questions with `expires_at is not

@@ -43,6 +43,10 @@ import { now, inZone } from '@/lib/clock'
 import { dayDiff, longDate } from '@/lib/format'
 import { catalogDigest } from '@/lib/messaging/catalog'
 import { SCHEMA_DOC } from '@/lib/agent/schema-doc'
+// The one place an id becomes SQL text. Used by `familyScope` below so the census's own
+// predicates are built the way an operation's are, and so an id that is not a uuid throws
+// instead of being interpolated.
+import { uid } from '@/lib/agent/sql'
 import { hotSet } from '@/lib/agent/memory'
 import { vocabularyPreferences } from '@/lib/agent/lint'
 // The model cannot read `job` — it is global and closed in both directions — so
@@ -737,6 +741,47 @@ async function census(id: Identity): Promise<string> {
   }
 
   /**
+   * Whose row this is, carried on the row itself.
+   *
+   * @mechanism censusProvenance — a census row that names a person says, on the same line, which
+   *   account it hangs off and whether that account is one this person holds. It retires the
+   *   class of defect where the runtime's own heading is the only thing vouching for a row: a
+   *   heading says "theirs", the model reads it as certified, and a row that is somebody
+   *   else's is repeated back as fact — including, once, a fee.
+   *
+   * The heading above the family session list says *their* sessions and *use these times
+   * verbatim*, and the prompt says the census was "already read out of the database, not a
+   * plan … so you never have to guess". That is a strong claim, and on the 30-day run it was
+   * spent on a list that had never been filtered: the census named another parent's son, the
+   * model's own correctly-scoped read disagreed, and the census won — three times in one turn,
+   * in writing. A later turn only recovered because the model happened to read
+   * `app.session_roster`, which projects `account_id`, and could finally see that the two
+   * children sat on different accounts.
+   *
+   * So the fact it had to buy a fifth query to learn now travels with the row. This is
+   * deliberately not a guarantee restated in prose — the predicate in `familyScope` below is
+   * what makes the list theirs, and this is the row's own account saying so independently. If
+   * the two ever disagree, the model sees the disagreement instead of a heading that has
+   * already resolved it.
+   *
+   * A row that carries no `account_id` (the coach branch's sessions) gets nothing added, so
+   * the one renderer stays the one renderer.
+   */
+  const censusProvenance = (r: Record<string, unknown>): string => {
+    // Absent, not null: `player.account_id` is NOT NULL, so undefined here means the statement
+    // never selected the column — which is the coach branch, and it gets nothing added.
+    if (r.account_id === undefined) return ''
+    const holder = r.account_label ? String(r.account_label) : ''
+    // `account` is readable by its own family and by nobody else, so an unreadable holder is
+    // not a glitch — it is the row telling you it belongs to a household this person cannot
+    // see. Say that, rather than dropping the clause and letting the row pass as unremarkable.
+    if (!holder) return ` · account holder not readable from their session`
+    return id.accountIds.includes(String(r.account_id))
+      ? ` · ${holder}'s account`
+      : ` · ${holder}'s account — NOT one of theirs`
+  }
+
+  /**
    * A session as a person says it, not as the row stores it.
    *
    * Rendered here rather than handed over raw, because a raw `starts_at` is the
@@ -753,12 +798,14 @@ async function census(id: Identity): Promise<string> {
     // A bare class name, under a heading that says "use these times verbatim", is an
     // invitation to supply the missing half from nowhere — which is exactly the
     // failure this whole block exists to prevent. Say the time is missing instead.
+    // Whose it is still travels: an unreadable clock is no reason to lose the one
+    // fact that says the row may not be theirs to be told about at all.
     if (Number.isNaN(at.getTime())) {
-      return `${String(r.class_name ?? 'a class')} — start time unreadable, look it up before you state one`
+      return `${String(r.class_name ?? 'a class')} — start time unreadable, look it up before you state one${censusProvenance(r)}`
     }
     const who = r.who ? `${String(r.who)} — ` : ''
     const venue = r.venue ? ` at ${String(r.venue)}` : ''
-    return `${who}${String(r.class_name ?? 'a class')}, ${inZone(at, tz).label}${venue}`
+    return `${who}${String(r.class_name ?? 'a class')}, ${inZone(at, tz).label}${venue}${censusProvenance(r)}`
   }
 
   try {
@@ -1029,21 +1076,75 @@ async function census(id: Identity): Promise<string> {
     }
 
     if (id.accountIds.length || id.playerIds.length) {
+      /**
+       * The predicate that makes this branch's rows *theirs*.
+       *
+       * @mechanism familyScope — narrows every statement in the family census to the accounts
+       *   and players this person actually holds, the way the coach branch above narrows every
+       *   one of its statements to `sc.coach_id`. It retires the class of defect where a census
+       *   label says "their children" over rows nothing filtered — a heading that is true for a
+       *   coach and false for a parent because one branch was written with the ids in hand and
+       *   never used them.
+       *
+       * The ids were three lines up the whole time: this branch is *entered* on
+       * `id.accountIds.length || id.playerIds.length`, and then neither statement mentioned
+       * either array. Layer 0 was the only thing standing between a parent and another
+       * household — and on the 30-day run layer 0 was not standing there at all, because
+       * 0008's family-privacy policies had gone missing from the database. The census duly
+       * told Rukmini Sarangi that Devendra Ahluwalia's son Kabir was one of hers, and then
+       * disclosed his fee. 0046 has re-applied the RLS; this is the second belt, and it is
+       * required whether or not the first one holds. A query that claims "theirs" over rows it
+       * never filtered is wrong even on a database where the answer happens to come back
+       * right, because the only thing making it right is somewhere else.
+       *
+       * Both halves are ORed, not ANDed: a person can reach a session through an account they
+       * hold *or* through a player row that is them, and an adult player on somebody else's
+       * account has the second and not the first. `uid` rejects anything that is not a uuid,
+       * and a throw here is caught by this function's own handler — so a malformed id costs
+       * the census, which is a stated hole in the prompt, rather than producing a statement
+       * with a predicate missing from it. The branch condition guarantees at least one clause,
+       * so this never renders an empty `in ()`.
+       */
+      const familyScope = (alias: string): string => {
+        const clauses: string[] = []
+        if (id.accountIds.length) clauses.push(`${alias}.account_id in (${id.accountIds.map(uid).join(', ')})`)
+        if (id.playerIds.length) clauses.push(`${alias}.id in (${id.playerIds.map(uid).join(', ')})`)
+        return `(${clauses.join(' or ')})`
+      }
       const [rec, next] = await Promise.all([
+        // Both counts were over the whole tenant and were read out as "their children" and
+        // "live enrolment(s)" — so in a business with two families the label was arithmetic
+        // nobody could check and a number twice the truth. The enrolment count goes through
+        // the players rather than carrying a scope of its own, because "their enrolments" and
+        // "enrolments of their players" have to be the same set or the two numbers on one line
+        // disagree.
         q(`select
-          (select count(*) from player where active) as players,
-          (select count(*) from enrollment where ended_on is null) as enrolled`, 'prefetch: family counts'),
+          (select count(*) from player pl where pl.active and ${familyScope('pl')}) as players,
+          (select count(*) from enrollment e where e.ended_on is null
+             and e.player_id in (select pl.id from player pl where ${familyScope('pl')})) as enrolled`,
+          'prefetch: family counts'),
         // §9's most-asked question is "what time is his class", and it cost a round
         // every time because the tail carried a count and a bare timestamp. These are
         // the actual rows, already in their words.
-        many(`select pe.full_name as who, c.name as class_name, s.starts_at, v.name as venue
+        //
+        // The account joins are LEFT joins and stay that way. `account` is readable by its own
+        // family and nobody else, so an inner join would silently DROP a row this person is
+        // entitled to see the moment the holder is out of their reach — and an empty list here
+        // is rendered as "nothing is scheduled ahead for them at all", the one sentence in this
+        // file a parent acts on by staying home. Provenance may go missing; the session may not.
+        many(`select pe.full_name as who, c.name as class_name, s.starts_at, v.name as venue,
+                     pl.account_id,
+                     coalesce(nullif(acc.display_name, ''), hp.full_name) as account_label
                 from session s
                 join class c on c.id = s.class_id
                 join enrollment e on e.class_id = s.class_id and e.ended_on is null
                 join player pl on pl.id = e.player_id and pl.active
                 join person pe on pe.id = pl.person_id
+                left join account acc on acc.id = pl.account_id
+                left join person hp on hp.id = acc.holder_person_id
                 left join venue v on v.id = coalesce(s.venue_id, c.venue_id)
                where s.status = 'scheduled' and s.starts_at > app.now()
+                 and ${familyScope('pl')}
                order by s.starts_at limit 4`, 'prefetch: family next sessions'),
       ])
       const bits: string[] = []
@@ -1071,17 +1172,29 @@ async function census(id: Identity): Promise<string> {
           (rows) =>
             rows.length
               ? [
-                  `- their next session(s), soonest first (up to 4 shown) — use these times verbatim:`,
+                  // The heading no longer has to be believed on its own. It says what the
+                  // statement was filtered to and hands the check over, because the reason this
+                  // list was wrong was that nothing downstream of the heading could tell.
+                  `- their next session(s), soonest first (up to 4 shown) — filtered to their own ` +
+                    `account(s) and player(s), and each row names the account it sits on. Use these times ` +
+                    `verbatim. If a row names an account that is not theirs, believe the row, not this line:`,
                   ...rows.map((r) => `    · ${sessionLine(r)}`),
                 ]
               : // Only when the query actually RAN and returned nothing. This sentence is
                 // the most consequential one in the census — a parent who reads it stays
                 // home — and until `many` separated failure from emptiness, a refused or
                 // timed-out lookup produced it word for word.
+                //
+                // It is now scoped, which makes it narrower as well as truer: it is a fact
+                // about their children and about nothing else. F-AD is what the second half is
+                // for — the old unscoped version at least happened to be about the business,
+                // and read without care this one licenses "there are no classes", which went to
+                // a stranger and then to an owner over a business holding four children.
                 [
-                  `- **nothing is scheduled ahead for them at all.** Not "nothing this week" — nothing. ` +
-                    `Say so plainly and say what the class normally is; do not infer a next date from the ` +
-                    `weekly pattern.`,
+                  `- **nothing is scheduled ahead for their own children at all.** Not "nothing this ` +
+                    `week" — nothing. Say so plainly and say what the class normally is; do not infer a ` +
+                    `next date from the weekly pattern. This is their roster only and says nothing about ` +
+                    `what the business has running for anybody else.`,
                 ],
         ),
       )

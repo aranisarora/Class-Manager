@@ -59,7 +59,11 @@ export type ComposeSpec = {
    * fresh key is generated, because two deliberate replies are two messages.
    */
   idempotencyKey?: string
-  /** Additive: overrides the catalog row's action TTL. Defaults to the row's, then 24h. */
+  /**
+   * Additive: overrides the catalog row's action TTL. Defaults to the row's, and where
+   * neither exists to the lifetime the button's own payload earns — see `committingTtl`
+   * in `lib/actions.ts`. It is deliberately NOT a single number any more.
+   */
   ttlMinutes?: number
   /** Additive: forces a specific §16.2 template out of window (usually the catalog decides). */
   templateName?: OutboundMessage['templateName']
@@ -108,6 +112,32 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
 
   const fixed = spec.fixed ?? entry?.fixed ?? false
 
+  /**
+   * The TTL somebody CHOSE for this message, or nothing.
+   *
+   * Resolved once and passed through unchanged, including when it is `undefined`, and
+   * both halves of that matter.
+   *
+   * A number here is a statement about a MOMENT — the catalog's `actionTtlMinutes`
+   * turns §12's "Expires 1h" into a real expiry, and a session reminder's buttons are
+   * meant to die when the session does. This file does not know the moment and must
+   * not improve on it: one number, every button on the card, exactly as chosen.
+   *
+   * `undefined` is the far commoner case — every confirmation the model composes
+   * mid-conversation arrives with no catalog row at all — and passing it on is what
+   * lets `mintAction` give each button the lifetime its own payload earns. Until that
+   * existed the fall-through was a flat 24 hours, which is the interval at which this
+   * product invites people back, so the founding plan of a whole business expired
+   * eleven seconds before its owner tapped it. See `committingTtl` for the argument.
+   *
+   * The card still dies coherently either way, and the direction is what makes that
+   * true: a named TTL gives every button the same expiry, and an unnamed one gives the
+   * committing buttons the SHORTER of the two tiers. So `[Cancel]` never predeceases
+   * the `[Do it]` beside it — the other way round is harmless, because 0016 retires
+   * the siblings of a commit inside the claim itself.
+   */
+  const namedTtlMinutes = spec.ttlMinutes ?? entry?.actionTtlMinutes
+
   // §16.3 — a message going back to the person who is talking to us is solicited by
   // construction, and the acting session is what proves it: a turn runs as `role:'user'` for
   // the contact who messaged, while jobs, digests and escalations run as `role:'service'`
@@ -142,9 +172,12 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
     templateParams: spec.templateParams,
     stateKey: spec.stateKey,
     confirmation: spec.confirmation,
-    // The same TTL the buttons are minted with, further down. Carried so `send`
-    // can give the pending question the lifetime of the tap that answers it.
-    actionTtlMinutes: spec.ttlMinutes ?? entry?.actionTtlMinutes,
+    // Carried so `send` can give the pending question the lifetime of the tap that
+    // answers it. Left `undefined` where nobody named one, and `send` then falls back
+    // to `DEFAULT_ACTION_TTL_MINUTES` — the COMMITTING tier, which is the right one:
+    // a `pending_request` is written for a confirmation, and a confirmation is
+    // answered by the button that commits it.
+    actionTtlMinutes: namedTtlMinutes,
   }
 
   // Validate the shape BEFORE minting: an unrenderable message must not leave a trail of
@@ -178,8 +211,6 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
     return send(ctx, provisional)
   }
 
-  const ttlMinutes = spec.ttlMinutes ?? entry?.actionTtlMinutes
-
   // Every action this message prints, kept so the message can be stamped onto them once it
   // has an id (0016). The order is forced: a button carries an action id, so the ids must
   // exist before the message does.
@@ -192,7 +223,7 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
       const actionId = await mintAction(ctx, {
         payload: b.action,
         forContactId: spec.toContactId,
-        ttlMinutes,
+        ttlMinutes: namedTtlMinutes,
       })
       minted.push(actionId)
       buttons.push({ actionId, title: b.title })
@@ -208,7 +239,7 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
         const actionId = await mintAction(ctx, {
           payload: r.action,
           forContactId: spec.toContactId,
-          ttlMinutes,
+          ttlMinutes: namedTtlMinutes,
         })
         minted.push(actionId)
         rows.push({ actionId, title: r.title, description: r.description })

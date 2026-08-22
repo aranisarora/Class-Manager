@@ -80,6 +80,20 @@ import type { Identity } from '@/lib/types'
 export type LintScope = {
   academyId?: string | null
   academy?: { name?: string | null; timezone?: string | null; memory?: string | null } | null
+  /**
+   * The real business names in play for this message, blanked out of a COPY of the
+   * body before the "academy" ban is tested — see `maskBusinessNames`.
+   *
+   * Optional, and absent almost everywhere on purpose: when it is not given, the
+   * one name in `academy.name` is used, so every tenant caller that already hands
+   * an `Identity` through gets the guarantee without threading anything. Only a
+   * caller holding SEVERAL businesses at once — the front desk, which is talking to
+   * somebody who has not yet been placed in one — has a list to supply.
+   *
+   * Optional also keeps `Identity` structurally assignable to this type, which is
+   * the whole reason `LintScope` exists.
+   */
+  businessNames?: readonly string[] | null
 }
 
 // -----------------------------------------------------------------------------
@@ -223,6 +237,28 @@ export type ProseViolation = {
   fix: string
   /** The offending text, so the model does not have to hunt for it. */
   sample?: string
+  /**
+   * This draft must not be sent even if the repair round fails.
+   *
+   * See `structuralViolation` below. Separates a draft that is WORDED wrong from a draft
+   *   that is not prose at all. The trailing-message path's rule is "a failed repair must
+   *   not become silence", and it is right about every violation but one: a body carrying
+   *   a wire-shape object is not a sentence with a flaw in it, it is machinery, and
+   *   sending it is strictly worse than the runtime saying one plain thing instead. Silence
+   *   is not the alternative and never was — the apology ladder has four sentences ready.
+   *
+   *   On `2026-08-22-08-13-sim-7bo8` turn 172 the fallback put
+   *   `[you called reply with {"body": …}]` on a paying parent's phone, escaped newlines
+   *   and all, on his first contact. `flattenToolTurns` is why that string existed at all
+   *   and is fixed at its own site; this is the belt under it, because the next thing that
+   *   puts an object in a body will not be that bug.
+   *
+   *   Deliberately narrow. Only the wire-shape rule sets it. A banned word, an id, a
+   *   doubled full stop — every one of those is a message a person can still read and act
+   *   on, and refusing to send it because the model could not rephrase it is the failure
+   *   the rule was written against.
+   */
+  structural?: true
 }
 
 const UUID = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/
@@ -302,6 +338,89 @@ const WIRE_SHAPE =
   /(?:^|[{,[\s])["']?(?:kind|buttons|action|steps|menu|args|form_prefill|catalog_id|to_contact_id|to_person_id)["']?\s*:/
 
 /**
+ * The banned domain noun, and the reason it is banned at all.
+ *
+ * `academy` is the tenant TABLE. The ban exists to stop a schema identifier
+ * reaching a customer's screen — the same class as `person.full_name` and a bare
+ * `class_slot` — and it is enforced by banning the ENGLISH NOUN, which is a blunt
+ * instrument for that job: the noun is also an ordinary word for the kind of
+ * business this product sells to, and half of them have it in their name.
+ */
+const ACADEMY_WORD = /\bacadem(?:y|ies)\b/i
+
+/**
+ * A copy of the body with the real business names blanked, for the length of one
+ * check. Nothing is rewritten and nothing is sent.
+ *
+ * @mechanism maskBusinessNames — the "academy" ban is asked of a copy of the message with
+ *   this context's real business names blanked out, so it answers the question the ban is
+ *   actually about — *does this sentence call a business an "academy"?* — rather than the
+ *   question it was accidentally asking, *does the business's own name appear?* A name is
+ *   blanked only when it matches one the caller holds, so the test stays exactly decidable;
+ *   the mask lives inside the check and what ships is byte-for-byte what the model wrote.
+ *   Retires the unsatisfiable refusal loop: a business whose own name contains the word
+ *   could not be named at all, and the remedy printed by the refusal contained the very
+ *   substring the refusal was rejecting.
+ *
+ * The defect this closes was measured, and it is the worst kind — a refusal the
+ * model cannot possibly satisfy. On the thirty-day run the owner typed his own
+ * business's name on day 3, `start_business` recorded it faithfully, and it was
+ * **Rahul Menon Tennis Academy**. From then on every message naming the business
+ * was refused for containing "academy", and the sentence the refusal handed back
+ * was *"Use their own name for the business — Rahul Menon Tennis Academy — or
+ * nothing at all"*: a remedy CONTAINING the substring being refused. The record
+ * shows the model going round that twice before the runtime ran out of rounds and
+ * a paying parent's first ever contact was answered with a raw tool-call envelope
+ * (turn 172). A rule with no satisfying answer does not degrade gracefully; it
+ * spends the whole turn and then ships whatever is left in the buffer.
+ *
+ * Masking rather than dropping the ban, and masking rather than rewriting, because
+ * both of the obvious alternatives are worse:
+ *
+ *   *Dropping the ban* gives back the leak it was built for — "I have updated the
+ *   academy row" reaching an admin, which is where the check came from.
+ *
+ *   *Substituting the name for the word* is what `stripIdentifiers` used to do, and
+ *   it is in ARCHITECTURE.md's trap list by name: a receipt once read "changed 1
+ *   Shuttle Point". That is the second author this file exists to have deleted.
+ *
+ * The mask is neither. It narrows the question, it is decided by a row rather than
+ * by judgement — a span is blanked only when it equals a name the caller is
+ * holding — and the masked string never leaves this function. What goes on the
+ * wire is what the model typed, characters unchanged, exactly as the `reply`
+ * declaration promises.
+ *
+ * Two details that are load-bearing:
+ *
+ *   **Longest name first.** With "Ace" and "Ace TT Academy" both on a number,
+ *   blanking the short one first leaves " TT Academy" behind and the check fires on
+ *   the fragment of a name it was supposed to have accepted.
+ *
+ *   **Case-insensitively, and only the WHOLE name.** The model writes the name back
+ *   in whatever case it read it in. But "the academy" on its own is not a name, is
+ *   not masked, and is still refused — which is the case the ban is for.
+ *
+ * A business literally NAMED "Academy" masks the word away entirely and the check
+ * stops firing for that tenant. That is the honest answer rather than a hole: for
+ * that business the ban was never satisfiable in the first place, and no string
+ * operation can tell their name from the table's.
+ */
+export function maskBusinessNames(text: string, names: readonly string[] | null | undefined): string {
+  if (!text || !names?.length) return text
+  const ordered = [...new Set(names.map((n) => (n ?? '').trim()).filter((n) => n.length >= 2))].sort(
+    (a, b) => b.length - a.length,
+  )
+  let masked = text
+  for (const name of ordered) {
+    // Escaped, because a business name is user-typed and "Ace TT (Andheri)" is a
+    // perfectly ordinary one — unescaped it is a regex group that matches nothing
+    // and silently masks nothing.
+    masked = masked.replace(new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ')
+  }
+  return masked
+}
+
+/**
  * Everything a message can be wrong about that the string itself decides.
  *
  * @mechanism proseViolations — the validator that REFUSES rather than rewrites. A uuid, a
@@ -312,7 +431,9 @@ const WIRE_SHAPE =
  *   between the message the model wrote and the message the person read that becomes a false
  *   belief on the very next turn. It comes back naming what is wrong and what to do instead,
  *   with one round of grace left: the model repairs everything it is told about and
- *   mis-narrates everything it is not.
+ *   mis-narrates everything it is not. The "academy" test alone runs against a copy with
+ *   this context's real business names blanked (`maskBusinessNames`), because it is the one
+ *   ban that is about what a sentence calls a business rather than about the characters.
  *
  * Nothing here judges MEANING. Every one of these is answerable by looking at the
  * characters — "does this contain a uuid" has one answer, the way "does this
@@ -402,22 +523,69 @@ export function proseViolations(text: string, scope?: LintScope): ProseViolation
     out.push({
       what: 'it has a wire-shape object in the body',
       fix: 'That is the shape you pass to the tool, not something a person may see. Put the offer on `buttons`.',
+      structural: true,
     })
   }
 
   // "academy" is the one word that appears nowhere a user can see, and it is also
   // a table name — so it is caught here rather than substituted, which is what
   // used to happen and is why a receipt once read "changed 1 Shuttle Point".
-  if (/\bacadem(?:y|ies)\b/i.test(text)) {
-    out.push({
-      what: 'it uses the word "academy"',
-      fix: scope?.academy?.name
-        ? `Use their own name for the business — ${scope.academy.name} — or nothing at all.`
-        : 'Use their own name for the business, or nothing at all.',
-    })
+  //
+  // And it is caught against a MASKED copy. This is the only test that gets one,
+  // deliberately: every other ban above is about characters that are machinery
+  // wherever they appear — a uuid inside a business name is still a uuid on a
+  // customer's screen, an ISO timestamp is still one — so masking there would hide
+  // real defects. This ban is the only one that is not about the characters at all
+  // but about what the sentence is calling the business, and the only one whose own
+  // remedy has to say a business's name out loud. `maskBusinessNames` carries the
+  // whole argument, including why the ban exists (a schema identifier leaking) and
+  // why banning a domain noun is a blunt way to get that.
+  //
+  // Cheap in the common case: the mask is only built for a body that contains the
+  // word at all, which almost none do.
+  if (ACADEMY_WORD.test(text)) {
+    const names = scope?.businessNames?.length
+      ? scope.businessNames
+      : scope?.academy?.name
+        ? [scope.academy.name]
+        : []
+    const masked = maskBusinessNames(text, names)
+    if (ACADEMY_WORD.test(masked)) {
+      // The remedy must not itself contain the word, or the refusal teaches the
+      // model the thing it just refused. It used to quote the name back — which is
+      // how "use their own name — Rahul Menon Tennis Academy" came to be printed as
+      // the cure for writing "academy". Quoting is kept only where it is safe (a
+      // name with no "academy" in it, where seeing the exact spelling helps); where
+      // it is not, the sentence says to use their name WITHOUT saying it, and says
+      // plainly that their name is not the problem — otherwise the model reads the
+      // refusal as covering the name too and goes silent about the business it is
+      // supposed to be speaking for.
+      const name = (names[0] ?? '').trim()
+      const safeToQuote = name.length > 0 && !ACADEMY_WORD.test(name)
+      out.push({
+        what: 'it uses the word "academy"',
+        fix: safeToQuote
+          ? `Use their own name for the business — ${name} — or nothing at all.`
+          : name
+            ? 'Use their own name for the business, exactly as they write it — their name is fine even where it contains this word, and is not what this is about. It is the bare word, standing on its own, that nobody outside this system says.'
+            : 'Use their own name for the business, or nothing at all.',
+      })
+    }
   }
 
   return out
+}
+
+/**
+ * @mechanism structuralViolation — the one predicate for "this draft must not go out even
+ *   if the repair round fails". Lives beside the rules rather than at the send site, so the
+ *   list of what counts as machinery has one author: `lib/agent/loop.ts` asks this question
+ *   instead of re-deciding it, which is the drift `proseViolations` itself exists to avoid.
+ *   Today exactly one rule sets it — a wire-shape object in the body — and the narrowness is
+ *   the point: every other violation leaves a sentence a person can still read and act on.
+ */
+export function structuralViolation(violations: readonly ProseViolation[]): ProseViolation | null {
+  return violations.find((v) => v.structural) ?? null
 }
 
 /** One sentence a tool result can carry, from a list of violations. */

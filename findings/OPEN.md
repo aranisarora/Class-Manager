@@ -1,6 +1,6 @@
 # What is open
 
-22 findings. This file is the source of truth for what is broken — hand-written, and short on
+25 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -33,12 +33,15 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-CA** | A staged plan is described in the past tense, so the owner is told a change was made while the buttons still ask whether to make it | [detail](#f-ca--a-staged-plan-is-described-in-the-past-tense-so-the-owner-is-told-a-change-was-made-while-the-buttons-still-ask-whether-to-make-it) |
 | **F-CC** | A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule | [detail](#f-cc--a-commercial-term-nobody-agreed-to--first-class-is-free--volunteered-in-a-parenthetical-and-stated-as-the-businesss-own-rule) |
 | **F-CI** | The product reports what it TRIED as what HAPPENED — 26 unbacked claims in 33 turns, while `turnState` is already telling it otherwise | [detail](#f-ci--the-product-reports-what-it-tried-as-what-happened-and-turnstate-is-already-telling-it-otherwise) |
-| **F-CK** | Quiet hours drops the message it means to delay, because nothing ever comes back for it | [detail](#f-ck--quiet-hours-drops-the-message-it-means-to-delay-because-nothing-ever-comes-back-for-it) |
+| **F-CK** | Quiet hours and both send caps drop the message they mean to delay, because nothing ever comes back for it | [detail](#f-ck--quiet-hours-and-both-send-caps-drop-the-message-they-mean-to-delay-because-nothing-ever-comes-back-for-it) |
 | **F-CN** | `npm run ab` cannot drive either arm, because it refuses the config it just wrote | [detail](#f-cn--npm-run-ab-cannot-drive-either-arm-because-it-refuses-the-config-it-just-wrote) |
-| **F-CQ** | A client-facing read composed without an account predicate hands one family another family's child | [detail](#f-cq--a-client-facing-read-composed-without-an-account-predicate-hands-one-family-another-familys-child) |
 | **F-CR** | A rate that begins after the work was done silently unpays it, and nothing says so | [detail](#f-cr--a-rate-that-begins-after-the-work-was-done-silently-unpays-it-and-nothing-says-so) |
-| **F-CS** | A draft refused for machinery is sent anyway when the repair fails | [detail](#f-cs--a-draft-refused-for-machinery-is-sent-anyway-when-the-repair-fails) |
-| **F-CT** | A staged plan's handle expires before an owner who checks his phone once a day taps it | [detail](#f-ct--a-staged-plans-handle-expires-before-an-owner-who-checks-his-phone-once-a-day-taps-it) |
+| **F-DH** | `pre_launch` suppresses a plan-staged message to a COACH about their own work, and nothing tells anyone it did | [detail](#f-dh--pre_launch-suppresses-a-plan-staged-message-to-a-coach-about-their-own-work-and-nothing-tells-anyone-it-did) |
+| **F-DI** | A read result keeps the model's own column alias, so a mislabel becomes durable and is built into a write five turns later | [detail](#f-di--a-read-result-keeps-the-models-own-column-alias-so-a-mislabel-becomes-durable-and-is-built-into-a-write-five-turns-later) |
+| **F-DO** | A stranger's commonest first question — what does this cost — has no answer anywhere in the product | [detail](#f-do--a-strangers-commonest-first-question--what-does-this-cost--has-no-answer-anywhere-in-the-product) |
+| **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
+| **F-DS** | A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn | [detail](#f-ds--a-staged-plan-can-only-be-committed-by-tapping-it-an-owner-who-answers-go-ahead-in-words-is-re-staged-instead-because-the-plan-handle-does-not-survive-the-turn) |
+| **F-DT** | The product invents its own go-live preconditions and tells the owner about them, against a census that states the real one correctly on the same turn | [detail](#f-dt--the-product-invents-its-own-go-live-preconditions-and-tells-the-owner-about-them-against-a-census-that-states-the-real-one-correctly-on-the-same-turn) |
 
 ---
 
@@ -657,70 +660,6 @@ by deliberate design, and the deliberate design does not hold at this width.
 
 ---
 
-### F-CK · Quiet hours drops the message it means to delay, because nothing ever comes back for it
-
-`send.ts`'s quiet-hours gate is explicit about what it is doing and why it is safe:
-
-> *Suppressed rather than deferred, and the key is released so the same moment may be attempted
-> again once morning comes: `send` has no queue of its own, and inventing one here would put a
-> second scheduler beside the real one.*
-
-The reasoning is right and the second half is not true of anything. **Nothing attempts it again.**
-
-`runDueJobs` (`lib/jobs/runner.ts`) calls the handler and then, unconditionally,
-`await finish(job.id, 'done', null)`. Send outcomes never reach that layer — the handler returns
-`void`, and no handler in `lib/jobs/handlers/` reads a `quiet_hours` outcome or re-enqueues on one.
-So the sequence is: the job runs, its send is suppressed, the idempotency key is released for a
-retry, the job is marked **done**, and morning never comes.
-
-**Measured, in the stress month** (`2026-08-21-17-19-stress-69q0`, academy `58b9df7c`, 16 simulated
-days):
-
-```
-message.suppressed_reason = 'quiet_hours'      4 rows
-job kind=client_outcome                        1 done, 1 skipped
-any pending or retried job for those sends     none
-```
-
-Four messages were composed, written to `message` as `suppressed`, and lost. Two of them are the
-**family invites at go-live**. Meera and Kiran were never introduced to the business at all — over
-the following two weeks they received tallies and dunning about money, having never had the
-introduction that explains who is messaging them.
-
-**It also makes the product lie without meaning to, which is how it was found.** In
-`st-coach-register` the model marks a register and says *"Both families get their session note
-automatically."* That was TRUE when it was said: `mark_attendance` had enqueued two
-`client_outcome` jobs and the operation result reported them as scheduled. One later ran and was
-suppressed by quiet hours; the other skipped. Nobody was told, and nobody was told that nobody was
-told. The same shape is behind `st-go-live`'s *"I'll send those once you say go"* — the invites had
-already been fired and eaten.
-
-This is why it is filed apart from [F-CI](#f-ci--the-product-reports-what-it-tried-as-what-happened-and-turnstate-is-already-telling-it-otherwise).
-F-CI is the product describing its own actions wrongly. Here the sentence is accurate at the moment
-it is written and the world changes underneath it afterwards, with no mechanism anywhere to notice
-or to say so.
-
-**Not only quiet hours.** `releasesKey` covers three reasons — `quiet_hours`,
-`recipient_frequency_cap` and `tenant_send_cap`. All three mean *the message is owed, the hour is
-wrong*; all three release the key for a retry that nothing performs. The frequency cap is the one
-that will bite hardest in production, because it fires precisely on the busiest families.
-
-**Where it lives.** `suppress()` / the quiet-hours gate in `lib/messaging/send.ts` decides "not
-now" and has, correctly, no way to schedule. `runDueJobs` in `lib/jobs/runner.ts` owns job lifecycle
-and cannot see send outcomes. The two need one signal between them, in the direction the layers
-already run (`jobs` imports `messaging`, never the reverse) — the shape `setNoteSink` and
-`setJobOrigin` already use, both of which are module-level sinks the runner sets around each
-handler. `deferPastQuietHours` already exists in `lib/jobs/util.ts` and is what the planner uses to
-avoid scheduling into the window in the first place.
-
-**The trap to design against.** A retry that is itself suppressed must not re-arm forever: a
-contact who is muted, capped, or asleep for a long weekend would generate an unbounded chain. Any
-mechanism here needs an attempt count on the payload and a ceiling, and a message that exhausts it
-is an admin's problem rather than a silent drop — which is the same shape `DUNNING_MAX` and
-`RECONCILE_MAX` already use.
-
----
-
 ### F-CN · `npm run ab` cannot drive either arm, because it refuses the config it just wrote
 
 Found 22 Aug 2026 trying to A/B a mechanism change (`--variant ref=`). **Both arms fail
@@ -773,73 +712,21 @@ four existing money checks and a direct `sim.ts` drive instead.
 
 ---
 
-### F-CQ · A client-facing read composed without an account predicate hands one family another family's child
-
-The most serious defect in `2026-08-22-08-13-sim-7bo8`, and the product's **first message to a
-paying parent**.
-
-Rukmini Sarangi writes in on day 23: *"hi wat is this for, my name got added to something?"* She
-has one child in the business, Ananya. She was answered with:
-
-> your name's here because **Ananya and Kabir** are on the Rahul batch
->
-> What's already set up for **you**:
-> • *Ananya* — Rahul batch, Thu 17 Sep, 6 pm at HSR Club courts
-> • *Kabir* — Rahul batch, Thu 17 Sep, 6 pm at HSR Club courts
-
-Kabir is **Devendra Ahluwalia's** child, on a different `account`. The next day (turn 168) she
-asks whether the timings are the same for "both of them" — she has adopted the product's error —
-and instead of correcting it the product confirms it and adds the other family's price:
-*"each is set at ₹2,500 a month"*.
-
-```
-account   parent               child
-·         Rukmini Sarangi      Ananya
-·         Devendra Ahluwalia   Kabir
-```
-
-**The model was not short of the right answer. It ran the correctly scoped query three times:**
-
-```sql
-select p.full_name, p.id from player pl join person p on p.id = pl.person_id
- where pl.account_id = 'fb38bf47-0805-4204-9dff-0fbbc478062a'      -- -> [Ananya]
-select p.full_name from player pl join person p on p.id = pl.person_id
- where pl.id = '0f695e9b-…'                                        -- -> [Ananya]
-select pl.id, p.full_name, pl.active from player pl … where pl.account_id = 'fb38bf47-…'
-                                                                    -- -> [Ananya]
-```
-
-and it also ran one with **no account predicate at all**, and wrote the message from that one:
-
-```sql
-select pe.full_name as who, c.name, s.starts_at, v.name
-  from session s join class c … join enrollment e on e.class_id = s.class_id and e.ended_on is null
-  join player pl on pl.id = e.player_id and pl.active join person pe on pe.id = pl.person_id
- where s.status = 'scheduled' and s.starts_at > app.now()          -- -> [Ananya, Kabir, Ananya, Kabir]
-```
-
-Nothing refused it. This is the same shape as **F-CO**, one level in: F-CO was a `read` with no
-tenant boundary, and 0044 shut those doors by revoking them. This is a `read` with no *account*
-boundary inside a tenant, and there is no equivalent door to shut.
-
-**Why prose cannot close it.** The turn already carried *"Everything in this block is about this
-one person"* in its context, and the model already knew the scoped answer — it had queried it
-three times. It picked the wrong result set from its own working set. An instruction cannot
-distinguish the two reads; a predicate can.
-
-**Where it lives.** `app.session_roster` (0022) exists because the admin-side join was guessed
-wrong repeatedly. There is no client-side equivalent. The structural home is a scoped view —
-`app.my_roster(account_id)` or a `session_roster` that requires an account when the asker is a
-client — plus the same treatment `assertSingleReadStatement` gives the tenant boundary: a
-client-role read touching `player`, `enrollment` or `session` without an account predicate is
-refused rather than answered.
-
-`scripts/rls-check.mjs` has a **`Family privacy (§6.7)` section that currently asserts nothing**
-— it printed no lines on 22 Aug. That is where the regression test belongs.
-
----
-
 ### F-CR · A rate that begins after the work was done silently unpays it, and nothing says so
+
+**Status: the silence is retired, the unpaying is not.** `unpricedWork`
+(lib/jobs/handlers/money.ts) keeps a worked session whose rate cannot be resolved instead of
+dropping it on `if (amount <= 0) continue`, records the gap in the run, and escalates it to the
+admin — who is exempt from the `pre_launch` gate, which matters because backdated work is entered
+during setup. It does NOT invent a price; guessing one is how F-CL happened.
+
+What is still open is the half above it. `app.pay_on` has no row before a coach's first
+`rate_period`, and 0043's trigger stamps that row with the WRITE date. In the thirty-day drive the
+two enrolment rate_periods were correctly dated 1 Sep though written on the 14th, while Arjun's
+coach rate began 6 Sep — the day he was entered — so the same trigger honours a stated start date
+for a family and takes the write date for a coach. Whether `set_rate` should backdate a coach's
+rate to the day the arrangement started is a product decision about what the owner is agreeing to,
+and it is not one to make from inside a job handler.
 
 Introduced by **0043**, found by the drive it was merged for. 0043 is right that money must be
 priced at the rate in force when it was earned. It has no answer for work that predates the rate
@@ -890,81 +777,195 @@ which is chosen.
 
 ---
 
-### F-CS · A draft refused for machinery is sent anyway when the repair fails
+### F-DH · `pre_launch` suppresses a plan-staged message to a coach about their own work, and nothing tells anyone it did
 
-Turn 172 of `2026-08-22-08-13-sim-7bo8`. Devendra Ahluwalia, a paying parent, asks on first contact
-*"what is this exactly and what's the cost?"* and receives, literally, on his phone:
+**Root:** half a gate. `lib/messaging/send.ts` suppresses when
+`onboarding_state !== 'live' && !msg.preLaunchOk && !row.is_admin && !msg.solicited`. `solicited`
+is set only when the acting session belongs to the contact being written to, so a message the
+OWNER's turn stages for a COACH is unsolicited by construction. `CO-INVITE` can carry
+`preLaunchOk`; a plan step has no way to.
 
-```
-[you called reply with {"body": "This is Rahul Menon Tennis Academy's class list — we're just
-getting it set up. Kabir has been added to the *Rahul batch*…\n\nSessions are Mon and Thu, 6 pm.
-…", "buttons": [{"title": "See Kabir's schedule", "action": {"kind": "reply", "text": "Yes, show
-me Kabir's schedule"}}]}]
-```
+**Saw:** the single suppressed outbound of the thirty-day drive
+(`2026-08-22-08-13-sim-7bo8`, day 14) — to Arjun Shetty, `suppressed_reason = pre_launch`,
+body *"The batch is on the books now. Rahul batch, Mon & Thu 6-7pm, ..."*. He had asked for
+exactly this, repeatedly. He found out the next day by asking again, and spent days 15-23
+believing his batch was still not on the system.
 
-**Three mechanisms fired correctly and the order defeated all three.**
+**Blast radius:** the plan reported success, so the owner believed the coach had been told. §2.6
+is a rule about not messaging a business's ROSTER before it opens — ANATOMY's own gate table says
+so — and a coach is staff. The suppression is also invisible: nothing resolves the state it
+suppresses over, which is the shape recorded in ARCHITECTURE's trap list as *half a gate*.
 
-1. Round 13 — `proseViolations` **caught it**: *"it has a wire-shape object in the body"*, with the
-   fix spelled out (*"That is the shape you pass to the tool, not something a person may see"*).
-2. Round 14 — the repair round asked the model to rewrite. It emitted the same wire-shape text.
-   The re-check worked: `if (rewritten && !proseViolations(rewritten, identity).length) outgoing =
-   rewritten` correctly declined to prefer it.
-3. And then `lib/agent/loop.ts:2023` sent the **original** — the draft it had just refused:
+**Where it lives:** the `preLaunchOk` flag needs to reach a plan-staged message, or the predicate
+needs to know staff from roster. Not a prompt line: the model composed the right message and the
+send path ate it.
 
-   ```ts
-   /* the draft still goes; a failed repair must not become silence */
-   ```
+### F-DI · A read result keeps the model's own column alias, so a mislabel becomes durable and is built into a write five turns later
 
-4. Round 15's reflection noticed the reply had gone wrong and composed a clean one. Round 16
-   dropped it, as outside `REFLECT_TOOLS`.
+**Root:** `modelQuery` returns rows labelled with whatever the model aliased them, and
+`recentToolTurns` replays those rows into later turns as fact. Nothing re-derives a column.
 
-The comment names the trade honestly and takes the wrong side of it. "A failed repair must not
-become silence" is right; sending the refused draft is not the only alternative to silence. The
-body is *recoverable* — the violation is a JSON envelope wrapped around a perfectly good message,
-and `body` can be lifted out of it. Failing that, a fixed holding line is better than machinery:
-the person can act on "give me a moment"; they can act on nothing here.
+**Saw:** turn 160 ran
+`select p.full_name, p.id as player_id from player pl join person p on p.id = pl.person_id ...`
+— aliasing `person.id` AS `player_id`. The recorded row read
+`{"full_name":"Ananya","player_id":"e94c6b78-..."}`; Ananya's real player id is `0f695e9b-...`.
+**Five turns later**, at turn 165, the model built an attendance write from that id and from
+Kabir's person id, and Postgres answered with a bare `attendance_player_id_fkey` violation. That
+was one of the three different failures behind *"this hasnt worked three times now"*.
 
-Note this is not the length-driven path `affordanceFits` handles, and not F-CA. The turn had
-already spent its tool rounds and fell to `(recovery: answer without tools)`, which is the path
-with no `reply` call in it — so the model expressed its intended `reply` as prose, and prose is
-what the runtime sends.
+**Status:** F-CZ now catches this at the write — `assertIdsExist` walks nested arguments and
+refuses before the transaction, with the read-back sentence. That bounds the damage and does not
+close this: the mislabelled row is still in the conversation, still says `player_id`, and is
+still what the model reasons from.
 
-**Where it lives.** `loop.ts`'s trailing-prose fallback: a draft carrying `proseViolations` must
-not be the thing that goes. Either strip to the recoverable body, or send the fixed line.
+**Where it lives:** `modelQuery` (lib/db.ts) is the one chokepoint every model read passes.
+Note the trap: a regex that judges the model's SQL is the pattern-matching-prose failure this
+repo has paid for repeatedly. Provenance carried from the statement, not inferred from it.
 
----
+### F-DO · A stranger's commonest first question — what does this cost — has no answer anywhere in the product
 
-### F-CT · A staged plan's handle expires before an owner who checks his phone once a day taps it
+**Saw:** across three 3-day drives on `ace-tennis`, the owner-to-be opened with a price
+question every single time and was never once answered. `2026-08-22-12-25-sim-bqc0` d1:
+*"how much and wat all does this actually do"* → the routing question. `2026-08-22-13-20-sim-67ai`
+d1: *"how much is this"* → the routing question; d3, after founding: *"rahul menon tennis, tennis
+coaching. wat does this cost i asked already"*. Farah Sheikh opened with *"price for two kids?"*
+and *"fees for two kids how much"* on two separate runs. Rahul's own persona brief names it as his
+rule — cut straight to price before anything else — and it is what a real referral does too.
 
-Turn 69, day 10, and the single most expensive event in the month drive.
+**Root:** the desk holds no facts by construction (`FRONT_DESK_PREFIX`: *"You hold no schedule, no
+fees, no roster and no data about any business"*), and its escape hatch is *"a question you cannot
+answer is a reason to hand over"* — which works for a question about a BUSINESS and not for one
+about this product. `docs/product-spec.md` names no price for the product anywhere, so there is
+nothing to say even if there were somewhere to say it. Once handed over, a tenant turn answers it
+well — *"I don't hold a price for this product itself — that's the terms you signed up under"*
+(`2026-08-22-12-47-sim-s4hg`) — but that is after founding, which is exactly the decision the
+question is gating.
 
-On day 9 the product did everything right (turn 62, scored 9): it staged both coaches with their
-pay, previewed the six rows correctly, and sent one button — *"Tap to add them both."* Rahul Menon
-runs a business off his phone between sessions. He opened WhatsApp the next morning and tapped
-**Add them**, which is the only thing he had been asked to do.
+**Blast radius:** the referral channel §10.0 exists to serve is the one this loses. A person who
+asks the price twice and is asked a routing question back both times has learned the thing does
+not answer questions.
 
-```
-turn 69 · day 10 · Rahul Menon · rounds 0 · sql 0 · wrote 0
-tapped: "Add them"
-sent:   "That button has expired — tell me what you'd like and I'll sort it out."
-```
+**Where it lives:** not a mechanism until somebody decides what the answer IS — this is a business
+decision, not an engineering one, and inventing a number in the prefix would be the product
+telling a customer something nobody has agreed. Two honest shapes once it is decided: a fact in
+the desk's stable prefix (it is byte-identical for every stranger, which is exactly what a price
+is), or a `sender`-level column if it differs per number. Until then the desk should say plainly
+that it cannot quote one and hand over — and that sentence has no home either.
 
-The setup then restarted and took **four more days and four more attempts** to land (turns 76, 79,
-85, 92, and finally 98 on day 14). By the time the class existed, the coach had run three sessions
-that nobody had recorded. The owner's departure on day 26 — *"this hasnt worked three times now and
-arjun still hasnt been paid"* — starts here.
+### F-DP · The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it
 
-**The expiry is not the defect; the mismatch is.** A plan handle is scoped to a conversational
-moment, and the owner's reply latency in this product is a day, not a minute — every persona in
-`worlds/` is somebody standing up with a ball machine going. Measured across the run, the median
-gap between a button being offered and a seat next picking up the phone is longer than the handle
-lives.
+**Saw:** `2026-08-22-13-20-sim-67ai`. Arjun Shetty d1: *"late today silk board traffic who was on
+tonight"* — a coach, unmistakably, asking who is on his own session — answered with *"Are you
+looking for classes, or do you run classes here?"*. Divya Rao d1: *"anika kumar evening batch
+timings kya hai"* — a parent naming a child and a batch — same question. Farah Sheikh d1: *"price
+for two kids?"*, d2: *"swimming, ages 6 and 9"*, and the d2 answer was still *"Are you looking for
+swimming classes, or do you run them?"* — the routing question asked of somebody who had answered
+it twice.
 
-**And the recovery is empty.** "Tell me what you'd like and I'll sort it out" throws away
-everything the runtime still holds: it knows which handle expired, what its `intent` was, and what
-rows it would have written. A tap on a dead handle is an unambiguous statement of intent — it is
-the *most* certain input this product ever gets — and it is answered with a blank prompt.
+**Root:** `FRONT_DESK_PREFIX` states the rule correctly — *"Their first message usually already
+says which they are. Read it before you ask anything… Ask only when the message genuinely does not
+say, and ask once."* — and nothing enforces it. §10.0's own summary says the desk asks *"only when
+their own words have not already answered it, which they usually have"*. `arrival.asked_at` and
+`answeredSinceAsked` stop it being asked TWICE; nothing stops it being asked ONCE when it should
+not have been at all. This repo's standing evidence is that a prose rule does not close a
+behavioural class.
 
-**Where it lives.** Two parts. Widen the handle's life for a staged plan to something on the order
-of the conversation it belongs to; and make an expired tap re-stage its own plan from the stored
-`intent` and re-offer it, rather than asking the person to type the request again.
+**Blast radius:** one wasted exchange per arrival, and in a world with one message per window that
+is a day. It is the difference between founding on day 1 and founding on day 3, which is the whole
+of the day-one go-live question.
+
+**Where it lives:** `lib/frontdesk/` — and the trap is that a keyword classifier over the
+visitor's text is exactly the pattern-matching-prose failure this repo has paid for repeatedly
+(`maskBusinessNames` is the only shape that has ever worked, and it is decidable because it
+matches against ROWS). The honest options are a cheap structured pre-read whose output is evidence
+rather than a decision (the shape `frontDeskTail` already uses), or accepting the cost and
+measuring it. Do not add a regex over "coach", "my daughter" and "batch".
+
+### F-DS · A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn
+
+**Saw:** `2026-08-22-13-29-sim-8528`, day 6. The owner had a `[Build timetable]` card on his screen
+from day 5 and wrote *"sat squad 9-11am. dont have priyas number saved either tbh shes just always
+been there in person, ask arjun to cover he'll have it. **also tap build timetable go ahead**"*.
+Nothing was built. The turn composed a fresh plan — correctly, since he had also just added the
+Saturday squad — and put a second `[Build timetable]` button under it. The run ended on day 7 with
+`class` still empty, one write in fifty-eight turns, and the business at `onboarding_state='setup'`.
+
+**Root:** `toolCtx.pendingPlans` is constructed fresh per turn, so a handle minted yesterday cannot
+be committed today: `commit` takes a handle that no longer exists. The fully-resolved steps DO
+survive — they are sitting in `action.payload` — but the only thing that can consume an `action` is
+`consumeAction`, and the only thing that reaches `consumeAction` is a tap. There is no path at all
+from consent expressed in words to a committed plan, on the one surface where typing and tapping
+are equally natural.
+
+**Blast radius:** every staged plan, for every role. It is worse than one wasted exchange, because
+the person has said yes and watched nothing happen — which is the shape that produced *"this hasnt
+worked three times now"* in the thirty-day run. It also compounds with the affordance being the
+only commit route: an owner who never taps can never change anything.
+
+**Where it lives:** the tap path (`lib/actions.ts` / `executeAction` in `lib/agent/loop.ts`) is the
+one place holding validated steps, and `standing()` already renders the outstanding question into
+the tail, so the model can SEE the card it cannot press. The trap: letting the model decide that a
+sentence means yes is exactly the model inference §6.5 keeps out of the commit path — *"no model
+inference decides what a tap runs, because a misread there commits someone to being somewhere"*.
+Any mechanism here has to make the RUNTIME the thing that matches consent to a specific outstanding
+action, and has to be as unambiguous as a tap.
+
+### F-DT · The product invents its own go-live preconditions and tells the owner about them, against a census that states the real one correctly on the same turn
+
+**Saw:** `2026-08-22-13-29-sim-8528`, day 6, the same turn as F-DS. The tail said, correctly:
+*"Nothing to go live with yet — the timetable is what is missing."* `app.guard_go_live()` (0033)
+asks for one active, non-ended class and asks for nothing else. The model reasoned: *"To message
+Arjun about the cover, the academy must be live. That requires completing setup… Going live needs:
+venues, roster (enrollments), and the onboarding state moved to live"* — and told the owner so.
+
+**Root:** the real precondition is stated in the census as a SYMPTOM ("the timetable is what is
+missing") and nowhere as a RULE. Nothing in the prefix, the schema doc or the operation signatures
+says what going live actually requires, so the model reconstructs it from §7.1's setup ladder —
+which lists venues, coaches, families and payments as steps 1-5 and is a description of a complete
+setup, not of the gate. It is then confidently wrong to the one person who cannot check.
+
+**Blast radius:** the owner is told he must do four things to reach a state he could reach now.
+On this run it converted a real operational request — cover for Saturday — into a lecture about
+onboarding. Compounds with F-DH: the coach message was suppressed by `pre_launch`, so the invented
+precondition arrived as the explanation for a suppression the owner did not need to know about.
+
+**Where it lives:** `SCHEMA_DOC` or the census in `lib/agent/context.ts` — the same argument that
+put the permission matrix in the prefix applies exactly ("the one class of fact the model cannot
+derive"). A trigger's condition is not derivable from any table the model can read, and this one
+gates the single most consequential write in the product.
+
+### F-CK · Quiet hours and both send caps drop the message they mean to delay, because nothing ever comes back for it
+
+`suppress()` (lib/messaging/send.ts) releases the idempotency key on three reasons —
+`quiet_hours`, `recipient_frequency_cap`, `tenant_send_cap` — and says why in its own words: *"the
+key is released so the same moment may be attempted again once morning comes: `send` has no queue
+of its own, and inventing one here would put a second scheduler beside the real one."* The
+reasoning is right and the second half is not true of anything. **Nothing attempts it again.**
+`runDueJobs` calls the handler and then, unconditionally, `finish(job.id, 'done', null)`; handlers
+return `void` and none reads a send outcome.
+
+**Verified, 22 Aug 2026:** `.probe/runs/2026-08-21-17-19-stress-69q0/turns/0003-d1-1721-sanjay-pillai-admin.json`
+carries, verbatim, `"body": "Hi Meera — I'm the class manager for Smash Badminton.
+Aarav has
+Beginners Monday at 6:30 pm at Green Park."`, `"status": "suppressed"`, `"origin": "job"`,
+`"suppressedReason": "quiet_hours"`. Four messages composed, written to `message`, and lost; two
+are the family invites at go-live. Meera and Kiran were never introduced to the business and then
+spent a fortnight receiving tallies and dunning about money from a number that had never said who
+it was.
+
+**A retry at the RUNNER is the wrong stage, and was tried and reverted on 22 Aug 2026.** A
+re-enqueue after the handler has already composed and burned the send does not fix the headline
+case: `firstContactBatch`'s batch predicate (lib/jobs/handlers/client.ts) selects contacts this
+academy has never messaged, and a `message` row exists for Meera the moment it is suppressed — so
+the re-run finds nobody and sends nothing. The existing answer to this class works at PLAN time and
+is the correct stage: `pullOutOfQuietHours` and `deferPastQuietHours` (lib/jobs/util.ts) already
+move a computed send time out of the window before the job is ever enqueued, and F-H closed exactly
+this for reminders.
+
+**Where it lives.** The gap is the sends whose time is NOT computed by the planner — a batch that
+walks a roster at run time, and the two caps, which are properties of the recipient and the tenant
+at the moment of sending rather than of the schedule. Both need the handler's own selection
+predicate to be able to see "owed but not sent", which `message.suppressed_reason` already records
+durably; the shape to build is a handler that reads its own suppressed rows back, not a runner that
+re-runs the job blind. `DUNNING_MAX`/`RECONCILE_MAX` are the precedent for the ceiling any such
+retry needs.

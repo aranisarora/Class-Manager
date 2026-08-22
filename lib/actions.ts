@@ -81,7 +81,110 @@ export type ActionPayload =
   | { kind: 'noop'; ack: string }
   | { kind: 'handoff'; reason: string; summary: string }
 
-export const DEFAULT_ACTION_TTL_MINUTES = 1440
+/* -------------------------------------------------------------------------- *
+ * How long a button stays alive
+ * -------------------------------------------------------------------------- */
+
+/**
+ * **The default used to be 1440 — exactly twenty-four hours, exactly the interval at
+ * which this product invites people back.** That is not a lifetime, it is a race.
+ *
+ * Measured over thirty simulated days on one academy: twelve `steps` buttons were
+ * minted and three were tapped in time, by margins of 93, 28 and 36 seconds. Of
+ * eleven `reply`, eleven `noop` and two `operation` buttons, none was ever consumed.
+ * The founding plan of the whole business — the one that would have created the
+ * class — was minted at 03:00:47.296 and expired at 03:00:47.296 the next day; the
+ * owner tapped it at 03:00:58.650. **It died 11.354 seconds before he reached it**,
+ * setup restarted, and four days went with it. Nothing about that was a judgement
+ * call about staleness; it was the composing turn having taken twelve seconds longer
+ * than the tapping turn a day later. Every commit this product made in a month sat
+ * inside a ninety-second window at the far end of the TTL.
+ *
+ * So the question is what the wall clock was ever protecting, and the honest answer
+ * is: less than it looks, and not the same amount for every button.
+ *
+ * **What already re-validates at the tap.** A stored payload is re-parsed through
+ * `checkActionPayload` on the way out of `consumeAction`, so an operation whose
+ * arguments no longer satisfy its own schema dies as a payload rather than as a
+ * write. `assertIdsExist` (lib/agent/plan.ts) reads every id-shaped OPERATION
+ * argument back, under the tapper's own session, before the transaction opens — so a
+ * plan naming a class that has since gone refuses with a sentence instead of running
+ * against nothing. `assertSomethingChanged` aborts a plan whose diff is empty, which
+ * is what a frozen decision that the world has already caught up with looks like.
+ * And a `steps` payload runs under the same RLS, the same guards and the same
+ * triggers it would have run under a day earlier.
+ *
+ * **What none of that catches, which is the real risk and why this is still bounded.**
+ * A plan that is still valid and no longer WANTED. A raw `write` step — `PlanStepSchema`
+ * allows one — carries no id-shaped argument for `assertIdsExist` to read back, so it
+ * is caught only by matching no rows. And the case that actually costs money: a
+ * decision the owner has since made by hand, where the stale tap does it a second time.
+ * `assertSomethingChanged` catches the exact no-op and not the duplicate insert.
+ *
+ * That risk is real, it grows with age, and it justifies a BOUND. It does not justify
+ * a bound of one day, and it does not justify the same bound for a button that carries
+ * no decision at all: a `reply` or a `menu` replays text back through the model with
+ * the current world in front of it, which is what would have happened if the person
+ * had typed the words instead. There is nothing in it to go stale.
+ *
+ * **What was considered and rejected.**
+ *  - *A staleness check at tap time.* There is nowhere honest to put it. Staleness is
+ *    a question about intent, not about rows, and `consumeAction` is deliberately the
+ *    one path in this product with no model in it (§6.5). A check that guessed would
+ *    refuse good taps in exactly the moment that has no recovery.
+ *  - *Expiry keyed to supersession rather than to the clock.* This is the right shape
+ *    and it half exists already: 0016 retires a card's siblings the moment one of them
+ *    commits. Extending it to "a later card about the same thing retires the earlier
+ *    one" needs a notion of what a payload is ABOUT, and a payload has none — the jobs
+ *    layer has `subject_key` and `action` has nothing like it. Retiring on "this
+ *    contact was sent another committing card" would be wrong the first time a business
+ *    has two decisions open at once, which is normal. Not built, deliberately, rather
+ *    than built on a guess.
+ *  - *No expiry at all for the replayed kinds.* A row set with no upper bound is a
+ *    different problem, and fourteen days is already the longest lifetime the catalog
+ *    trusts anything with.
+ *
+ * @mechanism committingTtl — a button's lifetime is set by what its payload CARRIES
+ *   rather than by one wall-clock constant: `operation` and `steps` freeze a decision
+ *   about rows and get a bounded window, while `reply`, `menu`, `noop` and `handoff`
+ *   replay through the model against the current world and get a long one. The single
+ *   24-hour default it replaces was exactly the interval at which this product invites
+ *   people back, so every commit was a race between how long the composing turn took and
+ *   how long the tapping turn took a day later: across thirty simulated days three of
+ *   twelve `steps` buttons were tapped in time, by 93, 28 and 36 seconds, and the founding
+ *   plan of the business expired 11.354 seconds before its owner tapped it, which
+ *   restarted setup and cost four days. The ordering of the two tiers is load-bearing in
+ *   its own right — a decline outliving the commit beside it is harmless, while the
+ *   reverse leaves a card offering a live `[Do it]` next to a dead `[Cancel]`.
+ */
+export const DEFAULT_ACTION_TTL_MINUTES = 3 * 24 * 60
+
+/**
+ * The lifetime of a button that decides nothing by itself.
+ *
+ * Fourteen days is not a guess: it is the longest TTL the catalog already chooses
+ * deliberately for a real moment (`lib/messaging/catalog.ts`, `DAY * 14`), so nothing
+ * defaulted here outlives the longest thing somebody has actually thought about.
+ */
+export const REPLAYED_ACTION_TTL_MINUTES = 14 * 24 * 60
+
+/**
+ * Which kinds freeze a decision about rows, and therefore which ones the clock is
+ * genuinely protecting anybody from.
+ *
+ * `noop` sits with the replayed kinds and that placement is deliberate, not
+ * incidental: a `noop` is the DECLINE beside a commit — "Left as it was — nothing
+ * changed" — and a decline that dies before the thing it declines is the worse half
+ * of the bug 0016 exists to kill, pointed the other way. `handoff` writes no domain
+ * row either; it hands a conversation to a person who reads the current state when
+ * they pick it up.
+ */
+const COMMITTING_KINDS = new Set<ActionPayload['kind']>(['operation', 'steps'])
+
+/** How long a freshly minted button of this kind may stay tappable, in minutes. */
+export function committingTtl(kind: ActionPayload['kind']): number {
+  return COMMITTING_KINDS.has(kind) ? DEFAULT_ACTION_TTL_MINUTES : REPLAYED_ACTION_TTL_MINUTES
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -114,7 +217,8 @@ export async function mintAction(
   a: {
     payload: ActionPayload
     forContactId: string
-    ttlMinutes?: number // default 1440
+    /** Omitted, the payload's own kind decides — see `committingTtl`. */
+    ttlMinutes?: number
   },
 ): Promise<string> {
   const payload = parsePayload(a.payload)
@@ -129,7 +233,12 @@ export async function mintAction(
     throw msgError('invalid_action_target', 'an action is minted for exactly one contact (§2.2)')
   }
 
-  const ttl = Number.isFinite(a.ttlMinutes) ? Number(a.ttlMinutes) : DEFAULT_ACTION_TTL_MINUTES
+  // A caller who named a number meant it — the catalog's per-moment TTLs are chosen
+  // against the moment, not against the payload, and this must not second-guess them.
+  // Nobody naming one is the common case, and then the PARSED payload's kind decides,
+  // never the raw one: `payload` has been through `checkActionPayload` and its `kind`
+  // is a value from the union rather than whatever arrived.
+  const ttl = Number.isFinite(a.ttlMinutes) ? Number(a.ttlMinutes) : committingTtl(payload.kind)
 
   return withSession(serviceFrom(ctx), async (tx) => {
     const rows = await tx<{ id: string }[]>`
@@ -208,9 +317,50 @@ export async function attachActionsToMessage(
 
 export type ConsumeResult =
   | { ok: true; payload: ActionPayload }
-  | { ok: false; reason: 'expired' | 'already_used' | 'wrong_contact' | 'missing' }
+  | {
+      ok: false
+      reason: 'expired' | 'already_used' | 'wrong_contact' | 'missing'
+      /**
+       * What the dead button was FOR, in the words it was minted with.
+       *
+       * @mechanism intentOf — a refusal carries the stored payload's own summary, so
+       *   the turn that answers it can say what did not happen instead of a shrug. The row
+       *   is still there — nothing deletes an action, it only expires — and the diagnostic
+       *   SELECT below already reads it to decide WHICH refusal this is, so carrying the
+       *   intent costs one more column on a read that was happening anyway.
+       *
+       *   Absent when the row is genuinely gone (`missing`), and deliberately absent for
+       *   `wrong_contact`: that is the one refusal that is about somebody else's button,
+       *   and what somebody else was being asked is not this person's to be told.
+       */
+      intent?: string
+    }
 
 type ClaimedRow = { payload: unknown; message_id: string | null }
+
+/**
+ * A stored payload's own one-line description of itself, for a refusal to quote.
+ *
+ * Reads the payload as stored rather than re-deriving anything: a `steps` payload was
+ * minted with the summary the model wrote for the person, an `operation` knows its own
+ * name, and a `reply` is literally the words that would have been replayed. Nothing is
+ * inferred and nothing is looked up — this is the row talking.
+ *
+ * Returns undefined rather than a placeholder when the payload will not parse. A refusal
+ * that says "a button" is honest; one that says "a plan" over a payload nobody can read
+ * is the answered vacuum, in the one place with no model to catch it.
+ */
+function intentOf(raw: unknown): string | undefined {
+  const p = parsePayload(raw)
+  if (!p) return undefined
+  if (p.kind === 'steps') return p.summary?.trim() || 'a plan with no summary on it'
+  if (p.kind === 'operation') return `the operation \`${p.op}\``
+  if (p.kind === 'reply') return `sending "${p.text.slice(0, 120)}"`
+  if (p.kind === 'menu') return 'opening a menu'
+  if (p.kind === 'noop') return p.ack?.trim() || 'acknowledging something'
+  if (p.kind === 'handoff') return `handing this to a person: ${p.reason.slice(0, 120)}`
+  return undefined
+}
 
 /**
  * The tap is the answer — recorded as the runtime, because the tapper cannot.
@@ -449,11 +599,13 @@ export async function consumeAction(
         minted_for_contact_id: string
         consumed_at: Date | null
         expired: boolean
+        payload: unknown
       }[]
     >`
       select minted_for_contact_id,
              consumed_at,
-             (expires_at is not null and expires_at <= app.now()) as expired
+             (expires_at is not null and expires_at <= app.now()) as expired,
+             payload
         from action
        where id = ${actionId}
          and academy_id = ${ctx.academyId}`
@@ -462,7 +614,8 @@ export async function consumeAction(
     const row = rows[0]
     // Order matters: someone else's button is the wrong contact whatever else is true of it.
     if (row.minted_for_contact_id !== byContactId) return { ok: false, reason: 'wrong_contact' }
-    if (row.consumed_at) return { ok: false, reason: 'already_used' }
+    const intent = intentOf(row.payload)
+    if (row.consumed_at) return { ok: false, reason: 'already_used', ...(intent ? { intent } : {}) }
     if (row.expired) {
       // A button retired by its sibling lands here, and `expired` is what it must report:
       // `TAP_REFUSAL.expired` in lib/agent/loop.ts says *"That button has expired — tell me
@@ -472,7 +625,7 @@ export async function consumeAction(
       // the other end. The row keeps the whole truth in `expired_reason`, which is where the
       // emulator and anyone asking "why did Cancel stop working?" reads it — this path stays
       // quiet because a sibling being retired is the system working, not a fault.
-      return { ok: false, reason: 'expired' }
+      return { ok: false, reason: 'expired', ...(intent ? { intent } : {}) }
     }
     return { ok: false, reason: 'missing' }
   })

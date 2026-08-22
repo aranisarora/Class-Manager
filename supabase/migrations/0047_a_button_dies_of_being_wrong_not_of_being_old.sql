@@ -1,0 +1,45 @@
+-- 0047 — subject_key on action: added, driven, and REVERTED in code the same day
+--
+-- The column stays because it is already applied to the live database and dropping
+-- an applied column is a second migration for nothing. Nothing writes it and nothing
+-- reads it. This file is the record of why.
+--
+-- THE IDEA
+-- ---------------------------------------------------------------------------
+-- A committing button knew only how OLD it was, never whether it was OUT OF DATE.
+-- Supersession already exists three times in this codebase -- `pending_request` on a
+-- subject, `job.subject_key` on a watch, 0016 on one message's siblings -- and stops
+-- one join short of `action` every time. So `subject_key` was derived from the payload
+-- (the tables a plan writes plus the ids it names) and a later card with the same key
+-- retired the earlier one.
+--
+-- WHY IT WAS REVERTED
+-- ---------------------------------------------------------------------------
+-- It was driven, and the drive produced the exact defect it was built to prevent,
+-- under the mechanism. On `2026-08-22-13-29-sim-8528` the owner gave a timetable on
+-- day 5 and restaged it on day 6 with a Saturday class and a coach added. The two keys
+-- were:
+--
+--   d5  tables:business_rule,class,class_slot|ids:e85a0944-...
+--   d6  tables:business_rule,class,class_coach,class_slot,coach|ids:...
+--
+-- Different table sets, so no supersession: both cards live, identical labels,
+-- `expired_reason` null on each. A plan is corrected by GROWING, and equality on the
+-- write-set is exactly the wrong relation for that.
+--
+-- WHAT REPLACED IT
+-- ---------------------------------------------------------------------------
+-- `staleAsks` (lib/messaging/send.ts). The same run showed that `send.ts` had ALREADY
+-- superseded the day-5 QUESTION, on a subject it already computes, and that only its
+-- BUTTON outlived it -- a state split between the ask and the affordance that answers
+-- it, which is the shape 0016 exists to kill one level up. Retiring the actions on a
+-- superseded ask is twenty lines riding machinery that was already there and already
+-- tuned, needs no new notion of sameness, and fixes the observed case.
+--
+-- The wider principle this cost: a change that only RESTRICTS the model is the wrong
+-- shape for this product. The button was never the problem -- `refusedTapBlock` already
+-- turns a dead tap into a real turn carrying the payload's own intent, which is the
+-- enabling answer to a stale handle and needs no clock and no key at all.
+
+comment on column action.subject_key is
+  'Unused. See the header of 0047 for the experiment this column is the residue of.';

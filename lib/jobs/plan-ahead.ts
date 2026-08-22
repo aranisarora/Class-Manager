@@ -516,6 +516,15 @@ type Push = (
 ) => void
 
 /**
+ * How long a business that is standing still waits between one go-live proposal and
+ * the next. A week, because that is the unit a coaching business runs on: an owner
+ * who has not turned the product on since last Monday has had a full cycle of
+ * classes to notice, and has noticed nothing, because nothing is what the product
+ * does until he says go.
+ */
+const GO_LIVE_ASK_EVERY_DAYS = 7
+
+/**
  * -- the gate nothing resolves -----------------------------------------------
  *
  * `pre_launch` suppresses every proactive path in the product, and for the whole
@@ -536,14 +545,15 @@ type Push = (
  * which any of that happens.
  *
  * @mechanism proposeGoLive — the planner opens the one turn allowed before an academy is
- *   live: a proposal to go live, raised on the SIZE OF THE HOLE rather than on the calendar
- *   — sessions that have already run to a roster nobody was told about — and re-raised only
- *   when that number doubles, so it cannot become a daily nag. `app.guard_go_live()`'s own
- *   precondition is checked first and this gate is strictly stronger, so the plan behind the
- *   button cannot fail in the owner's hand. Six simulated weeks produced six businesses that
- *   never went live, with every reminder, digest, coach nudge and fee request suppressed for
- *   twenty-one days, because R8 put a sign on the door and nothing ever put the owner in
- *   front of it.
+ *   live: a proposal to go live, raised on TWO axes and keyed to whichever of them has
+ *   moved further — the SIZE OF THE HOLE (sessions already run to a roster nobody was told
+ *   about, re-raised when that number doubles) and the TIME THE BUSINESS HAS STOOD STILL
+ *   (re-raised once a week). Either axis alone describes only half the failure: a business
+ *   teaching every day is asked as the damage compounds, and a business that is teaching
+ *   nobody yet — the state where the hole never grows because nothing is running — is
+ *   asked on the calendar instead of never. The dedupe key is the MAXIMUM of the two
+ *   counters rather than the pair of them, so the triggers cannot compound into two asks
+ *   in one week, and a day passing still moves nothing on its own.
  *   Closes F-CB.
  */
 async function proposeGoLive(
@@ -554,7 +564,7 @@ async function proposeGoLive(
   push: Push,
 ): Promise<void> {
   const academyId = academy.id
-  const [dark] = await tx<
+  const [unreachedRoster] = await tx<
     { classes: number; families: number; week_sessions: number; ran_dark: number }[]
   >`
     select
@@ -574,33 +584,96 @@ async function proposeGoLive(
                        where e.academy_id = s.academy_id and e.class_id = s.class_id
                          and e.ended_on is null))                               as ran_dark
   `
-  if (!dark) return
+  if (!unreachedRoster) return
 
   /**
-   * `app.guard_go_live()`'s own precondition, first and by itself: a proposal the
-   * trigger would refuse is a button that fails in the owner's hand, which is
-   * strictly worse than no button. Then the two facts that make it cost anything
-   * — somebody on the books, and a week with classes in it. Below that there is
-   * nothing true to say, and this stays quiet, which is the right behaviour for a
-   * half-entered timetable.
+   * `app.guard_go_live()`'s own precondition, first and BY ITSELF: a proposal the
+   * trigger (0033) would refuse is a button that fails in the owner's hand, which
+   * is strictly worse than no button. That trigger asks for one active, non-ended
+   * class and nothing else, so this asks for one active, non-ended class and
+   * nothing else.
+   *
+   * @mechanism unreachedRoster — the entry test for the go-live proposal is a class that
+   *   exists, and deliberately nothing more, because every other emptiness is not a reason
+   *   to stay quiet but the reason to speak. Families on the books and a week with
+   *   sessions in it were required here too, and that read the situation exactly the wrong
+   *   way round: a timetable with nobody on it and nothing scheduled is a business
+   *   mid-setup, and mid-setup is precisely when the owner cannot see that nothing he does
+   *   reaches anybody. Measured over thirty simulated days, the class existed from day 14
+   *   and the first family landed on day 22, so this gate held the proposal back for the
+   *   eight days it was most needed and then raised it at step 3 — keyed to damage already
+   *   done rather than to time elapsed — while the census told the model on every owner
+   *   turn from day 14 that going live was a real next step to offer. The business
+   *   finished the month at `onboarding_state = setup`, with no payments and an empty
+   *   coach ledger.
    */
-  if (dark.classes === 0 || dark.families === 0 || dark.week_sessions === 0) return
+  if (unreachedRoster.classes === 0) {
+    await askForTheTimetable(tx, academy, nowAt, today, push)
+    return
+  }
 
   /**
-   * Fire on a change in state, never on the calendar restating a stuck one. The
-   * state is the SIZE OF THE HOLE — how many sessions have now run to a roster
-   * nobody was told about — and the key moves only when it doubles. A business
-   * standing still is asked once; a business teaching every day is asked about
-   * four times across a week, each time carrying a bigger true number. A day
-   * passing does not move the key, so it cannot become a daily nag.
+   * How long this business has stood in setup, in whole days on its OWN calendar —
+   * `today` is this academy's local date and `created_on` is a date, so this counts
+   * day boundaries rather than measuring a duration, which is what a cadence keyed
+   * to "another week has gone by" has to count. A `created_on` that will not parse
+   * reads as zero: the hole axis below still works, and a slug of `go-live-NaN` is
+   * a dedupe key that never matches itself and therefore a job every single tick.
    */
-  const step = dark.ran_dark === 0 ? 0 : Math.floor(Math.log2(dark.ran_dark)) + 1
+  const standing = DateTime.fromISO(today).diff(DateTime.fromISO(academy.created_on), 'days').days
+  const daysStanding = Number.isFinite(standing) ? Math.max(0, Math.round(standing)) : 0
+
+  /**
+   * Fire on a change in state, never on the calendar restating a stuck one — with
+   * the calendar itself as one of the states, because *"nothing has moved here for
+   * another week"* is a change in what is true about a business, and it is the only
+   * change a business that is teaching nobody ever produces.
+   *
+   * Two counters, each monotone:
+   *
+   *  - the SIZE OF THE HOLE, which moves when the number of sessions that have run
+   *    to a roster nobody was told about DOUBLES. A business teaching every day is
+   *    asked about four times across a week, each time carrying a bigger true
+   *    number.
+   *  - the TIME STOOD STILL, which moves once every `GO_LIVE_ASK_EVERY_DAYS`. A
+   *    business with a timetable and no roster produces no hole at all — the old
+   *    key was pinned at 0 forever — and this is the axis that asks it anyway.
+   *
+   * The key is the MAXIMUM of the two and not the pair, and that is the part that
+   * keeps the original constraint intact. A pair would let both axes move in the
+   * same week and ask twice; a maximum is one integer that neither axis can push
+   * past the other, so the number of asks over any span is bounded by the larger
+   * counter alone. A day passing still moves nothing by itself, which is what
+   * "cannot become a daily nag" means and it is still true.
+   *
+   * Step 0 is reachable on the day a business is created, deliberately: the moment
+   * a real class exists, *"shall I turn this on?"* is a fair question, it is asked
+   * once, and then not again for a week.
+   */
+  const holeStep =
+    unreachedRoster.ran_dark === 0 ? 0 : Math.floor(Math.log2(unreachedRoster.ran_dark)) + 1
+  const standingStep = Math.floor(daysStanding / GO_LIVE_ASK_EVERY_DAYS)
+  const step = Math.max(holeStep, standingStep)
   const slug = `go-live-${step}`
 
   // `adminsIn`'s ordering puts a reachable admin first; an academy with no
   // reachable admin has nobody to propose anything to.
   const owner = (await admins(tx, academyId)).find((a) => a.contact_id)
   if (!owner?.contact_id) return
+
+  /**
+   * The two states this proposal is raised in are not the same message, and the
+   * difference is whether anything has been LOST yet.
+   *
+   * With sessions already run to a roster nobody was told about, the true thing to
+   * say is the cost. With nothing run — the state the gate above now lets through —
+   * there is no cost, and an instruction to state one is an instruction to invent
+   * one: "0 sessions have already run with nobody told" is a sentence about damage
+   * that reads as damage. So the empty case asks for where it stands instead, and
+   * says outright that an empty roster is not a reason to wait, because the roster
+   * is one of the things going live fills.
+   */
+  const nothingHasRunYet = unreachedRoster.ran_dark === 0
 
   push(
     'agent_task',
@@ -610,7 +683,13 @@ async function proposeGoLive(
     dedupe.agentTask(academyId, slug),
     {
       slug,
-      subject: `not live: ${dark.families} on the books, ${dark.ran_dark} session(s) already run dark`,
+      subject: nothingHasRunYet
+        ? `not live: ${unreachedRoster.classes} class(es) on the timetable, ` +
+          `${unreachedRoster.families} on the books, ` +
+          `${unreachedRoster.week_sessions} session(s) in the next 7 days, ` +
+          `${daysStanding} day(s) standing in setup`
+        : `not live: ${unreachedRoster.families} on the books, ` +
+          `${unreachedRoster.ran_dark} session(s) already run dark`,
       minted_by_contact_id: owner.contact_id,
       minted_roles: ['admin'],
       expires_at: new Date(nowAt.getTime() + 2 * 24 * 60 * 60 * 1000).toISOString(),
@@ -624,6 +703,12 @@ async function proposeGoLive(
         "select " +
         "(select count(*) from session where status <> 'cancelled' and ends_at < app.now()) " +
         "as sessions_already_run_with_nobody_told, " +
+        "(select count(distinct pl.account_id) from enrollment e " +
+        "join player pl on pl.id = e.player_id and pl.active where e.ended_on is null) " +
+        "as families_on_the_books, " +
+        "(select count(*) from session where status = 'scheduled' " +
+        "and starts_at between app.now() and app.now() + interval '7 days') " +
+        "as sessions_in_the_next_seven_days, " +
         "(select (app.now() at time zone timezone)::date - created_on from academy) " +
         "as days_since_this_business_was_created",
       instruction:
@@ -631,9 +716,17 @@ async function proposeGoLive(
         'no class reminder, no coach nudge, no morning brief or evening digest, no fee request and ' +
         'no payment chase. The owner cannot see that absence — from where they stand the roster is ' +
         'on the books and the timetable is on the board. ' +
-        'Say what it has cost so far, from the rows: how many sessions have already run with nobody ' +
-        'told, how many families are enrolled, how many sessions are in the next seven days, and ' +
-        'how long it has been. ' +
+        (nothingHasRunYet
+          ? 'Nothing has been lost yet, and you must not invent a loss: no session has run to a ' +
+            'roster nobody was told about, because there is barely a roster yet. Say where it ' +
+            'actually stands, from the rows: whether anybody is on the books at all, what is ' +
+            'scheduled in the next seven days, and how many days this business has been sitting ' +
+            'in setup with none of the above switched on. An empty roster is not a reason to wait: ' +
+            'the introduction that goes to every family who has never heard from this business is ' +
+            'itself one of the things going live turns ON. '
+          : 'Say what it has cost so far, from the rows: how many sessions have already run with ' +
+            'nobody told, how many families are enrolled, how many sessions are in the next seven ' +
+            'days, and how long it has been. ') +
         'Going live is one write and it is theirs to make, never yours: stage ' +
         'a plan whose one step writes onboarding_state = live on this academy — it comes back as a ' +
         "preview because it touches the business's own controls — and put it behind a button they " +
@@ -641,6 +734,114 @@ async function proposeGoLive(
         'the introduction that goes to every family who has never heard from this business, and the ' +
         'billing. Nothing is switched on until they press it. ' +
         'They may say no, and no is a real answer — if they have already said not yet, leave it.',
+    },
+    true,
+  )
+}
+
+/**
+ * The one state no proactive path in this product could reach: a business that exists
+ * and has no timetable.
+ *
+ * `proposeGoLive` returns above when there is no class, and it is right to —
+ * `unreachedRoster` argues it in full: `app.guard_go_live()` would refuse the write, so
+ * offering the tap puts a button in an owner's hand that fails when they press it, which
+ * is strictly worse than no button. But "do not offer the tap" was silently doing a
+ * second job, "say nothing at all", and those are not the same instruction. Everything
+ * else the planner does is gated on `onboarding_state = 'live'`, so a founded business
+ * with an empty timetable hears from this product exactly never, however long it sits
+ * there.
+ *
+ * That is the state EVERY business is in the moment it is founded, and it is the state
+ * `2026-08-22-08-13-sim-7bo8` stayed in for fourteen days. The census DOES speak to it —
+ * `readyToGoLive` puts "Nothing to go live with yet — the timetable is what is missing" in
+ * front of the model on every not-live owner turn, and it fired on all six of that run's
+ * owner sends between days 3 and 14. So the model was told, correctly, and the owner was
+ * still never asked when his classes run: the schedule arrived on day 8 because the COACH
+ * volunteered it in his own thread. What the census cannot do is speak when nobody has
+ * written in, and a business mid-setup can go quiet for a week — which is exactly the
+ * stretch where the owner cannot see that nothing he does reaches anybody.
+ *
+ * @mechanism askForTheTimetable — the branch `proposeGoLive` takes when there is no class
+ *   yet, asking for the timetable instead of offering a tap that would fail. It mints NO
+ *   go-live button, which is what keeps `unreachedRoster`'s argument intact: this is a
+ *   question, and the offer stays behind the precondition that makes it real. It rides the
+ *   same once-a-week axis rather than a second cadence, carries its own `subject_key` family
+ *   so it can never collide with a `go-live-<n>` job, and goes silent the instant one active
+ *   class exists — at which point `proposeGoLive` takes over unchanged. A business with a
+ *   timetable and no roster is a different state and already had a voice; this is the one
+ *   before it. It asks only somebody who has WRITTEN IN before: an owner who founded a
+ *   business and never came back cannot receive this (the desk's own hand-over is their
+ *   only inbound, and out of window an unsolicited job send is a template with somebody
+ *   else's shape), so silence there is correct rather than a gap.
+ *   Closes F-DQ.
+ */
+async function askForTheTimetable(
+  tx: Tx,
+  academy: AcademyRow,
+  nowAt: Date,
+  today: string,
+  push: Push,
+): Promise<void> {
+  const owner = (await admins(tx, academy.id)).find((a) => a.contact_id)
+  if (!owner?.contact_id) return
+
+  /**
+   * Only somebody who has actually written to this number.
+   *
+   * A question is worth asking of a person who can answer it. Out of the 24-hour window
+   * an unsolicited send leaves as one of the eight frozen templates, which cannot carry
+   * this question and would put "Update: <a date>" on the owner's phone instead — so the
+   * job would spend a model call to produce something the send path reshapes into
+   * something else. An owner who founded a business and never came back is not reachable
+   * with a question, and asking anyway is the definition of a nag.
+   */
+  const [reach] = await tx<{ heard_from: boolean }[]>`
+    select exists (
+      select 1 from message m
+       where m.academy_id = ${academy.id}
+         and m.contact_id = ${owner.contact_id}
+         and m.direction = 'inbound'
+         and m.created_at > app.now() - interval '14 days'
+    ) as heard_from`
+  if (!reach?.heard_from) return
+
+  const standing = DateTime.fromISO(today).diff(DateTime.fromISO(academy.created_on), 'days').days
+  const daysStanding = Number.isFinite(standing) ? Math.max(0, Math.round(standing)) : 0
+  // The same axis `proposeGoLive` uses, so the two never ask in the same week and a
+  // business standing still is asked once a week by exactly one of them. Step 0 is
+  // reachable on the founding day: the moment a business exists, "when do your classes
+  // run" is the only question worth asking it.
+  const step = Math.floor(daysStanding / GO_LIVE_ASK_EVERY_DAYS)
+  const slug = `no-timetable-${step}`
+
+  push(
+    'agent_task',
+    deferPastQuietHours(nowAt, academy.timezone, academy.settings),
+    dedupe.agentTask(academy.id, slug),
+    {
+      slug,
+      subject: `no timetable: 0 classes, ${daysStanding} day(s) since this business was created`,
+      minted_by_contact_id: owner.contact_id,
+      minted_roles: ['admin'],
+      expires_at: new Date(nowAt.getTime() + 2 * 24 * 60 * 60 * 1000).toISOString(),
+      context:
+        "select (select count(*) from class where active) as active_classes, "
+        + "(select count(*) from venue) as venues, "
+        + "(select count(*) from coach where status <> 'ended') as coaches, "
+        + "(select (app.now() at time zone timezone)::date - created_on from academy) "
+        + "as days_since_this_business_was_created",
+      instruction:
+        'This business has no class on its books, so it has no timetable, no sessions, nothing to take a '
+        + 'register for and nothing to bill. Until one exists it cannot be switched on at all, and while it '
+        + 'is switched off nothing this product does reaches anybody. Ask the owner when their classes '
+        + 'actually run — the days, the times, and where. Take it however it arrives: one messy sentence '
+        + 'naming every batch at once is the normal and best case ("mon & wed 6:30 beginners at Green Park, '
+        + 'sat 8am juniors"), and it is worth saying they can send the lot in one message rather than one '
+        + 'class at a time. Read back what you understood before you write it. '
+        + 'Do NOT offer to switch the business on in this turn and do not put a go-live button on it: there '
+        + 'is nothing to switch on yet, and that offer comes on its own once a class exists. '
+        + 'If they have already said they are not ready, leave it.',
     },
     true,
   )

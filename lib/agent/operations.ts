@@ -2991,13 +2991,40 @@ const sendInvite: OperationDef = {
      * go-live the send gate would drop this as `pre_launch` and the admin would be told
      * the invite went — R7's defining shape, on the one path where a parent hearing from
      * a business they have not been told about is the damage.
+     *
+     * **It is asked in the transaction rather than here, and that is the whole of the
+     * fix.** `expand` runs BEFORE `withSession` (lib/agent/plan.ts) — its result is the
+     * step list the transaction then executes — so a precondition read at expansion time
+     * is read against the world as it was before step one. The most natural sentence an
+     * owner can say at the end of setup is *"go live and send the invites"*, and that is
+     * one plan whose step 1 sets `onboarding_state = 'live'` and whose step 2 is this
+     * operation. Evaluated here it was refused every time, by its own first step, for a
+     * state that plan was in the middle of changing.
+     *
+     * On `2026-08-22-08-13-sim-7bo8` that is turn 173 on day 25: the owner asked for
+     * exactly that, the plan was refused, and on day 26 he left — *"this hasnt worked
+     * three times now and arjun still hasnt been paid."* The business finished the month
+     * at `onboarding_state = 'setup'`.
+     *
+     * @mechanism liveGuard — the go-live precondition for an invite is a guard
+     *   statement inside the plan's own transaction, evaluated in step order, rather than a
+     *   throw at expansion time against a world the plan has not run against yet. So "go
+     *   live, then invite everybody" is one preview and one tap, while an invite plan that
+     *   does NOT go live still refuses with the same sentence — now as a rollback that
+     *   messages nobody, which is where a gate belongs. Deliberately NOT implemented by
+     *   inspecting sibling steps for a go-live write: that is prose-matching over
+     *   model-authored SQL, and the database can answer the question itself, in order.
+     *   Closes F-DM.
      */
-    if (a.onboarding_state !== 'live') {
-      throw new Error(
-        `send_invite: nothing reaches a family until this academy is live, and it is "${a.onboarding_state}". ` +
-          'Finish the roster and go live, and the invites go out staged in batches — or say so and I will send ' +
-          `${name}'s the moment you do.`,
-      )
+    const notLiveYet =
+      `nothing reaches a family until this business is live, and it is "${a.onboarding_state}". ` +
+      'Go live in this same plan and the invites go out behind it — or go live first and ask me again.'
+    const liveGuard: PlanStep = {
+      write: `select 1 from academy where id = ${uid(ctx.academyId)} and onboarding_state = 'live'`,
+      service: true,
+      requireRows: 1,
+      guard: true,
+      because: `send_invite: ${notLiveYet}`,
     }
 
     const players = await q<{ person_id: string; full_name: string; class_name: string }>(
@@ -3043,6 +3070,7 @@ const sendInvite: OperationDef = {
     const proof = ` ${who} ${kids.length === 1 ? 'is' : 'are'} with us${inClass}.`
 
     return [
+      liveGuard,
       {
         message: {
           to_contact_id: target.id,

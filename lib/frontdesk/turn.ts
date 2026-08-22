@@ -13,7 +13,9 @@
  *   1. Build the context: the second stable prefix, the tail about this arrival, and
  *      the short thread so far.
  *   2. Up to MAX_ROUNDS of generate → run tools → feed the results back.
- *   3. A round that calls no tool is the desk speaking; the trailing prose is sent.
+ *   3. The desk speaks by calling `reply`, which is the only thing that can carry a
+ *      button. A round that calls no tool is spent telling it so — once (`proseRefused`),
+ *      after which prose is sent as written rather than becoming silence.
  *   4. A hand-over ends it immediately, whatever else the model had planned. The
  *      caller re-enters an ordinary turn inside the business and the person is
  *      answered from there.
@@ -50,6 +52,42 @@ import { frontDeskToolDecls, ReplyArgs, runFrontDeskTool } from './tools'
 
 const MAX_ROUNDS = 3
 
+/**
+ * What the desk was TOLD and what it THOUGHT, as raw material for the one recorder.
+ *
+ * Handed back rather than written here, and that is the whole point of the shape. The
+ * tenant loop owns `evidence`, `CONTEXT_MARKER`, `TRACE_MARKER` and the caps; this
+ * module cannot import any of them, because `lib/agent/loop.ts` value-imports
+ * `runFrontDeskTurn` and a value import back would close a cycle this repo has already
+ * paid for once (see the note on the `ToolTrace` import above). So the desk produces
+ * plain data and `runTurn` renders it into trace rows with the same author, the same
+ * markers and the same caps as a tenant turn — rather than a second copy of all three,
+ * which is exactly the "two authors of one truth" trap and exactly how this went
+ * missing.
+ */
+export type FrontDeskRecord = {
+  /** The variable half of the prompt — the only part that differs between desk turns. */
+  tail: string
+  /** The stable half by size only: it is byte-identical for every stranger forever. */
+  prefixChars: number
+  /** What they said, as the model was shown it. */
+  said: string
+  /** How many earlier messages of this thread were in front of it. */
+  historyCount: number
+  /** One entry per `generate()` call — the model's own round, uncapped at this layer. */
+  rounds: {
+    round: number
+    ms: number
+    prose: string
+    reasoning?: string
+    promptTokens: number
+    cachedTokens: number
+    outputTokens: number
+    calls: string[]
+    finish?: string
+  }[]
+}
+
 /** Everything `runTurn` needs to finish the turn it started. */
 export type FrontDeskRun = {
   outcomes: SendOutcome[]
@@ -64,6 +102,8 @@ export type FrontDeskRun = {
   error?: string
   /** Where this conversation belongs now. The caller re-enters an ordinary turn there. */
   handover?: Handover
+  /** @see FrontDeskRecord — the inside of the turn, for `runTurn` to record. */
+  record: FrontDeskRecord
 }
 
 /**
@@ -117,6 +157,10 @@ export async function runFrontDeskTurn(o: {
     promptTokens: 0,
     outputTokens: 0,
     cachedTokens: 0,
+    // Present from the first line, so a desk turn that returns early — no message to
+    // answer, a hand-over on round one, a `generate` that threw — still records the
+    // shape of itself rather than nothing.
+    record: { tail: '', prefixChars: 0, said: o.text ?? '', historyCount: 0, rounds: [] },
   }
 
   const at = await now(o.identity.academyId)
@@ -139,11 +183,18 @@ export async function runFrontDeskTurn(o: {
     identity: o.identity,
     arrival,
     named,
-    businessCount: businesses.length,
+    businesses,
     atIso: at.toISOString(),
   })
 
   const system = [FRONT_DESK_PREFIX, FRONT_DESK_BOUNDARY, tail].join('\n\n')
+
+  // The tail whole, the stable half by size. `FRONT_DESK_PREFIX` is byte-identical for
+  // every stranger on every number forever — that property IS the cache — so storing it
+  // per turn would bury the only part that varies. Same trade the tenant `(context)` row
+  // makes with the prefix fingerprint.
+  run.record.tail = tail
+  run.record.prefixChars = system.length - tail.length
 
   const messages: Msg[] = [...history.messages]
   if (history.failed) {
@@ -155,6 +206,7 @@ export async function runFrontDeskTurn(o: {
     })
   }
   if (o.text) messages.push({ role: 'user', content: o.text })
+  run.record.historyCount = Math.max(0, messages.length - (o.text ? 1 : 0))
   if (messages.length === 0) {
     // Nothing to answer. The caller does not route a media-only or empty inbound here,
     // but a turn with no message is a turn with nothing to say, and saying something
@@ -164,6 +216,11 @@ export async function runFrontDeskTurn(o: {
 
   const tools = frontDeskToolDecls()
   let proseChecked = false
+  /**
+   * Whether the desk has already been told, this turn, that prose is not how it speaks.
+   * One round of grace and never a second — see `deskSpeaksThroughReply`.
+   */
+  let proseRefused = false
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     run.rounds = round
@@ -180,15 +237,92 @@ export async function runFrontDeskTurn(o: {
     run.promptTokens += gen.usage.promptTokens
     run.outputTokens += gen.usage.outputTokens
     run.cachedTokens += gen.usage.cachedTokens
+
+    /**
+     * The model's own round, recorded before anything is decided about it.
+     *
+     * Every desk round in the thirty-day drive was invisible: 16 turns ran the model
+     * and 0 carried a `(model)` row, so the largest single deliberation the desk
+     * produced — 3,027 output tokens on `d4-08:30-farah-sheikh`, five times any other
+     * desk turn — survives only as the 62 words it sent. Written HERE, at the top of
+     * the round, so a round that goes on to break out, hand over or throw is still
+     * recorded: the tenant loop's rule is that the record is written whatever happened,
+     * and a desk turn is a turn.
+     */
+    run.record.rounds.push({
+      round,
+      ms: gen.ms,
+      prose: (gen.text ?? '').trim(),
+      ...(typeof gen.assistant?.reasoning_content === 'string' && gen.assistant.reasoning_content.trim()
+        ? { reasoning: gen.assistant.reasoning_content }
+        : {}),
+      promptTokens: gen.usage.promptTokens,
+      cachedTokens: gen.usage.cachedTokens,
+      outputTokens: gen.usage.outputTokens,
+      calls: gen.functionCalls.map((c) => c.name),
+      ...(gen.finishReason ? { finish: gen.finishReason } : {}),
+    })
+
     messages.push(gen.assistant)
 
-    // A round that calls nothing is the desk speaking. Same rule as the tenant loop,
-    // for the same reason: prose beside a tool call is a notebook nobody reads.
+    /**
+     * A round that calls nothing is the desk speaking — and speaking this way costs
+     * the person the only affordance this conversation has.
+     *
+     * Two paths reach a visitor's phone from here and they are not equivalent. `reply`
+     * carries up to three buttons whose `answer` replays as if typed; this path carries
+     * a string and there is nowhere in it to put one. The prefix called the prose path
+     * "the only way you speak", the `reply` declaration says "use this rather than plain
+     * prose whenever a tap would save them typing — which is almost always for the one
+     * question you are here to ask", and the model believed the prefix. Measured on
+     * `2026-08-22-12-25-sim-bqc0`, every desk message in three days went out through
+     * here: four messages reached a seat and NONE carried a button, while
+     * `d1-08:30-rahul-menon`'s own reasoning reads *"Let me ask with buttons."* and its
+     * round recorded `calls: []`. The desk asks one question with exactly two answers.
+     * That is the single most tappable moment in the product and it was being typed.
+     *
+     * @mechanism proseRefused — trailing prose at the desk is not a send. The
+     *   round is spent telling the model that nothing reached them and that `reply` is how
+     *   the desk speaks, which is the same round-of-grace shape `violationsAtDesk` above
+     *   already uses — a refusal that buys a round rather than a runtime edit. It fires at
+     *   most ONCE (`proseRefused`), and prose on the second attempt is sent as written,
+     *   because a desk that answers a stranger with silence is strictly worse than one that
+     *   answers without a button: this is the one conversation in the product where nobody
+     *   has any relationship to fall back on. The prefix sentence that taught the habit is
+     *   corrected beside this in `FRONT_DESK_PREFIX`, and `check:layout` cannot catch a
+     *   prompt contradicting a tool declaration, which is why the enforcement is here and
+     *   not there. It never spends the LAST round (`round < MAX_ROUNDS`): a refusal there
+     *   has no round left to be answered in, and would trade a message without a button for
+     *   no message at all — which is the one outcome a stranger cannot tell apart from
+     *   being ignored.
+     *   Closes F-DJ.
+     */
     if (gen.functionCalls.length === 0) {
       const body = (gen.text ?? '').trim()
       if (!body) {
         run.error = 'front desk produced neither a tool call nor anything to say'
         break
+      }
+      if (!proseRefused && round < MAX_ROUNDS) {
+        proseRefused = true
+        run.record.rounds.push({
+          round,
+          ms: 0,
+          prose: '',
+          calls: ['(prose refused: the desk speaks through reply, so a button is possible)'],
+          promptTokens: 0,
+          cachedTokens: 0,
+          outputTokens: 0,
+        })
+        messages.push({
+          role: 'user',
+          content:
+            '[That reached nobody. Prose is a note to yourself here — `reply` is how this desk speaks, and it ' +
+            'is the only thing that can carry a button. Send the same message through `reply`, and put the ' +
+            'answers on buttons: the person is on a phone with one hand, and a question they have to type ' +
+            'the answer to is a question many of them will not answer at all.]',
+        })
+        continue
       }
       const bad = proseChecked ? [] : violationsAtDesk(body, o.identity, businessNames)
       if (bad.length) {
@@ -218,7 +352,7 @@ export async function runFrontDeskTurn(o: {
         })
         run.trace.push({
           round, name: call.name, ms: Date.now() - startedMs,
-          args: String(call.raw ?? '').slice(0, 2000), result: `parse error: ${call.parseError}`,
+          args: String(call.raw ?? ''), result: `parse error: ${call.parseError}`,
         })
         continue
       }
@@ -261,8 +395,25 @@ export async function runFrontDeskTurn(o: {
         })
         run.trace.push({
           round, name: 'reply', ms: Date.now() - startedMs,
-          args: JSON.stringify(parsed.data).slice(0, 2000), result: outcome.status,
+          args: parsed.data, result: outcome.status,
         })
+        /**
+         * A message that actually landed ENDS the desk's turn.
+         *
+         * §10.0: "The desk asks exactly one question and holds no conversation of its
+         * own." The prose path enforced that by accident — it `break`s — and while prose
+         * was the only route out, nothing here ever ran twice. The moment `proseRefused`
+         * sent the desk through `reply` instead, the missing guard became visible in one
+         * drive: on `2026-08-22-12-47-sim-s4hg` three of nine desk turns sent the SAME
+         * question twice, and the second was caused by the refusal itself — the model
+         * replied, correctly wrote "I'll wait for their answer." on the next round, and
+         * was told that prose reaches nobody, so it obeyed and asked again.
+         *
+         * The tenant loop has `repliedTo` for this and the desk had nothing. A break is
+         * the whole of it here, because a desk turn has no plan to leave half-done: one
+         * question, one message, one round of tools at most after it.
+         */
+        if (outcome.status !== 'suppressed' && outcome.status !== 'failed') return run
         continue
       }
 
@@ -270,7 +421,7 @@ export async function runFrontDeskTurn(o: {
       messages.push({ role: 'tool', tool_call_id: call.id, content: result.content })
       run.trace.push({
         round, name: call.name, ms: Date.now() - startedMs,
-        args: JSON.stringify(call.args ?? {}).slice(0, 2000), result: result.content.slice(0, 2000),
+        args: call.args ?? {}, result: result.content,
       })
 
       if (result.handover) {

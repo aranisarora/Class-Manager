@@ -284,6 +284,54 @@ function messagesThisTurn(ctx: ToolCtx): string {
 }
 
 /**
+ * What the wire refused, on the line that otherwise only counts what it took.
+ *
+ * @mechanism trailingWentOutRefused — a send the gates suppressed or the transport failed
+ *   is named on the turn-state line beside the sends that landed, with its reason, so a
+ *   refused message is distinguishable from a delivered one by the round that reads that
+ *   line. It retires the class of defect where the runtime knows a person was answered
+ *   with nothing and the sentence in front of the model is silent about it.
+ *
+ * **`messagesThisTurn` filters to `sent`/`queued`, and everything else fell through the
+ * gap.** A suppressed outcome and a send that never happened produce the identical
+ * sentence, which is right about the person — they heard nothing either way — and wrong
+ * about the turn: one of them has a draft the runtime is holding and a reason it will not
+ * go, and the other has no draft at all. The two need completely different next moves and
+ * the line could not tell them apart.
+ *
+ * **Named for the send it was built for.** The trailing message is the LAST send of a
+ * turn — `landed` says so directly — so it is the one refused after every earlier check
+ * has already passed, and the one whose refusal nothing downstream re-examines. Turn 172
+ * of the thirty-day run is the shape: the trailing draft was refused for machinery in the
+ * prose, and the reflection round — which opens with the runtime's own *"[The reply has
+ * gone and nobody is waiting"* and closes with this line — concluded the parent had been
+ * answered. Both halves of what it read were silent about the refusal. This is the half
+ * that lives in this file.
+ *
+ * It covers every refused send rather than only that one, because `ToolCtx` holds the
+ * turn's outbox and not the order it was written in, and a refusal is the same fact
+ * whichever call produced it. One short clause: the whole line is rendered on every round
+ * of every turn, and a long one is a skimmed one.
+ *
+ * Deliberately counts and reasons, never advice. `SUPPRESSION_HELP` already tells the
+ * `reply` caller what to do about its own refusal in the round that made it; repeating a
+ * thinner version here would be the runtime composing, which is the thing the six regexes
+ * above died for.
+ */
+function trailingWentOutRefused(ctx: ToolCtx): string | null {
+  const refused = (ctx.outcomes ?? []).filter(
+    (o): o is Extract<SendOutcome, { status: 'suppressed' | 'failed' }> =>
+      o.status === 'suppressed' || o.status === 'failed',
+  )
+  if (!refused.length) return null
+  const reasons = [...new Set(refused.map((o) => String(o.reason)))].join(', ')
+  // "Refused" rather than "suppressed": a gate decision and a transport failure are
+  // different causes and the reason in brackets says which, but they are the same fact
+  // to a round deciding what to do next — this message is not on anybody's phone.
+  return `had ${plural(refused.length, 'message', 'messages')} refused and delivered to nobody (${reasons})`
+}
+
+/**
  * What this turn has actually done, in one line, told to the model every round.
  *
  * @mechanism turnState — states the turn's own facts to the model on every round:
@@ -316,10 +364,13 @@ function messagesThisTurn(ctx: ToolCtx): string {
  * Four candidates were measured against that test on the 19 Aug live run and
  * three of them failed it, which is recorded here so they are not re-proposed:
  *
- *   Suppression — already told, and told better. `reply` returns the reason,
- *   `SUPPRESSION_HELP`'s sentence for it, `retry:false` and a note saying a
- *   reworded resend is dropped the same way. Repeating a thinner version here
- *   would add length and no information.
+ *   Suppression — judged "already told, and told better" on that run, and the
+ *   judgement was right about the ROUND and wrong about the TURN. `reply` does
+ *   return the reason, `SUPPRESSION_HELP`'s sentence for it, `retry:false` and a
+ *   note saying a reworded resend is dropped the same way — to the round that
+ *   called it. Nothing carries it forward. The trailing send has no such round at
+ *   all, and reflection reads this line after it. So the count is here and the
+ *   advice is not: see `trailingWentOutRefused`.
  *
  *   Refused calls — the refusal is in the tool result of the round that made it.
  *   Visible, not hidden. Absence is what this line is for.
@@ -348,6 +399,11 @@ export function turnState(ctx: ToolCtx): string {
       : 'written nothing — no row in this database has changed',
   )
   bits.push(messagesThisTurn(ctx))
+  // Immediately after the count it corrects, and not folded into it: the count is about
+  // what reached somebody, this is about what did not, and a single clause carrying both
+  // is the sentence that let a refused reply read as a delivered one.
+  const refused = trailingWentOutRefused(ctx)
+  if (refused) bits.push(refused)
   // Named as its own clause rather than folded into the count above, because on a
   // turn that sent to two people it is ambiguous which one it describes — and the
   // whole point of it is that the model does not know this happened at all.
@@ -1296,24 +1352,94 @@ const ENTITY_COLUMNS: [RegExp, string, string][] = [
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}/
 
+/**
+ * The denominator, and **what it is actually counting.**
+ *
+ * @mechanism scopeDenominator — the "of N" on a scope line is counted through the
+ *   CALLER's own session, the same session the model's read ran under, so policy has
+ *   narrowed both numbers identically and the only thing left that can separate them is
+ *   the query's own predicates. It is therefore labelled as what it measures — rows of
+ *   this kind THIS SESSION can see — rather than as how many exist, and it is dropped
+ *   whenever it cannot be the superset the numerator came out of. It retires the class of
+ *   defect where the line built to catch a plausible-wrong total teaches the model to
+ *   distrust a correctly narrowed one.
+ *
+ * **The number was always this, and the line never said so.** `select count(*) from
+ * player where active` runs under `ctx`, which is the person in the seat — so under RLS
+ * it has never meant "players in this business". It means "players this person is allowed
+ * to see, that are active". Rendered bare as `1 of 2 players` beside a result the model
+ * had deliberately narrowed to one account, it reads as the runtime saying *two exist and
+ * you were shown one*, and the model has no way from there to tell which half of that
+ * sentence is its own doing.
+ *
+ * **What it cost, verbatim.** Turn `d23-20:15-rukmini-sarangi` of the thirty-day run. A
+ * mother asked what her name had been added to. Her own reads were right, and RLS showed
+ * her two players — her two children — while the query she wrote returned the one row she
+ * had asked for:
+ *
+ *   *"Interesting — the account has 2 players per the scope ("1 of 2 players") but the
+ *   query only returns 1 row… So there seem to be 2 players but only 1 shows. The other
+ *   (Kabir) might be on a different account, or the row is somehow not visible… Actually
+ *   the scope line is a bit odd. Let me not over-read."*
+ *
+ * It then abandoned three correct reads — *"the context is authoritative for what to
+ * say"* — and answered off the prefetched census instead, which was the stale half.
+ * §14.2's premise is right and this is what an unlabelled denominator does to it: the
+ * guard against a plausible-wrong answer became the reason a right one was thrown away.
+ *
+ * **Relabelled rather than recomputed, deliberately.** The denominator that would answer
+ * the model's real question — "how many rows match the predicate I wrote" — needs the
+ * predicate, and the only way to get it from here is to read the model's SQL and guess
+ * at it. That is ARCHITECTURE.md's pattern-that-judges-prose trap wearing a WHERE clause,
+ * and the six regexes above this file's `turnState` are what it costs. What the runtime
+ * can state without parsing anything is which session each count was taken under, and
+ * since that is the same session for both, the gap has exactly one remaining cause.
+ *
+ * Zero is "no denominator": a failed count and an entity with no total SQL are the same
+ * thing to the caller, which is the line saying `${distinct} ${label}` and nothing more.
+ * A guess would be worse than silence here — the whole defect is a number nobody can
+ * check being read as one that can.
+ */
+async function scopeDenominator(ctx: SessionCtx, totalSql: string): Promise<number> {
+  if (!totalSql) return 0
+  try {
+    const [t] = await withSession(ctx, async (tx) => (await tx.unsafe(totalSql)) as unknown as { count: string }[])
+    return Number(t?.count ?? 0)
+  } catch {
+    return 0
+  }
+}
+
 async function scopeLine(ctx: SessionCtx, rows: Record<string, unknown>[], truncated: boolean): Promise<string> {
   const bits: string[] = [`${rows.length} row${rows.length === 1 ? '' : 's'}${truncated ? ' (capped at 10k)' : ''}`]
+  // Whether any denominator on this line came out bigger than the result in front of it.
+  // That is the only shape that raises the question the trailing clause answers; `2 of 2
+  // players` raises nothing and pays for nothing.
+  let narrowed = false
   if (rows.length) {
     const cols = Object.keys(rows[0])
     for (const [re, label, totalSql] of ENTITY_COLUMNS) {
       const col = cols.find((c) => re.test(c))
       if (!col) continue
-      const distinct = new Set(rows.map((r) => String(r[col] ?? ''))).size
-      let total = 0
-      if (totalSql) {
-        try {
-          const [t] = await withSession(ctx, async (tx) => (await tx.unsafe(totalSql)) as unknown as { count: string }[])
-          total = Number(t?.count ?? 0)
-        } catch {
-          total = 0
-        }
-      }
-      bits.push(total ? `${distinct} of ${total} ${label}` : `${distinct} ${label}`)
+      /*
+       * A null is not an entity. The old Set mapped null to `''` and counted it as a
+       * member, so one left join that matched nothing added a phantom to the numerator —
+       * which is how the run produced `2 of 1 coaches`, a fraction whose numerator
+       * exceeds its denominator, on the one line in the product whose entire job is to be
+       * arithmetic the model can trust.
+       */
+      const distinct = new Set(rows.map((r) => String(r[col] ?? '').trim()).filter((v) => v.length > 0)).size
+      if (!distinct) continue
+      const total = await scopeDenominator(ctx, totalSql)
+      /*
+       * `total < distinct` means the two counts are not measuring the same set — the
+       * totals here carry their own predicates (`where active`, `status = 'active'`) and
+       * a result spanning an ended class or a departed coach outruns them. "Of" is a
+       * claim about containment, so where containment is provably false the claim is not
+       * made and the count stands alone.
+       */
+      bits.push(total >= distinct ? `${distinct} of ${total} ${label} visible to this session` : `${distinct} ${label}`)
+      if (total > distinct) narrowed = true
     }
     // Date span, from whatever looks like a date.
     const stamps: string[] = []
@@ -1330,7 +1456,16 @@ async function scopeLine(ctx: SessionCtx, rows: Record<string, unknown>[], trunc
       bits.push(a === b ? a : `${a} – ${b}`)
     }
   }
-  return `Across ${bits.join(', ')}`
+  const line = `Across ${bits.join(', ')}`
+  /*
+   * Said once, and only where the gap exists to be explained. Not when the result was
+   * capped: there the 10k clip is a second live explanation for the same gap, the row
+   * count already carries it, and a sentence blaming the query would be wrong half the
+   * time. This is the clause that would have kept three correct reads alive.
+   */
+  return narrowed && !truncated
+    ? `${line}. Both counts were read under this person's own policy, so the gap between them is your query narrowing, not rows held back from you.`
+    : line
 }
 
 /* ------------------------------------------------------------------------- *
@@ -2181,7 +2316,7 @@ export async function runTool(
       if (untraced) ctx.untraced?.push({ body, found: untraced })
 
       /**
-       * ── A question routed to somebody else is an OUTSTANDING QUESTION ────────
+       * ── A question behind a button is an OUTSTANDING QUESTION ───────────────
        *
        * `pending_request` is written at the wire (`send.ts`), and only when the
        * spec says a confirmation was asked. Three callers set that flag, all of
@@ -2213,14 +2348,53 @@ export async function runTool(
        * list layer 0 exists to take off the model. The runtime already knows: it
        * minted these buttons and it knows their action kinds. A button that
        * COMMITS something (`steps`, or an operation whose whole job is to run a
-       * staged plan) on a message to someone OTHER than the person who raised the
-       * thing is, definitionally, a question only that person's tap can answer.
+       * staged plan) is, definitionally, a question only one person's tap can
+       * answer.
        *
        * **Deliberately narrow.** An `undo` on a receipt commits and is an
        * affordance, not an ask; a reply-button offering a next step is a choice,
        * not an outstanding question. Filling the tail with those would devalue
        * the block that made the honest opt-out turn work. Widen on the evidence
        * of a drive, never on tidiness.
+       *
+       * ── The routing test asked the wrong question ────────────────────────────
+       *
+       * @mechanism awaitsATap — a committing button records the question it puts on a
+       *   screen whoever that screen belongs to, so the expiry sweep in
+       *   `lib/jobs/plan-ahead.ts` is armed for the commonest ask in the product — "here
+       *   is the plan, tap to confirm", put to the person who just asked for it — and not
+       *   only for the rare one routed to somebody else. It retires the class of defect
+       *   where a question dies unanswered and nothing anywhere knows a question was
+       *   asked.
+       *
+       * `routedElsewhere && commits` made "asks nobody" true of a question that is
+       * plainly being asked. The whole of the reasoning above — a committing button is a
+       * question only a tap answers, and the row is what lets it end — applies exactly as
+       * hard when the tap belongs to the owner in front of you. The routing clause was
+       * carried over from the incident that prompted it (`st-client-move-session`, a
+       * parent's ask routed to the owner) and mistook the incident for the rule.
+       *
+       * **Thirty-day run: 12 committing buttons minted, 9 never tapped, 0 follow-ups.**
+       * Not one produced a row for `pending_request.resolution` to sweep, so nine plans
+       * the owner had agreed to look at simply stopped existing — no tail line the next
+       * turn, no expiry, no re-ask. The sweep was correct code with nothing to match, in
+       * the same way `expires_at` was before it was written.
+       *
+       * **What `routedElsewhere` is genuinely for, and why it survives.** It is not the
+       * test for "is this a question"; it is the test for a §18 rule 1 collision at the
+       * wire. `isConfirmationRequest` is the same flag that arms gate 2 of `send.ts` —
+       * *never ask someone to confirm something to themselves* — which SUPPRESSES a
+       * confirmation whose `subject_person_ids` name the person reading it. While the
+       * flag was false on every self-directed reply, that gate could never fire on one;
+       * turning the flag on without a guard would convert a coach's own "can I swap
+       * Monday?" into silence, which is the one failure a person cannot tell apart from
+       * being ignored. So the narrow case the routing clause was accidentally protecting
+       * is protected on its own terms below, by name, and the rest is armed.
+       *
+       * That guard is a hole, and an honest one: a committing confirmation ABOUT the
+       * asker still records nothing. The real home is a `solicited` clause on that gate
+       * — compose.ts already derives `solicited` as exactly `!routedElsewhere` — and it
+       * is in `send.ts`, not here.
        */
       const routedElsewhere = to !== ctx.identity.contact.id
       const commits = (buttons ?? []).some(
@@ -2230,7 +2404,6 @@ export async function runTool(
           // `OperationName` — `String(op)` is the reader used everywhere else.
           (b.action?.kind === 'operation' && String(b.action.op) === 'commit'),
       )
-      const asksSomeoneElse = routedElsewhere && commits
       /**
        * The subject is what makes it one question rather than many.
        *
@@ -2241,17 +2414,34 @@ export async function runTool(
        * `send.ts` gives where it derives its own: prose would make two askings of
        * one question look like two questions.
        *
-       * It carries the ASKER too. This row lives on the OWNER's contact, because
-       * his tap resolves it, while the person owed the outcome is the one who
-       * raised it — and a sweep that re-asks the owner and leaves the asker in
-       * silence has rebuilt the defect one layer along.
+       * It carries the ASKER too. On a routed request the row lives on the
+       * OWNER's contact, because his tap resolves it, while the person owed the
+       * outcome is the one who raised it — and a sweep that re-asks the owner and
+       * leaves the asker in silence has rebuilt the defect one layer along. On a
+       * question put to the asker the two are the same contact and the prefix is
+       * degenerate, which costs nothing and keeps one subject grammar.
        */
       const subjectIds = Array.isArray(args?.subject_person_ids)
         ? [...args.subject_person_ids].map(String).sort()
         : []
-      const confirmation = asksSomeoneElse
+      /*
+       * The one case the routing clause was protecting, tested on its own terms.
+       * `to === ctx.identity.contact.id` is the only branch where the recipient's person
+       * is known here for certain — it is the person in the seat — so this is the whole
+       * of what can be said soundly about gate 2 from this file without guessing at a row
+       * `send.ts` reads and this does not.
+       */
+      const aboutTheAsker = !routedElsewhere && subjectIds.includes(String(ctx.identity.person.id))
+      const awaitsATap = commits && !aboutTheAsker
+      const confirmation = awaitsATap
         ? {
-            kind: 'routed_request',
+            // Rendered verbatim into the variable tail ("ASKED AND UNANSWERED (kind ·
+            // subject)"), so the label has to be true of the row: `routed_request` reads
+            // as a lie to the person who asked for the thing themselves. Distinct kinds
+            // also keep 0032's per-kind unique index honest — an owner's own pending
+            // confirm and a request routed to him about the same subject are two
+            // questions and supersede nothing of each other's.
+            kind: routedElsewhere ? 'routed_request' : 'own_request',
             subject: [
               `from:${ctx.identity.contact.id}`,
               ...(subjectIds.length ? subjectIds : catalogId ? [catalogId] : []),
@@ -2270,7 +2460,7 @@ export async function runTool(
         catalogId,
         fixed: catalogId ? CATALOG[catalogId].fixed : false,
         subjectPersonIds: Array.isArray(args?.subject_person_ids) ? args.subject_person_ids : undefined,
-        isConfirmationRequest: asksSomeoneElse,
+        isConfirmationRequest: awaitsATap,
         confirmation,
       })
       ctx.outcomes?.push(outcome)

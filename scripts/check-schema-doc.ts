@@ -31,6 +31,23 @@
  *     document can catch, because absence has nothing to point at.
  *   - Every view named must exist under exactly the qualification used.
  *
+ * WHAT A GATE CANNOT DO IS LOOK PAST ITS OWN PARSER (22 Aug 2026). Every
+ * signature in the block's `## The views` section is INDENTED by two spaces, and
+ * the parser anchored on `\n` with no allowance for leading space. So every one
+ * of them was invisible here — and `coach_ledger` is not a view. It is a table
+ * the admin may INSERT into, filed in that section because it answers the same
+ * question `coach_pay` does, and it had therefore never once been read against
+ * the database. Its signature omitted `dedupe_key`, which is NOT NULL with no
+ * default; on the 30-day run the model wrote a `coach_ledger` insert without it,
+ * lost the whole plan to a not-null violation, and was handed a runtime hint
+ * that guessed the missing column was `academy_id`. The check printed
+ * "SCHEMA_DOC agrees with the database" throughout.
+ *
+ * That is why the parse is now COUNTED and the count has a floor. A checker
+ * whose reader silently matches nothing reports perfect agreement, which is the
+ * one wrong answer worse than a false alarm: it is indistinguishable from having
+ * done the work.
+ *
  * It deliberately does NOT check prose. Nothing here can tell whether a sentence
  * about billing is true; it checks the parts that have a machine-readable answer,
  * which is the half that goes stale silently.
@@ -79,6 +96,21 @@ const NOT_INSERTABLE = new Set([
   'academy', // update-only: there is no route that creates a second one
 ])
 
+/**
+ * The fewest signature openings a healthy parse finds. Not a count — a FLOOR,
+ * and the only defence against the failure this file has already had: a reader
+ * that stops matching reports agreement, loudly and in green, having compared
+ * nothing at all. Asserted against `seen` rather than against the signatures
+ * kept, because `seen` is the parser's own health and nothing else: a view whose
+ * column list carries no types contributes an opening and no columns, and that
+ * is a fact about how the block is written, not about whether the regex works.
+ *
+ * Forty openings today. The floor is set below that so ordinary editing never
+ * trips it; move it down only when the block itself genuinely shrinks, and never
+ * to make a red run go green.
+ */
+const MIN_SIGNATURE_OPENINGS = 35
+
 type Sig = { table: string; cols: { name: string; required: boolean }[] }
 
 /**
@@ -87,13 +119,36 @@ type Sig = { table: string; cols: { name: string; required: boolean }[] }
  * (`unique(academy_id, phone_e164)`, `numeric(10,2)`). Parsed by walking the
  * parens rather than with one regex, because the regex version quietly stopped
  * at the first nested close and reported half the columns.
+ *
+ * @mechanism parseSignatures — reads a signature wherever it sits on the line, and
+ *   counts what it read, retiring the class of defect where a gate passes because
+ *   its own reader matched nothing. The anchor used to be `\n([a-z_]+)\(` — column
+ *   zero or nothing — so the twelve indented signatures under `## The views`, and
+ *   the one real TABLE filed among them, were never compared to the database at
+ *   all. Two spaces of indentation, chosen for layout, silently switched the check
+ *   off for a table the model writes to. Leading whitespace is now allowed, and
+ *   the openings it walked are counted and asserted against
+ *   `MIN_SIGNATURE_OPENINGS`, so the next reader that stops matching fails
+ *   instead of congratulating itself.
+ *
+ *   Allowing indentation means the walk also meets the CONSTRAINT calls nested
+ *   inside a signature — `unique(academy_id, phone_e164))` sits on its own
+ *   indented continuation line and would otherwise be read as a table called
+ *   `unique`. `consumedTo` is the guard: a match that begins inside a signature
+ *   already parsed belongs to that signature and is skipped, which is decided by
+ *   position rather than by a keyword list nobody would remember to extend.
  */
-function parseSignatures(doc: string): Sig[] {
+function parseSignatures(doc: string): { sigs: Sig[]; seen: number } {
   const out: Sig[] = []
-  const re = /(?:^|\n)([a-z_]+)\(/g
+  const re = /(?:^|\n)[ \t]*([a-z_]+)\(/g
+  /** Index just past the last signature consumed; anything before it is nested. */
+  let consumedTo = 0
+  /** Openings walked to a matching close, whether or not they yielded columns. */
+  let seen = 0
   let m: RegExpExecArray | null
   while ((m = re.exec(doc))) {
     const table = m[1] as string
+    if (m.index < consumedTo) continue
     let i = re.lastIndex - 1
     let depth = 0
     let end = -1
@@ -109,6 +164,7 @@ function parseSignatures(doc: string): Sig[] {
       }
     }
     if (end === -1) continue
+    consumedTo = end
     const body = doc
       .slice(re.lastIndex, end)
       .replace(/\/\*[\s\S]*?\*\//g, ' ') // inline commentary
@@ -142,9 +198,10 @@ function parseSignatures(doc: string): Sig[] {
       if (!/^[a-z_][a-z0-9_]*!?\s+\S/.test(t)) continue
       cols.push({ name, required: cm[2] === '!' })
     }
+    seen++
     if (cols.length) out.push({ table, cols })
   }
-  return out
+  return { sigs: out, seen }
 }
 
 /** `app.session_roster(…)` and bare `session_coverage(…)` mentioned as views. */
@@ -191,11 +248,43 @@ for (const r of realCols) {
     .set(r.column_name, { required: r.is_nullable === 'NO' && r.column_default === null })
 }
 
-const sigs = parseSignatures(SCHEMA_DOC)
-console.log(c.dim(`\n  ${sigs.length} table signatures parsed from SCHEMA_DOC\n`))
+const realViews = new Set(
+  (
+    await q<{ table_schema: string; table_name: string }>(
+      `select table_schema, table_name from information_schema.views where table_schema in ('app','public')`,
+    )
+  ).map((v) => `${v.table_schema}.${v.table_name}`),
+)
+/** A bare name that is really a view. Read before the loop so a view signature is skipped there. */
+const viewNames = new Set([...realViews].map((v) => v.slice(v.indexOf('.') + 1)))
+
+const { sigs, seen } = parseSignatures(SCHEMA_DOC)
+/**
+ * Both numbers, because they fail differently. `seen` falling is the parser
+ * losing sight of the block — which is exactly what indentation did, silently,
+ * for a year of view signatures and one real table. `sigs.length` falling while
+ * `seen` holds is a signature that lost its column TYPES, which reads here as a
+ * table with nothing to check. The line on its own was already here and nobody
+ * read it; the floor below is what makes the drop a failed run.
+ */
+console.log(c.dim(`\n  ${seen} signatures found in SCHEMA_DOC, ${sigs.length} with a typed column list\n`))
+if (seen < MIN_SIGNATURE_OPENINGS) {
+  problems.push(
+    `only ${seen} signatures found in SCHEMA_DOC and the floor is ${MIN_SIGNATURE_OPENINGS} — ` +
+      `the reader has stopped matching, so everything below this line is a comparison that did not happen`,
+  )
+}
 
 for (const sig of sigs) {
   if (PROSE_ONLY.has(sig.table)) continue
+  /**
+   * A view signature is a list of output columns, not a table definition: it has
+   * no NOT NULL to be honest about and nothing to insert into. Its EXISTENCE is
+   * checked — by `parseViewMentions` below, against the exact qualification used
+   * — so skipping it here is not a gap. A name that is neither a table nor a view
+   * still falls through to the "documented and does not exist" report.
+   */
+  if (!byTable.has(sig.table) && viewNames.has(sig.table)) continue
   const real = byTable.get(sig.table)
   if (!real) {
     problems.push(`table "${sig.table}" is documented and does not exist`)
@@ -230,13 +319,6 @@ for (const sig of sigs) {
   }
 }
 
-const realViews = new Set(
-  (
-    await q<{ table_schema: string; table_name: string }>(
-      `select table_schema, table_name from information_schema.views where table_schema in ('app','public')`,
-    )
-  ).map((v) => `${v.table_schema}.${v.table_name}`),
-)
 for (const v of parseViewMentions(SCHEMA_DOC)) {
   if (!realViews.has(`${v.schema}.${v.name}`)) {
     const elsewhere = [...realViews].find((r) => r.endsWith(`.${v.name}`))

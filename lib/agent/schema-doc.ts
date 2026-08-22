@@ -402,7 +402,7 @@ message(contact_id, sender_id, direction 'inbound|outbound', catalog_id text,
   -- query rather than a guess.
 action(kind! text, payload! jsonb /* fully resolved */, minted_at, minted_for_contact_id,
   expires_at, consumed_at, consumed_by_contact_id, message_id uuid -> message,
-  expired_reason text)
+  expired_reason text, subject_key text /* unused: see 0047 */)
 job(kind text, run_at tstz, dedupe_key text unique, subject_key text
   /* what is being watched; one live job per subject */, status text
   'pending|running|done|failed|skipped|cancelled|superseded', attempts int,
@@ -676,8 +676,29 @@ than a near-miss.
   -- describes the month in progress, and a month already closed has a row of its
   -- own in coach_ledger.
 
-  coach_ledger(academy_id, coach_id, period, kind 'session|hourly|monthly|adjustment',
-  description, amount, rate_amount, rate_unit, session_id, reason, approved_by)
+  coach_ledger(coach_id! uuid, period! date /* 1st of the month the work falls
+  in, the same meaning as tally_line.period */, kind! text
+  'session|hourly|monthly|adjustment', description! text /* shown verbatim to the
+  coach */, amount! numeric /* negative for a correction */, dedupe_key! text,
+  rate_amount numeric, rate_unit text 'per_session|per_hour|per_month',
+  session_id uuid /* per-session and per-hour lines only */, reason text
+  /* adjustments only */, approved_by uuid -> person /* adjustments only */)
+  -- The one TABLE in this section, not a view, and the only one here you may
+  -- write. It carries the ordinary id/created_at/academy_id like every other
+  -- table, so those are not repeated in the signature.
+  -- unique(academy_id, dedupe_key)
+  -- dedupe_key is NOT NULL and has NO DEFAULT — unlike tally_line's, which may be
+  -- null. An insert that omits it is refused and takes its whole plan with it,
+  -- and it is NOT academy_id: it is what "the same pay line" MEANS, said in ids,
+  -- never composed from description. Use the shape the runtime's own writer uses
+  -- (lib/billing-keys.ts, coachLedgerKey) or your row and its row will not
+  -- recognise each other and the coach is paid twice:
+  --   cs:<coach_id>:<session_id>      a per-session coach, one line per session worked
+  --   ch:<coach_id>:<session_id>      a per-hour coach, the hours are on the row
+  --   cm:<coach_id>:<period>          a per-month coach, one line for the month
+  --   ca:<coach_id>:<period>:<slug>   a correction; the slug is what makes it distinct
+  -- period in a key is yyyy-mm-dd, the first of the month, and nothing else — a
+  -- key that differs by its own formatting is the duplicate it exists to prevent.
   -- One row per coach per session worked, or one per month for a per_month coach,
   -- written when the month closes — with the rate that applied at the time copied
   -- into rate_amount rather than referenced.
