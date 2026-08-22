@@ -178,7 +178,15 @@ const isQueue = (t) => t.who === 'queue'
  * and for any driver that hands over prose instead of a shape — all three are
  * "the record does not say", which is different from "they answered".
  */
-const ACTIONS = new Set(['say', 'quiet', 'giveup'])
+/**
+ * `tap` was missing, and a tap is a quarter of what these seats do — 20 of b8xo's
+ * 82 seat turns, 17 of ceeg's. Without it `actionOf` returned null for every one
+ * of them, so the page and `--text` both said "the record does not say" about the
+ * single most deliberate thing a person can do on a phone, and F-DV's whole point
+ * — that the seat COULD always press a button and every mechanism behind a tap had
+ * been measured at a fifteenth of its rate — was invisible again in the reading.
+ */
+const ACTIONS = new Set(['say', 'tap', 'quiet', 'giveup'])
 const actionOf = (t) => {
   const pr = t.personaReasoning
   const a = pr && typeof pr === 'object' && !Array.isArray(pr) ? pr.action : null

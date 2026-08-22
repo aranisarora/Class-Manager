@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-220 mechanisms · 33 findings closed by one · 26 findings still open
+220 mechanisms · 33 findings closed by one · 27 findings still open
 
 ## The scan
 
@@ -739,6 +739,6 @@ One line each. Find a candidate here, then read its entry below.
 
 ## Still open
 
-No mechanism claims 26 findings. They are listed in
+No mechanism claims 27 findings. They are listed in
 [`../findings/OPEN.md`](../findings/OPEN.md), which is generated from the ledger and is the
 one place that list lives.

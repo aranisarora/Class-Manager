@@ -1,6 +1,6 @@
 # What is open
 
-26 findings. This file is the source of truth for what is broken — hand-written, and short on
+27 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -42,6 +42,7 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-EB** | A person taps when ONE thing is waiting and types when several are, and several things reach one person from DIFFERENT paths between two looks at a phone | [detail](#f-eb--a-person-taps-when-one-thing-is-waiting-and-types-when-several-are-and-several-things-reach-one-person-from-different-paths-between-two-looks-at-a-phone) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-EE** | §16.3's per-tenant quality proxies — delivery failures, read rate, **response rate**, opt-outs — have no reader, so nothing notices a tenant shouting into silence on a shared number | [detail](#f-ee--1633s-per-tenant-quality-proxies-have-no-reader) |
+| **F-EJ** | The instrument's per-person axis is a ROLE, and four smaller harness defects that manufacture losses the record then files against the product | [detail](#f-ej--the-instruments-per-person-axis-is-a-role) |
 | **F-DS** | A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn | [detail](#f-ds--a-staged-plan-can-only-be-committed-by-tapping-it-an-owner-who-answers-go-ahead-in-words-is-re-staged-instead-because-the-plan-handle-does-not-survive-the-turn) |
 
 ---
@@ -924,6 +925,53 @@ one has a gate.
 failure it guards against is the one that cannot be undone from inside the product: a number whose
 quality rating has been dropped takes every tenant on it down together, and the first evidence
 would be parents silently not receiving messages.
+
+### F-EJ · The instrument's per-person axis is a role
+
+Found by a 44-agent read of four drives on 23 Aug 2026, verified against the record, and
+recorded together because they share one consequence: **the harness puts the product in a
+position it cannot pass, and the loss is filed against the product.** F-DY names the class;
+these are its live instances, each with an address.
+
+**The per-person axis is a role, not a person.** `scripts/_derive.ts` keys
+`by-seat/<persona>.jsonl` on `persona`, which is the seat's role in the world file, and two
+people share one. `b8xo`'s `prospect.jsonl` holds the owner, an active coach and a departed
+stranger — 49 turns, three humans, one file. Both owner departures in this corpus are filed
+under `prospect`, which is how a business's operator walking out reads, in the one view meant
+for splitting a run by person, as a stranger wandering off. `report.mjs`'s departures block
+now prints `who` rather than `persona` for this reason; the split view still does not.
+
+**`academy.created_on` is the one date in the product taken from the wall clock.**
+`supabase/migrations/0002_schema.sql:47` — `date not null default current_date` — and
+`app.found_business` does not name the column in its insert list, so the default applies even
+though the function already receives the domain instant as `p_at` and uses it for
+`last_inbound_at` two statements later. Every driven business is therefore older than it is by
+however far the sim clock had walked when it was founded, which feeds `daysStanding` in
+`proposeGoLive` and `askForTheTimetable` and the "this business is N days old" line in the
+tail. **Not a production defect** — with no offset, `current_date` and the domain date agree
+except between midnight and 05:30 IST — which is why it is here rather than fixed: the repair
+is one column in a migration, and a migration is not the thing to run at the end of a session
+on a defect that only distorts drives.
+
+**A seat's role is derived from `status = 'active'`.** `scripts/_arrivals.ts:90/108` reads
+`exists (select 1 from coach where status = 'active')`. A coach the product has just added is
+`added` or `invited` — that is the whole point of the ladder — so they fall through to
+`prospect` and are briefed as a stranger to the business that just employed them.
+
+**Two windows a day cannot answer a ladder built for three.** `scripts/_personas.ts:166` sets
+`WINDOW_AT = { morning: '08:30', evening: '20:15' }`, and the coach confirmation ladder asks at
+5:00pm, nudges at 5:30 and escalates to the admin at 5:45. Every one of those lands between the
+two moments a seat exists, so the escalation is recorded as a coach who did not answer, every
+time, and the drive can never observe the ladder working.
+
+**`coachLine` has no branch for everybody being absent.** `scripts/_events.ts:831` has one for
+no absences and one for an empty roster, so a session nobody attended renders as *"Everybody was
+there except …"* followed by the whole roster.
+
+**Where it lives.** All of it in `scripts/`, none of it in `lib/`. The rule this violates is
+already written in `_world-file.ts`: *"a brief cannot contradict the database"*. It can, and
+these are five ways it does — which is why `scripts/watch.mjs` now carries `brief-unbackable`
+and `loop-not-recorded`, so the next one announces itself during the run rather than after it.
 
 ### F-CK · Quiet hours and both send caps drop the message they mean to delay, because nothing ever comes back for it
 
