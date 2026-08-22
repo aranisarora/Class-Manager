@@ -286,7 +286,21 @@ export async function runFrontDeskTurn(o: {
     if (gen.functionCalls.length === 0) {
       const body = (gen.text ?? '').trim()
       if (!body) {
-        run.error = 'front desk produced neither a tool call nor anything to say'
+        /**
+         * Nothing to say and nothing to call is how a desk turn ENDS, once it has spoken.
+         *
+         * The model answers, and the round after it correctly decides there is nothing left
+         * to do — "I've sent the question. Now I wait for their response." — and puts that
+         * in `reasoning_content`, where it belongs, leaving `text` empty. Recorded as an
+         * error, that is a turn which sent a good message and reads in the record as a
+         * failure. Two of the 205 turns of `2026-08-22-15-21-sim-ceeg` were flagged this
+         * way, both of them successful (`sent: 1`), and an error is the first thing a judge
+         * and a reader look at.
+         *
+         * It is only a failure when nobody was answered, which is the same test `spoke()`
+         * makes on the tenant side: silence with something owed.
+         */
+        if (!spoke) run.error = 'front desk produced neither a tool call nor anything to say'
         break
       }
       const bad = proseChecked ? [] : violationsAtDesk(body, o.identity, businessNames)
