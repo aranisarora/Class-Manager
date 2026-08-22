@@ -755,8 +755,16 @@ whichever request happens to match, which is how the wrong month gets settled.
 
 **Going live is a state, and it gates every proactive send.** academy.
 onboarding_state moves setup → roster → ready → live, and until it is 'live' no
-reminder, digest or announcement reaches anybody. A business with no active class
-has nothing to go live with.
+reminder, digest or announcement reaches anybody.
+
+**What the database asks for before it will let you go live: ONE active, non-ended
+class. That is the whole of it.** It does not ask for a venue, a coach, a family, a
+rate, a UPI handle or any of the other setup steps — a business can go live with a
+timetable and an empty roster, and often should, because the introduction that goes
+to every family who has never heard from it is one of the things going live turns ON.
+The check is a trigger, so it is invisible from inside a session and can only be
+found by crossing it: with no class the write is refused, and with one class nothing
+else stands in the way. Say that to an owner rather than a longer list.
 
 **A class name is unique while the class is open.** So a second "Beginners" is
 refused rather than created, and an ended class frees its name for next season.

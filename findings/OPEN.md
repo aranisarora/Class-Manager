@@ -1,6 +1,6 @@
 # What is open
 
-25 findings. This file is the source of truth for what is broken — hand-written, and short on
+24 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -41,7 +41,6 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-DO** | A stranger's commonest first question — what does this cost — has no answer anywhere in the product | [detail](#f-do--a-strangers-commonest-first-question--what-does-this-cost--has-no-answer-anywhere-in-the-product) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-DS** | A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn | [detail](#f-ds--a-staged-plan-can-only-be-committed-by-tapping-it-an-owner-who-answers-go-ahead-in-words-is-re-staged-instead-because-the-plan-handle-does-not-survive-the-turn) |
-| **F-DT** | The product invents its own go-live preconditions and tells the owner about them, against a census that states the real one correctly on the same turn | [detail](#f-dt--the-product-invents-its-own-go-live-preconditions-and-tells-the-owner-about-them-against-a-census-that-states-the-real-one-correctly-on-the-same-turn) |
 
 ---
 
@@ -909,30 +908,6 @@ sentence means yes is exactly the model inference §6.5 keeps out of the commit 
 inference decides what a tap runs, because a misread there commits someone to being somewhere"*.
 Any mechanism here has to make the RUNTIME the thing that matches consent to a specific outstanding
 action, and has to be as unambiguous as a tap.
-
-### F-DT · The product invents its own go-live preconditions and tells the owner about them, against a census that states the real one correctly on the same turn
-
-**Saw:** `2026-08-22-13-29-sim-8528`, day 6, the same turn as F-DS. The tail said, correctly:
-*"Nothing to go live with yet — the timetable is what is missing."* `app.guard_go_live()` (0033)
-asks for one active, non-ended class and asks for nothing else. The model reasoned: *"To message
-Arjun about the cover, the academy must be live. That requires completing setup… Going live needs:
-venues, roster (enrollments), and the onboarding state moved to live"* — and told the owner so.
-
-**Root:** the real precondition is stated in the census as a SYMPTOM ("the timetable is what is
-missing") and nowhere as a RULE. Nothing in the prefix, the schema doc or the operation signatures
-says what going live actually requires, so the model reconstructs it from §7.1's setup ladder —
-which lists venues, coaches, families and payments as steps 1-5 and is a description of a complete
-setup, not of the gate. It is then confidently wrong to the one person who cannot check.
-
-**Blast radius:** the owner is told he must do four things to reach a state he could reach now.
-On this run it converted a real operational request — cover for Saturday — into a lecture about
-onboarding. Compounds with F-DH: the coach message was suppressed by `pre_launch`, so the invented
-precondition arrived as the explanation for a suppression the owner did not need to know about.
-
-**Where it lives:** `SCHEMA_DOC` or the census in `lib/agent/context.ts` — the same argument that
-put the permission matrix in the prefix applies exactly ("the one class of fact the model cannot
-derive"). A trigger's condition is not derivable from any table the model can read, and this one
-gates the single most consequential write in the product.
 
 ### F-CK · Quiet hours and both send caps drop the message they mean to delay, because nothing ever comes back for it
 
