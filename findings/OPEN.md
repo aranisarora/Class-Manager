@@ -1,6 +1,6 @@
 # What is open
 
-25 findings. This file is the source of truth for what is broken — hand-written, and short on
+24 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -36,7 +36,6 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-CK** | Quiet hours and both send caps drop the message they mean to delay, because nothing ever comes back for it | [detail](#f-ck--quiet-hours-and-both-send-caps-drop-the-message-they-mean-to-delay-because-nothing-ever-comes-back-for-it) |
 | **F-CN** | `npm run ab` cannot drive either arm, because it refuses the config it just wrote | [detail](#f-cn--npm-run-ab-cannot-drive-either-arm-because-it-refuses-the-config-it-just-wrote) |
 | **F-CR** | A rate that begins after the work was done silently unpays it, and nothing says so | [detail](#f-cr--a-rate-that-begins-after-the-work-was-done-silently-unpays-it-and-nothing-says-so) |
-| **F-DH** | `pre_launch` suppresses a plan-staged message to a COACH about their own work, and nothing tells anyone it did | [detail](#f-dh--pre_launch-suppresses-a-plan-staged-message-to-a-coach-about-their-own-work-and-nothing-tells-anyone-it-did) |
 | **F-DI** | A read result keeps the model's own column alias, so a mislabel becomes durable and is built into a write five turns later | [detail](#f-di--a-read-result-keeps-the-models-own-column-alias-so-a-mislabel-becomes-durable-and-is-built-into-a-write-five-turns-later) |
 | **F-DV** | The seat cannot press a button, only retype one, so every mechanism behind a tap is measured at a fraction of its rate | [detail](#f-dv--the-seat-cannot-press-a-button-only-retype-one-so-every-mechanism-behind-a-tap-is-measured-at-a-fraction-of-its-rate) |
 | **F-DW** | The seat sends one message per half-day and has never sent two in a day, so "the product is slow to set a business up" is partly measuring the harness | [detail](#f-dw--the-seat-sends-one-message-per-half-day-and-has-never-sent-two-in-a-day-so-the-product-is-slow-to-set-a-business-up-is-partly-measuring-the-harness) |
@@ -777,29 +776,6 @@ which is chosen.
 
 ---
 
-### F-DH · `pre_launch` suppresses a plan-staged message to a coach about their own work, and nothing tells anyone it did
-
-**Root:** half a gate. `lib/messaging/send.ts` suppresses when
-`onboarding_state !== 'live' && !msg.preLaunchOk && !row.is_admin && !msg.solicited`. `solicited`
-is set only when the acting session belongs to the contact being written to, so a message the
-OWNER's turn stages for a COACH is unsolicited by construction. `CO-INVITE` can carry
-`preLaunchOk`; a plan step has no way to.
-
-**Saw:** the single suppressed outbound of the thirty-day drive
-(`2026-08-22-08-13-sim-7bo8`, day 14) — to Arjun Shetty, `suppressed_reason = pre_launch`,
-body *"The batch is on the books now. Rahul batch, Mon & Thu 6-7pm, ..."*. He had asked for
-exactly this, repeatedly. He found out the next day by asking again, and spent days 15-23
-believing his batch was still not on the system.
-
-**Blast radius:** the plan reported success, so the owner believed the coach had been told. §2.6
-is a rule about not messaging a business's ROSTER before it opens — ANATOMY's own gate table says
-so — and a coach is staff. The suppression is also invisible: nothing resolves the state it
-suppresses over, which is the shape recorded in ARCHITECTURE's trap list as *half a gate*.
-
-**Where it lives:** the `preLaunchOk` flag needs to reach a plan-staged message, or the predicate
-needs to know staff from roster. Not a prompt line: the model composed the right message and the
-send path ate it.
-
 ### F-DI · A read result keeps the model's own column alias, so a mislabel becomes durable and is built into a write five turns later
 
 **Root:** `modelQuery` returns rows labelled with whatever the model aliased them, and
@@ -872,13 +848,31 @@ the person has said yes and watched nothing happen — which is the shape that p
 worked three times now"* in the thirty-day run. It also compounds with the affordance being the
 only commit route: an owner who never taps can never change anything.
 
-**Where it lives:** the tap path (`lib/actions.ts` / `executeAction` in `lib/agent/loop.ts`) is the
-one place holding validated steps, and `standing()` already renders the outstanding question into
-the tail, so the model can SEE the card it cannot press. The trap: letting the model decide that a
-sentence means yes is exactly the model inference §6.5 keeps out of the commit path — *"no model
-inference decides what a tap runs, because a misread there commits someone to being somewhere"*.
-Any mechanism here has to make the RUNTIME the thing that matches consent to a specific outstanding
-action, and has to be as unambiguous as a tap.
+**Where it lives, and what was ruled out on 22 Aug 2026.** Two shapes were designed and neither
+was built, deliberately.
+
+*A `run_card(action_id)` tool.* It splits the two questions §6.5 answers with one gesture: WHAT
+RUNS stays model-free (the stored `action.payload`, replayed verbatim through `consumeAction`, so
+the model never sees the steps and cannot compose them) while WHO DECIDED becomes a declared verb.
+An adversarial pass ruled the gap REAL and this shape enabling. It was still not built, for a
+reason that is about ORDER rather than about safety: the tap path runs BEFORE the model turn — a
+committed tap arrives as a stated fact through `tapBlock`, which is what stops the runtime
+authoring a receipt — and a tool that consumes an action mid-turn inverts that, which is exactly
+the class `docs/ANATOMY.md` exists to catch. Anything built here has to answer where the narration
+lands first.
+
+*Matching the person's words against their own live button titles*, the way the seat harness's
+`buttonAction` already does. This is the better shape and it is decidable rather than
+interpretative — `maskBusinessNames` is the precedent, and it works because it matches against
+ROWS. The unresolved half is how loose the match may be: the owner wrote *"also tap build timetable
+go ahead"*, which CONTAINS the title and is not equal to it, and a substring rule over model-facing
+text is the prose-matching failure this repo has paid for repeatedly. An exact-match rule is safe
+and would not have caught this sentence.
+
+The trap either way: letting the model decide that a sentence means yes is the model inference §6.5
+keeps out of the commit path — *"no model inference decides what a tap runs, because a misread there
+commits someone to being somewhere."* The runtime has to be the thing that matches consent to a
+specific outstanding action, and it has to be as unambiguous as a tap.
 
 ### F-CK · Quiet hours and both send caps drop the message they mean to delay, because nothing ever comes back for it
 

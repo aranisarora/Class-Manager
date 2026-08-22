@@ -78,6 +78,8 @@ type Row = {
   /** `sender.is_sim` (0040) — a number a drive invented, which may never reach a handset. */
   sender_is_sim: boolean
   is_admin: boolean
+  /** An admin OR a coach who has not ended — who the business is being BUILT with. */
+  is_staff: boolean
   now_at: Date
 }
 
@@ -547,6 +549,18 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
              exists (select 1 from academy_admin aa
                       where aa.academy_id = c.academy_id
                         and aa.person_id  = c.person_id) as is_admin,
+             /**
+              * STAFF, not just the owner — see the pre-launch gate below. A coach who has
+              * not ended is somebody this business is being built WITH, and §2.6's silence
+              * is about the families it has not told yet.
+              */
+             (exists (select 1 from academy_admin aa2
+                       where aa2.academy_id = c.academy_id
+                         and aa2.person_id  = c.person_id)
+              or exists (select 1 from coach co
+                          where co.academy_id = c.academy_id
+                            and co.person_id  = c.person_id
+                            and co.ended_on is null)) as is_staff,
              app.now()         as now_at
         from contact c
         join person  p on p.id = c.person_id
@@ -723,7 +737,25 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     // where CO-INVITE-CONFIRM reads their schedule back. Watched happening before the
     // exemption existed: the coach's first contact with the product was silence, and
     // the schedule read back to them existed, was correct, and never left the building.
-    if (row.onboarding_state !== 'live' && !msg.preLaunchOk && !row.is_admin && !msg.solicited) {
+    /**
+     * @mechanism is_staff — before go-live the silence is owed to the FAMILIES, not to the
+     *   people the business is being built with. The gate read `!row.is_admin`, so a coach
+     *   was roster: during the one phase whose entire content is standing a business up
+     *   alongside their staff, the owner could ask the product to reach their coach and the
+     *   product would compose the message, suppress it, and then have to explain its own
+     *   internal gate to the owner instead.
+     *
+     *   Driven on `2026-08-22-13-29-sim-8528` day 6: the owner asked for Saturday cover,
+     *   the send to Arjun was suppressed `pre_launch`, and the reply that went back was
+     *   about onboarding states rather than about cover. §2.6 is "building the roster
+     *   messages nobody" and ARCHITECTURE names the roster as the families; §8.1 already
+     *   required one coach send to cross this line (`sendInvite` sets `preLaunchOk`), so
+     *   the boundary was already drawn here — one role at a time, by whoever remembered.
+     *   This reads it off the rows instead: an `academy_admin` row or a live `coach` row.
+     *   A family still hears nothing until go-live, which is the rule §2.6 actually states.
+     *   Closes F-DH.
+     */
+    if (row.onboarding_state !== 'live' && !msg.preLaunchOk && !row.is_staff && !msg.solicited) {
       return suppress(tx, row, msg, 'pre_launch', inWindow)
     }
 

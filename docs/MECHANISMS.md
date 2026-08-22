@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-200 mechanisms · 30 findings closed by one · 23 findings still open
+201 mechanisms · 30 findings closed by one · 24 findings still open
 
 ## The scan
 
@@ -233,6 +233,7 @@ One line each. Find a candidate here, then read its entry below.
 `committingButton` — reads the stored `action` payload at send time and refuses to let an `operation` or `steps` button ride an…  
 `suppress` — every gate's refusal becomes a `message` row:  
 `subjectPersonIds` — the message declares who it is ABOUT, and the two gates below compare that list against who is reading it:  
+`is_staff` — before go-live the silence is owed to the FAMILIES, not to the people the business is being built with.  
 `stateKey` — a standing message reports a state once, however long the state lasts:  
 `pending_request` — the outstanding question is written on the one path every ask goes through, and only once a message has act…  
 `staleAsks` — retiring an unanswered question also retires the buttons on the message that asked it, in the same statemen…  
@@ -633,17 +634,19 @@ One line each. Find a candidate here, then read its entry below.
   the single call that turns a shared contact card into the words a turn works from, used by `ingestInbound` for the `message.body` column and by `runTurn` for the text it hands the model. Because it is one call rather than two renderings, the sentence the model reads this turn is byte-identical to the one it re-reads out of the conversation next turn. Writing it into `body` is what makes the card survive at all: `recentHistory` selects `where body is not null`, so a card with no caption typed beside it would be in the pane, the payload and the event log, and absent from the conversation two turns later — the hole `button_reply.title` fell into, where a tap arrived with its words attached or without them depending only on which kind of button carried it. A card is also the one attachment `mediaRefusal` must never answer, since it is data rather than a file, and giving it a body is what routes it past both that branch and the nothing-readable guard beside it.
 - **`send`** — `lib/messaging/send.ts:8`  
   the one path to the wire. Every message the product emits — catalog row, composed message, model-authored reply, job output — passes ten ordered gates: opt-out, the scoped mute, quiet hours, §18's two subject rules, pre-launch silence, state-key and byte-identical repeat, the wire's own limits, the per-recipient and per-tenant 24h caps, window-and-template, and idempotency. No helper skips them, so a rule holds here once instead of holding in the senders somebody remembered.
-- **`committingButton`** — `lib/messaging/send.ts:282`  
+- **`committingButton`** — `lib/messaging/send.ts:284`  
   reads the stored `action` payload at send time and refuses to let an `operation` or `steps` button ride an approved template, because a template's quick-reply title is fixed at approval and the tap would then carry somebody else's label: an `Open` that confirms a payment, or marks a whole register present. A missing or unreadable row counts as committing, so the action goes rather than the label, and the body keeps the question answerable by reply.
-- **`suppress`** — `lib/messaging/send.ts:466`  
+- **`suppress`** — `lib/messaging/send.ts:468`  
   every gate's refusal becomes a `message` row: status `suppressed` rather than `failed`, the reason in `suppressed_reason`, and the body, window state and cost that would have gone. A deliberate non-send is therefore distinguishable from a broken number, and staying quiet is auditable rather than invisible: a suppression nobody can see is indistinguishable from a bug. The three "not now" reasons — both caps and quiet hours — release the idempotency key so the moment may be attempted again; every other suppression keeps it, because it is a decision made once. **Closes F-AT.**
-- **`subjectPersonIds`** — `lib/messaging/send.ts:678`  
+- **`subjectPersonIds`** — `lib/messaging/send.ts:692`  
   the message declares who it is ABOUT, and the two gates below compare that list against who is reading it: a confirmation request about the recipient and an escalation about the recipient are dropped here, once, rather than by an `if solo` branch in every sender that could raise one. It catches what a tenant-level solo flag misses — the two-coach academy where one is the admin, the head coach who is also an admin — and the same list names the subject in an out-of-window template, so the line is about the child rather than the parent reading it.
-- **`stateKey`** — `lib/messaging/send.ts:747`  
+- **`is_staff`** — `lib/messaging/send.ts:741`  
+  before go-live the silence is owed to the FAMILIES, not to the people the business is being built with. The gate read `!row.is_admin`, so a coach was roster: during the one phase whose entire content is standing a business up alongside their staff, the owner could ask the product to reach their coach and the product would compose the message, suppress it, and then have to explain its own internal gate to the owner instead.
+- **`stateKey`** — `lib/messaging/send.ts:779`  
   a standing message reports a state once, however long the state lasts: the key is matched against `payload->>'state_key'` on this contact's unsuppressed outbound rows with no time window at all, so a job firing daily into an unchanged state says it once, and a state that legitimately recurs carries what moved inside its own key. Suppressed rows do not count as having told anybody. **Closes F-AN.**
-- **`pending_request`** — `lib/messaging/send.ts:1005`  
+- **`pending_request`** — `lib/messaging/send.ts:1037`  
   the outstanding question is written on the one path every ask goes through, and only once a message has actually been queued, with the subject derived from `subjectPersonIds` when the caller passes none and `expires_at` taken from the button's own TTL. So "asked and unanswered" is a state nobody has to remember to record, and one that can end; re-asking supersedes the open row rather than colliding with 0032's partial unique index. **Closes F-AF, F-AQ.**
-- **`staleAsks`** — `lib/messaging/send.ts:1039`  
+- **`staleAsks`** — `lib/messaging/send.ts:1071`  
   retiring an unanswered question also retires the buttons on the message that asked it, in the same statement-pair and on the same subject, so a re-ask can never leave an earlier version of the same decision tappable. The narrowness is inherited rather than invented: only a message that actually wrote a `pending_request` is reached, which `isConfirmationRequest` already limits to asks somebody has to answer, so a reminder card pairing `[I'll be there]` with `[Can't make it]` is untouched exactly as it is by 0016. **Closes F-DR.**
 - **`TEMPLATES`** — `lib/messaging/templates.ts:4`  
   eight frozen bodies, one per CATEGORY of unsolicited contact rather than one per feature, so ~35 catalog rows ride on eight approvals and a new in-window interaction costs none. Their shape is load-bearing, not style: a label frame (`For:`, `Change:`) because no frozen word may conjugate with a parameter it cannot see, ~16 fixed words around 4 parameters because Meta rejects a higher ratio outright, and a lead-in naming only the SENDER so two notifications to one parent never open identically. **Closes F-G, F-AZ.**
@@ -674,6 +677,6 @@ One line each. Find a candidate here, then read its entry below.
 
 ## Still open
 
-No mechanism claims 23 findings. They are listed in
+No mechanism claims 24 findings. They are listed in
 [`../findings/OPEN.md`](../findings/OPEN.md), which is generated from the ledger and is the
 one place that list lives.
