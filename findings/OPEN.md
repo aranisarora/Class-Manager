@@ -1,6 +1,6 @@
 # What is open
 
-20 findings. This file is the source of truth for what is broken — hand-written, and short on
+17 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -33,10 +33,7 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-CA** | A staged plan is described in the past tense, so the owner is told a change was made while the buttons still ask whether to make it | [detail](#f-ca--a-staged-plan-is-described-in-the-past-tense-so-the-owner-is-told-a-change-was-made-while-the-buttons-still-ask-whether-to-make-it) |
 | **F-CC** | A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule | [detail](#f-cc--a-commercial-term-nobody-agreed-to--first-class-is-free--volunteered-in-a-parenthetical-and-stated-as-the-businesss-own-rule) |
 | **F-CI** | The product reports what it TRIED as what HAPPENED — 26 unbacked claims in 33 turns, while `turnState` is already telling it otherwise | [detail](#f-ci--the-product-reports-what-it-tried-as-what-happened-and-turnstate-is-already-telling-it-otherwise) |
-| **F-CJ** | A rate change is destructive, so it re-prices sessions that already ran — and the parent was told the opposite of the row | [detail](#f-cj--a-rate-change-is-destructive-so-it-re-prices-sessions-that-already-ran--and-the-parent-was-told-the-opposite-of-the-row) |
 | **F-CK** | Quiet hours drops the message it means to delay, because nothing ever comes back for it | [detail](#f-ck--quiet-hours-drops-the-message-it-means-to-delay-because-nothing-ever-comes-back-for-it) |
-| **F-CL** | Coach pay is frozen a month late, so a raise typed mid-month reprices the month it was typed in | [detail](#f-cl--coach-pay-is-frozen-a-month-late-so-a-raise-typed-mid-month-reprices-the-month-it-was-typed-in) |
-| **F-CM** | Restructuring a package resizes every package already sold | [detail](#f-cm--restructuring-a-package-resizes-every-package-already-sold) |
 
 ---
 
@@ -645,60 +642,6 @@ by deliberate design, and the deliberate design does not hold at this width.
 
 ---
 
-### F-CJ · A rate change is destructive, so it re-prices sessions that already ran — and the parent was told the opposite of the row
-
-`2026-08-21-17-19-stress-69q0`, the stress month. Sanjay raises Aarav's one-to-one from ₹900 to
-₹1,100 on 30 Aug, effective 1 Sep. The plan is two updates:
-
-```sql
-update class      set rate_amount = 1100 where id = '24526fa7-…'
-update enrollment set rate_amount = 1100 where id = '18b55e89-…'
-```
-
-**There is nowhere for the old rate to go.** `app.effective_rate()` is
-`coalesce(e.rate_amount, c.rate_amount)` and carries no date; `enrollment` holds `rate_amount`,
-`rate_count` and `rate_unit` and **no effective-from column**. A rate is one current number with
-no history, so ₹900 is not superseded — it is destroyed.
-
-The 25 Aug one-to-one had already run and its register is still unmarked. `mark_attendance`
-(`lib/agent/operations.ts`) reads `rate_amount` at the moment the register is marked, with no
-reference to `session.starts_at`. So marking that session today writes **₹1,100 for a class that
-ran at ₹900**, and the database already says so — `unmarked_billable_session` returns session
-`334251ff` (2026-08-25) at `unbilled_amount 1100.00`.
-
-**The product diagnosed this correctly and told two people opposite things about it, four minutes
-apart.** To Sanjay, four separate times, accurately: *"with the rate now ₹1,100 it would bill at
-that rather than the ₹900 it ran at"*, and *"₹1,100 has sat a week with no bill written"*. To
-Meera — the parent who pays — at 2026-08-30T04:38:01Z:
-
-> **"The class before that, 25 Aug, stays at the old ₹900."**
-
-Only one of those is backed by a row, and it is not the one the paying parent received.
-
-It also mis-states the total twice, on 2 and 4 Sep: *"Aarav's two one-to-ones are ₹2,000 sitting
-unbilled"*. The view says `1100.00 + 1100.00` = **₹2,200**. The model is quoting the rate the
-sessions ran at while the rows carry the rate they will bill at, which is the same defect
-arriving as arithmetic.
-
-**Why this is a money defect and not a prose one.** The model was right about the mechanism,
-said so repeatedly and unprompted, and **had nowhere to act**. `raisePartialPeriod` exists for the
-mid-period *enrolment* shape and does its job well — it fired three times in this same run with
-exact arithmetic. Nothing exists for the mid-period *rate-change* shape, which is the same class of
-problem: a charge computed at write time for a window that has since moved. The product cannot
-express "₹900 from 21 Aug, ₹1,100 from 1 Sep" in any table it has.
-
-**Blast radius.** Every unmarked register older than a rate change bills at the new rate. In this
-run that is ₹200 on one child. On a business with a term's worth of unmarked sessions and an
-annual price rise it is the whole difference between the two prices, charged to families who
-attended at the old one — and §6.4 bills off attendance, so the register is exactly where it lands.
-
-**Where it lives.** `app.effective_rate()` (no date), `enrollment` (no effective-from column),
-`mark_attendance` in `lib/agent/operations.ts` (reads the rate at mark time rather than at
-`session.starts_at`). The forward-dated half the model keeps promising — *"from 1 Sep"*,
-*"from October"* — has no home in the schema, which is why it is stated in prose every time.
-
----
-
 ### F-CK · Quiet hours drops the message it means to delay, because nothing ever comes back for it
 
 `send.ts`'s quiet-hours gate is explicit about what it is doing and why it is safe:
@@ -761,78 +704,3 @@ mechanism here needs an attempt count on the payload and a ceiling, and a messag
 is an admin's problem rather than a silent drop — which is the same shape `DUNNING_MAX` and
 `RECONCILE_MAX` already use.
 
----
-
-### F-CL · Coach pay is frozen a month late, so a raise typed mid-month reprices the month it was typed in
-
-`0038_the_month_a_coach_worked_is_written_down.sql` built `coach_ledger` to stop exactly this, and
-its header names the case: *"an owner who granted a raise 'from September' repriced August by
-typing it."* The freeze is real and it works. **It happens one month after the money was earned.**
-
-`coach_month_lines` for August is scheduled at 00:20 on 1 September —
-`atTimeOn(closesOn, '00:20:00', tz)`, `lib/jobs/plan-ahead.ts:793`. The handler then reads the pay
-rate **at that moment**:
-
-```
-const rate = num(coach.pay_amount)        // lib/jobs/handlers/money.ts:850
-```
-
-and the per-session / per-hour arm reads the `coach_pay` view, whose `amount_for_session`
-multiplies by `c.pay_amount` live (`0037_the_business_answers_at_every_grain.sql:465-467`). Neither
-carries any reference to when the session was worked.
-
-**So a raise typed on 25 August is applied to the whole of August.** Priya on ₹500 a session, 24
-sessions worked, raised to ₹700 on the 25th: `coach_ledger` is written on 1 September at
-₹700 × 24 = **₹16,800**, against the **₹12,000** she actually earned. ₹4,800 overpaid, and every row
-says it is correct. The reverse is worse and likelier to be noticed — a rate agreed *downward* from
-September and typed in late August underpays a month already worked.
-
-**The window used to be unbounded, and 0038 closed most of it.** Before it, "what was Priya owed
-for August" was computed live from `coach.pay_amount` forever, so a raise in December changed what
-August said. What is left is the *current* month — which is precisely when raises get agreed.
-
-`lib/agent/schema-doc.ts:636` already tells the model the truth about the view — *"It multiplies by
-coach.pay_amount, which is the rate they are on NOW"* — so the product can describe this defect
-accurately and still cannot avoid it.
-
-**Where it lives.** `coach.pay_amount` / `pay_unit` (`0002_schema.sql:123-124`), one number with no
-date beside it. `coachMonthLines` (`lib/jobs/handlers/money.ts:841,848-851,886-924`) resolves at
-close time rather than at work time. `coach_pay.amount_for_session` (`0037:452-468`) resolves at
-read time. The same class as [F-CJ](#f-cj--a-rate-change-is-destructive-so-it-re-prices-sessions-that-already-ran--and-the-parent-was-told-the-opposite-of-the-row), one table over.
-
----
-
-### F-CM · Restructuring a package resizes every package already sold
-
-§6.4 defines a pack as *"one `package` line when a package opens; sessions consume it on the
-per_session rule; after `rate_count` sessions the next session opens a new package and writes the
-next line."* The line freezes the **money**. Nothing anywhere freezes the **count**.
-
-`tally_line` carries `amount` and no rate columns at all (`0002_schema.sql:256-270`, plus `class_id`
-and `dedupe_key` from 0023), so the size of the pack a family actually bought exists nowhere except
-on the class, where it is mutable. `packRemaining` therefore recomputes it live:
-
-```
-const size = Math.max(1, e.rate_count ?? 1)                 // lib/jobs/handlers/money.ts:773
-remaining: Math.max(0, opened * size - consumed)            // lib/jobs/handlers/money.ts:780
-```
-
-with `rate_count` selected as `coalesce(e.rate_count, cl.rate_count)` twelve lines above (`:760`).
-
-**So changing the pack size rewrites every pack ever sold.** A ten-class pack at ₹8,000, four
-consumed, six remaining. The owner restructures to eight-class packs. Every mid-pack family
-silently drops to **four** remaining — they paid for ten and now hold eight. In the other
-direction, ten to twelve, the business gives away two sessions on every pack it already sold.
-Nobody is told either way, and §6.4 puts this number in front of the parent deliberately: *"The
-count remaining rides on the tally — a parent who has bought ten classes will ask, and should never
-have to."*
-
-**This one needs no dated rate.** It needs the frozen row to carry the term it was frozen at —
-which is exactly what 0038 gave the coach side and the family side never received. `coach_ledger`
-carries `rate_amount` and `rate_unit` *"copied rather than referenced"* (`0038:68-71`); `tally_line`
-carries neither.
-
-**Where it lives.** `tally_line`, which has no `rate_count` to freeze into. `packageState`
-(`lib/jobs/handlers/money.ts:635-649`) and `packRemaining` (`:758-780`), which size a pack sold at
-one count by the class's current one. `oneClassOf` (`:598-603`) divides by the same live number when
-sizing the free-first-class credit.

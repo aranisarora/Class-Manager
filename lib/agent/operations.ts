@@ -316,6 +316,10 @@ type RosterRow = {
  *   and still report success: no roster, no attendance, no §6.4 billing line, and a
  *   coach told it went fine. Reachability is established upstream by `sessionOf` or
  *   `assertIdsExist`, so reading it as the runtime widens nothing.
+ *   It also resolves the rate AS OF `onDate` — the day the roster is being asked
+ *   about — beside the live one, which is what stops a register marked a week late
+ *   billing at whatever the price became in the meantime. Five of its six callers
+ *   were already passing the session's own date; only the rate columns ignored it.
  */
 async function rosterOf(ctx: SessionCtx, classId: string, onDate: string): Promise<RosterRow[]> {
   return q<RosterRow>(

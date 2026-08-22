@@ -664,6 +664,17 @@ async function oneClassOf(
  * family already has. It counts by `class_id` now. The `description` parameter is
  * kept only for the rows written before 0023 backfilled a class onto them.
  */
+/**
+ * @mechanism packageState — a pack is sized by the line that OPENED it, not by the class
+ *   as it stands today. `tally_line.rate_count` is the size the family actually bought,
+ *   frozen at purchase the way `coach_ledger` freezes a rate, and a line written before
+ *   0043 falls back to the live size rather than reading as zero. Retires the class where
+ *   restructuring an offer rewrites what everybody already holds: turning a ten-class pack
+ *   into four silently took two sessions off every mid-pack family, and turning it into
+ *   twelve gave away sessions the business never sold. Nobody was told either way, and the
+ *   count remaining is a number the product puts in front of the parent on purpose.
+ *   Closes F-CM.
+ */
 async function packageState(
   tx: Tx, academyId: string, e: EnrollmentRow, description: string,
 ): Promise<{ opened: number; consumed: number; soldSize: number | null }> {
@@ -847,6 +858,12 @@ export async function packRemaining(tx: Tx, academyId: string, accountId: string
  *   instead of rebuilding `worked` — a hand-written second copy of that predicate reached
  *   for `status = 'scheduled'`, true only of sessions that have not happened, and counted
  *   a month of work as none.
+ *   The rate it copies is now the one in force WHILE the month was worked, not the one
+ *   on the morning it closed: the close fires at 00:20 on the 1st of the next month, so
+ *   a raise typed on the 25th used to reprice everything already earned — 24 sessions at
+ *   500 raised to 700 written as 16,800 against the 12,000 owed. The per-session arm
+ *   freezes each line at that session's own rate rather than one rate for the month.
+ *   Closes F-CL.
  *
  * The family side of this product freezes money the moment it is earned: a
  * `tally_line` carries the amount and the period, so raising a class rate today

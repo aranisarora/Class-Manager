@@ -1,6 +1,6 @@
 # Closed
 
-40 findings, retired. Kept as one line each for two reasons and no others:
+45 findings, retired. Kept as one line each for two reasons and no others:
 
 **A closed finding is a regression test.** `npm run findings` cross-references these codes against
 the instruments to answer the one question nothing else could — *which of the things that have
@@ -58,3 +58,6 @@ this is only the receipt. The full narrative for everything before 20 Aug 2026 i
 | **F-CG** | The road a message took was a process variable, so a drive could put an invented parent's number on the live Cloud wire | 21 Aug 2026, by binding the transport to the sender (0040, `getTransport`) |
 | **F-CH** | A business the product founded during a drive was byte-identical to a real one, so no guard could tell them apart | 21 Aug 2026, by inheriting `is_sandbox` from the sender (0040, `app.found_business`) |
 | **F-CB** | R8 put a sign on the go-live door and nothing put a handle on it, so six businesses ran a week with every proactive path suppressed | 21 Aug 2026, by `proposeGoLive` (`lib/jobs/plan-ahead.ts`) — the planner raises it on the size of the hole, and the owner got a `[ Go live ]` button |
+| **F-CJ** | A rate change is destructive, so it re-prices sessions that already ran — and the parent was told the opposite of the row | 22 Aug 2026, by `rate_period` and `app.rate_on` (0043) — the rate carries the day it starts, `rosterOf` resolves it as of the session's own date, and `setRate` makes "from the 1st" a row rather than a sentence |
+| **F-CL** | Coach pay is frozen a month late, so a raise typed mid-month reprices the month it was typed in | 22 Aug 2026, by `coachMonthLines` reading `app.pay_on` for the period and `coach_pay.amount_then` per line (0043) |
+| **F-CM** | Restructuring a package resizes every package already sold | 22 Aug 2026, by freezing `rate_count` onto the `tally_line` that opens a pack and sizing from it in `packageState` (0043) |
