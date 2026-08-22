@@ -58,6 +58,7 @@ they share is the finding, and a `finding:` field on a case is how a stage is de
 | `judge.mjs` | The same job done by a judge model when there is nobody free to read. Writes the same `judgement.json` a person writes, deliberately: the two are interchangeable. `--run <dir>` judges the record and sees the SQL, the rows and what the model was told; `--academy` tails a live drive and sees less, and says so. |
 | `_judge-text.mjs` | One turn as plain text, shared by `judge.mjs` and `judge-slice.mjs` so the two cannot drift apart about what a turn is. Not a command. |
 | `judge-slice.mjs` | ONE turn, printed in the order `JUDGING.md` says to read it — for when the failure is skipping ahead. |
+| `turn-record.ts` | `npx tsx scripts/turn-record.ts --academy <id|name>` — the LIVE number's turns, read back out of `turn` + `turn_record` (0045) into an ordinary `turns.jsonl`. No renderer of its own: `report`, `runs`, `_derive` and both judges then open a production turn without being told it is one. `--list` names the businesses. |
 | `record-from-probe.ts` | `npm run record:backfill` — writes `record.json` for a `probe-model` run that predates the instrument writing one itself, and for a thinking sweep, where you pick the arm. |
 | `latency-report.py` | A one-off renderer for the 18 Aug latency page. **Unmaintained:** the only Python here, it hardcodes its input and output paths and lifts its stylesheet out of a sibling report by regex. Port it into `report.mjs` or delete it; do not extend it. |
 

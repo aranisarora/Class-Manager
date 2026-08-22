@@ -162,7 +162,7 @@ nothing to try and nothing to learn by trying.
 | pending_request | admin · their own | - | - | - |
 | action | their own | - | their own | - |
 | row_snapshot | all | - | - | - |
-| job · audit_entry · turn · sender · arrival | - | - | - | - |
+| job · audit_entry · turn · turn_record · sender · arrival | - | - | - | - |
 
 What the grid cannot say:
 

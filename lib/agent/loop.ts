@@ -25,6 +25,7 @@ import { stablePrefix, variableTail } from './context'
 import { proseViolations, violationMessage } from './lint'
 import { traceabilityNote } from './traceability'
 import { fullTraceOn } from './turn-trace'
+import { captureSql, currentSql, type SqlRecord } from './sql-trace'
 import { hotSet } from './memory'
 import { audienceFor, executePlan, type PlanStep } from './plan'
 import { jsonLit, lit, uid, type OperationName } from './operations'
@@ -145,8 +146,23 @@ function sessionOf(
  * runTurn
  * ------------------------------------------------------------------------- */
 
+/**
+ * @mechanism runTurn — opens one SQL capture per turn, so what the model actually sent
+ *   to Postgres is recorded in production and not only under a harness. The capture is
+ *   async-scoped (`lib/agent/sql-trace.ts`), which is what makes it safe here: Fluid
+ *   Compute reuses one function instance across concurrent requests, and the module
+ *   variable this replaced would have had two overlapping turns writing into each
+ *   other's record and then closing it early. `rows: false` — a read's rows already
+ *   come back in the tool result and a write's come back as before/after images in
+ *   `row_snapshot`, so storing them again would be a third copy of the same bytes.
+ */
 export async function runTurn(input: TurnInput): Promise<TurnOutput> {
   const turnId = newId()
+  const got = await captureSql({ rows: false, turnId }, () => runTurnBody(input, turnId))
+  return got.value
+}
+
+async function runTurnBody(input: TurnInput, turnId: string): Promise<TurnOutput> {
   const startedMs = Date.now()
   const outcomes: SendOutcome[] = []
   let toolCalls = 0
@@ -452,6 +468,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     error,
     trace,
     rounds,
+    sql: currentSql(),
   })
 
   if (error) {
@@ -1000,18 +1017,85 @@ function traceValue(v: unknown, limit: number): unknown {
  * A value on its way INTO the flight recorder, as opposed to one on its way back
  * to the model.
  *
- * The distinction is the whole point of the wrapper. Production keeps the cap it
- * always kept — these rows are stored on every turn forever. While an instrument
- * holds a capture open (`lib/agent/turn-trace.ts`) nothing is clipped, because a
- * harness asking "what did it actually send" cannot be answered with the first
- * four thousand characters of the answer.
+ * @mechanism evidence — records the value WHOLE and carries the cap that its own call
+ *   site chose, so the one clip happens once, at the end, in `projectTrace`. Twenty-six
+ *   sites each pass a different limit — 400 for a button diagnostic, 24,000 for a
+ *   round's reasoning — and the alternative shapes were both wrong: capping here means
+ *   the complete record can never be recovered, and dropping the per-site limits in
+ *   favour of one number per field silently grows `turn.tool_calls`, which
+ *   `recentToolTurns` reads back in full on the hot path of every turn. The marker
+ *   costs an allocation and buys both records from one traversal.
  *
  * Every recorder site below goes through this. The one site that must NOT is the
  * history builder near the bottom of the file, which uses `traceValue` directly:
  * what the model is shown has to be identical whether or not anybody is watching.
  */
+type Evidence = { __evidence: true; value: unknown; cap: number }
+
 function evidence(v: unknown, limit: number): unknown {
-  return traceValue(v, fullTraceOn() ? Number.POSITIVE_INFINITY : limit)
+  const e: Evidence = { __evidence: true, value: v, cap: limit }
+  return e
+}
+
+function isEvidence(v: unknown): v is Evidence {
+  return typeof v === 'object' && v !== null && (v as Partial<Evidence>).__evidence === true
+}
+
+/**
+ * Resolve every recorded value in a structure — whole, or clipped at the limit its
+ * own site chose. Recursive because a few sites nest one inside a plain object, e.g.
+ * `{ returnedNothing: true, message: evidence(res.assistant, 2000) }`.
+ */
+function resolveEvidence(v: unknown, capped: boolean): unknown {
+  if (isEvidence(v)) {
+    const inner = resolveEvidence(v.value, capped)
+    return capped ? traceValue(inner, v.cap) : inner
+  }
+  if (Array.isArray(v)) return v.map((x) => resolveEvidence(x, capped))
+  // PLAIN objects only. Rebuilding by `Object.entries` would flatten a Date, an
+  // Error or anything else carrying its state off its own enumerable keys to `{}`
+  // — a recorder quietly deleting the evidence it was handed.
+  if (typeof v === 'object' && v !== null && isPlainObject(v)) {
+    const out: Record<string, unknown> = {}
+    for (const [k, x] of Object.entries(v as Record<string, unknown>)) out[k] = resolveEvidence(x, capped)
+    return out
+  }
+  return v
+}
+
+function isPlainObject(v: object): boolean {
+  const proto = Object.getPrototypeOf(v) as unknown
+  return proto === Object.prototype || proto === null
+}
+
+/**
+ * The trace, resolved for one of its two readers.
+ *
+ * @mechanism projectTrace — the same rounds twice: `stored` is what `turn.tool_calls`
+ *   has always held, clipped at each site's own limit and without the `(context)`
+ *   round; `full` is the whole thing, for `turn_record`. The split is what lets
+ *   production record everything without touching the hot path — `recentToolTurns`
+ *   reads `tool_calls` back in full for four turns on EVERY turn, so a column that
+ *   grows is a read that grows forever. Under a harness the stored projection is the
+ *   full one, exactly as `captureFullTrace` always made it, because `_capture.ts`
+ *   reads the `(context)` round back out of `tool_calls` to count `contextCuts`.
+ */
+function projectTrace(trace: ToolTrace[], mode: 'stored' | 'full'): ToolTrace[] {
+  const capped = mode === 'stored'
+  const out: ToolTrace[] = []
+  for (const t of trace) {
+    // The tail carries names, phone-shaped ids and a person's memory, and
+    // `turn.tool_calls` is kept forever and read on the hot path. It belongs in
+    // `turn_record`, which nothing under lib/agent/ reads and no session can.
+    if (capped && t.name === CONTEXT_MARKER) continue
+    out.push({
+      ...t,
+      ...(t.args !== undefined ? { args: resolveEvidence(t.args, capped) } : {}),
+      ...(t.result !== undefined ? { result: resolveEvidence(t.result, capped) } : {}),
+      ...(t.reasoning !== undefined ? { reasoning: resolveEvidence(t.reasoning, capped) } : {}),
+    })
+  }
+  return out
 }
 
 /**
@@ -1292,11 +1376,15 @@ async function modelTurn(
    * Its length and head are enough to prove which prefix was in play, and the
    * prefix itself is in the tree at the commit the run names.
    *
-   * Instrument only, gated on `fullTraceOn()`. In production this allocates
-   * nothing and stores nothing: the tail carries names, phone-shaped ids and a
-   * person's memory, and `turn.tool_calls` is kept forever.
+   * Built on EVERY turn now, and kept out of `turn.tool_calls` by `projectTrace`
+   * rather than by not existing. The old gate was the right answer to the wrong
+   * question: the tail carries names, phone-shaped ids and a person's memory and
+   * `tool_calls` is read back on the hot path forever — so it does not go THERE.
+   * It goes to `turn_record` (0045), which no session can read and nothing under
+   * lib/agent/ ever queries. Production is the surface where the product acts
+   * unsupervised; it is the last place that should record the least.
    */
-  if (fullTraceOn()) {
+  {
     const tail = situation.join('\n\n')
     trace.push({
       round: 0,
@@ -2286,7 +2374,12 @@ function flattenToolTurns(messages: Msg[]): Msg[] {
     if (m.role === 'assistant' && m.tool_calls?.length) {
       for (const c of m.tool_calls) names.set(c.id, c.function.name)
       const lines = m.tool_calls.map(
-        (c) => `[you called ${c.function.name} with ${evidence(c.function.arguments ?? '{}', 1500)}]`,
+        // `traceValue`, NOT `evidence`: this is the history handed BACK to the model,
+        // and what it is shown must be identical whether or not anybody is watching.
+        // `turn-trace.ts:34-41` has always said so; the call went through the
+        // recorder's wrapper anyway, so a capture silently uncapped the model's own
+        // view of what it had just done — an instrument altering what it measures.
+        (c) => `[you called ${c.function.name} with ${traceValue(c.function.arguments ?? '{}', 1500)}]`,
       )
       const said = (m.content ?? '').trim()
       // The reasoning is deliberately dropped rather than flattened. It belongs to
@@ -2777,8 +2870,23 @@ async function writeTurn(o: {
   error?: string
   trace?: ToolTrace[]
   rounds?: number
+  sql?: SqlRecord[]
 }): Promise<void> {
   try {
+    const trace = o.trace ?? []
+    // What `turn.tool_calls` has always held. Under a harness this is the full
+    // projection, exactly as `captureFullTrace` always made it.
+    const stored = projectTrace(trace, fullTraceOn() ? 'full' : 'stored')
+
+    const full = projectTrace(trace, 'full')
+    const context = full.find((t) => t.name === CONTEXT_MARKER)?.args ?? null
+    const record = JSON.stringify({
+      v: 1,
+      context,
+      trace: full.filter((t) => t.name !== CONTEXT_MARKER),
+      sql: o.sql ?? [],
+    })
+
     await withSession({ role: 'service', academyId: o.identity.academyId }, async (tx) => {
       await tx.unsafe(
         `insert into turn (id, academy_id, contact_id, person_id, role_acted, input, output, model,
@@ -2795,8 +2903,33 @@ async function writeTurn(o: {
                  })},
                  ${jsonLit(o.output)}, ${lit(o.model ?? null)}, ${lit(o.promptTokens)}, ${lit(o.outputTokens)},
                  ${lit(o.cachedTokens)}, ${lit(o.latencyMs)}, ${lit(o.error ?? null)},
-                 ${jsonLit(o.trace ?? [])}, ${lit(o.rounds ?? null)})`,
+                 ${jsonLit(stored)}, ${lit(o.rounds ?? null)})`,
       )
+
+      /**
+       * @mechanism writeTurn — the complete turn goes down in the SAME
+       *   transaction as the row it belongs to, so there is never a `turn` whose
+       *   record is missing and never a record for a turn that rolled back — and it
+       *   costs one statement inside an open transaction rather than four more round
+       *   trips. Behind a SAVEPOINT, because the priority between the two rows is not
+       *   symmetric: `turn` is operational and read back on the hot path of every
+       *   turn, the record is instrumentation. Without the savepoint an oversized or
+       *   malformed payload would poison the transaction and take the turn row with
+       *   it — an instrument deleting the thing it measures.
+       */
+      await tx.unsafe('savepoint turn_record')
+      try {
+        await tx.unsafe(
+          `insert into turn_record (turn_id, academy_id, bytes, record)
+           values (${uid(o.turnId)}, ${uid(o.identity.academyId)},
+                   ${lit(Buffer.byteLength(record, 'utf8'))}, ${lit(record)}::jsonb)
+           on conflict (turn_id) do update
+              set record = excluded.record, bytes = excluded.bytes`,
+        )
+        await tx.unsafe('release savepoint turn_record')
+      } catch {
+        await tx.unsafe('rollback to savepoint turn_record')
+      }
     })
   } catch {
     /* instrumentation must never be the reason a turn fails */

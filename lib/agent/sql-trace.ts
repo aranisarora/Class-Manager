@@ -41,6 +41,8 @@
  * question and only interesting while somebody is watching.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 /**
  * One statement the model authored, as it was sent and as Postgres answered.
  *
@@ -79,21 +81,59 @@ export type SqlRecord = {
   error?: string
   /** Free-form label from the call site — the plan's intent, the read's stated purpose. */
   note?: string
+  /**
+   * The turn that sent it.
+   *
+   * F-BZ: a drain runs several independent job handlers in one window and they all
+   * landed in one undifferentiated list, so `_capture.ts` could split a four-handler
+   * beat into four records for its rounds and its messages but not for its SQL. Every
+   * capture is now scoped to one async context, so the list is already per-turn — this
+   * carries the answer across a nesting, where an outer capture wrapping a whole arc
+   * receives statements from every turn inside it.
+   */
+  turnId?: string
 }
 
-type Sink = (r: SqlRecord) => void
+/**
+ * One open capture. `parent` is the capture this one was opened inside, so a record
+ * lands in the innermost list and in every list enclosing it.
+ */
+type Capture = {
+  collected: SqlRecord[]
+  withRows: boolean
+  turnId?: string
+  parent: Capture | null
+}
 
-let sink: Sink | null = null
-let withRows = false
+/**
+ * @mechanism captures — the open capture is held in async-local storage rather than in
+ *   a module variable, so two turns running at once in one process cannot corrupt each
+ *   other's record. The module-global version was documented as "not concurrent-safe,
+ *   and deliberately so — one process, one driver at a time", which is true of a
+ *   harness and false of the deployed product: Fluid Compute reuses one function
+ *   instance across concurrent requests. Two overlapping turns there did not merely
+ *   interleave, they lost data — turn A's statements were pushed into turn B's array,
+ *   and when A finished first it restored `sink = null` and silently closed B's capture
+ *   for the rest of the turn. Nothing anywhere would have said so.
+ */
+const captures = new AsyncLocalStorage<Capture>()
 
 /** True while a capture is open. Call sites check this before assembling anything. */
 export function sqlTraceOn(): boolean {
-  return sink !== null
+  return captures.getStore() !== undefined
 }
 
-/** True while a capture that asked for row bodies is open. */
+/**
+ * True while ANY capture in the chain asked for row bodies.
+ *
+ * The walk is not a detail. Production opens a `rows: false` capture around every
+ * turn; a drive wraps that in a `rows: true` one. Reading only the innermost would
+ * mean the harness stopped receiving the rows it asks for the moment the product
+ * started recording itself — an instrument broken by the thing it measures.
+ */
 export function sqlTraceRows(): boolean {
-  return sink !== null && withRows
+  for (let c: Capture | null = captures.getStore() ?? null; c; c = c.parent) if (c.withRows) return true
+  return false
 }
 
 /**
@@ -104,9 +144,19 @@ export function sqlTraceRows(): boolean {
  * returned row on every read in production to fill a field that is discarded.
  */
 export function recordSql(make: () => SqlRecord): void {
-  if (!sink) return
+  const innermost = captures.getStore()
+  if (!innermost) return
   try {
-    sink(make())
+    const record = make()
+    if (record.turnId === undefined) {
+      for (let c: Capture | null = innermost; c; c = c.parent) {
+        if (c.turnId) {
+          record.turnId = c.turnId
+          break
+        }
+      }
+    }
+    for (let c: Capture | null = innermost; c; c = c.parent) c.collected.push(record)
   } catch {
     // An instrument must never be able to fail the thing it is measuring.
   }
@@ -116,39 +166,38 @@ export function recordSql(make: () => SqlRecord): void {
  * Run `fn` with a capture open, and return everything the model sent alongside
  * whatever `fn` returned.
  *
- * Captures NEST rather than replace: an inner capture restores the outer sink on
- * the way out, so a harness that wraps a whole arc and a case that wraps one turn
- * both get their own list. They are not concurrent-safe, and deliberately so —
- * this is module state, one process, one driver at a time. A harness running two
- * turns in parallel under one capture gets both turns' statements interleaved in
- * `at` order, which is the honest answer rather than a wrong attribution.
+ * Captures NEST rather than replace: a record lands in the innermost list and in
+ * every list enclosing it, so a harness that wraps a whole arc and the product's own
+ * per-turn capture inside it both get a complete answer.
+ *
+ * They are scoped to the async context that opened them, which is what makes the
+ * product able to hold one per turn. Work started inside a capture is attributed to
+ * it even if it settles after `fn` returned; work started outside one never is.
  */
 export async function captureSql<T>(
-  opts: { rows?: boolean },
+  opts: { rows?: boolean; turnId?: string },
   fn: () => Promise<T>,
 ): Promise<{ value: T; sql: SqlRecord[] }> {
-  const priorSink = sink
-  const priorRows = withRows
-  const priorLive = live
-  const collected: SqlRecord[] = []
-  sink = (r) => {
-    collected.push(r)
-    priorSink?.(r)
+  const capture: Capture = {
+    collected: [],
+    withRows: opts.rows ?? false,
+    ...(opts.turnId ? { turnId: opts.turnId } : {}),
+    parent: captures.getStore() ?? null,
   }
-  live = collected
-  withRows = opts.rows ?? false
-  try {
-    const value = await fn()
-    return { value, sql: collected }
-  } finally {
-    sink = priorSink
-    withRows = priorRows
-    live = priorLive
-  }
+  const value = await captures.run(capture, fn)
+  return { value, sql: capture.collected }
 }
 
-/** What the innermost open capture has collected so far. Empty when none is open. */
-let live: SqlRecord[] | null = null
+/**
+ * Everything the innermost open capture has collected so far, without draining it.
+ *
+ * This is how a turn reads its own statements back at the point it writes its record,
+ * from inside the capture it is already running in.
+ */
+export function currentSql(): SqlRecord[] {
+  const c = captures.getStore()
+  return c ? c.collected.slice() : []
+}
 
 /**
  * Take everything the open capture has collected since the last drain.
@@ -172,6 +221,7 @@ let live: SqlRecord[] | null = null
  * one callback would have meant restructuring the loop to suit the instrument.
  */
 export function drainSql(): SqlRecord[] {
-  if (!live) return []
-  return live.splice(0, live.length)
+  const c = captures.getStore()
+  if (!c) return []
+  return c.collected.splice(0, c.collected.length)
 }

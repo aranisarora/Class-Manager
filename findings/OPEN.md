@@ -1,6 +1,6 @@
 # What is open
 
-16 findings. This file is the source of truth for what is broken — hand-written, and short on
+18 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -476,6 +476,16 @@ answers *what did this job actually query* — and trade one blindness for anoth
 **The structural home** is `sql-trace.ts`: a statement should carry the turn that sent it, from
 the same `app.turn_id` the database already stamps on `message` and `audit_entry` for exactly
 this reason. The record-level split of a drain is correct only after that.
+
+**The structural home is built, 22 Aug 2026.** `SqlRecord` now carries `turnId`, and a capture is
+scoped to the async context that opened it rather than to a module variable — so the statements of
+two turns cannot reach each other's list in the first place, which is a stronger guarantee than
+sorting them out afterwards. It had to be: production now opens a capture per turn (0045), and
+Fluid Compute reuses one function instance across concurrent requests.
+
+**What is still open is the record-level split**, which is `_capture.ts`'s to make: a four-handler
+drain still lands in one record, and now that every statement in it says which turn sent it, that
+record can be split four ways without stranding its SQL.
 
 ### F-CA · A staged plan is described in the past tense, so the owner is told a change was made while the buttons still ask whether to make it
 

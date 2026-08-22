@@ -26,26 +26,31 @@
  *
  * ONE PROCESS PER SEAT, WHICH IS NOT A SIMPLIFICATION WAITING TO HAPPEN
  * -----------------------------------------------------------------------------
- * Two seats may speak at the same time, and they must do it in two OS processes.
- * `captureSql` (lib/agent/sql-trace.ts) collects the statements a turn composed
- * into MODULE-LEVEL state: it saves `sink`, `withRows` and `live`, swaps in its
- * own collector, and restores them in a `finally`. Its own comment says the
- * quiet part out loud — "they are not concurrent-safe, and deliberately so …
- * one process, one driver at a time."
+ * Two seats may speak at the same time, and they do it in two OS processes.
  *
- * Two turns awaiting the model inside one process therefore do this: the second
- * capture opens with the first's collector as its `priorSink`, so every
- * statement the second turn writes is pushed into the FIRST turn's record too;
- * and when the first turn finishes it restores `sink` to what was open before
- * IT started — null — so the second turn silently stops collecting anything for
+ * The original reason was `captureSql` (lib/agent/sql-trace.ts), which collected
+ * a turn's statements into MODULE-LEVEL state: it saved `sink`, `withRows` and
+ * `live`, swapped in its own collector, and restored them in a `finally`. Two
+ * turns awaiting the model inside one process therefore did this: the second
+ * capture opened with the first's collector as its `priorSink`, so every
+ * statement the second turn wrote was pushed into the FIRST turn's record too;
+ * and when the first turn finished it restored `sink` to what was open before IT
+ * started — null — so the second turn silently stopped collecting anything for
  * the rest of its life. One record with another turn's SQL in it, one record
- * missing its own. Both look complete. Nothing throws.
+ * missing its own. Both looked complete. Nothing threw.
  *
- * That is why concurrency here is processes, and why nothing in this file may
- * assume it can see another seat's memory: the cursor is a file rather than a
- * field, the turn is an append rather than a rewrite (`_capture.ts`), and
- * `Promise.all` over four seats in one process is not a tidier version of this —
- * it is the silent loss of the evidence the run exists to collect.
+ * **That hazard is closed** (0045's work): a capture now lives in async-local
+ * storage, scoped to the context that opened it, so two turns in one process
+ * cannot reach each other's list. It had to be — Fluid Compute reuses one
+ * function instance across concurrent requests, so the deployed product was
+ * exposed to it too, and the product now opens a capture per turn.
+ *
+ * The rule survives the reason, on the two grounds that were never about SQL:
+ * the seat's cursor is a FILE rather than a field, and a turn is an APPEND to
+ * `turns.jsonl` rather than a rewrite (`_capture.ts`). Both are how two seats
+ * stay honest without sharing memory, and both are why `Promise.all` over four
+ * seats in one process is not a tidier version of this. Nothing in this file may
+ * assume it can see another seat's memory.
  *
  * A CURSOR PER PERSONA, WHICH IS BETTER THAN A LOCK
  * -----------------------------------------------------------------------------
