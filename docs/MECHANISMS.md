@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-220 mechanisms · 33 findings closed by one · 27 findings still open
+221 mechanisms · 33 findings closed by one · 27 findings still open
 
 ## The scan
 
@@ -247,6 +247,7 @@ One line each. Find a candidate here, then read its entry below.
 `is_staff` — before go-live the silence is owed to the FAMILIES, not to the people the business is being built with.  
 `stateKey` — a standing message reports a state once, however long the state lasts:  
 `operatorWhileOperating` — the exemption is keyed on ENGAGEMENT rather than on role, because the argument above is entirely about an a…  
+`saidHowMuchWasCut` — when the body did not fit the template parameter, `altered` says so and says by how much, because the subst…  
 `pending_request` — the outstanding question is written on the one path every ask goes through, and only once a message has act…  
 `staleAsks` — retiring an unanswered question also retires the buttons on the message that asked it, in the same statemen…  
 `TEMPLATES` — eight frozen bodies, one per CATEGORY of unsolicited contact rather than one per feature, so ~35 catalog ro…  
@@ -689,9 +690,11 @@ One line each. Find a candidate here, then read its entry below.
   a standing message reports a state once, however long the state lasts: the key is matched against `payload->>'state_key'` on this contact's unsuppressed outbound rows with no time window at all, so a job firing daily into an unchanged state says it once, and a state that legitimately recurs carries what moved inside its own key. Suppressed rows do not count as having told anybody. **Closes F-AN.**
 - **`operatorWhileOperating`** — `lib/messaging/send.ts:920`  
   the exemption is keyed on ENGAGEMENT rather than on role, because the argument above is entirely about an admin mid-task and `is_admin` cannot tell mid-task from gone. `inWindow` can, and is already in hand three gates up: an operator working through this has written inside 24 hours by definition, so every case the exemption was written for keeps it, unchanged.
-- **`pending_request`** — `lib/messaging/send.ts:1062`  
+- **`saidHowMuchWasCut`** — `lib/messaging/send.ts:997`  
+  when the body did not fit the template parameter, `altered` says so and says by how much, because the substitution line above does not imply it and the model cannot see the difference.
+- **`pending_request`** — `lib/messaging/send.ts:1091`  
   the outstanding question is written on the one path every ask goes through, and only once a message has actually been queued, with the subject derived from `subjectPersonIds` when the caller passes none and `expires_at` taken from the button's own TTL. So "asked and unanswered" is a state nobody has to remember to record, and one that can end; re-asking supersedes the open row rather than colliding with 0032's partial unique index. **Closes F-AF, F-AQ.**
-- **`staleAsks`** — `lib/messaging/send.ts:1096`  
+- **`staleAsks`** — `lib/messaging/send.ts:1125`  
   retiring an unanswered question also retires the buttons on the message that asked it, in the same statement-pair and on the same subject, so a re-ask can never leave an earlier version of the same decision tappable. The narrowness is inherited rather than invented: only a message that actually wrote a `pending_request` is reached, which `isConfirmationRequest` already limits to asks somebody has to answer, so a reminder card pairing `[I'll be there]` with `[Can't make it]` is untouched exactly as it is by 0016. **Closes F-DR.**
 - **`TEMPLATES`** — `lib/messaging/templates.ts:4`  
   eight frozen bodies, one per CATEGORY of unsolicited contact rather than one per feature, so ~35 catalog rows ride on eight approvals and a new in-window interaction costs none. Their shape is load-bearing, not style: a label frame (`For:`, `Change:`) because no frozen word may conjugate with a parameter it cannot see, ~16 fixed words around 4 parameters because Meta rejects a higher ratio outright, and a lead-in naming only the SENDER so two notifications to one parent never open identically. **Closes F-G, F-AZ.**

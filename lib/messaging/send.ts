@@ -36,7 +36,7 @@ import { DEFAULT_ACTION_TTL_MINUTES } from '@/lib/actions'
 import { encodeForWhatsApp } from '@/lib/agent/lint'
 import { inZone, isQuietHour } from '@/lib/clock'
 import { CATALOG, isCatalogId, MUTE_SCOPE } from './catalog'
-import { TEMPLATES, sanitizeParam, renderTemplate, isTemplateName } from './templates'
+import { TEMPLATES, sanitizeParam, renderTemplate, isTemplateName, PARAM_MAX_CHARS } from './templates'
 import type { TemplateName } from './templates'
 import { getTransport } from './transport'
 import type { TransportRequest, TransportResult } from './transport'
@@ -992,6 +992,35 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
         `the 24-hour window with this person is closed, so the body was replaced by the "${wanted}" template ` +
           `rendering — what they read is the template's words, not yours.`,
       )
+
+      /**
+       * @mechanism saidHowMuchWasCut — when the body did not fit the template parameter,
+       *   `altered` says so and says by how much, because the substitution line above does
+       *   not imply it and the model cannot see the difference.
+       *
+       *   `sanitizeParam` flattens the body to one line and trims it to `PARAM_MAX_CHARS`
+       *   FROM THE END. A brief is composed lead, then detail, then the ask — so what the
+       *   trim takes is the ask. On `2026-08-22-16-51-sim-b8xo` THIRTEEN of 49 template
+       *   sends went out visibly cut, and the money section is what they lost:
+       *   *"Unpaid: Arjun Rs4,800 (6 sessions), Priya Rs3,000 (3 sessions). No…"*
+       *
+       *   This reports and does not refuse. `windowRightHere` (lib/agent/context.ts) now
+       *   tells the model the budget BEFORE it composes, which is the half that prevents
+       *   the cut rather than describing it, and the repo's own rule after deleting
+       *   `proseRefused` is to fix the information first and measure whether a gate ever
+       *   fires. This is the measurement: a cut that is named is a cut somebody can count.
+       */
+      const composed = String(msg.body ?? '')
+      const kept = String(wire.body ?? '')
+      const saidHowMuchWasCut = composed.length > PARAM_MAX_CHARS && kept.includes('…')
+      if (saidHowMuchWasCut) {
+        altered.push(
+          `your ${composed.length}-character body did not fit the template's ${PARAM_MAX_CHARS}-character ` +
+            `parameter, so it was cut FROM THE END — roughly the last ` +
+            `${Math.max(0, composed.length - PARAM_MAX_CHARS)} characters did not go. Whatever you left ` +
+            `until last is what they did not read.`,
+        )
+      }
     }
 
     const costPaise = COST_PAISE[category]
