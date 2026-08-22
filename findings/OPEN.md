@@ -966,13 +966,30 @@ default.
 
 ### F-DX · A worker restart deletes the reply the person was holding, so the product reads as never having answered
 
+**Status, 22 Aug 2026: real by construction, UNOBSERVED in four runs.** Recorded rather than
+fixed, because a fix for a defect nobody has caught firing is a change made on a reading of the
+code, and this session has already paid twice for that.
+
+The one case that looked like it was not: `2026-08-22-12-25-sim-bqc0`, Arjun Shetty on day 3,
+`move: quiet` with an empty message. The record shows `shown: 1` and the body — *"Here's the honest
+state of it: nothing is on record yet…"* — so he received the founding reply and put the phone
+down, which is a real and recorded decision rather than a lost message. Any future instance looks
+exactly like that one and is told apart from it by `shown` being EMPTY on a window where the
+database holds an outbound the cursor has already passed.
+
 **Saw:** the seat holds what arrived on its phone in a `pending` array in the worker process's
 heap, and `drive()` advances the persona's cursor as it reads. A worker that restarts loses the
 array; the cursor has already moved past those messages, so they can never be read again. The
 persona then acts as though the product said nothing.
 
-**Why it is worse than a lost message.** Every turn downstream is judged against a conversation
-that did not happen: the persona escalates about a thing it was already told, the product
+**Why it would be worse than a lost message.** The restart is not hypothetical and it is not
+random: `sim.ts` restarts every worker deliberately, once per run, at the moment a business is
+FOUNDED — *"They are restarted rather than patched: `_seat-worker.ts` rebuilds what its person has
+already said from the run's own log, which is precisely the machinery that makes a restart cheap
+and lossless."* That claim is true of what the person SAID and false of what they were SHOWN, and
+the moment it is made is the moment the funnel's most important reply lands.
+
+Every turn downstream would be judged against a conversation that did not happen: the persona escalates about a thing it was already told, the product
 apologises for a silence it did not commit, and a departure — Farah's and Divya's are the ones in
 the record — reads as the product having ignored somebody. Those are the most consequential turns
 in any run and they are the ones this corrupts.
