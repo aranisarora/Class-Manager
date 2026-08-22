@@ -1007,109 +1007,155 @@ export type WorldEvent =
 
 const EPOCH = '1970-01-01T00:00:00.000Z'
 
-async function messageEvents(academyId: string, since: string, limit: number): Promise<WorldEvent[]> {
-  return withSession(svc(academyId), async (tx) => {
-    const rows = await tx`
-      select m.id, m.created_at, m.academy_id, a.name as academy_name, m.contact_id,
-             p.full_name as contact_name, m.direction, m.catalog_id, m.template_name,
-             m.in_window, m.status, m.cost_paise, m.conversation_category,
-             m.suppressed_reason, m.failed_reason, s.phone_e164 as sender_phone,
-             left(coalesce(m.body, ''), 200) as body
-      from message m
-      join academy a on a.id = m.academy_id
-      join contact c on c.id = m.contact_id
-      join person p on p.id = c.person_id
-      join sender s on s.id = m.sender_id
-      where m.academy_id = ${academyId}::uuid and m.created_at > ${since}::timestamptz
-      order by m.created_at asc
-      limit ${limit}`
-    return rows.map((m): WorldEvent => ({
-      type: 'message',
-      id: String(m.id),
-      messageId: String(m.id),
-      at: new Date(m.created_at as string).toISOString(),
-      academyId: String(m.academy_id),
-      academyName: String(m.academy_name),
-      contactId: String(m.contact_id),
-      contactName: String(m.contact_name),
-      direction: String(m.direction),
-      catalogId: (m.catalog_id as string) ?? null,
-      templateName: (m.template_name as string) ?? null,
-      inWindow: Boolean(m.in_window),
-      status: String(m.status),
-      costPaise: m.cost_paise === null || m.cost_paise === undefined ? null : Number(m.cost_paise),
-      conversationCategory: (m.conversation_category as string) ?? null,
-      suppressedReason: (m.suppressed_reason as string) ?? null,
-      failedReason: (m.failed_reason as string) ?? null,
-      senderPhone: String(m.sender_phone),
-      body: String(m.body ?? ''),
-      summary: String(m.body ?? '') || `${String(m.direction)} ${String(m.catalog_id ?? 'composed')}`,
-    }))
-  })
+/**
+ * A row from the world, as the console's wire shape.
+ *
+ * @mechanism mapMessageRow — one author for the shape of an event, shared by every
+ *   reader. `stream/route.ts:66` emits `ev.type` verbatim as the SSE event name and
+ *   `normalizeEvent` (lib/emulator/state.ts:709) reads about twenty-five field names
+ *   off the frame, so a second speller of this shape does not fail — the console goes
+ *   quiet, with no error anywhere. That is why `app.emulator_poll` returns ROWS and
+ *   not events: the door moves the READ across tenants and owns none of the shape.
+ */
+type EventRow = Record<string, unknown>
+
+function mapMessageRow(m: EventRow): WorldEvent {
+  return {
+    type: 'message',
+    id: String(m.id),
+    messageId: String(m.id),
+    at: new Date(m.created_at as string).toISOString(),
+    academyId: String(m.academy_id),
+    academyName: String(m.academy_name),
+    contactId: String(m.contact_id),
+    contactName: String(m.contact_name),
+    direction: String(m.direction),
+    catalogId: (m.catalog_id as string) ?? null,
+    templateName: (m.template_name as string) ?? null,
+    inWindow: Boolean(m.in_window),
+    status: String(m.status),
+    costPaise: m.cost_paise === null || m.cost_paise === undefined ? null : Number(m.cost_paise),
+    conversationCategory: (m.conversation_category as string) ?? null,
+    suppressedReason: (m.suppressed_reason as string) ?? null,
+    failedReason: (m.failed_reason as string) ?? null,
+    senderPhone: String(m.sender_phone),
+    body: String(m.body ?? ''),
+    summary: String(m.body ?? '') || `${String(m.direction)} ${String(m.catalog_id ?? 'composed')}`,
+  }
 }
 
-async function turnEvents(academyId: string, since: string, limit: number): Promise<WorldEvent[]> {
-  return withSession(svc(academyId), async (tx) => {
-    const rows = await tx`
-      select t.id, t.created_at, t.academy_id, a.name as academy_name, t.contact_id,
-             p.full_name as contact_name, t.role_acted, t.model, t.prompt_tokens,
-             t.output_tokens, t.cached_tokens, t.latency_ms, t.error
-      from turn t
-      join academy a on a.id = t.academy_id
-      left join person p on p.id = t.person_id
-      where t.academy_id = ${academyId}::uuid and t.created_at > ${since}::timestamptz
-      order by t.created_at asc
-      limit ${limit}`
-    return rows.map((t): WorldEvent => ({
-      type: 'turn',
-      id: String(t.id),
-      at: new Date(t.created_at as string).toISOString(),
-      academyId: String(t.academy_id),
-      academyName: String(t.academy_name),
-      contactId: t.contact_id ? String(t.contact_id) : null,
-      contactName: t.contact_name ? String(t.contact_name) : null,
-      roleActed: (t.role_acted as string) ?? null,
-      model: (t.model as string) ?? null,
-      promptTokens: t.prompt_tokens === null || t.prompt_tokens === undefined ? null : Number(t.prompt_tokens),
-      outputTokens: t.output_tokens === null || t.output_tokens === undefined ? null : Number(t.output_tokens),
-      cachedTokens: t.cached_tokens === null || t.cached_tokens === undefined ? null : Number(t.cached_tokens),
-      latencyMs: t.latency_ms === null || t.latency_ms === undefined ? null : Number(t.latency_ms),
-      error: (t.error as string) ?? null,
-    }))
-  })
+function mapTurnRow(t: EventRow): WorldEvent {
+  return {
+    type: 'turn',
+    id: String(t.id),
+    at: new Date(t.created_at as string).toISOString(),
+    academyId: String(t.academy_id),
+    academyName: String(t.academy_name),
+    contactId: t.contact_id ? String(t.contact_id) : null,
+    contactName: t.contact_name ? String(t.contact_name) : null,
+    roleActed: (t.role_acted as string) ?? null,
+    model: (t.model as string) ?? null,
+    promptTokens: t.prompt_tokens === null || t.prompt_tokens === undefined ? null : Number(t.prompt_tokens),
+    outputTokens: t.output_tokens === null || t.output_tokens === undefined ? null : Number(t.output_tokens),
+    cachedTokens: t.cached_tokens === null || t.cached_tokens === undefined ? null : Number(t.cached_tokens),
+    latencyMs: t.latency_ms === null || t.latency_ms === undefined ? null : Number(t.latency_ms),
+    error: (t.error as string) ?? null,
+  }
 }
 
-async function jobEvents(since: string, limit: number): Promise<WorldEvent[]> {
-  return withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
-    const rows = await tx`
-      select id, created_at, kind, status, run_at, dedupe_key, attempts, last_error
-      from job
-      where created_at > ${since}::timestamptz
-      order by created_at asc
-      limit ${limit}`
-    return rows.map((j): WorldEvent => {
-      const status = String(j.status)
-      const outcome =
-        status === 'done' ? ('ran' as const)
-          : status === 'skipped' ? ('skipped' as const)
-          : status === 'failed' ? ('failed' as const)
-          : null
-      return {
-        type: 'job',
-        id: String(j.id),
-        at: new Date(j.created_at as string).toISOString(),
-        kind: String(j.kind),
-        jobKind: String(j.kind),
-        status,
-        outcome,
-        runAt: new Date(j.run_at as string).toISOString(),
-        dedupeKey: String(j.dedupe_key),
-        attempts: Number(j.attempts),
-        lastError: (j.last_error as string) ?? null,
-        summary: `${String(j.kind)} ${String(j.dedupe_key)}`,
-      }
-    })
+function mapJobRow(j: EventRow): WorldEvent {
+  const status = String(j.status)
+  const outcome =
+    status === 'done' ? ('ran' as const)
+      : status === 'skipped' ? ('skipped' as const)
+      : status === 'failed' ? ('failed' as const)
+      : null
+  return {
+    type: 'job',
+    id: String(j.id),
+    at: new Date(j.created_at as string).toISOString(),
+    kind: String(j.kind),
+    jobKind: String(j.kind),
+    status,
+    outcome,
+    runAt: new Date(j.run_at as string).toISOString(),
+    dedupeKey: String(j.dedupe_key),
+    attempts: Number(j.attempts),
+    lastError: (j.last_error as string) ?? null,
+    summary: `${String(j.kind)} ${String(j.dedupe_key)}`,
+  }
+}
+
+/**
+ * A timestamp as a SQL literal, refused rather than escaped.
+ *
+ * @mechanism tsLiteral — the stream's cursor reaches Postgres as literal text, because a
+ *   BOUND timestamp parameter silently loses precision. postgres.js reads a
+ *   date-shaped string into a JS `Date` on the way out, and `Date` holds
+ *   milliseconds; `created_at` holds microseconds. Measured: binding
+ *   `2026-09-06T14:45:29.954454+00:00` arrives as `…29.954+00`, so
+ *   `created_at > $cursor` stays true for the very row the cursor was taken from
+ *   and that row is re-emitted on every tick, every 600 ms, for as long as the
+ *   console is open. Interpolating the same value returns zero rows, correctly.
+ *   The pattern admits no quote, so there is nothing to escape — and `?since=` is
+ *   a query parameter a stranger can set, which is why this refuses rather than
+ *   quotes, the same trade `lib/db.ts::guc` makes for uuids.
+ */
+const TIMESTAMP_LITERAL = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}(:?\d{2})?)?$/
+
+function tsLiteral(v: string): string {
+  if (!TIMESTAMP_LITERAL.test(v)) throw new Error(`not a timestamp: ${JSON.stringify(v).slice(0, 60)}`)
+  return `'${v}'::timestamptz`
+}
+
+/** What `app.emulator_poll` hands back: rows, plus the two cursors and the clock. */
+type PollRows = {
+  messages: EventRow[]
+  turns: EventRow[]
+  jobs: EventRow[]
+  statuses: EventRow[]
+  status_cursor: number | null
+  /**
+   * The newest `created_at` among the rows returned, at the database's own
+   * precision. Deliberately NOT derived from the mapped events: `at` is
+   * `toISOString()` and loses the microseconds, so a cursor taken from it still
+   * matches the row it came from and re-emits it on every tick forever.
+   */
+  event_cursor: string | null
+  offset_ms: number
+  now: string
+}
+
+/**
+ * @mechanism emulatorPoll — every surface of one console tick, across every tenant, in
+ *   ONE transaction through the named door (0044). It replaced a loop that ran three
+ *   transactions per academy plus a job read and a clock read — `3N+2` every 600 ms per
+ *   open console, and a transaction is four network round trips. Watching a world in
+ *   which nothing was happening moved 5.29 GB in nine days and put a free-plan
+ *   organisation over its whole monthly egress quota; 7.0M of 10.45M round trips
+ *   carried no data at all. The cost no longer scales with tenant count, which is the
+ *   property that made a two-tenant console a 5 GB/month instrument.
+ *   Closes F-CL.
+ */
+async function emulatorPoll(
+  since: string,
+  statusSince: number | null,
+  limit: number,
+  statusLimit: number,
+): Promise<PollRows> {
+  const rows = await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
+    return await tx.unsafe(
+      `select app.emulator_poll(
+         ${tsLiteral(since)}, ${statusSince === null ? 'null' : `${Math.trunc(statusSince)}`}::bigint,
+         ${Math.trunc(limit)}::int, ${Math.trunc(statusLimit)}::int
+       ) as d`,
+    )
   })
+  const d = rows[0]?.d as PollRows | undefined
+  // A door that answers with nothing is a door that is shut to this session, and
+  // an empty world renders identically to one — so it is raised, not defaulted.
+  if (!d) throw new Error('app.emulator_poll returned no row')
+  return d
 }
 
 // =============================================================================
@@ -2134,12 +2180,14 @@ export async function eventLog(o: { since?: string | null; limit?: number } = {}
 }> {
   const limit = Math.min(Math.max(o.limit ?? 200, 1), 1000)
   const since = o.since ?? EPOCH
-  const out: WorldEvent[] = []
-  for (const academyId of await worldAcademyIds()) {
-    out.push(...(await messageEvents(academyId, since, limit)))
-    out.push(...(await turnEvents(academyId, since, limit)))
-  }
-  out.push(...(await jobEvents(since, limit)))
+  // Statuses are the stream's business, not the log's, so this asks for none of
+  // them rather than fetching a window it would throw away.
+  const d = await emulatorPoll(since, null, limit, 0)
+  const out: WorldEvent[] = [
+    ...d.messages.map(mapMessageRow),
+    ...d.turns.map(mapTurnRow),
+    ...d.jobs.map(mapJobRow),
+  ]
   out.sort((a, b) => a.at.localeCompare(b.at))
   // Oldest first, so the cursor never advances past an event the caller has not
   // seen — a clipped page is caught up on the next poll rather than lost.
@@ -2149,6 +2197,17 @@ export async function eventLog(o: { since?: string | null; limit?: number } = {}
 
 export type MessageStatusRow = {
   id: string
+  /**
+   * Which thread this status belongs to.
+   *
+   * @mechanism MessageStatusRow — a status frame that cannot say whose thread it is
+   *   sends the client to `nudgeThread(null)` (lib/emulator/state.ts:1755), which
+   *   re-reads EVERY open pane's entire thread — and `threadFor`'s body query has no
+   *   `limit` at all. One field turns a blanket re-read on every delivery receipt into
+   *   a targeted one. No client change: `state.ts:1753` already reads `contactId` off
+   *   the frame, and `stream/route.ts:78` already spreads the row into it.
+   */
+  contactId: string | null
   status: string
   sentAt: string | null
   deliveredAt: string | null
@@ -2162,6 +2221,14 @@ export type PollResult = {
   statuses: MessageStatusRow[]
   clock: { nowIso: string; now: string; offsetMs: number }
   cursor: string
+  /**
+   * Where the STATUS half of the next poll starts, and it is a counter rather than
+   * a time on purpose (0044 section 2). The event cursor above is `created_at`,
+   * which follows the TENANT clock (0027) — so the moment a drive winds a world
+   * forward, one shared timestamp cursor sits in the future and the live business's
+   * own rows never stream again. A sequence cannot do that.
+   */
+  statusCursor: number | null
 }
 
 /**
@@ -2170,76 +2237,66 @@ export type PollResult = {
  * up live without a second cursor. The caller de-dupes statuses it has already
  * pushed.
  */
-export async function pollWorld(o: { cursor?: string | null; statusLimit?: number } = {}): Promise<PollResult> {
+export async function pollWorld(
+  o: { cursor?: string | null; statusCursor?: number | null; statusLimit?: number } = {},
+): Promise<PollResult> {
   const since = o.cursor ?? EPOCH
-  const statusLimit = o.statusLimit ?? 60
-  const events: WorldEvent[] = []
-  const statuses: MessageStatusRow[] = []
+  const statusSince = o.statusCursor ?? null
+  const d = await emulatorPoll(since, statusSince, 200, o.statusLimit ?? 200)
 
-  for (const academyId of await worldAcademyIds()) {
-    events.push(...(await messageEvents(academyId, since, 200)))
-    events.push(...(await turnEvents(academyId, since, 200)))
-    const rows = await withSession(svc(academyId), async (tx) => {
-      return await tx`
-        select id, status, sent_at, delivered_at, read_at, failed_reason, suppressed_reason
-        from message
-        where academy_id = ${academyId}::uuid
-        order by created_at desc
-        limit ${statusLimit}`
-    })
-    for (const m of rows) {
-      statuses.push({
-        id: String(m.id),
-        status: String(m.status),
-        sentAt: isoOrNull(m.sent_at),
-        deliveredAt: isoOrNull(m.delivered_at),
-        readAt: isoOrNull(m.read_at),
-        failedReason: (m.failed_reason as string) ?? null,
-        suppressedReason: (m.suppressed_reason as string) ?? null,
-      })
-    }
-  }
-  events.push(...(await jobEvents(since, 200)))
+  const events: WorldEvent[] = [
+    ...d.messages.map(mapMessageRow),
+    ...d.turns.map(mapTurnRow),
+    ...d.jobs.map(mapJobRow),
+  ]
   events.sort((a, b) => a.at.localeCompare(b.at))
 
-  const nowD = await now()
-  const offset = await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
-    return await tx`select offset_ms from sim_clock where academy_id is null`
-  })
+  const statuses: MessageStatusRow[] = d.statuses.map((m) => ({
+    id: String(m.id),
+    contactId: m.contact_id ? String(m.contact_id) : null,
+    status: String(m.status),
+    sentAt: isoOrNull(m.sent_at),
+    deliveredAt: isoOrNull(m.delivered_at),
+    readAt: isoOrNull(m.read_at),
+    failedReason: (m.failed_reason as string) ?? null,
+    suppressedReason: (m.suppressed_reason as string) ?? null,
+  }))
+
+  // The world clock comes back from the same statement rather than from a read of
+  // its own. It is the tenant clock's own resolution (`app.now_for`), so the time
+  // the console shows and the time the rows are stamped with cannot disagree.
+  const nowIso = new Date(d.now).toISOString()
 
   return {
     events,
     statuses,
-    clock: {
-      nowIso: nowD.toISOString(),
-      now: nowD.toISOString(),
-      offsetMs: offset.length > 0 ? Number(offset[0].offset_ms) : 0,
-    },
-    cursor: events.length > 0 ? events[events.length - 1].at : since,
+    clock: { nowIso, now: nowIso, offsetMs: Number(d.offset_ms ?? 0) },
+    cursor: d.event_cursor ?? since,
+    statusCursor:
+      d.status_cursor === null || d.status_cursor === undefined
+        ? statusSince
+        : Number(d.status_cursor),
   }
 }
 
-/** The newest `created_at` anywhere — a stream's starting cursor when none is given. */
+/**
+ * The newest `created_at` anywhere — a stream's starting cursor when none is given.
+ *
+ * One statement through the same door. This used to be `N+1` transactions and it runs
+ * on every reconnect, which DEPLOY.md:215-219 says is a fixed cadence rather than an
+ * exception: Vercel kills the function at its duration cap and the client comes
+ * straight back.
+ */
 export async function latestCursor(): Promise<string> {
-  let best = EPOCH
-  const take = (v: unknown) => {
-    if (v === null || v === undefined) return
-    const iso = new Date(v as string).toISOString()
-    if (iso > best) best = iso
-  }
-  for (const academyId of await worldAcademyIds()) {
-    const r = await withSession(svc(academyId), async (tx) => {
-      const m = await tx`select max(created_at) as t from message where academy_id = ${academyId}::uuid`
-      const t = await tx`select max(created_at) as t from turn where academy_id = ${academyId}::uuid`
-      return [m[0]?.t, t[0]?.t]
-    })
-    r.forEach(take)
-  }
-  const j = await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
-    return await tx`select max(created_at) as t from job`
+  const rows = await withSession(svc(BOOTSTRAP_ACADEMY_ID), async (tx) => {
+    // `::text` for the same reason `tsLiteral` exists, in the other direction:
+    // postgres.js parses a timestamptz RESULT into a JS `Date`, which would round
+    // this to milliseconds before it is ever used as a cursor. It is opaque to
+    // every reader — a place to resume from, never a time to display.
+    return await tx`select app.emulator_latest()::text as t`
   })
-  take(j[0]?.t)
-  return best
+  const t = rows[0]?.t
+  return t ? String(t) : EPOCH
 }
 
 // -----------------------------------------------------------------------------

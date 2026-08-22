@@ -1,6 +1,6 @@
 # Closed
 
-40 findings, retired. Kept as one line each for two reasons and no others:
+44 findings, retired. Kept as one line each for two reasons and no others:
 
 **A closed finding is a regression test.** `npm run findings` cross-references these codes against
 the instruments to answer the one question nothing else could — *which of the things that have
@@ -58,3 +58,5 @@ this is only the receipt. The full narrative for everything before 20 Aug 2026 i
 | **F-CG** | The road a message took was a process variable, so a drive could put an invented parent's number on the live Cloud wire | 21 Aug 2026, by binding the transport to the sender (0040, `getTransport`) |
 | **F-CH** | A business the product founded during a drive was byte-identical to a real one, so no guard could tell them apart | 21 Aug 2026, by inheriting `is_sandbox` from the sender (0040, `app.found_business`) |
 | **F-CB** | R8 put a sign on the go-live door and nothing put a handle on it, so six businesses ran a week with every proactive path suppressed | 21 Aug 2026, by `proposeGoLive` (`lib/jobs/plan-ahead.ts`) — the planner raises it on the size of the hole, and the owner got a `[ Go live ]` button |
+| **F-CL** | The live console cost one transaction per tenant per surface per tick, and a transaction is four round trips — so watching a world in which nothing was happening moved 5.29 GB in nine days and put a free-plan organisation over its whole monthly egress quota | 22 Aug 2026, by one door (0044, `app.emulator_poll`) and a status cursor with no clock in it (`message.status_seq`) |
+| **F-CM** | Every cross-tenant `security definer` door was executable by the model's own role, so a single `read` could enumerate all twelve tenants and return every contact's name and phone — the one security boundary, open, while 0007 stated in prose that it was shut | 22 Aug 2026, by revoking them from cm_user and cm_readonly (0044) — `revoke all … from public` never removed the grant `alter default privileges` (0006) hands out |
