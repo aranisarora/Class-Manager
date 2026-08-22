@@ -1649,6 +1649,38 @@ export function seedFromCommitted(
   recordExecuted(ctx, op, res.diffs)
 }
 
+/**
+ * The runtime's own books, closed to EVERY session including an admin's.
+ *
+ * `SCHEMA_DOC`'s permission grid says so — the row reads `job · audit_entry · turn ·
+ * turn_record · sender · arrival | - | - | - | -` — and follows it with the sentence that
+ * matters: "never answer 'nothing changed' from one". That is a prose rule, and this repo's
+ * standing evidence is that prose rules do not close behavioural classes. A RESULT closes
+ * them, which is what ARCHITECTURE.md means by the cheapest teaching channel the product
+ * owns.
+ *
+ * The failure it prevents is rare and confident. RLS refuses these tables by returning zero
+ * rows rather than an error, so a read of `job` hunting for scheduled work comes back `[]`,
+ * byte-identical to a business with nothing scheduled — and the sentence built on it is
+ * "nothing is scheduled", said to somebody who cannot check. One such read in the 218 turns
+ * of `2026-08-22-08-13-sim-7bo8`: `select kind, status, run_at, subject_key, dedupe_key from
+ * job where kind ilike '%session%' …`, zero rows, no mark of any kind.
+ *
+ * @mechanism CLOSED_TO_EVERY_SESSION — a read whose relations are ALL closed to every session
+ *   comes back as a refusal naming the table and the route that works, instead of as an empty
+ *   result that reads as absence. Only when every relation is closed: a join from `session` to
+ *   `job` still returns the session rows, and calling that a refusal would hide real data. The
+ *   route matters as much as the refusal — `standing()` already puts every live watch in the
+ *   tail, so the answer the model wanted is above it in the same prompt.
+ */
+const CLOSED_TO_EVERY_SESSION = new Set(['job', 'audit_entry', 'turn', 'turn_record', 'sender', 'arrival'])
+
+/** Every relation a statement names, lowercased. Enough to spot a read that cannot work. */
+function relationsNamed(query: string): string[] {
+  const found = [...query.matchAll(/(?:from|join)\s+"?([a-z_][a-z0-9_]*)"?/gi)].map((m) => m[1].toLowerCase())
+  return [...new Set(found)]
+}
+
 export async function runTool(
   name: string,
   args: any,
@@ -1673,6 +1705,26 @@ export async function runTool(
         assertSingleReadStatement(query)
       } catch (e) {
         return { result: { error: e instanceof Error ? e.message : String(e) } }
+      }
+      /**
+       * Before the read runs, because it cannot succeed and its failure is silent.
+       * See `CLOSED_TO_EVERY_SESSION` above.
+       */
+      const named = relationsNamed(query)
+      if (named.length && named.every((t) => CLOSED_TO_EVERY_SESSION.has(t))) {
+        return {
+          result: {
+            rows: [],
+            closed: named.join(', '),
+            error:
+              `${named.join(', ')} ${named.length === 1 ? 'is' : 'are'} the runtime own books and no session may ` +
+              'read them — not a coach, not a family, not an admin. This came back empty because the policy ' +
+              'refused it, NOT because there is nothing there, so do not report it as nothing. What you were probably ' +
+              'after is already in front of you: every watch this business holds is listed at the top of this ' +
+              'conversation, what this turn has done is on the turn-state line, and what a plan changed comes back in ' +
+              'the plan own result — a plan says what it changed.',
+          },
+        }
       }
       const res = await modelQuery(ctx.session, query)
       if (res.error) return { result: { error: res.error, rows: [], ...(await whereThatColumnLives(ctx, res.error)) } }

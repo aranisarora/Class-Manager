@@ -1956,7 +1956,26 @@ async function refusalHint(
   code: 'CHANGED_NOTHING' | 'PRECONDITION_FAILED' = 'CHANGED_NOTHING',
 ): Promise<string | null> {
   if (ctx.role === 'service') return null
-  const writes = expanded.filter((s): s is PlanStep & { write: string } => 'write' in s)
+  /**
+   * A guard is excluded here for the same reason it is excluded from
+   * `assertSomethingChanged`, and the consequence of including it is worse.
+   *
+   * This function re-runs the plan's writes as the service role to tell an RLS refusal from
+   * a WHERE that matched nothing. A guard matches nothing on purpose — that IS its refusal —
+   * and it matches nothing as the service role too, so the diagnosis below turns a plain,
+   * true precondition into one of two false sentences. With no other DML the model is handed
+   * the race hypothesis ("somebody else got there first, which is what these guards are
+   * for"), which is precisely the F-AX shape this file documents forty lines up: *a model
+   * given a wrong cause diagnoses it perfectly*. With other valid DML in the plan it is
+   * handed the escalation instead — "this person is not allowed to change them" — said to an
+   * owner about his own business.
+   *
+   * The guard already carries the only true sentence about why it failed, in `because`.
+   * Nothing here can improve on it and both branches make it worse.
+   */
+  const writes = expanded.filter(
+    (s): s is PlanStep & { write: string } => 'write' in s && !s.guard,
+  )
   if (!writes.length) return null
   try {
     const matched = await withRollback(serviceFrom(ctx), async (tx) => {

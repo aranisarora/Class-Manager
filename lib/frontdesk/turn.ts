@@ -224,6 +224,8 @@ export async function runFrontDeskTurn(o: {
   let proseRefused = false
   /** Whether a message has already reached this person this turn — see the `reply` case. */
   let spoke = false
+  /** The draft written before the prose refusal, restored if the retry produces nothing better. */
+  let heldDraft: string | undefined
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     run.rounds = round
@@ -308,6 +310,23 @@ export async function runFrontDeskTurn(o: {
       }
       if (!proseRefused && round < MAX_ROUNDS) {
         proseRefused = true
+        /**
+         * HELD, not discarded — the same shape `heldProse` uses in the tenant loop, and for
+         * the same reason: the refused round wrote to the PERSON and the round after it
+         * answers the RUNTIME, so letting the second one replace the first widens the gap
+         * between what the model wrote and what the person reads on the one path with no
+         * round of grace left.
+         *
+         * Measured over 23 refusals across four runs: 9 (39%) ended in escape-valve prose,
+         * and of the six read closely two were WORSE, four equal, none better. The clearest
+         * is 2026-08-22-13-20-sim-67ai turn 0012 — round 1 drafted "Great, that's the right
+         * place for it. What should I call the business on here — and what do you teach?"
+         * and what shipped was "…I can put the \"what do you teach\" part on buttons — just
+         * tell me the name and tap one", with buttons: []. Turn 0013 shipped "Type the name
+         * and I'll set you up right away", out of the refusal whose whole purpose is to stop
+         * people typing.
+         */
+        heldDraft = body
         run.record.rounds.push({
           round,
           ms: 0,
@@ -337,8 +356,28 @@ export async function runFrontDeskTurn(o: {
         })
         continue
       }
-      run.replyText = body
-      run.outcomes.push(await sendFromDesk(o.session, o.identity, body))
+      /**
+       * The escape valve is a SEND, so it obeys the one-message rule like every other send.
+       *
+       * It did not, and that was a regression against HEAD rather than a fix: on
+       * 2026-08-22-12-47-sim-s4hg turn 0013 the model called `reply` in round 2 (sent), then
+       * wrote "I'll wait for your business name and get you set up." in round 3 — prose, no
+       * tool, straight down this path and onto the phone as a second message. `spoke` caught
+       * three of that run's five double-sends and this path leaked the other two.
+       */
+      if (spoke) {
+        run.trace.push({
+          round,
+          name: '(trailing prose discarded: they have already had a message this turn)',
+          ms: 0,
+          args: body,
+        })
+        break
+      }
+      const ship = heldDraft && heldDraft !== body ? heldDraft : body
+      run.replyText = ship
+      run.outcomes.push(await sendFromDesk(o.session, o.identity, ship))
+      spoke = true
       await noteAsked(o.identity, arrival?.id, at)
       break
     }
@@ -366,7 +405,32 @@ export async function runFrontDeskTurn(o: {
       if (call.name === 'reply') {
         const parsed = ReplyArgs.safeParse(call.args)
         if (!parsed.success) {
-          messages.push({ role: 'tool', tool_call_id: call.id, content: 'reply needs a body.' })
+          /**
+           * The real error, and a trace row, because this is where a desk turn goes silent.
+           *
+           * "reply needs a body." was a guess at the failure and usually the wrong one:
+           * `ReplyArgs` also requires `answer` on every button (lib/frontdesk/tools.ts), which
+           * is the field a model reaching for a tap forgets. The model was told to add a body
+           * it had already written, so it sent the same shape again and the turn ended having
+           * said nothing — with no trace row, `messages: []` and `error: null`, so the record
+           * showed a turn that simply did not speak.
+           *
+           * Realised once in 46 post-change desk turns and it was the worst possible one:
+           * 2026-08-22-13-20-sim-67ai turn 0021, Arjun handing over his timetable —
+           * "rahul evening bath mon n thu 6-7" — answered with silence.
+           */
+          const why = parsed.error.issues
+            .slice(0, 3)
+            .map((i) => `${i.path.join('.') || 'reply'}: ${i.message}`)
+            .join('; ')
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content:
+              `that reply was not sent — ${why}. Every button needs BOTH a title and an answer, and the ` +
+              'answer is the words tapping it says in their voice. Fix that field and send it again.',
+          })
+          run.trace.push({ round, name: 'reply', ms: 0, args: call.args ?? {}, result: `refused: ${why}` })
           continue
         }
         if (spoke) {
@@ -375,8 +439,9 @@ export async function runFrontDeskTurn(o: {
             tool_call_id: call.id,
             content:
               'not sent — they have already had a message from you this turn, and a second one arrives as ' +
-              'the first being withdrawn. Everything else is still open to you: hand them over, or call ' +
-              'nothing and let them answer.',
+              'the first being withdrawn. Hand them over if you know where they belong; otherwise this turn ' +
+              'is finished and it is their move. Do not write anything further: trailing text is a note to ' +
+              'yourself here and nothing you add now reaches them.',
           })
           run.trace.push({ round, name: 'reply', ms: 0, args: parsed.data, result: 'refused: already spoke this turn' })
           continue
@@ -389,6 +454,9 @@ export async function runFrontDeskTurn(o: {
             tool_call_id: call.id,
             content: `that message cannot go as written: ${bad.join('; ')} Rewrite just that part and send it again.`,
           })
+          // Traced for the same reason as the parse failure above: a refusal nobody records is
+          // a turn that reads as having chosen to say nothing.
+          run.trace.push({ round, name: 'reply', ms: 0, args: parsed.data, result: `refused: ${bad.join('; ')}` })
           continue
         }
         const outcome = await sendFromDesk(
