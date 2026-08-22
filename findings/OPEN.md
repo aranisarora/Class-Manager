@@ -1,6 +1,6 @@
 # What is open
 
-18 findings. This file is the source of truth for what is broken — hand-written, and short on
+22 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -35,6 +35,10 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-CI** | The product reports what it TRIED as what HAPPENED — 26 unbacked claims in 33 turns, while `turnState` is already telling it otherwise | [detail](#f-ci--the-product-reports-what-it-tried-as-what-happened-and-turnstate-is-already-telling-it-otherwise) |
 | **F-CK** | Quiet hours drops the message it means to delay, because nothing ever comes back for it | [detail](#f-ck--quiet-hours-drops-the-message-it-means-to-delay-because-nothing-ever-comes-back-for-it) |
 | **F-CN** | `npm run ab` cannot drive either arm, because it refuses the config it just wrote | [detail](#f-cn--npm-run-ab-cannot-drive-either-arm-because-it-refuses-the-config-it-just-wrote) |
+| **F-CQ** | A client-facing read composed without an account predicate hands one family another family's child | [detail](#f-cq--a-client-facing-read-composed-without-an-account-predicate-hands-one-family-another-familys-child) |
+| **F-CR** | A rate that begins after the work was done silently unpays it, and nothing says so | [detail](#f-cr--a-rate-that-begins-after-the-work-was-done-silently-unpays-it-and-nothing-says-so) |
+| **F-CS** | A draft refused for machinery is sent anyway when the repair fails | [detail](#f-cs--a-draft-refused-for-machinery-is-sent-anyway-when-the-repair-fails) |
+| **F-CT** | A staged plan's handle expires before an owner who checks his phone once a day taps it | [detail](#f-ct--a-staged-plans-handle-expires-before-an-owner-who-checks-his-phone-once-a-day-taps-it) |
 
 ---
 
@@ -766,3 +770,201 @@ file, which is why it is the only instrument that cannot run.
 the round trip means deciding how "unspecified" is spelled on disk, which is a design
 question, not a patch. Verification for this branch was done with `check-rate-history.ts`, the
 four existing money checks and a direct `sim.ts` drive instead.
+
+---
+
+### F-CQ · A client-facing read composed without an account predicate hands one family another family's child
+
+The most serious defect in `2026-08-22-08-13-sim-7bo8`, and the product's **first message to a
+paying parent**.
+
+Rukmini Sarangi writes in on day 23: *"hi wat is this for, my name got added to something?"* She
+has one child in the business, Ananya. She was answered with:
+
+> your name's here because **Ananya and Kabir** are on the Rahul batch
+>
+> What's already set up for **you**:
+> • *Ananya* — Rahul batch, Thu 17 Sep, 6 pm at HSR Club courts
+> • *Kabir* — Rahul batch, Thu 17 Sep, 6 pm at HSR Club courts
+
+Kabir is **Devendra Ahluwalia's** child, on a different `account`. The next day (turn 168) she
+asks whether the timings are the same for "both of them" — she has adopted the product's error —
+and instead of correcting it the product confirms it and adds the other family's price:
+*"each is set at ₹2,500 a month"*.
+
+```
+account   parent               child
+·         Rukmini Sarangi      Ananya
+·         Devendra Ahluwalia   Kabir
+```
+
+**The model was not short of the right answer. It ran the correctly scoped query three times:**
+
+```sql
+select p.full_name, p.id from player pl join person p on p.id = pl.person_id
+ where pl.account_id = 'fb38bf47-0805-4204-9dff-0fbbc478062a'      -- -> [Ananya]
+select p.full_name from player pl join person p on p.id = pl.person_id
+ where pl.id = '0f695e9b-…'                                        -- -> [Ananya]
+select pl.id, p.full_name, pl.active from player pl … where pl.account_id = 'fb38bf47-…'
+                                                                    -- -> [Ananya]
+```
+
+and it also ran one with **no account predicate at all**, and wrote the message from that one:
+
+```sql
+select pe.full_name as who, c.name, s.starts_at, v.name
+  from session s join class c … join enrollment e on e.class_id = s.class_id and e.ended_on is null
+  join player pl on pl.id = e.player_id and pl.active join person pe on pe.id = pl.person_id
+ where s.status = 'scheduled' and s.starts_at > app.now()          -- -> [Ananya, Kabir, Ananya, Kabir]
+```
+
+Nothing refused it. This is the same shape as **F-CO**, one level in: F-CO was a `read` with no
+tenant boundary, and 0044 shut those doors by revoking them. This is a `read` with no *account*
+boundary inside a tenant, and there is no equivalent door to shut.
+
+**Why prose cannot close it.** The turn already carried *"Everything in this block is about this
+one person"* in its context, and the model already knew the scoped answer — it had queried it
+three times. It picked the wrong result set from its own working set. An instruction cannot
+distinguish the two reads; a predicate can.
+
+**Where it lives.** `app.session_roster` (0022) exists because the admin-side join was guessed
+wrong repeatedly. There is no client-side equivalent. The structural home is a scoped view —
+`app.my_roster(account_id)` or a `session_roster` that requires an account when the asker is a
+client — plus the same treatment `assertSingleReadStatement` gives the tenant boundary: a
+client-role read touching `player`, `enrollment` or `session` without an account predicate is
+refused rather than answered.
+
+`scripts/rls-check.mjs` has a **`Family privacy (§6.7)` section that currently asserts nothing**
+— it printed no lines on 22 Aug. That is where the regression test belongs.
+
+---
+
+### F-CR · A rate that begins after the work was done silently unpays it, and nothing says so
+
+Introduced by **0043**, found by the drive it was merged for. 0043 is right that money must be
+priced at the rate in force when it was earned. It has no answer for work that predates the rate
+row entirely, and the answer it gives by default is **zero, silently**.
+
+Arjun Shetty coached eight sessions in September. His coach row was created on **6 Sep**, so the
+trigger dated his `rate_period` from 6 Sep — `least(coalesce(onboarded_at::date, created_at::date),
+today)`, and nothing backdated `onboarded_at`. The two sessions he worked before that resolve to
+nothing:
+
+```
+coach_name    worked_on    amount_for_session (now)   amount_then
+Arjun Shetty  2026-09-01   800.00                     ·
+Arjun Shetty  2026-09-04   800.00                     ·
+Arjun Shetty  2026-09-06   800.00                     800.00
+…             (5 more)     800.00                     800.00
+```
+
+`app.pay_on()` returns no row before the first `rate_period`, so `coach_pay.amount_then` is null.
+`coachMonthLines` then reads that column and drops the session on the floor:
+
+```ts
+const amount = num(r.amount_for_session)   // amount_then; null -> 0
+if (amount <= 0) continue                  // no ledger line, no log, no flag
+```
+
+**₹1,600 of Arjun's ₹4,800 disappears at month close with nothing anywhere recording that it
+did.** Before 0043 `coachMonthLines` read `coach.pay_amount` at close time and would have paid all
+eight at ₹800. F-CL was the same money being *over*stated; this is the correction overshooting into
+silence.
+
+**The enrolment side got this right and shows the fix.** Both families' `rate_period` rows carry
+`effective_from = 2026-09-01` while `created_at = 2026-09-14`, because the trigger reads
+`least(NEW.started_on, today)` and the model backdated `started_on`. A coach has no `started_on`
+the model sets, so the same trigger has nothing to reach back with.
+
+**The same hazard, unmeasured, on the family side.** `unmarked_billable_session` filters
+`rt.unit = 'per_session'`; a null unit fails that test, so an unmarked session that predates its
+enrolment's `rate_period` **drops out of the view entirely** rather than showing a wrong number.
+The owner is not told there is a register to mark.
+
+**Where it lives.** Three candidates, and the third is probably right: (a) have the trigger date a
+coach's first period from their earliest `session_coach`, (b) make `pay_on` fall back to the
+*earliest* period rather than returning null — history extends backwards to the first thing anybody
+stated, or (c) keep the null, and make `coachMonthLines` refuse to close a month containing a
+session it cannot price, rather than `continue`. Silence is the part that has to go regardless of
+which is chosen.
+
+---
+
+### F-CS · A draft refused for machinery is sent anyway when the repair fails
+
+Turn 172 of `2026-08-22-08-13-sim-7bo8`. Devendra Ahluwalia, a paying parent, asks on first contact
+*"what is this exactly and what's the cost?"* and receives, literally, on his phone:
+
+```
+[you called reply with {"body": "This is Rahul Menon Tennis Academy's class list — we're just
+getting it set up. Kabir has been added to the *Rahul batch*…\n\nSessions are Mon and Thu, 6 pm.
+…", "buttons": [{"title": "See Kabir's schedule", "action": {"kind": "reply", "text": "Yes, show
+me Kabir's schedule"}}]}]
+```
+
+**Three mechanisms fired correctly and the order defeated all three.**
+
+1. Round 13 — `proseViolations` **caught it**: *"it has a wire-shape object in the body"*, with the
+   fix spelled out (*"That is the shape you pass to the tool, not something a person may see"*).
+2. Round 14 — the repair round asked the model to rewrite. It emitted the same wire-shape text.
+   The re-check worked: `if (rewritten && !proseViolations(rewritten, identity).length) outgoing =
+   rewritten` correctly declined to prefer it.
+3. And then `lib/agent/loop.ts:2023` sent the **original** — the draft it had just refused:
+
+   ```ts
+   /* the draft still goes; a failed repair must not become silence */
+   ```
+
+4. Round 15's reflection noticed the reply had gone wrong and composed a clean one. Round 16
+   dropped it, as outside `REFLECT_TOOLS`.
+
+The comment names the trade honestly and takes the wrong side of it. "A failed repair must not
+become silence" is right; sending the refused draft is not the only alternative to silence. The
+body is *recoverable* — the violation is a JSON envelope wrapped around a perfectly good message,
+and `body` can be lifted out of it. Failing that, a fixed holding line is better than machinery:
+the person can act on "give me a moment"; they can act on nothing here.
+
+Note this is not the length-driven path `affordanceFits` handles, and not F-CA. The turn had
+already spent its tool rounds and fell to `(recovery: answer without tools)`, which is the path
+with no `reply` call in it — so the model expressed its intended `reply` as prose, and prose is
+what the runtime sends.
+
+**Where it lives.** `loop.ts`'s trailing-prose fallback: a draft carrying `proseViolations` must
+not be the thing that goes. Either strip to the recoverable body, or send the fixed line.
+
+---
+
+### F-CT · A staged plan's handle expires before an owner who checks his phone once a day taps it
+
+Turn 69, day 10, and the single most expensive event in the month drive.
+
+On day 9 the product did everything right (turn 62, scored 9): it staged both coaches with their
+pay, previewed the six rows correctly, and sent one button — *"Tap to add them both."* Rahul Menon
+runs a business off his phone between sessions. He opened WhatsApp the next morning and tapped
+**Add them**, which is the only thing he had been asked to do.
+
+```
+turn 69 · day 10 · Rahul Menon · rounds 0 · sql 0 · wrote 0
+tapped: "Add them"
+sent:   "That button has expired — tell me what you'd like and I'll sort it out."
+```
+
+The setup then restarted and took **four more days and four more attempts** to land (turns 76, 79,
+85, 92, and finally 98 on day 14). By the time the class existed, the coach had run three sessions
+that nobody had recorded. The owner's departure on day 26 — *"this hasnt worked three times now and
+arjun still hasnt been paid"* — starts here.
+
+**The expiry is not the defect; the mismatch is.** A plan handle is scoped to a conversational
+moment, and the owner's reply latency in this product is a day, not a minute — every persona in
+`worlds/` is somebody standing up with a ball machine going. Measured across the run, the median
+gap between a button being offered and a seat next picking up the phone is longer than the handle
+lives.
+
+**And the recovery is empty.** "Tell me what you'd like and I'll sort it out" throws away
+everything the runtime still holds: it knows which handle expired, what its `intent` was, and what
+rows it would have written. A tap on a dead handle is an unambiguous statement of intent — it is
+the *most* certain input this product ever gets — and it is answered with a blank prompt.
+
+**Where it lives.** Two parts. Widen the handle's life for a staged plan to something on the order
+of the conversation it belongs to; and make an expired tap re-stage its own plan from the stored
+`intent` and re-offer it, rather than asking the person to type the request again.
