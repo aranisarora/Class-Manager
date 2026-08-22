@@ -1,6 +1,6 @@
 # What is open
 
-24 findings. This file is the source of truth for what is broken — hand-written, and short on
+26 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -37,7 +37,9 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-CN** | `npm run ab` cannot drive either arm, because it refuses the config it just wrote | [detail](#f-cn--npm-run-ab-cannot-drive-either-arm-because-it-refuses-the-config-it-just-wrote) |
 | **F-CR** | A rate that begins after the work was done silently unpays it, and nothing says so | [detail](#f-cr--a-rate-that-begins-after-the-work-was-done-silently-unpays-it-and-nothing-says-so) |
 | **F-DI** | A read result keeps the model's own column alias, so a mislabel becomes durable and is built into a write five turns later | [detail](#f-di--a-read-result-keeps-the-models-own-column-alias-so-a-mislabel-becomes-durable-and-is-built-into-a-write-five-turns-later) |
-| **F-DV** | The seat cannot press a button, only retype one, so every mechanism behind a tap is measured at a fraction of its rate | [detail](#f-dv--the-seat-cannot-press-a-button-only-retype-one-so-every-mechanism-behind-a-tap-is-measured-at-a-fraction-of-its-rate) |
+| **F-DV** | The seat COULD always press a button and was never told so, so every mechanism behind a tap was measured at a fifteenth of its rate | [detail](#f-dv--the-seat-could-always-press-a-button-and-was-never-told-so-so-every-mechanism-behind-a-tap-was-measured-at-a-fifteenth-of-its-rate) |
+| **F-DX** | A worker restart deletes the reply the person was holding, so the product reads as never having answered | [detail](#f-dx--a-worker-restart-deletes-the-reply-the-person-was-holding-so-the-product-reads-as-never-having-answered) |
+| **F-DY** | A persona brief asserts a history the world never builds, so the model is argued out of a correct read of its own database | [detail](#f-dy--a-persona-brief-asserts-a-history-the-world-never-builds-so-the-model-is-argued-out-of-a-correct-read-of-its-own-database) |
 | **F-DW** | The seat sends one message per half-day and has never sent two in a day, so "the product is slow to set a business up" is partly measuring the harness | [detail](#f-dw--the-seat-sends-one-message-per-half-day-and-has-never-sent-two-in-a-day-so-the-product-is-slow-to-set-a-business-up-is-partly-measuring-the-harness) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-DS** | A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn | [detail](#f-ds--a-staged-plan-can-only-be-committed-by-tapping-it-an-owner-who-answers-go-ahead-in-words-is-re-staged-instead-because-the-plan-handle-does-not-survive-the-turn) |
@@ -910,25 +912,34 @@ durably; the shape to build is a handler that reads its own suppressed rows back
 re-runs the job blind. `DUNNING_MAX`/`RECONCILE_MAX` are the precedent for the ceiling any such
 retry needs.
 
-### F-DV · The seat cannot press a button, only retype one, so every mechanism behind a tap is measured at a fraction of its rate
+### F-DV · The seat COULD always press a button and was never told so, so every mechanism behind a tap was measured at a fifteenth of its rate
 
-**Status: half fixed 22 Aug 2026.** `_persona-agent.ts` now offers a fourth move, `tap`, carrying
-the affordance's words as printed; `buttonAction` (`_seat-worker.ts`) already resolved a title to
-an `action` id and is unchanged. A declared press that resolves to nothing is recorded as
-`tapMissed` rather than downgrading to text in silence — this file's own header calls that
-silent downgrade a *fabricated defect* and measured it at two of five presses across three weeks,
-one of them a staged date change that consequently never committed.
+**The first draft of this finding was wrong and the correction is the interesting part.** It said
+the seat could not press a button. It could: `buttonAction` (`scripts/_seat-worker.ts`) resolves a
+typed title to a live `action` on one of this contact's own recent messages and drives the turn as
+the tap it is, and the file's own header explains why that is not a shortcut — *"a WhatsApp button
+reply arrives as the title of the button, so a persona who reads `tap: [ Yes ]` and answers 'yes'
+is a persona pressing it."* That is how the real wire works. The mechanism was never missing.
 
-**What is still open** is the measurement. Before the change the persona had to spontaneously type
-a button's exact words: 47 seat turns that said something produced 3 resolved taps. Every mechanism
-that only exists behind a tap — `consumeAction`, `superseded`, `committingTtl`, `resolveAction`,
-`awaitsATap`, `refusedTapBlock`, `staleAsks`, `undo`, `commit` — has therefore been exercised at a
-rate the product will never see, and the whole F-CT story (a button expiring 11.354 seconds before
-its owner reached it) rests on a harness where reaching for a button at all was rare. **Nothing in
-this repo's measured history of the tap path should be trusted until a run with `tap` in it has
-been read**, and that run does not exist yet.
+**What was missing was the persona knowing it existed.** `SEAT_RULES` offered three things a person
+could do — say, quiet, giveup — and pressing was in none of them, so a press only happened when a
+persona spontaneously typed a button's exact words. Measured across three blank weeks: **47 seat
+turns that said something, 3 resolved taps.** Every mechanism reachable only through a tap —
+`consumeAction`, `superseded`, `committingTtl`, `resolveAction`, `awaitsATap`, `refusedTapBlock`,
+`staleAsks`, `undo`, `commit` — has therefore been exercised at a rate the product will never meet.
 
-**Where it lives:** the instrument, and the remaining work is a reading rather than a build.
+**Fixed 22 Aug 2026, and it is a prompt clause rather than a mechanism**, which is the honest
+description: `SEAT_RULES` now names `tap` as the first of four things a person can do, and the move
+carries the words as printed. The one genuinely new thing beside it is `tapMissed` — a press the
+seat DECLARED and the harness could not resolve is now recorded, instead of downgrading to text in
+silence. That downgrade is what this file's own header calls a fabricated defect and it measured
+two of five presses across three weeks, one of them a staged date change that consequently never
+committed.
+
+**Still open** is the reading, not the build. **Nothing in this repo's measured history of the tap
+path should be trusted until a run with `tap` in it has been read** — including the F-CT story that
+shaped a whole session of work, in which a button expired 11.354 seconds before its owner reached
+it, on a harness where reaching for a button at all was rare.
 
 ### F-DW · The seat sends one message per half-day and has never sent two in a day, so "the product is slow to set a business up" is partly measuring the harness
 
@@ -952,3 +963,45 @@ from DIFFERENT people is already real; this is the same thing from one person. T
 must stay rare and short, or every run becomes a stress test of a shape that is itself uncommon —
 the seat rules should reach for it when a person would (annoyed, correcting, dictating), not by
 default.
+
+### F-DX · A worker restart deletes the reply the person was holding, so the product reads as never having answered
+
+**Saw:** the seat holds what arrived on its phone in a `pending` array in the worker process's
+heap, and `drive()` advances the persona's cursor as it reads. A worker that restarts loses the
+array; the cursor has already moved past those messages, so they can never be read again. The
+persona then acts as though the product said nothing.
+
+**Why it is worse than a lost message.** Every turn downstream is judged against a conversation
+that did not happen: the persona escalates about a thing it was already told, the product
+apologises for a silence it did not commit, and a departure — Farah's and Divya's are the ones in
+the record — reads as the product having ignored somebody. Those are the most consequential turns
+in any run and they are the ones this corrupts.
+
+**Where it lives:** `drive()` in `scripts/_seat.ts`. The fix has two halves and both are small.
+Stop `drive()` advancing the cursor — return `readPhone(s, key, false)` and let the seat's next
+look advance it, so the reply lives in the database behind a cursor rather than in a process's
+heap, which removes `pending` entirely and makes the loss structurally impossible. Then rebuild the
+thread at worker boot the way `said` is already rebuilt from `readTurns`. The per-persona cursor
+files under `cursors/` exist precisely because a shared blob lost a seat's place; this is the same
+lesson one level in.
+
+### F-DY · A persona brief asserts a history the world never builds, so the model is argued out of a correct read of its own database
+
+**Saw:** Divya Rao's brief says her daughter has attended the evening batch for a year. `buildWorld`
+(`scripts/_world-file.ts`) writes a sender, a front desk and contacts — and no enrolment, no
+sessions, no payments. So the product reads its own tables correctly, finds no such child, says so,
+and is then pushed by a persona who is certain. In the record it eventually confesses to having
+lost a year of records that never existed.
+
+**Why this is an instrument defect and not a product one.** The product's design is *a capable
+model, told the truth*. Here it is told the truth by the database and something else by the
+customer, with no way to tell which — and doctrine's *do not assume* pushes it toward believing the
+human. That is the right instinct in general and it is being punished by a world that is
+incomplete. The run then scores the product for a failure the harness manufactured.
+
+**Where it lives:** `worlds/*.json` and `scripts/_world-file.ts`. A world person needs an optional
+`history` block — the enrolment, the weekly slot, the months already paid — written into the
+business at the instant `adopt()` sees it founded, under the service session that already sets the
+new tenant's clock. That is the enabling shape: it lets the model be RIGHT about Anika's year
+instead of being punished for reading an empty table correctly. The deleted `_world-spec.ts`
+fixtures wrote exactly this kind of history, so the shape is not new.
