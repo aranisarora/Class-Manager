@@ -265,6 +265,16 @@ type RosterRow = {
   rate_amount: string | null
   rate_unit: string | null
   rate_count: number | null
+  /**
+   * The same three, resolved AS OF the day this roster was asked for rather than
+   * as of now. Everything pricing something that ALREADY HAPPENED reads these;
+   * everything answering "what does this cost" reads the three above and is
+   * unchanged. `rosterOf` has taken `onDate` all along — the fix is passing it
+   * one layer further down (F-CJ).
+   */
+  rate_amount_then: string | null
+  rate_unit_then: string | null
+  rate_count_then: number | null
 }
 
 /**
@@ -306,6 +316,10 @@ type RosterRow = {
  *   and still report success: no roster, no attendance, no §6.4 billing line, and a
  *   coach told it went fine. Reachability is established upstream by `sessionOf` or
  *   `assertIdsExist`, so reading it as the runtime widens nothing.
+ *   It also resolves the rate AS OF `onDate` — the day the roster is being asked
+ *   about — beside the live one, which is what stops a register marked a week late
+ *   billing at whatever the price became in the meantime. Five of its six callers
+ *   were already passing the session's own date; only the rate columns ignored it.
  */
 async function rosterOf(ctx: SessionCtx, classId: string, onDate: string): Promise<RosterRow[]> {
   return q<RosterRow>(
@@ -314,12 +328,16 @@ async function rosterOf(ctx: SessionCtx, classId: string, onDate: string): Promi
             ac.holder_person_id, e.id as enrollment_id, e.is_trial,
             coalesce(e.rate_amount, c.rate_amount) as rate_amount,
             coalesce(e.rate_unit, c.rate_unit)     as rate_unit,
-            coalesce(e.rate_count, c.rate_count)   as rate_count
+            coalesce(e.rate_count, c.rate_count)   as rate_count,
+            rt.amount as rate_amount_then,
+            rt.unit   as rate_unit_then,
+            rt.cnt    as rate_count_then
        from enrollment e
        join player p  on p.id = e.player_id and p.active
        join person pe on pe.id = p.person_id
        join account ac on ac.id = p.account_id
        join class c   on c.id = e.class_id
+       left join lateral app.rate_on(e.id, date ${lit(onDate)}) rt on true
       where e.class_id = ${uid(classId)}
         and e.academy_id = ${uid(ctx.academyId)}
         and e.started_on <= date ${lit(onDate)}
@@ -414,6 +432,7 @@ function num(v: string | number | null | undefined): number {
  * ------------------------------------------------------------------------- */
 
 export type OperationName =
+  | 'set_rate'
   | 'end_coach'
   | 'cancel_session'
   | 'move_class'
@@ -1617,8 +1636,22 @@ const markAttendance: OperationDef = {
       })
 
       if (!r) continue
-      const unit = r.rate_unit
-      const amount = num(r.rate_amount)
+      /**
+       * The rate the session RAN at, not the one it is being marked at.
+       *
+       * `onDate` is the session's own local date and `rosterOf` has always taken
+       * it; these three are that date carried one layer further down. A register
+       * marked a week late used to bill whatever the price had become in the
+       * meantime — F-CJ, where a 25 August one-to-one that ran at 900 answered
+       * 1100 because the owner had raised it on the 30th.
+       *
+       * The fallback is for a row that predates 0043's backfill and should never
+       * fire; reading null as zero would silently bill nobody, which is the F-BA
+       * shape and worse than billing the wrong number.
+       */
+      const unit = r.rate_unit_then ?? r.rate_unit
+      const amount = num(r.rate_amount_then ?? r.rate_amount)
+      const cnt = r.rate_count_then ?? r.rate_count
       const billable = e.status === 'present' || e.status === 'late' || e.status === 'absent'
 
       // §6.4 — a `session` line for present/late/absent, never for
@@ -1628,10 +1661,12 @@ const markAttendance: OperationDef = {
           e.status === 'absent' ? ' (absent)' : ''
         }`
         steps.push({
-          write: `insert into tally_line (academy_id, account_id, player_id, class_id, period, kind, description, amount, session_id, dedupe_key)
+          write: `insert into tally_line (academy_id, account_id, player_id, class_id, period, kind, description, amount, session_id, dedupe_key,
+                                          rate_amount, rate_unit, rate_count)
                   select ${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)}, ${uid(s.class_id)}, date ${lit(period)},
                          'session', ${lit(desc)}, ${moneyLit(amount)}, ${uid(s.id)},
-                         ${lit(billingKey.session(r.player_id, s.id))}
+                         ${lit(billingKey.session(r.player_id, s.id))},
+                         ${moneyLit(amount)}, ${lit(unit)}, ${cnt === null || cnt === undefined ? 'null' : lit(cnt)}
                    where not exists (select 1 from tally_line t
                                       where t.session_id = ${uid(s.id)} and t.player_id = ${uid(r.player_id)})`,
           service: true,
@@ -2213,7 +2248,11 @@ const clientCancel: OperationDef = {
     const windowHours = args.decided_window_hours ?? a.cancellation_window_hours
     const hoursOut = (new Date(s.starts_at).getTime() - nowD.getTime()) / 3_600_000
     const inWindow = args.decided_timely ?? hoursOut >= windowHours
-    const perSession = r.rate_unit === 'per_session'
+    // As of the session's own day, like every other money read here: rosterOf
+    // was already asked for that date. A late cancellation on a class that ran
+    // at 900 is a 900 charge however many raises have landed since (F-CJ).
+    const perSession = (r.rate_unit_then ?? r.rate_unit) === 'per_session'
+    const cancelRate = num(r.rate_amount_then ?? r.rate_amount)
 
     /**
      * Look at the register before asking about it.
@@ -2371,13 +2410,13 @@ const clientCancel: OperationDef = {
     // §6.4 — the cancellation window carries money meaning only for
     // per_session. For per_month it is a headcount signal to the coach: same
     // interface, different consequence, no extra code.
-    if (perSession && !inWindow && num(r.rate_amount) > 0) {
+    if (perSession && !inWindow && cancelRate > 0) {
       steps.push({
         write: `insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount, session_id)
                 select ${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)},
                        date ${lit(periodOf(s.starts_at, a.timezone))}, 'session',
                        ${lit(`${s.class_name} — ${zoned(s.starts_at, a.timezone).toFormat('d LLL')} (late cancellation)`)},
-                       ${moneyLit(num(r.rate_amount))}, ${uid(s.id)}
+                       ${moneyLit(cancelRate)}, ${uid(s.id)}
                  where not exists (select 1 from tally_line t
                                     where t.session_id = ${uid(s.id)} and t.player_id = ${uid(r.player_id)})
                    -- And never charge for a session the register still records as a
@@ -3547,7 +3586,173 @@ const linkContact: OperationDef = {
   },
 }
 
+/* ===========================================================================
+ * set_rate — "from the 1st of next month", as a row
+ *
+ * A price change starting NOW has always been writable: `update enrollment set
+ * rate_amount = 1100`, which the model composes itself and which 0043's trigger
+ * turns into history. This operation exists for the half that had nowhere to go.
+ *
+ * The model kept promising it anyway. F-AW is the shape when it tries: a
+ * correct, forward-dated answer minted a button carrying a `schedule` step whose
+ * job kind did not exist — accepted at compose time, stored, and dead on the
+ * tap. "The admin has been told his prices rise. They do not." A dated row needs
+ * no job, so there is nothing to fire late and nothing to miss.
+ *
+ * It also says the part the product could not say. Raising a rate leaves every
+ * unmarked register before that date still owed at the OLD price, and the owner
+ * is the only person who can decide whether that is what they meant. F-CJ is
+ * what happens when nobody says it: the model told Sanjay the truth four times
+ * and told the parent who pays the opposite, four minutes later.
+ *
+ * @mechanism setRate — a price change carries the day it starts, so "from 1
+ *   September" is a row rather than a sentence: the rate_period row is written at
+ *   that date and the current-value column is moved only when the date has
+ *   arrived. Its note is composed from rows and names what does NOT move — the
+ *   registers still unmarked before the change, and the lines already written,
+ *   which are an adjustment's job and not a rate's. Retires the class where a
+ *   forward-dated price is promised in prose with nothing behind it: F-AW minted
+ *   a button carrying a job kind that did not exist, and the admin's prices never
+ *   rose.
+ *   Closes F-CJ.
+ * ========================================================================= */
+
+const setRate: OperationDef = {
+  name: 'set_rate',
+  description:
+    'Change what something costs, from a date. Use this for anything starting LATER — "1,100 a session from the 1st" — because a plain update takes effect immediately and there is nowhere else to put the date. Works on an enrolment (one family only), a class (everyone who has not got their own rate), or a coach’s pay. Sessions that already ran keep the rate they ran at.',
+  destructive: true,
+  params: z.object({
+    subject_kind: z.enum(['enrollment', 'class', 'coach']),
+    subject_id: uuid,
+    amount: z.number().nonnegative(),
+    unit: z.enum(['per_session', 'per_month', 'per_term', 'per_package', 'per_hour']).nullish(),
+    rate_count: z.number().int().positive().nullish(),
+    /** The day it STARTS APPLYING. Today is allowed and means "now". */
+    effective_from: z.string(),
+    /** The owner's own words for why, if they gave any. */
+    note: z.string().nullish(),
+  }),
+  async build(ctx, args, _id) {
+    const a = await academyOf(ctx)
+    const today = zoned(await now(ctx.academyId), a.timezone).toFormat('yyyy-MM-dd')
+    const from = isoDate(args.effective_from, a.timezone)
+    const kind = args.subject_kind
+
+    const [subj] = await q<{ label: string; cur_amount: string | null; cur_unit: string | null }>(
+      svc(ctx),
+      kind === 'coach'
+        ? `select pe.full_name as label, c.pay_amount as cur_amount, c.pay_unit as cur_unit
+             from coach c join person pe on pe.id = c.person_id
+            where c.id = ${uid(args.subject_id)} and c.academy_id = ${uid(ctx.academyId)}`
+        : kind === 'class'
+          ? `select cl.name as label, cl.rate_amount as cur_amount, cl.rate_unit as cur_unit
+               from class cl
+              where cl.id = ${uid(args.subject_id)} and cl.academy_id = ${uid(ctx.academyId)}`
+          : `select pe.full_name || ', ' || cl.name as label,
+                    coalesce(e.rate_amount, cl.rate_amount) as cur_amount,
+                    coalesce(e.rate_unit, cl.rate_unit) as cur_unit
+               from enrollment e
+               join class cl on cl.id = e.class_id
+               join player pl on pl.id = e.player_id
+               join person pe on pe.id = pl.person_id
+              where e.id = ${uid(args.subject_id)} and e.academy_id = ${uid(ctx.academyId)}`,
+    )
+    if (!subj) throw new Error(`there is no ${kind} here with that id`)
+
+    const unit = args.unit ?? subj.cur_unit
+    if (kind === 'coach' && unit && !['per_session', 'per_hour', 'per_month'].includes(unit)) {
+      throw new Error(`a coach is paid per session, per hour or per month, not ${unit}`)
+    }
+    if (kind !== 'coach' && unit === 'per_hour') {
+      throw new Error('per_hour is a coach pay unit; a family is billed per session, month, term or package')
+    }
+
+    /**
+     * What does NOT move, counted from the rows rather than asserted.
+     *
+     * The registers still unmarked before this date will bill at the old rate
+     * when somebody finally marks them, which is correct and is also the thing
+     * an owner is most likely to be surprised by. Saying it here, with the
+     * number, is the whole difference between F-CJ's two sentences.
+     */
+    const [waiting] = await q<{ n: string; owed: string | null }>(
+      svc(ctx),
+      `select count(*)::text as n, sum(unbilled_amount)::text as owed
+         from unmarked_billable_session u
+        where u.academy_id = ${uid(ctx.academyId)}
+          and (u.starts_at at time zone ${lit(a.timezone)})::date < date ${lit(from)}
+          ${kind === 'class' ? `and u.class_id = ${uid(args.subject_id)}` : ''}
+          ${
+            kind === 'enrollment'
+              ? `and u.class_id = (select class_id from enrollment where id = ${uid(args.subject_id)})`
+              : ''
+          }`,
+    )
+    const stillWaiting = Number(waiting?.n ?? 0)
+
+    const col = kind === 'coach' ? 'pay_amount' : 'rate_amount'
+    const unitCol = kind === 'coach' ? 'pay_unit' : 'rate_unit'
+    const when = from <= today ? 'now' : monthLabel(periodOf(from, a.timezone), a.timezone)
+    const rateLabel = `${formatINR(args.amount)}${unit ? ` ${String(unit).replace('_', ' ')}` : ''}`
+
+    const lines = [
+      from <= today
+        ? `${subj.label} — ${rateLabel}, from today.`
+        : `${subj.label} — ${rateLabel} from ${zoned(from, a.timezone).toFormat('d LLL')}. ` +
+          `Until then it stays ${formatINR(num(subj.cur_amount))}.`,
+      stillWaiting > 0
+        ? `${stillWaiting} session${stillWaiting === 1 ? '' : 's'} before that ` +
+          `${stillWaiting === 1 ? 'is' : 'are'} still unmarked and will bill at the old rate.`
+        : '',
+      // 0038's boundary, said to the owner in their own terms. A line already
+      // written is frozen and a rate cannot reach it; changing one is an
+      // adjustment, which is a decision a person makes on purpose.
+      `Anything already billed does not change — that would be an adjustment.`,
+    ].filter(Boolean)
+
+    const steps: PlanStep[] = [{ note: lines.join(' ') }]
+
+    /**
+     * The dated row first, always, whatever the date is. Then the column, only
+     * if the date has arrived: a row dated ahead is not a claim about now, and
+     * moving the column early is exactly the destructive write this operation
+     * exists to replace.
+     */
+    steps.push({
+      write: `insert into rate_period (academy_id, ${kind}_id, amount, unit, rate_count, effective_from, stated_by, note)
+              values (${uid(ctx.academyId)}, ${uid(args.subject_id)}, ${moneyLit(args.amount)},
+                      ${unit ? lit(unit) : 'null'},
+                      ${args.rate_count === null || args.rate_count === undefined ? 'null' : lit(args.rate_count)},
+                      date ${lit(from)}, ${_id.person?.id ? uid(_id.person.id) : 'null'}, ${lit(args.note ?? null)})
+              on conflict (subject_kind, subject_id, effective_from) do update
+                 set amount = excluded.amount, unit = excluded.unit,
+                     rate_count = excluded.rate_count, note = excluded.note`,
+      service: true,
+      requireRows: 1,
+    })
+
+    if (from <= today) {
+      steps.push({
+        write: `update ${kind} set ${col} = ${moneyLit(args.amount)}
+                       ${unit ? `, ${unitCol} = ${lit(unit)}` : ''}
+                       ${
+                         kind !== 'coach' && args.rate_count !== null && args.rate_count !== undefined
+                           ? `, rate_count = ${lit(args.rate_count)}`
+                           : ''
+                       }
+                 where id = ${uid(args.subject_id)} and academy_id = ${uid(ctx.academyId)}`,
+        requireRows: 1,
+      })
+    }
+
+    void when
+    return steps
+  },
+}
+
 export const OPERATIONS: Record<OperationName, OperationDef> = {
+  set_rate: setRate,
   end_coach: endCoach,
   cancel_session: cancelSession,
   move_class: moveClass,

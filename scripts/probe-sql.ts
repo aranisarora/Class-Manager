@@ -467,6 +467,116 @@ const CASES: Case[] = [
            from account a limit 1`,
     ],
   },
+
+  /* --- tier 6: a rate has a date now (0043) ----------------------------- */
+  {
+    id: 'rate-as-of',
+    finding: 'F-CJ',
+    tier: 6,
+    persona: 'admin',
+    text: 'that one-to-one I put up last month — what was it costing before I raised it?',
+    probes:
+      'the whole point of app.rate_on(enrollment_id, date). The hand-written version is a lateral ' +
+      'over rate_period ordered by effective_from with a date predicate, TWICE — enrolment then ' +
+      'class — because amount, unit and count each fall back independently. Reading ' +
+      'enrollment.rate_amount answers today and is the defect F-CJ is: it told the owner one number ' +
+      'and the parent who pays the other, four minutes apart.',
+    setup: [
+      `insert into class (academy_id, name, rate_amount, rate_unit, starts_on)
+         select (select id from academy limit 1), 'Anika one-to-one', 900, 'per_session',
+                (app.now() at time zone 'Asia/Kolkata')::date - 30
+          where not exists (select 1 from class where name = 'Anika one-to-one')`,
+      `insert into enrollment (academy_id, class_id, player_id, started_on)
+         select cl.academy_id, cl.id, (select id from player limit 1),
+                (app.now() at time zone 'Asia/Kolkata')::date - 30
+           from class cl
+          where cl.name = 'Anika one-to-one'
+            and not exists (select 1 from enrollment e where e.class_id = cl.id)`,
+      `insert into session (academy_id, class_id, starts_at, ends_at, status)
+         select cl.academy_id, cl.id, app.now() - interval '7 days',
+                app.now() - interval '7 days' + interval '1 hour', 'scheduled'
+           from class cl
+          where cl.name = 'Anika one-to-one'
+            and not exists (select 1 from session s where s.class_id = cl.id)`,
+      // The raise. The trigger turns this ordinary update into the second period,
+      // which is the whole thing the case is asking the model to find.
+      `update class set rate_amount = 1100 where name = 'Anika one-to-one'`,
+    ],
+  },
+  {
+    id: 'pay-for-a-closed-month',
+    finding: 'F-CL',
+    tier: 6,
+    persona: 'admin',
+    text: 'what did I actually owe the coach for last month?',
+    probes:
+      'coach_ledger if the month has closed, and coach_pay.amount_then if it has not — never ' +
+      'amount_for_session, which multiplies by the rate they are on NOW. A raise typed mid-month ' +
+      'used to reprice everything already worked, so the two columns are deliberately both there ' +
+      'and deliberately named apart.',
+    setup: [
+      // The coach has been on 500 for a quarter. Written directly because the
+      // world was made this morning and a trigger can only date a change from
+      // when it happens — in a real business this row is months old.
+      `insert into rate_period (academy_id, coach_id, amount, unit, effective_from)
+         select c.academy_id, c.id, 500, 'per_session',
+                (app.now() at time zone 'Asia/Kolkata')::date - 90
+           from coach c
+          where c.pay_amount is null
+            and not exists (select 1 from rate_period rp where rp.coach_id = c.id)
+          limit 1
+         on conflict do nothing`,
+      `insert into session (academy_id, class_id, starts_at, ends_at, status)
+         select cl.academy_id, cl.id, app.now() - interval '35 days',
+                app.now() - interval '35 days' + interval '1 hour', 'scheduled'
+           from class cl limit 1`,
+      `insert into session_coach (academy_id, session_id, coach_id, confirmed_at)
+         select s.academy_id, s.id, (select coach_id from rate_period where coach_id is not null limit 1),
+                s.starts_at - interval '1 day'
+           from session s
+          where s.starts_at < app.now() - interval '30 days'
+            and not exists (select 1 from session_coach sc where sc.session_id = s.id)
+          limit 1`,
+      // And the raise, typed today, long after that session was worked.
+      `update coach set pay_amount = 800, pay_unit = 'per_session'
+         where id = (select coach_id from rate_period where coach_id is not null limit 1)`,
+    ],
+  },
+  {
+    id: 'pack-remaining-after-a-resize',
+    finding: 'F-CM',
+    tier: 6,
+    persona: 'admin',
+    text: 'how many classes has she got left on her pack?',
+    probes:
+      "the size is on the tally_line that OPENED the pack — that pack's own rate_count — not on the " +
+      'class, which may have been restructured since. Reading class.rate_count silently resizes ' +
+      'every pack already sold, in whichever direction the owner moved it.',
+    setup: [
+      `insert into class (academy_id, name, rate_amount, rate_unit, rate_count, starts_on)
+         select (select id from academy limit 1), 'Ten-class pack', 8000, 'per_package', 10,
+                (app.now() at time zone 'Asia/Kolkata')::date - 60
+          where not exists (select 1 from class where name = 'Ten-class pack')`,
+      `insert into enrollment (academy_id, class_id, player_id, started_on)
+         select cl.academy_id, cl.id, (select id from player limit 1),
+                (app.now() at time zone 'Asia/Kolkata')::date - 60
+           from class cl
+          where cl.name = 'Ten-class pack'
+            and not exists (select 1 from enrollment e where e.class_id = cl.id)`,
+      // The line that OPENED the pack, carrying the size it was sold at.
+      `insert into tally_line (academy_id, account_id, player_id, class_id, period, kind,
+                               description, amount, rate_amount, rate_unit, rate_count)
+         select cl.academy_id, (select account_id from player where account_id is not null limit 1),
+                (select id from player limit 1), cl.id,
+                date_trunc('month', app.now() at time zone 'Asia/Kolkata')::date, 'package',
+                'Ten-class pack', 8000, 8000, 'per_package', 10
+           from class cl
+          where cl.name = 'Ten-class pack'
+            and not exists (select 1 from tally_line t where t.class_id = cl.id and t.kind = 'package')`,
+      // The restructure, after the pack was sold. Four now, ten then.
+      `update class set rate_count = 4 where name = 'Ten-class pack'`,
+    ],
+  },
 ]
 
 /* ------------------------------------------------------------------------- *

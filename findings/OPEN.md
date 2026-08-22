@@ -1,6 +1,6 @@
 # What is open
 
-16 findings. This file is the source of truth for what is broken — hand-written, and short on
+18 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -33,8 +33,8 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-CA** | A staged plan is described in the past tense, so the owner is told a change was made while the buttons still ask whether to make it | [detail](#f-ca--a-staged-plan-is-described-in-the-past-tense-so-the-owner-is-told-a-change-was-made-while-the-buttons-still-ask-whether-to-make-it) |
 | **F-CC** | A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule | [detail](#f-cc--a-commercial-term-nobody-agreed-to--first-class-is-free--volunteered-in-a-parenthetical-and-stated-as-the-businesss-own-rule) |
 | **F-CI** | The product reports what it TRIED as what HAPPENED — 26 unbacked claims in 33 turns, while `turnState` is already telling it otherwise | [detail](#f-ci--the-product-reports-what-it-tried-as-what-happened-and-turnstate-is-already-telling-it-otherwise) |
-| **F-CJ** | A rate change is destructive, so it re-prices sessions that already ran — and the parent was told the opposite of the row | [detail](#f-cj--a-rate-change-is-destructive-so-it-re-prices-sessions-that-already-ran--and-the-parent-was-told-the-opposite-of-the-row) |
 | **F-CK** | Quiet hours drops the message it means to delay, because nothing ever comes back for it | [detail](#f-ck--quiet-hours-drops-the-message-it-means-to-delay-because-nothing-ever-comes-back-for-it) |
+| **F-CN** | `npm run ab` cannot drive either arm, because it refuses the config it just wrote | [detail](#f-cn--npm-run-ab-cannot-drive-either-arm-because-it-refuses-the-config-it-just-wrote) |
 
 ---
 
@@ -643,60 +643,6 @@ by deliberate design, and the deliberate design does not hold at this width.
 
 ---
 
-### F-CJ · A rate change is destructive, so it re-prices sessions that already ran — and the parent was told the opposite of the row
-
-`2026-08-21-17-19-stress-69q0`, the stress month. Sanjay raises Aarav's one-to-one from ₹900 to
-₹1,100 on 30 Aug, effective 1 Sep. The plan is two updates:
-
-```sql
-update class      set rate_amount = 1100 where id = '24526fa7-…'
-update enrollment set rate_amount = 1100 where id = '18b55e89-…'
-```
-
-**There is nowhere for the old rate to go.** `app.effective_rate()` is
-`coalesce(e.rate_amount, c.rate_amount)` and carries no date; `enrollment` holds `rate_amount`,
-`rate_count` and `rate_unit` and **no effective-from column**. A rate is one current number with
-no history, so ₹900 is not superseded — it is destroyed.
-
-The 25 Aug one-to-one had already run and its register is still unmarked. `mark_attendance`
-(`lib/agent/operations.ts`) reads `rate_amount` at the moment the register is marked, with no
-reference to `session.starts_at`. So marking that session today writes **₹1,100 for a class that
-ran at ₹900**, and the database already says so — `unmarked_billable_session` returns session
-`334251ff` (2026-08-25) at `unbilled_amount 1100.00`.
-
-**The product diagnosed this correctly and told two people opposite things about it, four minutes
-apart.** To Sanjay, four separate times, accurately: *"with the rate now ₹1,100 it would bill at
-that rather than the ₹900 it ran at"*, and *"₹1,100 has sat a week with no bill written"*. To
-Meera — the parent who pays — at 2026-08-30T04:38:01Z:
-
-> **"The class before that, 25 Aug, stays at the old ₹900."**
-
-Only one of those is backed by a row, and it is not the one the paying parent received.
-
-It also mis-states the total twice, on 2 and 4 Sep: *"Aarav's two one-to-ones are ₹2,000 sitting
-unbilled"*. The view says `1100.00 + 1100.00` = **₹2,200**. The model is quoting the rate the
-sessions ran at while the rows carry the rate they will bill at, which is the same defect
-arriving as arithmetic.
-
-**Why this is a money defect and not a prose one.** The model was right about the mechanism,
-said so repeatedly and unprompted, and **had nowhere to act**. `raisePartialPeriod` exists for the
-mid-period *enrolment* shape and does its job well — it fired three times in this same run with
-exact arithmetic. Nothing exists for the mid-period *rate-change* shape, which is the same class of
-problem: a charge computed at write time for a window that has since moved. The product cannot
-express "₹900 from 21 Aug, ₹1,100 from 1 Sep" in any table it has.
-
-**Blast radius.** Every unmarked register older than a rate change bills at the new rate. In this
-run that is ₹200 on one child. On a business with a term's worth of unmarked sessions and an
-annual price rise it is the whole difference between the two prices, charged to families who
-attended at the old one — and §6.4 bills off attendance, so the register is exactly where it lands.
-
-**Where it lives.** `app.effective_rate()` (no date), `enrollment` (no effective-from column),
-`mark_attendance` in `lib/agent/operations.ts` (reads the rate at mark time rather than at
-`session.starts_at`). The forward-dated half the model keeps promising — *"from 1 Sep"*,
-*"from October"* — has no home in the schema, which is why it is stated in prose every time.
-
----
-
 ### F-CK · Quiet hours drops the message it means to delay, because nothing ever comes back for it
 
 `send.ts`'s quiet-hours gate is explicit about what it is doing and why it is safe:
@@ -758,3 +704,55 @@ contact who is muted, capped, or asleep for a long weekend would generate an unb
 mechanism here needs an attempt count on the payload and a ceiling, and a message that exhausts it
 is an admin's problem rather than a silent drop — which is the same shape `DUNNING_MAX` and
 `RECONCILE_MAX` already use.
+
+---
+
+### F-CN · `npm run ab` cannot drive either arm, because it refuses the config it just wrote
+
+Found 22 Aug 2026 trying to A/B a mechanism change (`--variant ref=`). **Both arms fail
+identically, at second zero, before a single model call.** Arm B was an unmodified `main`
+checkout, so this is not a property of the branch under test — it is the instrument.
+
+`ab.ts` resolves one `DriveConfig`, writes it to `config.json` with `recordedConfig`
+(`scripts/_drive-config.ts:999-1009`), and hands both children `--config <that file>`. The
+children then re-parse it. Two fields cannot survive the round trip:
+
+```
+--variant ref=<path> --days 14                    config.json: seats must be at least 1, not 0
+--variant ref=<path> --days 14 --seats 4          config.json: personas is empty
+--variant ref=<path> --world ace-tennis --seats 4 config.json: personas is empty
+```
+
+- **`seats`.** Its default is `0`, documented as *"all of them"* (`_drive-config.ts:141-148`).
+  But a `seats` arriving from a config file is parsed `num(value, at, { int: true, min: 1 })`
+  (`:574`), so the parser refuses the very default the writer emits. `0` is expressible in the
+  type and not in the file.
+- **`personas`.** `recordedConfig` writes `personas: [...world.seats]` — but `ab.ts` never
+  builds a world, because building it is the child's job. So `world.seats` is empty, the file
+  gets `personas: []`, and `list()` refuses an empty list (`:515`). `sim.ts:696-699` says
+  empty means *"everybody this world has"*, which is exactly the meaning the file cannot carry.
+
+Both are the same shape: **a sentinel that means "unspecified" in memory becomes a literal
+value on disk, and the reader has no way to tell the two apart.** It is the config-file
+sibling of the `suppressed`-vs-`failed` distinction 0032 drew — "not set" and "set to zero"
+are different facts and this file has one slot for them.
+
+**What it costs.** `--dry-run` does not catch it: it stops before any child runs, so it
+reports two healthy arms and a prepared parent directory (verified — the dry run passes and
+prints both prefix hashes). The failure appears only when money would have been spent, and
+the run then exits **0**, with `A1  no record` in the summary rather than an error. A caller
+reading the exit code learns nothing.
+
+**Why nobody hit it.** The `doctrine=` path is the one that gets used, and `--preset smoke`
+freezes `seats: 2` (`:327`) — a preset that happens to name a seat count masks both bugs.
+`ref=` with no preset is the combination that has no working spelling at all.
+
+**Where it lives.** `recordedConfig` (`scripts/_drive-config.ts:999-1009`) writes a resolved
+config that its own parser will not accept; the `seats` rule at `:574` and the `list()` guard
+at `:515` are the two refusals. `ab.ts` is the only caller that round-trips a config through a
+file, which is why it is the only instrument that cannot run.
+
+**Not fixed here.** This PR is a money change and the instrument is a separate concern; fixing
+the round trip means deciding how "unspecified" is spelled on disk, which is a design
+question, not a patch. Verification for this branch was done with `check-rate-history.ts`, the
+four existing money checks and a direct `sim.ts` drive instead.

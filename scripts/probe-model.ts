@@ -2397,7 +2397,11 @@ const STRESS_CASES: Case[] = [
     name: 'st-price-raise',
     stage: 'money',
     persona: 'admin',
-    what: 'a forward-dated price change (F-AW): a staged step naming a job kind that does not exist',
+    what:
+      'a forward-dated price change (F-AW): a staged step naming a job kind that does not exist. '
+      + 'Also F-CJ, which fell out of this same turn unasked: the raise destroyed the old rate, so an '
+      + 'unmarked register from before it re-priced. set_rate and rate_period are what it should reach '
+      + 'for now, and the 25 Aug session must still read 900.',
     text: 'put the one-to-ones up to 1100 a session from the 1st of next month.',
     tap: true,
   },

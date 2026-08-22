@@ -235,6 +235,7 @@ const TABLES = [
   'payment', 'sender', 'message', 'action', 'job', 'audit_entry',
   'turn', 'pending_request', 'comm_preference', 'business_rule',
   'coach_ledger',
+  'rate_period',
 ]
 
 const TABLE_COLUMN = new RegExp(`\\b(?:${TABLES.join('|')})\\.[a-z_]+\\b`)
