@@ -959,6 +959,7 @@ export async function coachMonthLines(job: Job): Promise<void> {
        *   and the month must not be one that ended before they did. `endCoach` and the
        *   enqueuer make the same two checks, because a settlement that disagrees with the
        *   close is the same fiction arriving by a different door.
+       *   Closes F-EF.
        */
       // The first day of the month AFTER this one: onboarding on the 28th still
       // earns the whole month, which is the rule this arm already states.

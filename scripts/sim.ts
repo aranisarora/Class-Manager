@@ -1214,6 +1214,7 @@ async function main(): Promise<void> {
      *
      *   One number, one week, one wall clock, which is what the paragraph above already
      *   says. A tenant is only ever moved FORWARD, the same monotonicity 0027 relies on.
+     *   Closes F-EI.
      */
     const everyTenantOnTheNumber = await q<{ id: string }>(
       world.frontDeskId,

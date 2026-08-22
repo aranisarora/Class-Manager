@@ -955,6 +955,7 @@ async function census(id: Identity): Promise<string> {
              *
              *   Counts, not instructions, like everything else here — nothing tells the model
              *   what to do about a gap, only that there is one to look at.
+             *   Closes F-EG.
              */
             (() => {
               const owed = n(row, 'owed_to_coaches')
@@ -1583,6 +1584,7 @@ export async function variableTail(
    *   Stated where the composing happens, with the figure, and only when it bites. Nothing
    *   is refused and nothing is rewritten: the model is told what will reach them, and
    *   what to do about it — which is the difference between a constraint and a surprise.
+   *   Closes F-EH.
    */
   // Through the one predicate, never the arithmetic: `lib/seed.ts` inlined it
   // against a WINDOW_MS of its own, twice, and `window.ts` says so in its docstring.
