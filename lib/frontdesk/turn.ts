@@ -15,7 +15,8 @@
  *   2. Up to MAX_ROUNDS of generate → run tools → feed the results back.
  *   3. The desk speaks by calling `reply`, which is the only thing that can carry a
  *      button. A round that calls no tool is spent telling it so — once (`proseRefused`),
- *      after which prose is sent as written rather than becoming silence.
+ *      after which prose is sent as written rather than becoming silence. A second message
+ *      to the same person is refused (`spoke`) and every other verb stays reachable.
  *   4. A hand-over ends it immediately, whatever else the model had planned. The
  *      caller re-enters an ordinary turn inside the business and the person is
  *      answered from there.
@@ -221,6 +222,8 @@ export async function runFrontDeskTurn(o: {
    * One round of grace and never a second — see `deskSpeaksThroughReply`.
    */
   let proseRefused = false
+  /** Whether a message has already reached this person this turn — see the `reply` case. */
+  let spoke = false
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     run.rounds = round
@@ -366,6 +369,18 @@ export async function runFrontDeskTurn(o: {
           messages.push({ role: 'tool', tool_call_id: call.id, content: 'reply needs a body.' })
           continue
         }
+        if (spoke) {
+          messages.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            content:
+              'not sent — they have already had a message from you this turn, and a second one arrives as ' +
+              'the first being withdrawn. Everything else is still open to you: hand them over, or call ' +
+              'nothing and let them answer.',
+          })
+          run.trace.push({ round, name: 'reply', ms: 0, args: parsed.data, result: 'refused: already spoke this turn' })
+          continue
+        }
         const bad = proseChecked ? [] : violationsAtDesk(parsed.data.body, o.identity, businessNames)
         if (bad.length) {
           proseChecked = true
@@ -398,22 +413,29 @@ export async function runFrontDeskTurn(o: {
           args: parsed.data, result: outcome.status,
         })
         /**
-         * A message that actually landed ENDS the desk's turn.
+         * One message per person per turn — and the turn goes ON.
          *
-         * §10.0: "The desk asks exactly one question and holds no conversation of its
-         * own." The prose path enforced that by accident — it `break`s — and while prose
-         * was the only route out, nothing here ever ran twice. The moment `proseRefused`
-         * sent the desk through `reply` instead, the missing guard became visible in one
-         * drive: on `2026-08-22-12-47-sim-s4hg` three of nine desk turns sent the SAME
-         * question twice, and the second was caused by the refusal itself — the model
-         * replied, correctly wrote "I'll wait for their answer." on the next round, and
-         * was told that prose reaches nobody, so it obeyed and asked again.
+         * While prose was the only route out of this loop it `break`s, so nothing here
+         * ever ran twice and the missing guard was invisible. The moment `proseRefused`
+         * sent the desk through `reply` instead, it showed up in one drive: on
+         * `2026-08-22-12-47-sim-s4hg` three of nine desk turns sent the SAME question
+         * twice, and the second was caused by the refusal itself — the model replied,
+         * correctly wrote "I'll wait for their answer." on the next round, and was told
+         * that prose reaches nobody, so it obeyed and asked again.
          *
-         * The tenant loop has `repliedTo` for this and the desk had nothing. A break is
-         * the whole of it here, because a desk turn has no plan to leave half-done: one
-         * question, one message, one round of tools at most after it.
+         * The first fix returned from the whole turn on a landed reply. That killed the
+         * double-send and took a capability with it: the desk could no longer say "yes,
+         * that's the one — handing you over" and then hand over, so a turn could end with
+         * a message sent and the visitor still standing at the desk. Unobserved across
+         * four runs, and still the wrong shape — a defect in the SEND channel is not a
+         * reason to end the turn.
+         *
+         * So it is the tenant loop's guard instead, which is where this belongs and what
+         * `repliedTo` has always been: refuse the SECOND message to this person, leave
+         * every other verb reachable. `runFrontDeskTool` still returns from the turn on a
+         * hand-over, exactly as before, so "call the tool and stop" is unchanged.
          */
-        if (outcome.status !== 'suppressed' && outcome.status !== 'failed') return run
+        spoke = true
         continue
       }
 
