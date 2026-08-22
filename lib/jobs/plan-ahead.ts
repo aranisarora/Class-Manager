@@ -832,16 +832,10 @@ async function askForTheTimetable(
         + "(select (app.now() at time zone timezone)::date - created_on from academy) "
         + "as days_since_this_business_was_created",
       instruction:
-        'This business has no class on its books, so it has no timetable, no sessions, nothing to take a '
-        + 'register for and nothing to bill. Until one exists it cannot be switched on at all, and while it '
-        + 'is switched off nothing this product does reaches anybody. Ask the owner when their classes '
-        + 'actually run — the days, the times, and where. Take it however it arrives: one messy sentence '
-        + 'naming every batch at once is the normal and best case ("mon & wed 6:30 beginners at Green Park, '
-        + 'sat 8am juniors"), and it is worth saying they can send the lot in one message rather than one '
-        + 'class at a time. Read back what you understood before you write it. '
-        + 'Do NOT offer to switch the business on in this turn and do not put a go-live button on it: there '
-        + 'is nothing to switch on yet, and that offer comes on its own once a class exists. '
-        + 'If they have already said they are not ready, leave it.',
+        'This business has no class on its books. Until one exists the database refuses to switch it on, '
+        + 'so no reminder, brief, introduction or bill reaches anybody — and the owner cannot see that '
+        + 'absence, because from where they stand the classes are on the board. '
+        + 'Going live is not offerable yet and a button for it would fail in their hand.',
     },
     true,
   )
