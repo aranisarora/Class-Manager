@@ -1,6 +1,6 @@
 # What is open
 
-25 findings. This file is the source of truth for what is broken — hand-written, and short on
+24 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -39,7 +39,6 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-DI** | A read result keeps the model's own column alias, so a mislabel becomes durable and is built into a write five turns later | [detail](#f-di--a-read-result-keeps-the-models-own-column-alias-so-a-mislabel-becomes-durable-and-is-built-into-a-write-five-turns-later) |
 | **F-DV** | The seat COULD always press a button and was never told so, so every mechanism behind a tap was measured at a fifteenth of its rate | [detail](#f-dv--the-seat-could-always-press-a-button-and-was-never-told-so-so-every-mechanism-behind-a-tap-was-measured-at-a-fifteenth-of-its-rate) |
 | **F-DY** | A persona brief asserts a history the world never builds, so the model is argued out of a correct read of its own database | [detail](#f-dy--a-persona-brief-asserts-a-history-the-world-never-builds-so-the-model-is-argued-out-of-a-correct-read-of-its-own-database) |
-| **F-DW** | The seat sends one message per half-day and has never sent two in a day, so "the product is slow to set a business up" is partly measuring the harness | [detail](#f-dw--the-seat-sends-one-message-per-half-day-and-has-never-sent-two-in-a-day-so-the-product-is-slow-to-set-a-business-up-is-partly-measuring-the-harness) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-DS** | A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn | [detail](#f-ds--a-staged-plan-can-only-be-committed-by-tapping-it-an-owner-who-answers-go-ahead-in-words-is-re-staged-instead-because-the-plan-handle-does-not-survive-the-turn) |
 
@@ -939,29 +938,6 @@ committed.
 path should be trusted until a run with `tap` in it has been read** — including the F-CT story that
 shaped a whole session of work, in which a button expired 11.354 seconds before its owner reached
 it, on a harness where reaching for a button at all was rare.
-
-### F-DW · The seat sends one message per half-day and has never sent two in a day, so "the product is slow to set a business up" is partly measuring the harness
-
-**Saw:** every run in `.probe/runs/`. A window deals each persona at most one `say`, and a window is
-half a simulated day, so the fastest possible conversation is one exchange per twelve hours. Founding
-a business took three days in `2026-08-22-13-20-sim-67ai` and `2026-08-22-13-57-sim-b8nn`: one
-exchange to route, one to name it, one to found. That is three messages, and a real owner sends
-three messages in ninety seconds.
-
-**Why it matters beyond speed.** The whole class of defect where somebody corrects themselves
-mid-flow — *"mon and thu 6-7. no wait, thu is 7-8"* — has never been driven, because a correction
-always arrives twelve hours after the thing it corrects, by which time the product has already
-answered and possibly acted. `repliedTo`, the one-message-per-person guard, has never been
-exercised against a burst. §7.1's central claim — *"bring the timetable in one message, however
-messy"* — is measured only in the shape where there is nothing else in flight.
-
-**Where it lives:** `_persona-agent.ts`'s move (`say: string` → a small ordered list), and
-`_seat-worker.ts` posting them back to back through the existing inbound path without awaiting the
-product between them. `inFlight` in `sim.ts` already runs seats concurrently, so concurrent inbound
-from DIFFERENT people is already real; this is the same thing from one person. The trap: a burst
-must stay rare and short, or every run becomes a stress test of a shape that is itself uncommon —
-the seat rules should reach for it when a person would (annoyed, correcting, dictating), not by
-default.
 
 ### F-DY · A persona brief asserts a history the world never builds, so the model is argued out of a correct read of its own database
 

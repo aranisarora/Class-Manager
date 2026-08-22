@@ -457,6 +457,28 @@ async function move(ask: Ask): Promise<Told> {
    */
   const wire = bodyWithSharedContacts(m.say, shared) ?? ''
 
+  /**
+   * The second message, sent AFTER the first has been driven and never beside it.
+   *
+   * `_capture.ts` attributes a turn's evidence by contact plus a time window, so two
+   * concurrent turns on ONE contact would have their statements, messages and audit rows
+   * interleaved into whichever record flushed second — the two would be indistinguishable
+   * in exactly the file a reader goes to. Sequential costs a round trip and keeps the
+   * record readable, which is the trade every instrument in this repo makes.
+   *
+   * @mechanism secondBreath — a persona may send a second message before the product has
+   *   answered, which is what `INPUT_REALISM` has instructed since it was written — "HALF
+   *   MESSAGES sent by accident, then finished in the next one", "THE SAME THING TWICE,
+   *   because the first one looked like it did not send" — and what `SeatAction` made
+   *   structurally impossible: one move per window, one string in it, a measured maximum of
+   *   1 message per person per window across 101 sim seat turns with zero exceptions. So
+   *   `repliedTo` had never once faced a second inbound, and §7.1's "bring the timetable in
+   *   one message, however messy" was only ever measured with nothing else in flight.
+   *   Bounded at exactly one extra so a run cannot become a stress test of an uncommon shape.
+   *   Closes F-DW.
+   */
+  const secondBreath = typeof (m as { then?: string }).then === 'string' ? (m as { then?: string }).then : ''
+
   pending = await drive(
     s,
     KEY,
@@ -489,6 +511,31 @@ async function move(ask: Ask): Promise<Told> {
       })
     },
   )
+
+  // The second message, as its own turn in the same window — see `secondBreath`.
+  if (secondBreath) {
+    const after = await drive(
+      s,
+      KEY,
+      {
+        say: secondBreath,
+        kind: 'say',
+        window: ask.window,
+        intent: m.intent,
+        who: persona.name,
+        seat: persona.seat,
+        // The SAME reasoning object: one decision produced both messages, and giving the
+        // second a reasoning of its own would invent a deliberation nobody had.
+        personaReasoning: { action: m.action, reasoning: m.reasoning, breath: 2 },
+        phone,
+      },
+      async () => {
+        await inboundFromContact({ contactId, text: secondBreath })
+      },
+    )
+    pending = [...pending, ...after]
+    said.push(secondBreath)
+  }
   // Their own memory of what they sent — the card included, or they will hand the
   // same person over again tomorrow having no record of having done it.
   if (wire) said.push(wire)

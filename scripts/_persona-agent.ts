@@ -135,6 +135,22 @@ export type SeatMove = {
    */
   say: string
   /**
+   * A SECOND message, sent straight after the first and before the product answers.
+   *
+   * `INPUT_REALISM` has instructed every seat since it was written to produce "HALF
+   * MESSAGES sent by accident, then finished in the next one" — *send "can you check if
+   * anika" and then, separately, "was marked absent yesterday"* — and "THE SAME THING
+   * TWICE, because the first one looked like it did not send". Both were structurally
+   * impossible: one move per window, one string in it. Measured across 101 sim seat
+   * turns, the maximum messages from one person in one window was 1, with zero
+   * exceptions, and the shortest gap between two of anybody's messages was 12.26 hours.
+   *
+   * Bounded at exactly one extra, deliberately. It is enough for both instructed shapes
+   * and it cannot become a flood that turns every run into a stress test of an uncommon
+   * case. Absent on most moves.
+   */
+  then?: string
+  /**
    * People from their own phone, attached to this message as contact cards.
    *
    * NAMES, never numbers, and that is the whole safety property. A persona that
@@ -314,6 +330,12 @@ THE FOUR THINGS YOU CAN DO
            usually well under twenty words, sometimes a single word, occasionally
            one long dictated run-on. Never an essay.
 
+           Sometimes a second one follows it before they have answered, and that
+           is "then". Use it when you would really send two: you hit send early
+           and finished the thought — "can you check if anika" / "was marked
+           absent yesterday" — or you sent the same thing again because the first
+           looked like it had not gone. Most messages have no "then" at all.
+
            You can also attach somebody out of your own contacts to it, the way
            you tap the paperclip and pick a person. Put their names in "attach".
            Only people who are actually in your phone — the list is below — and
@@ -339,6 +361,7 @@ ANSWER WITH ONE JSON OBJECT AND NOTHING ELSE:
 {
   "action":    "say" or "tap" or "quiet" or "giveup",
   "say":       "the message exactly as you would type it — or, for a tap, the button's words exactly as printed",
+  "then":      "a second message sent straight after it, before they reply",   // leave it out unless you mean it
   "attach":    ["a name from your contacts"],   // leave it out unless you mean it
   "intent":    "what you are trying to get out of them, in your own words, one line",
   "reasoning": "how you read the last reply and why you have put it this way, a sentence or two"
@@ -548,9 +571,15 @@ function validateMove(v: unknown): SeatMove | null {
     ? [...new Set(o.attach.filter((n): n is string => typeof n === 'string').map((n) => n.trim()).filter(Boolean))]
     : []
 
+  // A second message only ever accompanies a first, so it cannot ride `quiet` or a `tap`
+  // — a press is one gesture and there is nothing to finish about it.
+  const thenRaw = typeof o.then === 'string' ? o.then.trim() : ''
+  const second = action === 'say' && say && thenRaw && thenRaw !== say ? thenRaw : ''
+
   return {
     action,
     say: action === 'quiet' ? '' : say,
+    ...(second ? { then: second } : {}),
     ...(attach.length && action !== 'quiet' ? { attach } : {}),
     intent,
     reasoning,
