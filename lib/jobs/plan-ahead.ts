@@ -611,6 +611,7 @@ async function proposeGoLive(
     await askForTheTimetable(tx, academy, nowAt, today, push)
     return
   }
+  await tellThemWhoAsked(tx, academy, nowAt, push)
 
   /**
    * How long this business has stood in setup, in whole days on its OWN calendar —
@@ -836,6 +837,102 @@ async function askForTheTimetable(
         + 'so no reminder, brief, introduction or bill reaches anybody — and the owner cannot see that '
         + 'absence, because from where they stand the classes are on the board. '
         + 'Going live is not offerable yet and a button for it would fail in their hand.',
+    },
+    true,
+  )
+}
+
+/**
+ * The people who asked on this number before there was anything here.
+ *
+ * `arrival` exists for exactly this and says so: *"A stranger who wrote once, was asked,
+ * and never answered is the row this product could not previously produce, and 'how many
+ * referrals became businesses' is the first question the vendor will ask."* The rows are
+ * written. Nothing has ever read them.
+ *
+ * Driven over thirty days on `2026-08-22-16-51-sim-b8xo`, and it is the whole reason the
+ * money never moved. Divya Rao asked on DAY 1 — *"anika's evening batch timings this
+ * week?"* — and was told, truthfully, *"there's no class or batch on this number going by
+ * anika, nothing is set up here yet at all"*. She left on day 2: *"wrong number then,
+ * sorry."* Farah Sheikh asked the same evening and left on day 5: *"no classes no price no
+ * thanks."* Rahul founded the business on day 3, went live, and ran 22 sessions to an
+ * EMPTY ROSTER — zero enrolments, zero players, zero accounts, zero tally lines. His two
+ * customers had walked past the door two days before it opened, and he was never told they
+ * existed.
+ *
+ * WHY THIS TELLS THE OWNER AND DOES NOT MESSAGE THEM
+ * -----------------------------------------------------------------------------
+ * §16.2 is explicit and it is not a preference: *"A promotional message to a prospect who
+ * did not convert is not on this list and will not be added — on a shared number, one
+ * marketing classification is charged to every tenant. When an admin wants to re-approach
+ * a cold prospect, the bot drafts it and the admin sends it from their own number."* So
+ * the product must not write to Divya, and the draft path it must use instead already
+ * exists (`send_invite`, `as_draft`). What was missing was never the channel. It was that
+ * the owner did not know there was anybody to re-approach.
+ *
+ * @mechanism tellThemWhoAsked — the arrivals that reached this NUMBER, asked for classes and
+ *   found nothing, told to the owner once their business exists, in the words those people
+ *   used. It never messages them: §16.2 forbids re-approaching a cold prospect from this
+ *   sender, and `send_invite`'s draft path is the road that stays open. Scoped to arrivals
+ *   that settled nowhere — `destination_academy_id is null` — so anybody the desk actually
+ *   handed to a business is somebody else's customer and not a lead. Bounded to a month
+ *   back and asked once, on the `dedupe_key`, because a list of people who were turned away
+ *   is news exactly once.
+ */
+async function tellThemWhoAsked(
+  tx: Tx,
+  academy: AcademyRow,
+  nowAt: Date,
+  push: Push,
+): Promise<void> {
+  const owner = (await admins(tx, academy.id)).find((a) => a.contact_id)
+  if (!owner?.contact_id) return
+
+  /**
+   * Read as the SERVICE role and against the SENDER, because that is what these rows are
+   * about: a front desk is a different academy, and this business's own session cannot see
+   * into it. The join through `sender` is what keeps it to this number rather than every
+   * front desk in the deployment.
+   */
+  const waiting = await tx<{ n: number }[]>`
+    select count(*)::int as n
+      from arrival ar
+      join academy fd on fd.id = ar.front_desk_id
+     where fd.sender_id = (select sender_id from academy where id = ${academy.id})
+       and ar.destination_academy_id is null
+       and ar.created_at > app.now() - interval '30 days'`
+  const n = waiting[0]?.n ?? 0
+  if (n === 0) return
+
+  push(
+    'agent_task',
+    deferPastQuietHours(nowAt, academy.timezone, academy.settings),
+    dedupe.agentTask(academy.id, 'who-asked'),
+    {
+      slug: 'who-asked',
+      subject: `${n} person(s) asked on this number and found nothing here`,
+      minted_by_contact_id: owner.contact_id,
+      minted_roles: ['admin'],
+      expires_at: new Date(nowAt.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+      /**
+       * Their own words, read at run time under the owner's turn. `first_text` is what
+       * they typed, which is the whole value of the row — "anika's evening batch timings
+       * this week?" tells an owner more than a count ever could.
+       */
+      context:
+        'select ar.profile_name, ar.first_text, ar.created_at::date as asked_on '
+        + 'from arrival ar join academy fd on fd.id = ar.front_desk_id '
+        + 'where fd.sender_id = (select sender_id from academy where id = app.academy_id()) '
+        + "and ar.destination_academy_id is null "
+        + "and ar.created_at > app.now() - interval '30 days' "
+        + 'order by ar.created_at limit 20',
+      instruction:
+        'People wrote to this number looking for classes before this business was set up on it, and were '
+        + 'told there was nothing here, because at the time there was not. They are not customers and this '
+        + 'business has never contacted them. The rows carry what each of them actually typed. '
+        + 'This product must not message them: on a shared number a re-approach to somebody who did not '
+        + 'convert is a marketing classification charged to every business on it. The owner can, from '
+        + 'their own phone, and send_invite with as_draft writes the message for them to forward.',
     },
     true,
   )
