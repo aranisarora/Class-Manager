@@ -903,11 +903,13 @@ export async function coachMonthLines(job: Job): Promise<void> {
     const [coach] = await tx<
       {
         id: string; full_name: string; pay_amount: string | null; pay_unit: string | null
-        status: string | null; onboarded_on: string | null
+        status: string | null; started_on: string | null; ever_employed: boolean
       }[]
     >`
       select c.id, pe.full_name, c.pay_amount::text as pay_amount, c.pay_unit,
-             c.status, (c.onboarded_at at time zone ${tz})::date::text as onboarded_on
+             c.status,
+             (coalesce(c.onboarded_at, c.created_at) at time zone ${tz})::date::text as started_on,
+             (c.onboarded_at is not null or c.status in ('active', 'ended')) as ever_employed
         from coach c join person pe on pe.id = c.person_id
        where c.id = ${coachId} and c.academy_id = ${academyId}
     `
@@ -961,15 +963,31 @@ export async function coachMonthLines(job: Job): Promise<void> {
        *   close is the same fiction arriving by a different door.
        *   Closes F-EF.
        */
-      // The first day of the month AFTER this one: onboarding on the 28th still
-      // earns the whole month, which is the rule this arm already states.
+      /**
+       * "Got past `invited`", not "has an `onboarded_at`" — and the difference is a
+       * REAL coach going unpaid, which is the worse half of this defect.
+       *
+       * `onboard_coach` sets `status` and `onboarded_at` together, and it is not the
+       * only path to `active`: reading the rows back on 23 Aug 2026 found active
+       * coaches in three academies with `onboarded_at` null. A gate that asked for the
+       * timestamp alone would have refused every one of their months. Somebody who
+       * never accepted is `added` or `invited` AND has no stamp; anybody who reached
+       * `active` or `ended` was employed however their row got there.
+       *
+       * The month boundary then uses the stamp where there is one and `created_at`
+       * where there is not, because a coach who has been active since the row existed
+       * has been employed since the row existed.
+       */
+      // The first day of the month AFTER this one: starting on the 28th still earns
+      // the whole month, which is the rule this arm already states.
       const afterThisMonth = DateTime.fromISO(period, { zone: tz }).plus({ months: 1 }).toFormat('yyyy-MM-dd')
-      const employedThatMonth = Boolean(coach.onboarded_on) && coach.onboarded_on! < afterThisMonth
-      if (!coach.onboarded_on) {
-        skip(`${firstName(coach.full_name)} has never onboarded (status ${String(coach.status)}) — no month was worked`)
+      const employedThatMonth =
+        coach.ever_employed && Boolean(coach.started_on) && coach.started_on! < afterThisMonth
+      if (!coach.ever_employed) {
+        skip(`${firstName(coach.full_name)} never got past "${String(coach.status)}" — no month was worked`)
       }
       if (!employedThatMonth) {
-        skip(`${firstName(coach.full_name)} onboarded on ${coach.onboarded_on}, after ${monthName} ended`)
+        skip(`${firstName(coach.full_name)} started on ${coach.started_on}, after ${monthName} ended`)
       }
       // One line, and it may already be here: a rate agreed in advance writes
       // September's row in August under this exact key. Finding it is the feature.

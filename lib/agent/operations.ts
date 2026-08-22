@@ -540,9 +540,10 @@ const endCoach: OperationDef = {
       pay_amount: string | null
       pay_unit: string | null
       onboarded_at: string | null
+      status: string | null
     }>(
       ctx,
-      `select c.id, c.person_id, pe.full_name, c.pay_amount, c.pay_unit, c.onboarded_at
+      `select c.id, c.person_id, pe.full_name, c.pay_amount, c.pay_unit, c.onboarded_at, c.status
          from coach c join person pe on pe.id = c.person_id
         where c.id = ${uid(args.coach_id)} and c.academy_id = ${uid(ctx.academyId)}`,
     )
@@ -680,7 +681,7 @@ const endCoach: OperationDef = {
         // final statement: somebody invited and never onboarded was owed a whole month here
         // and told so on their phone — Rs36,000 to a parent who never taught, on ceeg.
         // A settlement that disagrees with the close is the same fiction by another door.
-        openTotal = coach.onboarded_at ? num(coach.pay_amount) : 0
+        openTotal = coach.onboarded_at || coach.status === 'active' || coach.status === 'ended' ? num(coach.pay_amount) : 0
       } else {
         const [open] = await q<{ total: string }>(
           ctx,

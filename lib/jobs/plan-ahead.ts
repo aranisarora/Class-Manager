@@ -1177,9 +1177,11 @@ async function planMonthBoundary(
       ) as gs(period)
      where c.academy_id = ${academy.id}
        and c.pay_amount is not null
-       -- Somebody who was invited and never accepted has not worked a month. See
-       -- employedThatMonth for what a month's salary was written against without it.
-       and c.onboarded_at is not null
+       -- Somebody who was invited and never accepted has not worked a month. Reaching
+       -- 'active' counts however the row got there: onboard_coach stamps onboarded_at
+       -- and it is not the only path, and a gate on the stamp alone leaves REAL coaches
+       -- unpaid. See employedThatMonth (lib/jobs/handlers/money.ts).
+       and (c.onboarded_at is not null or c.status in ('active', 'ended'))
        -- A coach who has left still earned their last month. What excludes a
        -- period is having ended BEFORE it, not having ended at all.
        and (c.ended_on is null or c.ended_on >= gs.period::date)
