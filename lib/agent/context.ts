@@ -40,7 +40,7 @@ import { modelQuery, type SessionCtx } from '@/lib/db'
 import { repoRoot } from '@/lib/env'
 import { errorMessage } from '@/lib/errors'
 import { now, inZone } from '@/lib/clock'
-import { dayDiff, longDate } from '@/lib/format'
+import { dayDiff, longDate, formatINR } from '@/lib/format'
 import { catalogDigest } from '@/lib/messaging/catalog'
 import { isInWindowAt } from '@/lib/messaging/window'
 import { PARAM_MAX_CHARS } from '@/lib/messaging/templates'
@@ -847,7 +847,14 @@ async function census(id: Identity): Promise<string> {
           (select count(*) from message where direction = 'outbound'
              and coalesce(suppressed_reason, '') = ''
              and status in ('sent','delivered','read')
-             and contact_id <> '${id.contact.id}'::uuid) as sent_to_others`, 'prefetch: admin census')
+             and contact_id <> '${id.contact.id}'::uuid) as sent_to_others,
+          -- The two halves of solvency, read together, because separately each of them
+          -- is a true sentence about the wrong side. See bothSidesOfTheMoney below.
+          (select coalesce(sum(amount_for_session), 0) from coach_pay where worked)
+            + (select coalesce(sum(amount), 0) from coach_ledger)                as owed_to_coaches,
+          (select coalesce(sum(amount), 0) from tally_line)                      as charged_to_families,
+          (select coalesce(sum(amount), 0) from payment where confirmed_at is not null)
+                                                                                 as collected`, 'prefetch: admin census')
       return fromRead(
         rec,
         {
@@ -924,6 +931,45 @@ async function census(id: Identity): Promise<string> {
             id.academy.upi_handle
               ? `UPI handle set`
               : `no UPI handle on file, so a payment request goes out with nothing to pay to`,
+            /**
+             * @mechanism bothSidesOfTheMoney — what this business owes its coaches, stated on
+             *   the same line as what it has charged and what it has actually collected,
+             *   because each of those alone is a true sentence about one side of a business
+             *   that only makes sense as two.
+             *
+             *   The cost side accrues off the CALENDAR and needs no human act: a session ends
+             *   uncancelled and `coach_pay` calls it worked. The revenue side needs five —
+             *   an enrolment, a register, a tally line, a UPI handle and a delivered request —
+             *   and stops at the first one missing. So the gap opens by itself, silently, and
+             *   the only surface that reported money was `unmarked_billable_session`, which
+             *   answers about families alone.
+             *
+             *   `2026-08-22-16-51-sim-b8xo` #135, on an owner's phone: *"Money: nobody's
+             *   unpaid — there's no one on the books yet, and nothing's sitting unbilled."*
+             *   True, and about the family side only; Rs1,000 of coach pay stood accrued
+             *   against Rs0 of revenue as it was written. By #219 it was Rs7,800 owed and Rs0
+             *   taken. The model DID reach that number on day 29 — by writing its own
+             *   `coach_pay` query, unprompted, ten days after the owner had gone. It was not a
+             *   false sentence anywhere; it was an absent question, and an absent question has
+             *   no turn to be fixed in.
+             *
+             *   Counts, not instructions, like everything else here — nothing tells the model
+             *   what to do about a gap, only that there is one to look at.
+             */
+            (() => {
+              const owed = n(row, 'owed_to_coaches')
+              const charged = n(row, 'charged_to_families')
+              const paid = n(row, 'collected')
+              if (owed === 0 && charged === 0 && paid === 0) return ''
+              return (
+                `money: ${formatINR(owed)} owed to coaches for work already done, ` +
+                `${formatINR(charged)} charged to families, ${formatINR(paid)} actually collected` +
+                (owed > charged
+                  ? ` — this business is paying out more than it has billed` +
+                    (n(row, 'enrolled') === 0 ? ', and nobody is enrolled to bill' : '')
+                  : '')
+              )
+            })(),
           ]
           return bits.filter(Boolean).map((b) => `- ${b}`)
         },

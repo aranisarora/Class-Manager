@@ -901,9 +901,13 @@ export async function coachMonthLines(job: Job): Promise<void> {
 
     // §13 rule 2 — every handler re-checks its own precondition at run time.
     const [coach] = await tx<
-      { id: string; full_name: string; pay_amount: string | null; pay_unit: string | null }[]
+      {
+        id: string; full_name: string; pay_amount: string | null; pay_unit: string | null
+        status: string | null; onboarded_on: string | null
+      }[]
     >`
-      select c.id, pe.full_name, c.pay_amount::text as pay_amount, c.pay_unit
+      select c.id, pe.full_name, c.pay_amount::text as pay_amount, c.pay_unit,
+             c.status, (c.onboarded_at at time zone ${tz})::date::text as onboarded_on
         from coach c join person pe on pe.id = c.person_id
        where c.id = ${coachId} and c.academy_id = ${academyId}
     `
@@ -931,6 +935,41 @@ export async function coachMonthLines(job: Job): Promise<void> {
     const monthName = monthLabel(period, tz)
 
     if (unit === 'per_month') {
+      /**
+       * @mechanism employedThatMonth — a salary is owed for a month the coach was actually
+       *   employed in, and `onboarded_at` is the evidence the row already carries.
+       *
+       *   The per-session and per-hour arms below read `coach_pay`, whose `worked` requires
+       *   the session to be OVER and uncancelled, and they `skip` when it returns nothing.
+       *   This arm required nothing at all: one insert of the rate for every month the
+       *   enqueuer generated, with no session, no assignment, no status. The asymmetry was
+       *   never argued — it is what "a salaried coach is owed a quiet month too" turns into
+       *   when nobody separates *worked nothing* from *was never here*.
+       *
+       *   What it wrote, on `2026-08-22-15-21-sim-ceeg`: Priya, a PARENT who was mis-invited
+       *   as a coach and whose `status` never got past `invited`, holds a real
+       *   `coach_ledger` row of Rs18,000 for a month she was never employed in, and was sent
+       *   *"final statement to 10 Sep. Rs36,000 in all"*. A number that size, on an owner's
+       *   phone, about somebody who never taught, is not a reporting defect — the ledger
+       *   row is the artifact the whole close exists to freeze, and it froze a fiction.
+       *
+       *   Two facts, both on `coach`, neither about sessions — so a genuinely salaried coach
+       *   with an empty month is still paid in full, which is the entire point of per_month:
+       *   they must have ACCEPTED (`onboarded_at`, the moment `status` moves past `invited`),
+       *   and the month must not be one that ended before they did. `endCoach` and the
+       *   enqueuer make the same two checks, because a settlement that disagrees with the
+       *   close is the same fiction arriving by a different door.
+       */
+      // The first day of the month AFTER this one: onboarding on the 28th still
+      // earns the whole month, which is the rule this arm already states.
+      const afterThisMonth = DateTime.fromISO(period, { zone: tz }).plus({ months: 1 }).toFormat('yyyy-MM-dd')
+      const employedThatMonth = Boolean(coach.onboarded_on) && coach.onboarded_on! < afterThisMonth
+      if (!coach.onboarded_on) {
+        skip(`${firstName(coach.full_name)} has never onboarded (status ${String(coach.status)}) — no month was worked`)
+      }
+      if (!employedThatMonth) {
+        skip(`${firstName(coach.full_name)} onboarded on ${coach.onboarded_on}, after ${monthName} ended`)
+      }
       // One line, and it may already be here: a rate agreed in advance writes
       // September's row in August under this exact key. Finding it is the feature.
       const written = await tx<{ id: string }[]>`

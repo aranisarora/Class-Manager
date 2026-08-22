@@ -1163,7 +1163,12 @@ async function planMonthBoundary(
       from coach c
       cross join lateral generate_series(
         greatest(
-          date_trunc('month', c.created_at at time zone ${tz}),
+          -- From the month they ACCEPTED, not the month the row was typed. A coach
+          -- added in August who onboards in October was never employed in August,
+          -- and employedThatMonth (lib/jobs/handlers/money.ts) refuses that row at
+          -- the close — this is the same rule one stage earlier, so the job is never
+          -- enqueued rather than enqueued and skipped.
+          date_trunc('month', coalesce(c.onboarded_at, c.created_at) at time zone ${tz}),
           date_trunc('month', (app.now() at time zone ${tz}))
             - make_interval(months => ${BILLING_CATCHUP_MONTHS}::int)
         ),
@@ -1172,6 +1177,9 @@ async function planMonthBoundary(
       ) as gs(period)
      where c.academy_id = ${academy.id}
        and c.pay_amount is not null
+       -- Somebody who was invited and never accepted has not worked a month. See
+       -- employedThatMonth for what a month's salary was written against without it.
+       and c.onboarded_at is not null
        -- A coach who has left still earned their last month. What excludes a
        -- period is having ended BEFORE it, not having ended at all.
        and (c.ended_on is null or c.ended_on >= gs.period::date)

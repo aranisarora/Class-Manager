@@ -539,9 +539,10 @@ const endCoach: OperationDef = {
       full_name: string
       pay_amount: string | null
       pay_unit: string | null
+      onboarded_at: string | null
     }>(
       ctx,
-      `select c.id, c.person_id, pe.full_name, c.pay_amount, c.pay_unit
+      `select c.id, c.person_id, pe.full_name, c.pay_amount, c.pay_unit, c.onboarded_at
          from coach c join person pe on pe.id = c.person_id
         where c.id = ${uid(args.coach_id)} and c.academy_id = ${uid(ctx.academyId)}`,
     )
@@ -674,7 +675,12 @@ const endCoach: OperationDef = {
     let openTotal = 0
     if (coach.pay_amount !== null) {
       if (coach.pay_unit === 'per_month') {
-        openTotal = num(coach.pay_amount)
+        // The same test `employedThatMonth` makes at the close (lib/jobs/handlers/money.ts),
+        // because this figure is computed pre-model from a stored payload and goes out as a
+        // final statement: somebody invited and never onboarded was owed a whole month here
+        // and told so on their phone — Rs36,000 to a parent who never taught, on ceeg.
+        // A settlement that disagrees with the close is the same fiction by another door.
+        openTotal = coach.onboarded_at ? num(coach.pay_amount) : 0
       } else {
         const [open] = await q<{ total: string }>(
           ctx,
