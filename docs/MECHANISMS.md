@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-215 mechanisms · 33 findings closed by one · 26 findings still open
+216 mechanisms · 33 findings closed by one · 26 findings still open
 
 ## The scan
 
@@ -85,6 +85,7 @@ One line each. Find a candidate here, then read its entry below.
 `censusProvenance` — a census row that names a person says, on the same line, which account it hangs off and whether that accoun…  
 `familyScope` — narrows every statement in the family census to the accounts and players this person actually holds, the wa…  
 `standing` — puts the states layer 0 already stores in front of the model instead of leaving them to be reconstructed:  
+`windowRightHere` — the 24-hour window is a property of the person this turn is addressing, the runtime holds it on the contact…  
 `ModelCall.parseError` — a tool call whose `arguments` did not parse is carried rather than dropped:  
 `finishReason` — why generation stopped, carried out of this module onto the turn row, so that a turn cut short, a turn bloc…  
 `thinkingFor` — resolves the thinking level for every model call and always sends it, because this API enables thinking at…  
@@ -350,20 +351,22 @@ One line each. Find a candidate here, then read its entry below.
 
 - **`coachClashes`** — `lib/agent/clash.ts:4`  
   asks the database, inside the plan's own transaction and after the steps have run, which coach this plan just put in two places at once — both arms, the weekly slot and the dated session, scoped to the rows this plan is responsible for so somebody else's old overlap never surfaces inside this receipt. It notes and never refuses: the sentence becomes a plan note, so `needsPreview` gates on what a plan COLLIDES with rather than on how much it writes, and the person's tap stays the override. Five routes put a coach somewhere, so the same check written into `create_class` would have covered one of them.
-- **`stablePrefix`** — `lib/agent/context.ts:357`  
+- **`stablePrefix`** — `lib/agent/context.ts:359`  
   the whole cached half of the prompt, assembled once and memoised: preamble, schema, operations framing, catalog digest, platform limits, business facts, doctrine, then `CACHE_BOUNDARY`. It is byte-identical for every turn, every person and every business served, and that identity is the entire cost mechanism — a hit costs 3.2% of a miss and there is no handle to hold, so one date, one id or one per-academy fact above the boundary makes every turn in the product pay full price. Ordering inside it is free, which is why doctrine sits last, against the boundary, rather than 35k characters upstream of the decision.
-- **`Read`** — `lib/agent/context.ts:521`  
+- **`Read`** — `lib/agent/context.ts:523`  
   the type that keeps a prefetch that FAILED (`value` null, `why` set) apart from one that ran and found nothing (`value` `[]`, `why` null), and carries `modelQuery`'s own error text along with the gap. The two were one value here, and they are opposite sentences downstream: a refused or timed-out lookup rendered as a confident negative is what told a parent nothing was scheduled and told a coach his own pay was not visible to the product, while the same figure was read out to the owner in another thread.
-- **`fromRead`** — `lib/agent/context.ts:593`  
+- **`fromRead`** — `lib/agent/context.ts:595`  
   renders a `Read`'s value, or, where the read failed, an `unread` line that states the gap and hands over `because(why)`. The failure text is a REQUIRED argument, so a call site cannot exist without one and `render` is never handed a failure to think about. That is what retires the silent hole: five of the nine ways a prefetch could fail used to drop their block entirely, and string concatenation is silent by construction — you append one line fewer and the result is a perfectly well-formed paragraph asserting the opposite of what was read.
-- **`census`** — `lib/agent/context.ts:640`  
+- **`census`** — `lib/agent/context.ts:642`  
   what exists, read before the turn's first round and always under this person's own RLS, so a coach's census is their classes and a parent's is their children without anything having to remember to filter it. Counts and rows, never instructions: it retires the round spent discovering whether anything is set up at all, and the bot that narrated its own state machine because that was the only fact about the business it held. Every label in it is prompt and is held to one rule — read the label and its value with no access to the SQL above it, and the sentence they license must be true.
-- **`censusProvenance`** — `lib/agent/context.ts:746`  
+- **`censusProvenance`** — `lib/agent/context.ts:748`  
   a census row that names a person says, on the same line, which account it hangs off and whether that account is one this person holds. It retires the class of defect where the runtime's own heading is the only thing vouching for a row: a heading says "theirs", the model reads it as certified, and a row that is somebody else's is repeated back as fact — including, once, a fee.
-- **`familyScope`** — `lib/agent/context.ts:1082`  
+- **`familyScope`** — `lib/agent/context.ts:1084`  
   narrows every statement in the family census to the accounts and players this person actually holds, the way the coach branch above narrows every one of its statements to `sc.coach_id`. It retires the class of defect where a census label says "their children" over rows nothing filtered — a heading that is true for a coach and false for a parent because one branch was written with the ids in hand and never used them.
-- **`standing`** — `lib/agent/context.ts:1235`  
+- **`standing`** — `lib/agent/context.ts:1237`  
   puts the states layer 0 already stores in front of the model instead of leaving them to be reconstructed: questions asked and not answered, mutes and opt-outs, and the watches this business has already promised — the `job` table is closed to the model in both directions, so its own standing promises can reach it no other way. Reconstruction is where the false unsubscribe confirmation came from, and each line says what it LICENSES, because an unanswered stop request described as a completed one is the worst sentence this product has ever sent. **Closes F-AF.**
+- **`windowRightHere`** — `lib/agent/context.ts:1522`  
+  the 24-hour window is a property of the person this turn is addressing, the runtime holds it on the contact row it already loaded, and the prefix's answer was *"whether a given person's window is open is something you can look up — person_directory.window_open … it is worth knowing before you build"*. That paragraph is otherwise complete and correct, and it is a pointer: measured across `b8xo` and `ceeg`, 220 context tails, the window was stated on 18 of them and the model had to spend a round to find out on the rest.
 - **`ModelCall.parseError`** — `lib/agent/deepseek.ts:59`  
   a tool call whose `arguments` did not parse is carried rather than dropped: the id, the name, the raw string and the parse error all survive, so the loop can answer that exact call id with what went wrong. This is the whole of what used to arrive as `MALFORMED_FUNCTION_CALL` with nothing attached — a call no history could answer, because a tool result matches by id and there was no id to match.
 - **`finishReason`** — `lib/agent/deepseek.ts:95`  
@@ -684,7 +687,7 @@ One line each. Find a candidate here, then read its entry below.
   eight frozen bodies, one per CATEGORY of unsolicited contact rather than one per feature, so ~35 catalog rows ride on eight approvals and a new in-window interaction costs none. Their shape is load-bearing, not style: a label frame (`For:`, `Change:`) because no frozen word may conjugate with a parameter it cannot see, ~16 fixed words around 4 parameters because Meta rejects a higher ratio outright, and a lead-in naming only the SENDER so two notifications to one parent never open identically. **Closes F-G, F-AZ.**
 - **`sanitizeParam`** — `lib/messaging/templates.ts:330`  
   the one place a composed body becomes a template parameter, so the wire's whitespace rules are obeyed without a caller knowing them. A line break becomes a ` · ` separator rather than a space, because flattening a list with spaces runs its items into one sentence; only bullet characters are absorbed after the break, since a hyphen there is as often a minus sign or a wrapped range.
-- **`renderTemplate`** — `lib/messaging/templates.ts:363`  
+- **`renderTemplate`** — `lib/messaging/templates.ts:373`  
   a missing or blank parameter throws by name here and in `templateWireParams`, so an out-of-window send fails loudly at compose time instead of putting a literal "{detail}" on a parent's phone. Both the emulator's rendering and the wire's arguments come out of the same definition through the same check, which is what makes §17's "works here, works there" true of templates.
 - **`cacheSenderCredentials`** — `lib/messaging/transport-cloud.ts:4`  
   credentials are held per SENDER number, parsed from the `sender.credentials` jsonb that `send.ts` reads under its own role and hands in (§16.3 — `academy.sender_id → sender`, never a constant and never an env var), so one academy's traffic cannot leave over another's number. It is also why this module keeps no database connection: a transport that queries is not a transport.

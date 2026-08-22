@@ -42,6 +42,8 @@ import { errorMessage } from '@/lib/errors'
 import { now, inZone } from '@/lib/clock'
 import { dayDiff, longDate } from '@/lib/format'
 import { catalogDigest } from '@/lib/messaging/catalog'
+import { isInWindowAt } from '@/lib/messaging/window'
+import { PARAM_MAX_CHARS } from '@/lib/messaging/templates'
 import { SCHEMA_DOC } from '@/lib/agent/schema-doc'
 // The one place an id becomes SQL text. Used by `familyScope` below so the census's own
 // predicates are built the way an operation's are, and so an id that is not a uuid throws
@@ -1513,6 +1515,42 @@ export async function variableTail(
         `should treat it as the answer to a question you therefore do not need to ask again.`,
     )
   }
+  /**
+   * Whether what you are about to write survives the wire, stated rather than
+   * looked up.
+   *
+   * @mechanism windowRightHere — the 24-hour window is a property of the person this turn
+   *   is addressing, the runtime holds it on the contact row it already loaded, and the
+   *   prefix's answer was *"whether a given person's window is open is something you can
+   *   look up — person_directory.window_open … it is worth knowing before you build"*.
+   *   That paragraph is otherwise complete and correct, and it is a pointer: measured
+   *   across `b8xo` and `ceeg`, 220 context tails, the window was stated on 18 of them and
+   *   the model had to spend a round to find out on the rest.
+   *
+   *   What it costs is not a wasted round. 49 of `b8xo`'s 138 sends left as templates, and
+   *   THIRTEEN of those 49 went out visibly cut mid-content — `sanitizeParam` flattens the
+   *   body to one line and trims it to 700 characters from the END, and a brief is written
+   *   lead, then detail, then the ask, so the ask is the part that goes. The prefix
+   *   explains the demotion in full and has never named the number, so a model composing
+   *   for a shut window had no budget to compose to.
+   *
+   *   Stated where the composing happens, with the figure, and only when it bites. Nothing
+   *   is refused and nothing is rewritten: the model is told what will reach them, and
+   *   what to do about it — which is the difference between a constraint and a surprise.
+   */
+  // Through the one predicate, never the arithmetic: `lib/seed.ts` inlined it
+  // against a WINDOW_MS of its own, twice, and `window.ts` says so in its docstring.
+  const lastInbound = id.contact.last_inbound_at
+  const windowRightHere = isInWindowAt({ last_inbound_at: lastInbound ?? null }, at)
+  who.push(
+    windowRightHere
+      ? `Their 24-hour window is OPEN, so anything you send them now goes as you wrote it — formatting, buttons, a list — and costs nothing.`
+      : `Their 24-hour window is SHUT${lastInbound ? '' : ' (they have never written to this number)'}. ` +
+        `Anything you send them now leaves as one of the eight frozen templates: your words become a single ` +
+        `parameter inside it, flattened to one line with " · " for your line breaks, and CUT TO ${PARAM_MAX_CHARS} CHARACTERS ` +
+        `FROM THE END. Put the ask first — what gets lost is whatever you left until last. Their reply, or one ` +
+        `tap, reopens the window and the next message goes out whole.`,
+  )
   if (id.roles.length > 1) {
     who.push(
       `Roles compose: this is one person wearing several hats, in one thread. Serve all of them. Never ask them to confirm something to themselves.`,

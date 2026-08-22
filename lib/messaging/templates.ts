@@ -333,7 +333,17 @@ export function templateParams(name: TemplateName): string[] {
  *   runs its items into one sentence; only bullet characters are absorbed after the break,
  *   since a hyphen there is as often a minus sign or a wrapped range.
  */
-export function sanitizeParam(value: string, max = 700): string {
+/**
+ * How much of a composed body survives becoming a template parameter.
+ *
+ * Exported so the sentence that TELLS the model about it (`windowRightHere`,
+ * lib/agent/context.ts) is bound to the same number that enforces it. A budget
+ * stated in a prompt and defined in a function is two numbers, and the prompt's
+ * one is the one nobody updates.
+ */
+export const PARAM_MAX_CHARS = 700
+
+export function sanitizeParam(value: string, max = PARAM_MAX_CHARS): string {
   // The wire forbids newlines in a parameter, so a multi-line body has to
   // flatten — but a space erases the structure a list carried ("unpaid: •
   // Rajesh (₹6000) • Latha (₹2500)" ran together, F-G). A line break becomes a
