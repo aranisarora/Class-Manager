@@ -119,8 +119,16 @@ export type ToolCtx = {
    * Set at the trailing send and nowhere else, because it is a fact about which
    * path spoke rather than about what was said. `saidToUser` records the words;
    * this records that the runtime, not a `reply` call, put them there.
+   *
+   * It CARRIES the opening of what went out, because the boolean was not enough to
+   * be believed. On `2026-08-22-16-51-sim-b8xo` turn 173 the reflection round spent
+   * 16.3 seconds arguing with this line — *"the flow says I already sent a reply via
+   * plain text at the end of a round … but that doesn't make sense, I haven't
+   * composed a reply yet in this turn"* — because a true statement about a message
+   * it cannot identify is indistinguishable from a wrong one. The words are the
+   * difference between telling somebody what they did and letting them recognise it.
    */
-  spokeAsTrailingProse?: boolean
+  spokeAsTrailingProse?: string
   /**
    * Whether this turn has done anything at all beyond reading: an operation that ran,
    * a plan committed, a plan previewed and waiting on a tap, a watch scheduled.
@@ -409,8 +417,8 @@ export function turnState(ctx: ToolCtx): string {
   // whole point of it is that the model does not know this happened at all.
   if (ctx.spokeAsTrailingProse) {
     bits.push(
-      'answered them with the plain text you wrote at the end of a round — the runtime sent that as your reply, ' +
-        'so it is on their phone though you never called reply',
+      `answered them with the plain text you wrote at the end of a round — the runtime sent that as your reply, ` +
+        `so it is on their phone though you never called reply. It began “${ctx.spokeAsTrailingProse}”`,
     )
   }
   if (waiting) bits.push(`${plural(waiting, 'plan', 'plans')} waiting on a tap (nothing of it has run)`)

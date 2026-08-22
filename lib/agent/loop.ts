@@ -2358,7 +2358,11 @@ async function modelTurn(
       // YOU wrote went out as your reply", and about the runtime's own copy it is
       // simply untrue. `messagesThisTurn` still reports the send, which is the part
       // reflection needs.
-      if (!runtimeAuthored) toolCtx.spokeAsTrailingProse = true
+      // The opening rather than the whole body: enough to be recognised, short
+      // enough that the turn-state line stays one sentence.
+      if (!runtimeAuthored)
+        toolCtx.spokeAsTrailingProse =
+          outgoing.slice(0, 90).replace(/\s+/g, ' ').trim() + (outgoing.length > 90 ? '…' : '')
     }
 
     /**
