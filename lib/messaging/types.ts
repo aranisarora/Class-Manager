@@ -255,6 +255,18 @@ export type SendOutcome =
        * rather than from its own draft; absent means nothing changed.
        */
       altered?: string[]
+      /**
+       * How many tappable things ACTUALLY left, counted off the wire message
+       * after every gate has had it — not off the caller's draft.
+       *
+       * The draft and the wire disagree on exactly the sends where it matters:
+       * a body over the interactive cap loses every button, and out of window
+       * `committingButton` deletes a button that would commit because a
+       * template's quick-reply title is frozen at approval and cannot be made to
+       * match the action behind it. Both are correct. Both leave a caller that
+       * counted its own array believing there is something to tap.
+       */
+      tappable: number
     }
   | { status: 'suppressed'; reason: SuppressReason; messageId: string | null }
   | { status: 'failed'; reason: string; messageId: string | null }

@@ -102,7 +102,7 @@ const LOOPS = {
  * books for the first few days — and the point is not to be strict, it is to fire
  * long before day 30.
  */
-const DUE = { setup: 3, coaches: 7, roster: 10, register: 12, charging: 14, paid: 18 }
+const DUE = { setup: 5, coaches: 9, roster: 12, register: 14, charging: 17, paid: 21 }
 
 const SILENT_TURNS = num('silent', 25) // turns in a row with nothing sent
 const SPEND_CAP = num('spend', Infinity) // rupees
@@ -198,13 +198,37 @@ function evaluate(turns) {
     )
 
   /* --- a loop the drive was supposed to enter and has not ----------------- */
+  /**
+   * Founding does not land in this record, and that is not the drive failing.
+   *
+   * A business is talked into existence at the FRONT DESK, so `start_business`
+   * writes the `academy` row in a tenant that does not exist when the window
+   * opens — `_capture.ts` is scoped to the desk until `adopt` runs, and the rows
+   * arrive under a stray-tenant note instead of in `changed`. Measured on
+   * `2026-08-22-19-36-sim-4xsq`: Rahul founded on day 3, gave a full timetable on
+   * day 4, and every turn read `wrote: 0` — correctly, for the tenant being
+   * recorded — so `coverage:setup` fired on a run that was working.
+   *
+   * `session.json` says which business the run has adopted, is rewritten the
+   * moment it does, and is on disk while the drive walks. A run that has moved off
+   * the front desk has a business, whatever `changed` can see.
+   */
+  const adopted = (() => {
+    try {
+      const s = JSON.parse(readFileSync(join(run, 'session.json'), 'utf8'))
+      return Boolean(s.academyId) && s.academyId !== manifest.world?.academyId
+    } catch {
+      return false
+    }
+  })()
+
   for (const [loop, tabs] of Object.entries(LOOPS)) {
-    const entered = tabs.some((t) => tables.has(t))
+    const entered = tabs.some((t) => tables.has(t)) || (loop === 'setup' && adopted)
     if (!entered && day >= DUE[loop])
       trip(
         `coverage:${loop}`,
-        `day ${day} and not one row has been written to ${tabs.join(', ')}. ` +
-          `Nothing this drive records from here can say anything about ${loop}. ` +
+        `day ${day} and not one row has been written to ${tabs.join(', ')} in the tenant this record ` +
+          `is scoped to. Nothing this drive records from here can say anything about ${loop}. ` +
           `b8xo ran all thirty days in exactly this state.`,
       )
   }

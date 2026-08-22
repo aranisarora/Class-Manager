@@ -1321,6 +1321,21 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
  * useless because nobody translated it.
  */
 /**
+ * What actually left, for the one field that claims to say so. Falls back to the
+ * draft only for an outcome that carries no count — a suppression or a failure,
+ * where nothing landed and the number is moot either way.
+ */
+function tappableThatLanded(
+  outcome: SendOutcome,
+  buttons: unknown[] | undefined,
+  list: unknown,
+): number {
+  return 'tappable' in outcome && typeof outcome.tappable === 'number'
+    ? outcome.tappable
+    : (buttons?.length ?? 0) + (list ? 1 : 0)
+}
+
+/**
  * Every relation a statement names, so the repair can be about the thing the model
  * was actually reading. Matches `from x`, `join x`, `update x`, `insert into x`, an
  * optional schema and optional quotes, and stops before an alias.
@@ -2701,8 +2716,32 @@ export async function runTool(
            * what went out; whether that was right is the model's call and the
            * reader's, and a `hint` here would be the runtime editing a message
            * it has already sent.
+           *
+           * @mechanism tappableThatLanded — the count comes off the WIRE message, through
+           *   `SendOutcome.tappable`, rather than off the draft this function was handed.
+           *
+           *   The paragraph above states the property exactly — *"a true statement about
+           *   what went out"*, existing because *"the model's only picture of its own
+           *   message is its draft, and a later round reasoning about 'the message in front
+           *   of them' was reasoning about affordances it could not check"* — and then
+           *   counted the draft. It was right on every send where nothing was taken away,
+           *   which is most of them, and wrong on precisely the sends where the model most
+           *   needs it: a body over the interactive cap loses every button, and out of
+           *   window `committingButton` deletes a button that would commit, because a
+           *   template's quick-reply title is frozen at approval and cannot be made to match
+           *   the action behind it. Both of those are correct and neither is reported here.
+           *
+           *   Measured across the four drives of 22 Aug 2026: seven turns where more was
+           *   claimed than reached a phone, two of them with `buttons: []` on the wire
+           *   against `tappable: 2`. On `b8xo` #94 the model then reasoned, in as many
+           *   words, *"the button survived (tappable: 2)"*, and the go-live offer it was
+           *   describing had gone out as a template with nothing to press.
+           *
+           *   `altered` is not enough on its own: it names the template substitution and the
+           *   model has to infer the consequence from it. A number it can compare needs no
+           *   inference.
            */
-          tappable: (buttons?.length ?? 0) + (list ? 1 : 0),
+          tappable: tappableThatLanded(outcome, buttons, list),
           ...('reason' in outcome ? { reason: outcome.reason } : {}),
           ...(altered.length
             ? {

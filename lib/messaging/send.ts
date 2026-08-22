@@ -1251,6 +1251,9 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     costPaise,
     toContactId: msg.toContactId,
     ...(altered.length ? { altered } : {}),
+    // Off `wire`, which is what the transport was handed — so a button the
+    // interactive cap or `committingButton` took out is not counted here.
+    tappable: (wire.buttons?.length ?? 0) + (wire.list ? 1 : 0),
   }
 }
 
