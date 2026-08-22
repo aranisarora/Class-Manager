@@ -1,6 +1,6 @@
 # What is open
 
-26 findings. This file is the source of truth for what is broken — hand-written, and short on
+25 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -40,7 +40,6 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-DV** | The seat COULD always press a button and was never told so, so every mechanism behind a tap was measured at a fifteenth of its rate | [detail](#f-dv--the-seat-could-always-press-a-button-and-was-never-told-so-so-every-mechanism-behind-a-tap-was-measured-at-a-fifteenth-of-its-rate) |
 | **F-DY** | A persona brief asserts a history the world never builds, so the model is argued out of a correct read of its own database | [detail](#f-dy--a-persona-brief-asserts-a-history-the-world-never-builds-so-the-model-is-argued-out-of-a-correct-read-of-its-own-database) |
 | **F-EB** | A person taps when ONE thing is waiting and types when several are, and several things reach one person from DIFFERENT paths between two looks at a phone | [detail](#f-eb--a-person-taps-when-one-thing-is-waiting-and-types-when-several-are-and-several-things-reach-one-person-from-different-paths-between-two-looks-at-a-phone) |
-| **F-ED** | A business ran a month of sessions to an empty roster while the two customers who asked for it walked past the door two days before it opened | [detail](#f-ed--a-business-ran-a-month-of-sessions-to-an-empty-roster-while-the-two-customers-who-asked-for-it-walked-past-the-door-two-days-before-it-opened) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-DS** | A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn | [detail](#f-ds--a-staged-plan-can-only-be-committed-by-tapping-it-an-owner-who-answers-go-ahead-in-words-is-re-staged-instead-because-the-plan-handle-does-not-survive-the-turn) |
 
@@ -997,36 +996,3 @@ generalising past.
 **Do not fix it by sending less.** Every one of those three messages was worth sending, and the
 person answered all three — in prose, which is the cost being measured.
 
-### F-ED · A business ran a month of sessions to an empty roster while the two customers who asked for it walked past the door two days before it opened
-
-**Status: half fixed 22 Aug 2026 by `tellThemWhoAsked`. The other half is the enrolment path
-itself and is open.**
-
-`2026-08-22-16-51-sim-b8xo`, thirty days, 233 turns, zero errors, and the business reached `live`
-with four classes and three coaches. It finished with **0 enrolments, 0 players, 0 accounts, 0
-tally lines** against **22 sessions run**. Nobody could mark a register because there was nobody on
-it — Priya said so on day 18: *"skip the register since theres nobody to mark."*
-
-**Both customers arrived before the business did.** Divya Rao wrote on day 1 — *"anika's evening
-batch timings this week?"* — and was told, truthfully, *"there's no class or batch on this number
-going by anika, nothing is set up here yet at all"*. She left on day 2: *"wrong number then,
-sorry."* Farah Sheikh asked the same evening, was told on day 5 *"there aren't any classes set up
-yet"*, and left: *"no classes no price no thanks not waiting around for that."* Rahul founded the
-business on day 3.
-
-`tellThemWhoAsked` closes the half the product can act on: the owner is now told, once, that people
-asked on this number and found nothing, with what each of them typed, and pointed at
-`send_invite`'s draft path — because §16.2 forbids this product re-approaching a cold prospect from
-a shared number and the admin's own phone is the road that stays open.
-
-**What is still open is the enrolment path.** §7.1 step 4 is *"Families — contacts typed in, roster
-built, nobody messaged"*, and nothing in the product asks for it: `askForTheTimetable` chases the
-timetable because `guard_go_live` requires a class, and once a class exists no job asks who is in
-it. The census counts families and the go-live offer says outright that an empty roster is not a
-reason to wait — which is true, and leaves nothing that ever makes it stop being empty. A business
-can now set itself up, go live, teach for a month and bill nobody, and every message it sends about
-that is accurate.
-
-**Where it lives:** `lib/jobs/plan-ahead.ts`, beside `askForTheTimetable`, and the entry test is
-the mirror of that one — a class exists and no enrolment does. The trap: this must not become a
-nag, and `proposeGoLive`'s own weekly axis is the precedent for how often to ask.

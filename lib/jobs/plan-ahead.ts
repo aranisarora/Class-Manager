@@ -270,6 +270,9 @@ export async function planAheadFor(academyId: string): Promise<number> {
       return out
     }
 
+    // Live, teaching, and billing nobody — see `askWhoIsInIt`.
+    await askWhoIsInIt(tx, academy, nowAt, today, push)
+
     // -- the 48-hour window -----------------------------------------------------
     const sessions = await tx<SessionRow[]>`
       select s.id, s.class_id, cl.name as class_name, s.starts_at, s.ends_at
@@ -837,6 +840,101 @@ async function askForTheTimetable(
         + 'so no reminder, brief, introduction or bill reaches anybody — and the owner cannot see that '
         + 'absence, because from where they stand the classes are on the board. '
         + 'Going live is not offerable yet and a button for it would fail in their hand.',
+    },
+    true,
+  )
+}
+
+/**
+ * A business that is LIVE, teaching, and has nobody on its books.
+ *
+ * §7.1's ladder has five steps and the product chases two of them. `askForTheTimetable`
+ * chases step 2 because `guard_go_live` refuses without a class, so the schema itself
+ * forces the question. Step 4 — *"Families — contacts typed in, roster built, nobody
+ * messaged"* — is forced by nothing, so nothing asks it, and the gap does not announce
+ * itself: every message the product sends about an empty roster is accurate.
+ *
+ * `2026-08-22-16-51-sim-b8xo` is what that costs. Thirty days, 233 turns, no errors, the
+ * business live with four classes and three coaches, the whole standing surface running —
+ * and 22 sessions taught to nobody, 0 enrolments, 0 tally lines, ₹0 billed. The register
+ * chase fired correctly and repeatedly and could not be acted on, because a register over
+ * an empty roster has nothing to mark: *"skip the register since theres nobody to mark"*
+ * (Priya, day 18). The money loop has one broken link and it is this one.
+ *
+ * The go-live offer says outright that an empty roster is not a reason to wait, and that
+ * is TRUE — the introduction to every family is one of the things going live turns on.
+ * What it left implicit is that somebody has to put a family there, and after go-live the
+ * product had no moment where it noticed nobody had.
+ *
+ * @mechanism askWhoIsInIt — the mirror of `askForTheTimetable`, one rung further up the
+ *   ladder: a live business with a class and no enrolment is asked who is in it. On the same
+ *   `GO_LIVE_ASK_EVERY_DAYS` axis and under its own dedupe family, so it cannot collide with
+ *   the go-live proposal it succeeds — the two are mutually exclusive by construction, since
+ *   that one only runs while the business is NOT live. It goes silent the instant one live
+ *   enrolment exists, and it asks only somebody who has written in, for the reason its
+ *   sibling does: out of window this question is reshaped into a template that cannot carry it.
+ *   Closes F-ED.
+ */
+async function askWhoIsInIt(
+  tx: Tx,
+  academy: AcademyRow,
+  nowAt: Date,
+  today: string,
+  push: Push,
+): Promise<void> {
+  const [state] = await tx<{ classes: number; families: number; ran: number }[]>`
+    select
+      (select count(*)::int from class c
+        where c.academy_id = ${academy.id} and c.active
+          and (c.ends_on is null or c.ends_on >= ${today}::date))                as classes,
+      (select count(*)::int from enrollment e
+         join player pl on pl.id = e.player_id and pl.active
+        where e.academy_id = ${academy.id} and e.ended_on is null)               as families,
+      (select count(*)::int from session s
+        where s.academy_id = ${academy.id} and s.status <> 'cancelled'
+          and s.ends_at < app.now())                                             as ran
+  `
+  if (!state || state.classes === 0 || state.families > 0) return
+
+  const owner = (await admins(tx, academy.id)).find((a) => a.contact_id)
+  if (!owner?.contact_id) return
+
+  const [reach] = await tx<{ heard_from: boolean }[]>`
+    select exists (
+      select 1 from message m
+       where m.academy_id = ${academy.id}
+         and m.contact_id = ${owner.contact_id}
+         and m.direction = 'inbound'
+         and m.created_at > app.now() - interval '14 days'
+    ) as heard_from`
+  if (!reach?.heard_from) return
+
+  const standing = DateTime.fromISO(today).diff(DateTime.fromISO(academy.created_on), 'days').days
+  const daysStanding = Number.isFinite(standing) ? Math.max(0, Math.round(standing)) : 0
+  const step = Math.floor(daysStanding / GO_LIVE_ASK_EVERY_DAYS)
+
+  push(
+    'agent_task',
+    deferPastQuietHours(nowAt, academy.timezone, academy.settings),
+    dedupe.agentTask(academy.id, `no-roster-${step}`),
+    {
+      slug: `no-roster-${step}`,
+      subject: `live with ${state.classes} class(es), nobody enrolled, ${state.ran} session(s) already taught`,
+      minted_by_contact_id: owner.contact_id,
+      minted_roles: ['admin'],
+      expires_at: new Date(nowAt.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+      context:
+        "select (select count(*) from session where status <> 'cancelled' and ends_at < app.now()) "
+        + 'as sessions_already_taught, '
+        + '(select count(*) from attendance) as registers_marked, '
+        + '(select count(*) from tally_line) as charges_written, '
+        + '(select count(*) from class where active) as active_classes',
+      instruction:
+        'This business is live and teaching, and nobody is enrolled in anything. Sessions are running and '
+        + 'generating no register to mark and no charge to bill, because a register over an empty roster has '
+        + 'nothing on it. The rows say how many have already gone that way. '
+        + 'A family is a contact and a child on the books; nobody is messaged by adding one, and nothing is '
+        + 'sent to them until this business chooses to.',
     },
     true,
   )
