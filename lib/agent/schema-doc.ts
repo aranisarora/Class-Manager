@@ -218,6 +218,11 @@ person(full_name! text, notes text, memory text, settings jsonb)
 contact(person_id! uuid, phone_e164! text, wa_id text, profile_name text,
   is_primary bool, state text 'prospect|registered|engaged|opted_out',
   opted_out_at tstz, last_inbound_at tstz, role_hint text, tier_state jsonb,
+  arrived_as text 'parent|coach|owner|unsure'
+  /* what they told the FRONT DESK they were, before this business knew anything about
+     them. Evidence, never a grant — coach, academy_admin and account decide what somebody
+     may do and this decides nothing. Null for anybody who did not arrive through a desk,
+     which is most rows. */,
   unique(academy_id, phone_e164))          -- a WhatsApp number
   -- phone_e164 is REWRITTEN to +91… on the way in, whatever was typed. So a
   -- lookup on the digits somebody gave you ('9876500011', '098765 00011')

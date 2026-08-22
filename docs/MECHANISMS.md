@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-208 mechanisms · 32 findings closed by one · 24 findings still open
+209 mechanisms · 33 findings closed by one · 24 findings still open
 
 ## The scan
 
@@ -170,6 +170,7 @@ One line each. Find a candidate here, then read its entry below.
 `answeredSinceAsked` — this says WHEN they were asked and sends the model to the thread;  
 `carryOpeningMessage` — the words that brought this person here, written into the business they were handed to, as the first row of…  
 `joinBusiness` — the visitor is a parent, and this is the one door into a tenant the front desk can open.  
+`arrivedAs` — the answer the desk already had, carried across the hand-over on the one row that crosses it.  
 `foundBusiness` — a stranger becomes a tenant, and this is the write §16.2's referral channel needs to exist at all:  
 `found_business` — a business is born with the reality of the NUMBER it was founded on:  
 `stopMessagingVisitor` — "leave me alone" is answerable at the front desk, where there is no tenant to record it against and therefo…  
@@ -526,13 +527,15 @@ One line each. Find a candidate here, then read its entry below.
   the words that brought this person here, written into the business they were handed to, as the first row of its thread. Without it the tenant's transcript opens on the bot answering a question nobody in that academy can see it being asked, and `recentHistory` renders a one-sided conversation for as long as the thread lasts — the shape that makes a model re-introduce itself to somebody it is mid-sentence with. The front desk keeps its own copy: that one is the arrival record and answers a different question. `idempotencyKey` is derived from the destination contact and the text, so a hand-over retried after a crash carries the opening line once rather than twice.
 - **`joinBusiness`** — `lib/frontdesk/route.ts:144`  
   the visitor is a parent, and this is the one door into a tenant the front desk can open. It goes through `prospectContactIn`, so §10.1's "the one thing the bot must not do is create a second `person` for someone already in the roster" holds on this route the same way it holds on the router's: an existing parent who came in through a QR resolves to the person they already are, with their children and their money intact, and gets the client surface rather than PR-WELCOME. The front-desk contact is deliberately left alone — it holds the only copy of how this conversation started, and 0039 keeps it out of `inbound_candidates` so it can never compete with the tenant contact on the next inbound.
-- **`foundBusiness`** — `lib/frontdesk/route.ts:203`  
+- **`arrivedAs`** — `lib/frontdesk/route.ts:195`  
+  the answer the desk already had, carried across the hand-over on the one row that crosses it. Not on `arrival`, which 0039 closes to every role, so a fact written there is a fact the tenant still cannot read. It is EVIDENCE and not a role: `coach`, `academy_admin` and `account` decide what somebody may do and this decides nothing, in the same spirit as the opening words carried beside it. Written only when the desk actually said one, so it never overwrites a known person's history with a stranger's guess. **Closes F-EC.**
+- **`foundBusiness`** — `lib/frontdesk/route.ts:233`  
   a stranger becomes a tenant, and this is the write §16.2's referral channel needs to exist at all: a coach tells another coach "just message this number", and the person who arrives has no link, no prefill and no business to be a prospect of. It is one `security definer` call because the academy, the founder's person, their contact, their `academy_admin` row and the funnel outcome have to commit together — a crash between any two of them leaves a business with no admin, which is a business nobody can ever reach. `onboarding_state` stays at `setup`, so §2.6 is intact and the new business messages nobody until its owner says go; the founder is an admin, which is what exempts their own setup conversation from the pre-launch gate.
-- **`found_business`** — `lib/frontdesk/route.ts:261`  
+- **`found_business`** — `lib/frontdesk/route.ts:291`  
   a business is born with the reality of the NUMBER it was founded on: the function reads `sender.is_sim` and stamps `academy.is_sandbox` from it (0040), so a tenant the product talks into existence during a drive is marked without the harness touching a product table. Before this, a drive's academy was byte-identical to a paying one — `_danger.ts` would refuse to clean it up, `ops-guard.ts` would refuse to act on it, and its jobs enqueued into the live lane where the production beat claimed them. The harness cannot stamp it itself because fixtures are gone: the `academy` row is written here, by product code, on the strength of a conversation. Inheritance is what reaches it. **Closes F-CH.**
-- **`stopMessagingVisitor`** — `lib/frontdesk/route.ts:310`  
+- **`stopMessagingVisitor`** — `lib/frontdesk/route.ts:340`  
   "leave me alone" is answerable at the front desk, where there is no tenant to record it against and therefore nowhere for the ordinary opt-out to go. It writes `opted_out_at` on the front-desk contact, which is gate 1 of the send path — the gate that outranks every other — so the refusal is enforced by the same machinery that enforces a parent's, rather than by the desk remembering. On a pooled number this is not manners: one marketing complaint is charged to every tenant on the sender (§16.1), so a stranger who asked to be left alone and was not is a bill the businesses pay.
-- **`runFrontDeskTool`** — `lib/frontdesk/tools.ts:147`  
+- **`runFrontDeskTool`** — `lib/frontdesk/tools.ts:159`  
   the four verbs, and every one of them answers in words the model can act on rather than in a status. Layer 2's rule is that results tell the truth: a refusal here says what to do next ("ask what theirs is called", "that id is not on this number"), because the record is that every honest refusal was repaired in-turn and every opaque one became a false sentence to a person. A successful hand-over says *say nothing further here*, because the runtime is about to answer them from inside the business and two answers to one message is the failure that shape can produce.
 - **`runFrontDeskTurn`** — `lib/frontdesk/turn.ts:138`  
   the visitor's turn, on the second stable prefix and four verbs. It ends the moment a hand-over lands rather than letting the model add a parting sentence, because the business is about to answer the same message from inside itself and two answers to one question is what that shape produces if nothing stops it. It writes no `turn` row and owns no recorder: `runTurn` records this exactly as it records every other turn, so a front-desk turn is visible in the same table, the same report and the same drive as a parent's.

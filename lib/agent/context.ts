@@ -1491,6 +1491,28 @@ export async function variableTail(
     ``,
     `${id.person.full_name} — ${roles}.`,
   ]
+  /**
+   * What they told the FRONT DESK, on the turns where the tables cannot say it yet.
+   *
+   * A person handed over from the desk arrives as a `prospect` with no role, and their
+   * roles are what the tail's first line reports — so a coach who has just explained that
+   * he coaches reads, to the business, as somebody about whom nothing is known. Watched
+   * twice on 22 Aug 2026: Arjun Shetty wrote *"im not the owner im just coach for rahul
+   * evening bath mon n thu"*, the desk read him correctly and routed on it, and the owner
+   * was still being asked to confirm who he was a week later.
+   *
+   * Stated only while the rows do not already say it. The moment there is a `coach` row
+   * this is noise, and worse than noise if the two ever disagree — the rows win, and this
+   * disappears rather than arguing with them.
+   */
+  const arrivedAs = id.contact.arrived_as
+  if (arrivedAs && arrivedAs !== 'unsure' && !id.roles.some((r) => r === 'coach' || r === 'admin' || r === 'account_holder')) {
+    who.push(
+      `They told the front desk they were a ${arrivedAs}, and nothing in this business has been written down about ` +
+        `them yet — that is why they show as ${roles}. It is what they SAID, not a role: it grants nothing and you ` +
+        `should treat it as the answer to a question you therefore do not need to ask again.`,
+    )
+  }
   if (id.roles.length > 1) {
     who.push(
       `Roles compose: this is one person wearing several hats, in one thread. Serve all of them. Never ask them to confirm something to themselves.`,

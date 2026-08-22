@@ -47,6 +47,18 @@ const FindBusiness = z.object({
 
 const JoinBusiness = z.object({
   academy_id: z.string().uuid().describe('the id find_business returned for the business they mean'),
+  /**
+   * Not a role and it grants nothing — what they SAID, kept so the business does not have
+   * to ask a question its own front desk already asked. The desk decides this to route at
+   * all, so nothing new is being inferred out of it.
+   */
+  as: z
+    .enum(['parent', 'coach', 'owner', 'unsure'])
+    .nullish()
+    .describe(
+      'which they told you they were — parent, coach, owner, or unsure if their words did not say. ' +
+        'It is carried into the business so it does not have to ask you again.',
+    ),
 })
 
 const StartBusiness = z.object({
@@ -200,7 +212,7 @@ export async function runFrontDeskTool(
       if (!parsed.success) {
         return { content: 'join_business needs the id find_business returned, not a name.' }
       }
-      const routed = await joinBusiness(identity, arrival, parsed.data.academy_id, openingText)
+      const routed = await joinBusiness(identity, arrival, parsed.data.academy_id, openingText, parsed.data.as ?? undefined)
       if (isRefusal(routed)) return { content: routed.refused }
       return { content: routed.note, handover: routed }
     }

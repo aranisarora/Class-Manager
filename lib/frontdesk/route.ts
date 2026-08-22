@@ -156,6 +156,8 @@ export async function joinBusiness(
   arrival: Arrival | null,
   academyId: string,
   openingText?: string,
+  /** What they told the desk they were — see `arrivedAs`. Never a role and never a grant. */
+  arrivedAs?: 'parent' | 'coach' | 'owner' | 'unsure',
 ): Promise<RouteResult> {
   const options = await businessesOnThisNumber(identity)
   const target = options.find((a) => a.academyId === academyId)
@@ -178,6 +180,34 @@ export async function joinBusiness(
   }
 
   await carryOpeningMessage(target.academyId, landed.contactId, openingText, at)
+
+  /**
+   * What the desk worked out, written where the business can read it.
+   *
+   * The desk's whole job is deciding which side of the counter somebody is on, and it
+   * routed on that answer and then dropped it: `join_business` took an academy id and
+   * nothing else, so the tenant turn answering the same message a breath later started
+   * from zero. Watched twice on 22 Aug 2026 — Arjun Shetty writing *"im not the owner im
+   * just coach for rahul evening bath mon n thu"*, read correctly by the desk, arriving
+   * inside the business as a role-less prospect, and the owner still being asked to
+   * confirm who he was a week later.
+   *
+   * @mechanism arrivedAs — the answer the desk already had, carried across the hand-over on
+   *   the one row that crosses it. Not on `arrival`, which 0039 closes to every role, so a
+   *   fact written there is a fact the tenant still cannot read. It is EVIDENCE and not a
+   *   role: `coach`, `academy_admin` and `account` decide what somebody may do and this
+   *   decides nothing, in the same spirit as the opening words carried beside it. Written
+   *   only when the desk actually said one, so it never overwrites a known person's history
+   *   with a stranger's guess.
+   *   Closes F-EC.
+   */
+  if (arrivedAs) {
+    await withSession({ role: 'service', academyId: target.academyId }, async (tx) => {
+      await tx`update contact set arrived_as = ${arrivedAs} where id = ${landed.contactId}::uuid`
+    }).catch(() => {
+      /* Never a precondition: a hand-over that lands without this is worse, not broken. */
+    })
+  }
 
   if (arrival) {
     await settleArrival({

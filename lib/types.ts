@@ -125,6 +125,13 @@ export type Contact = {
   opted_out_at: Date | null
   last_inbound_at: Date | null
   role_hint: string | null
+  /**
+   * What they told the FRONT DESK they were, carried across the hand-over (0048).
+   *
+   * Evidence, never a grant: `coach`, `academy_admin` and `account` decide what somebody
+   * may do and this decides nothing. Null for anybody who did not arrive through a desk.
+   */
+  arrived_as: 'parent' | 'coach' | 'owner' | 'unsure' | null
   tier_state: Json
 }
 
