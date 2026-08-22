@@ -53,7 +53,8 @@ they share is the finding, and a `finding:` field on a case is how a stage is de
 
 | | |
 |---|---|
-| `report.mjs` | `npm run report` — the newest run as one standalone page. `npm run runs` lists them. |
+| `report.mjs` | `npm run report` — the newest run as one standalone page. `npm run runs` lists them. `--text` emits the same run, whole and untruncated, as plain text for a reader that cannot open HTML — `--from`/`--to`/`--who`/`--day` slice it. It is a second EMISSION and not a second reader: same record, same helpers, same order. |
+| `watch.mjs` | `npm run watch` — **is this drive still measuring anything?** Follows a run as it is written and stops the moment it stops being worth paying for: a loop never entered by the day it was due (`roster` by day 10, `charging` by 14, a `payment` by 18), the seat the product reports to walking out, statements the model keeps getting wrong, a long silence. Attaching mid-run prints what was already true as a baseline and only stops on something new. It scores NOTHING — every tripwire asks about the RUN, never about a message — and `--once` evaluates a finished run in one pass. Written after `b8xo` spent ₹42 and seventy-five minutes on thirty days that never wrote an `enrollment` row, which was knowable on day 3. |
 | `judge-feed.mjs` | The inside of a turn, rendered for a person to read *while the drive is still walking*. |
 | `judge.mjs` | The same job done by a judge model when there is nobody free to read. Writes the same `judgement.json` a person writes, deliberately: the two are interchangeable. `--run <dir>` judges the record and sees the SQL, the rows and what the model was told; `--academy` tails a live drive and sees less, and says so. |
 | `_judge-text.mjs` | One turn as plain text, shared by `judge.mjs` and `judge-slice.mjs` so the two cannot drift apart about what a turn is. Not a command. |

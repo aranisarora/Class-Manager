@@ -111,8 +111,10 @@ npm run ab -- --variant doctrine=<file>      # the same week twice, one thing ch
 npm run ab -- --variant ref=<sha> --dry-run  # prepare and hash both arms, spend nothing
 npx tsx scripts/live.ts open --days 7        # the human seat, blindfolded
 
+npm run watch               # is the drive still measuring anything? stop it before it wastes a month
 npm run runs                # every recorded run, newest first
 npm run report              # render the newest run as one standalone page
+npm run report -- --text --from 40 --to 80   # the same run as plain text, whole, for a reader
 npm run findings            # which open findings no instrument stages
 npm run findings -- --write # regenerate findings/OPEN.md, the status board
 npm run mechanisms          # regenerate docs/MECHANISMS.md from the @mechanism tags

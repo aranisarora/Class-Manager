@@ -1,0 +1,338 @@
+/**
+ * watch — is this drive still measuring anything?
+ *
+ *   node scripts/watch.mjs                       # the newest run, followed until it ends
+ *   node scripts/watch.mjs --run .probe/runs/…   # a named run
+ *   node scripts/watch.mjs --once                # evaluate what exists now and exit
+ *   node scripts/watch.mjs --quiet               # tripwires only, no per-turn line
+ *
+ * Exit codes: 0 nothing tripped · 3 a tripwire tripped · 1 no run to watch.
+ *
+ * WHY THIS IS NOT A JUDGE, AND MUST NEVER BECOME ONE
+ * -----------------------------------------------------------------------------
+ * The house rule is that nothing in an instrument scores anything — deterministic
+ * pass/fail was taken out of the drives on purpose, because a pattern-matcher read
+ * 0 overclaims on a run containing exactly one. That rule is about the PRODUCT.
+ * This file is about the RUN.
+ *
+ * Every tripwire below answers one question — *can this drive still measure the
+ * thing it was started to measure?* — and none of them answers *was the bot any
+ * good?* "Forty turns and no row has been written" is not a verdict on a message;
+ * it is the observation that the world is not moving and the next twenty minutes
+ * of DeepSeek will buy nothing. A tripwire fires, says what it saw, and stops. It
+ * writes nothing into `judgement.json` and it never labels a turn.
+ *
+ * If you find yourself adding a rule that reads a message BODY, you are writing a
+ * judge and it belongs in `docs/JUDGING.md`. The line is: tripwires read the
+ * shape of the record (counts, tables, states, errors), never its prose.
+ *
+ * WHAT IT COST TO NOT HAVE THIS
+ * -----------------------------------------------------------------------------
+ * `2026-08-22-16-51-sim-b8xo`: thirty simulated days, 233 turns, ~75 minutes and
+ * ₹42, finished with ZERO rows in `enrollment`, `player`, `account`, `attendance`
+ * and every money table. The month exercised setup and the coach ladder and
+ * nothing else — the half of the product that takes money was never entered. That
+ * was true and knowable by day 3. Eleven drives were run on 22 Aug 2026 in six
+ * hours; each was read only after it finished.
+ *
+ * The tripwire that matters most is therefore `money-loop`, and it is stated as a
+ * question about COVERAGE: a drive whose world never produces a customer cannot
+ * say anything about billing, however long it runs.
+ */
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { join, basename } from 'node:path'
+
+const args = process.argv.slice(2)
+const flag = (n) => {
+  const i = args.findIndex((a) => a === `--${n}` || a.startsWith(`--${n}=`))
+  if (i === -1) return undefined
+  const f = args[i]
+  return f.includes('=') ? f.slice(f.indexOf('=') + 1) : args[i + 1]
+}
+const num = (n, d) => (flag(n) === undefined ? d : Number(flag(n)))
+const ONCE = args.includes('--once')
+const QUIET = args.includes('--quiet')
+
+const RUNS = join('.probe', 'runs')
+const newest = () => {
+  if (!existsSync(RUNS)) return undefined
+  const dirs = readdirSync(RUNS)
+    .map((d) => join(RUNS, d))
+    .filter((d) => existsSync(join(d, 'turns.jsonl')))
+    .sort()
+  return dirs[dirs.length - 1]
+}
+
+const run = flag('run') ?? newest()
+if (!run) {
+  console.error('  no run to watch. Start a drive, or pass --run <dir>.')
+  process.exit(1)
+}
+
+const manifest = existsSync(join(run, 'manifest.json'))
+  ? JSON.parse(readFileSync(join(run, 'manifest.json'), 'utf8'))
+  : {}
+const config = existsSync(join(run, 'config.json'))
+  ? JSON.parse(readFileSync(join(run, 'config.json'), 'utf8'))
+  : {}
+
+/**
+ * The tables a class of coverage is made of.
+ *
+ * Named rather than counted, because "18 rows were written" is the number that
+ * made `b8xo` look like a working month: eighteen writes, all of them setup, and
+ * the register never had a name on it. A drive is covered when it has ENTERED a
+ * loop, and a loop is entered by writing to one of its tables.
+ */
+const LOOPS = {
+  setup: ['academy', 'venue', 'class', 'class_slot', 'rate_period'],
+  coaches: ['coach', 'class_coach', 'session_coach'],
+  roster: ['account', 'player', 'enrollment'],
+  register: ['attendance'],
+  charging: ['tally_line', 'coach_ledger'],
+  paid: ['payment'],
+}
+
+/**
+ * How long a drive may go without entering a loop before that is worth saying.
+ *
+ * In simulated DAYS, not turns, because a drive's turn count is a function of how
+ * chatty its personas are and its day count is what the operator actually chose.
+ * The defaults are deliberately late — a business genuinely has nobody on its
+ * books for the first few days — and the point is not to be strict, it is to fire
+ * long before day 30.
+ */
+const DUE = { setup: 3, coaches: 7, roster: 10, register: 12, charging: 14, paid: 18 }
+
+const SILENT_TURNS = num('silent', 25) // turns in a row with nothing sent
+const SPEND_CAP = num('spend', Infinity) // rupees
+
+let seen = 0
+let tripped = false
+const fired = new Set()
+
+/**
+ * What was ALREADY true when the watch attached, which is not the same as
+ * something going wrong on your watch.
+ *
+ * Measured the first time this file was pointed at a drive already thirteen days
+ * in: it fired on a departure from day 4, exited, and therefore never reached the
+ * two tripwires the attach was FOR (`charging` at day 14, `paid` at day 18). A
+ * watcher that stops on history cannot watch the future, and attaching mid-run is
+ * the common case — a drive is usually already going by the time anybody wonders
+ * whether it is worth finishing.
+ *
+ * So the first pass is a BASELINE: everything true at attach is stated once,
+ * loudly, and then held. Only a condition that becomes true afterwards stops the
+ * watch. Nothing is hidden either way — the baseline is printed in full, because
+ * "this drive was already not measuring anything when you arrived" is the most
+ * useful thing it can tell you and the whole reason to look.
+ */
+let baseline = true
+
+const say = (s) => process.stdout.write(s + '\n')
+const trip = (name, msg) => {
+  if (fired.has(name)) return
+  fired.add(name)
+  if (baseline) {
+    say(`  ·· already true at attach — ${name}`)
+    say(`     ${msg}`)
+    return
+  }
+  tripped = true
+  say('')
+  say(`  !! TRIPWIRE  ${name}`)
+  say(`     ${msg}`)
+  say('')
+}
+
+function read() {
+  const p = join(run, 'turns.jsonl')
+  if (!existsSync(p)) return []
+  return readFileSync(p, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => {
+      try {
+        return JSON.parse(l)
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+}
+
+function evaluate(turns) {
+  const day = turns.reduce((m, t) => Math.max(m, Number(t.day ?? 0)), 0)
+  const spend = turns.reduce((a, t) => a + Number(t.inr ?? 0), 0)
+  const errs = turns.filter((t) => t.error)
+  const gaveUp = turns.filter((t) => {
+    const pr = t.personaReasoning
+    return pr && typeof pr === 'object' && pr.action === 'giveup'
+  })
+  const sqlErrors = turns.flatMap((t) => (t.sql ?? []).filter((q) => q.error && !String(q.note ?? '').trim()))
+  const suppressed = turns.flatMap((t) => (t.messages ?? []).filter((m) => m.suppressedReason))
+  const tables = new Set(turns.flatMap((t) => (t.changed ?? []).map((c) => String(c.table ?? ''))))
+
+  /* --- the run has stopped saying anything ------------------------------- */
+  let quietRun = 0
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (Number(turns[i].sent ?? 0) > 0) break
+    quietRun++
+  }
+  if (quietRun >= SILENT_TURNS)
+    trip(
+      'silence',
+      `${quietRun} turns in a row with nothing sent to anybody. Either the product has stopped ` +
+        `speaking or the harness has stopped delivering. Both make the rest of this drive unreadable.`,
+    )
+
+  /* --- a loop the drive was supposed to enter and has not ----------------- */
+  for (const [loop, tabs] of Object.entries(LOOPS)) {
+    const entered = tabs.some((t) => tables.has(t))
+    if (!entered && day >= DUE[loop])
+      trip(
+        `coverage:${loop}`,
+        `day ${day} and not one row has been written to ${tabs.join(', ')}. ` +
+          `Nothing this drive records from here can say anything about ${loop}. ` +
+          `b8xo ran all thirty days in exactly this state.`,
+      )
+  }
+
+  /* --- the harness is losing turns --------------------------------------- */
+  if (errs.length)
+    trip(
+      'errors',
+      `${errs.length} turn(s) carry an error. First: #${errs[0].n ?? '?'} ${errs[0].id} — "${errs[0].error}". ` +
+        `Read it before spending more: a turn that errors this early usually errors every time.`,
+    )
+
+  if (sqlErrors.length >= 3)
+    trip(
+      'sql',
+      `${sqlErrors.length} model-authored statements failed. First: ${String(sqlErrors[0].error).slice(0, 200)}. ` +
+        `A statement shape the model cannot get right will not fix itself over thirty days.`,
+    )
+
+  /* --- somebody walked out ------------------------------------------------ */
+  /**
+   * A prospect who decides this is the wrong number on day 2 is the product
+   * working. The person who has been RUNNING the business leaving on day 20 is
+   * the run ending, whatever the day counter says — and the two are the same
+   * `giveup` row. What separates them is not a role (the owner is seeded as a
+   * `prospect` and founds the business mid-run) but how much of the drive was
+   * being carried by that seat, which is what the inbound count measures.
+   */
+  /**
+   * Name to number, from `session.json` — the one file a drive writes BEFORE it
+   * starts, so this works on a run that has no `record.json` yet, which is every
+   * run worth watching.
+   */
+  const phoneOf = {}
+  try {
+    const s = JSON.parse(readFileSync(join(run, 'session.json'), 'utf8'))
+    for (const p of s.roster ?? []) if (p.name && p.phone) phoneOf[p.name] = String(p.phone)
+  } catch {
+    /* a run too young to have one; the departure line still prints, unranked */
+  }
+  const got = {}
+  for (const t of turns)
+    for (const m of t.messages ?? []) if (!m.suppressedReason) got[String(m.to)] = (got[String(m.to)] ?? 0) + 1
+  const busiest = Object.entries(got).sort((a, b) => b[1] - a[1])[0]?.[0]
+  const principal = Object.keys(phoneOf).find((w) => phoneOf[w] === busiest)
+  const seats = new Set(turns.map((t) => t.who).filter((w) => w && w !== 'queue'))
+
+  if (gaveUp.length) {
+    const lostPrincipal = gaveUp.some((t) => t.who === principal)
+    const left = new Set(gaveUp.map((t) => t.who))
+    if (lostPrincipal || left.size >= Math.max(1, seats.size - 1))
+      trip(
+        'departure',
+        `${gaveUp.map((t) => `${t.who} left on day ${t.day}`).join('; ')}. ` +
+          (lostPrincipal
+            ? `${principal} is the seat this product reports to — the one it has sent the most to — so from here the drive is ` +
+              `measuring a business with nobody running it — every remaining day is standing jobs talking to an empty room.`
+            : `That is ${left.size} of ${seats.size} seats gone.`) +
+          ` Last words: “${gaveUp[gaveUp.length - 1].personaReasoning?.reasoning ?? '?'}”`,
+      )
+    else say(`  ·· ${gaveUp.map((t) => `${t.who} left (day ${t.day})`).join(', ')} — not the principal seat, watch continues`)
+  }
+
+  if (suppressed.length >= 5)
+    trip(
+      'suppressed',
+      `${suppressed.length} outbound messages were suppressed (${[...new Set(suppressed.map((m) => m.suppressedReason))].join(', ')}). ` +
+        `A gate firing this often is either the product protecting somebody or the drive talking to itself.`,
+    )
+
+  if (spend > SPEND_CAP)
+    trip('spend', `₹${spend.toFixed(2)} spent, past the ₹${SPEND_CAP} you set.`)
+
+  return { day, spend, errs: errs.length, tables }
+}
+
+say(`  watching ${basename(run)}`)
+say(
+  `  ${config.days ?? '?'} days · ${manifest.models?.brain ?? '?'} · ${manifest.git?.sha?.slice(0, 7) ?? '?'}` +
+    `${manifest.git?.dirty ? ` (+${manifest.git.dirty} dirty)` : ''} · world ${config.world?.ref ?? '?'}`,
+)
+say(`  tripwires: coverage ${Object.entries(DUE).map(([k, v]) => `${k}≥d${v}`).join(' ')} · silence ${SILENT_TURNS} turns`)
+say('')
+
+function pass() {
+  const turns = read()
+  for (const t of turns.slice(seen)) {
+    if (!QUIET) {
+      const who = String(t.who ?? '?').slice(0, 14).padEnd(14)
+      const mark = t.error ? '!' : t.wrote ? 'w' : t.sent ? '.' : ' '
+      say(
+        `  ${String(t.n ?? seen + 1).padStart(3)} d${String(t.day ?? '?').padStart(2)} ${String(t.window ?? '').slice(0, 4).padEnd(4)} ` +
+          `${who} ${mark} sent:${t.sent ?? 0} wrote:${t.wrote ?? 0} ₹${Number(t.inr ?? 0).toFixed(2)}` +
+          `${(t.changed ?? []).length ? '  [' + [...new Set(t.changed.map((c) => c.table))].join(' ') + ']' : ''}` +
+          `${t.error ? '  ERROR: ' + t.error : ''}`,
+      )
+    }
+    seen++
+  }
+  const s = evaluate(turns)
+  baseline = false
+  return { turns, s }
+}
+
+if (ONCE) {
+  const { turns, s } = pass()
+  say('')
+  say(
+    `  ${turns.length} turns · day ${s.day} · ₹${s.spend.toFixed(2)} · ${s.errs} errors · ` +
+      `tables touched: ${[...s.tables].join(', ') || '(none)'}`,
+  )
+  const missing = Object.entries(LOOPS).filter(([, tabs]) => !tabs.some((t) => s.tables.has(t))).map(([k]) => k)
+  if (missing.length) say(`  loops never entered: ${missing.join(', ')}`)
+  process.exit(tripped ? 3 : 0)
+}
+
+/**
+ * Followed by polling the file rather than by watching it, because the writer
+ * appends a line per turn from another process and a `fs.watch` on Windows
+ * reports the change before the line is flushed — a half-written line parsed as
+ * a dropped turn is exactly the kind of instrument defect this file exists to
+ * catch in others.
+ */
+let idle = 0
+const iv = setInterval(() => {
+  const before = seen
+  const { turns } = pass()
+  idle = seen === before ? idle + 1 : 0
+  if (tripped) {
+    say(`  stopping the watch — ${fired.size} tripwire(s). The drive is still running; kill it if you agree.`)
+    clearInterval(iv)
+    process.exit(3)
+  }
+  // Ten minutes with no new turn: the drive is over, or it is stuck.
+  if (idle > 120) {
+    const done = existsSync(join(run, 'record.json')) && statSync(join(run, 'record.json')).mtimeMs > 0
+    say(`  no new turn for ten minutes — ${done ? 'the run has been folded up.' : 'the drive appears stuck.'}`)
+    clearInterval(iv)
+    process.exit(done ? 0 : 3)
+  }
+}, 5000)

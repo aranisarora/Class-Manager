@@ -254,6 +254,132 @@ const scored = turns.map(scoreOf).filter((s) => s !== null)
 const mean = scored.length ? scored.reduce((a, b) => a + b, 0) / scored.length : null
 
 /* -------------------------------------------------------------------------- *
+ * The same run as plain text
+ *
+ * WHY THIS LIVES IN THE ONE READER
+ * -----------------------------------------------------------------------------
+ * `--text` is a second EMISSION, not a second reader: it walks the same
+ * `record.json`, through the same helpers, in the same order the page does. The
+ * rule this repo enforces is one reader per record shape, and six report
+ * generators are what it cost to learn it. A parallel `dump-turns.mjs` would be
+ * the seventh, and it would drift on the first field added here.
+ *
+ * It exists because the page is not the only thing that reads a run. An analysis
+ * pass over 233 turns cannot open HTML, and the alternative measured on 22 Aug
+ * 2026 was every reader hand-writing its own `JSON.parse` walk — twenty parsers,
+ * twenty different opinions about which fields matter, and no way to tell a turn
+ * somebody skipped from a turn somebody read.
+ *
+ *   node scripts/report.mjs --text                    # every turn, whole
+ *   node scripts/report.mjs --text --from 40 --to 80  # turns 40..80
+ *   node scripts/report.mjs --text --who queue        # one seat
+ *   node scripts/report.mjs --text --day 12           # one day
+ *
+ * NOTHING IS TRUNCATED. Reasoning, statements, the rows they returned and the
+ * message that went out are printed whole, because the turn where those disagree
+ * is the turn worth reading and a clip is exactly where the disagreement hides.
+ */
+if (args.includes('--text')) {
+  const num = (n) => (flag(n) === undefined ? undefined : Number(flag(n)))
+  const from = num('from') ?? -Infinity
+  const to = num('to') ?? Infinity
+  const whoWanted = flag('who')
+  const dayWanted = num('day')
+
+  const J = (v) => {
+    if (v === undefined) return 'undefined'
+    if (typeof v === 'string') return v
+    try { return JSON.stringify(v, null, 2) } catch { return String(v) }
+  }
+  const out = []
+  const P = (s = '') => out.push(s)
+  const indent = (s, pad) => String(s).split('\n').map((l) => pad + l).join('\n')
+
+  P(`RUN ${basename(runPath)}   suite=${rec.suite}  model=${rec.model ?? '?'}  turns=${turns.length}`)
+  if (rec.note) P(`note: ${rec.note}`)
+  if (rec.arm) P(`arm: ${rec.arm}`)
+  if (rec.world) P(`world: ${J(rec.world)}`)
+  // Above everything, for the reason the page states above `departures`.
+  const left = Array.isArray(rec.extra?.departures) ? rec.extra.departures : []
+  if (left.length) {
+    P('')
+    P(`!! ${left.length} PEOPLE LEFT DURING THIS RUN — every day after is a smaller world:`)
+    for (const d of left) P(`   ${d.persona} — day ${d.day}${d.window ? ', ' + d.window : ''}: "${d.say ?? '(left without a word)'}"`)
+  }
+  P('='.repeat(78))
+
+  let shown = 0
+  for (const t of turns) {
+    if (t.n < from || t.n > to) continue
+    if (whoWanted && String(t.who) !== whoWanted) continue
+    if (dayWanted !== undefined && Number(t.day) !== dayWanted) continue
+    shown++
+    P('')
+    P('#'.repeat(78))
+    P(`TURN #${t.n}  ${t.id}   who=${t.who}  persona=${t.persona}  day=${t.day ?? '?'}  window=${t.window ?? '?'}`)
+    P(`sent=${t.sent} wrote=${t.wrote} inr=${t.inr} ms=${t.ms} tokens=${J(t.tokens)}`)
+    if (t.error) P(`!! ERROR: ${t.error}`)
+    if (t.intent) P(`PERSONA INTENT: ${t.intent}`)
+    if (t.personaReasoning) P(`PERSONA CHOSE: ${actionOf(t) ?? '(not recorded)'}\nPERSONA REASONING:\n${J(reasonOf(t))}`)
+    if (t.say) P(`\nTHEY SAID:\n${t.say}`)
+    else
+      P(
+        `\nTHEY SAID: (nothing — ${
+          actionOf(t) === 'giveup' ? 'left without a word'
+          : actionOf(t) === 'quiet' ? 'read it and said nothing'
+          : 'no inbound; this is a job/queue turn'
+        })`,
+      )
+    if (t.tapped) P(`\nTHEY TAPPED: ${J(t.tapped)}`)
+
+    P(`\n--- ROUNDS (${(t.rounds ?? []).length}) ---`)
+    for (const r of t.rounds ?? []) {
+      P(`\n  [round ${r.round}] ${r.name}   turnId=${r.turnId ?? '?'}  ms=${r.ms ?? '?'}`)
+      if (r.reasoning) P(`  REASONING:\n${indent(r.reasoning, '    ')}`)
+      if (r.args !== undefined) P(`  ARGS:\n${indent(J(r.args), '    ')}`)
+      if (r.result !== undefined) P(`  RESULT:\n${indent(J(r.result), '    ')}`)
+      if (r.error) P(`  ROUND ERROR: ${J(r.error)}`)
+    }
+
+    const sql = t.sql ?? []
+    const isRuntime = (x) => Boolean(String(x.note ?? '').trim())
+    const modelSql = sql.filter((x) => !isRuntime(x))
+    const runtimeSql = sql.filter(isRuntime)
+    P(`\n--- SQL THE MODEL WROTE (${modelSql.length}) ---`)
+    for (const q of modelSql) {
+      P(`\n  [${q.kind}] role=${q.role} rows=${q.rowCount}${q.truncated ? ' TRUNCATED' : ''} ms=${q.ms}`)
+      P(indent(q.sql, '    '))
+      P(`  ROWS: ${J(q.rows)}`)
+      if (q.error) P(`  SQL ERROR: ${J(q.error)}`)
+    }
+    P(`\n--- SQL THE RUNTIME WROTE (${runtimeSql.length}, prefetches and census) ---`)
+    for (const q of runtimeSql) P(`  [${q.note}] rows=${q.rowCount}${q.error ? ' ERROR ' + J(q.error) : ''}`)
+
+    P(`\n--- MESSAGES OUT (${(t.messages ?? []).length}) ---`)
+    for (const m of t.messages ?? []) {
+      P(`  to=${m.to} origin=${m.origin} status=${m.status}${m.suppressedReason ? ' SUPPRESSED=' + m.suppressedReason : ''}`)
+      P(indent(m.body ?? '', '    | '))
+      if (m.buttons?.length) P(`    BUTTONS: ${J(m.buttons)}`)
+    }
+
+    if ((t.changed ?? []).length) {
+      P(`\n--- ROWS CHANGED (${t.changed.length}) ---`)
+      for (const c of t.changed) P(`  ${J(c)}`)
+    }
+    if ((t.jobs ?? []).length) P(`\n--- JOBS THIS TURN ---\n  ${[...t.jobs].join(', ')}`)
+  }
+  P('')
+  P('='.repeat(78))
+  P(`${shown} turns printed of ${turns.length}.`)
+  const dest = flag('out')
+  if (dest) {
+    writeFileSync(dest, out.join('\n'))
+    console.log(`  wrote ${dest}`)
+  } else console.log(out.join('\n'))
+  process.exit(0)
+}
+
+/* -------------------------------------------------------------------------- *
  * The page
  * -------------------------------------------------------------------------- */
 
@@ -287,6 +413,44 @@ if (judgement?.verdict) {
   thought, every statement it sent and what came back. The verdict is written by a reader into
   <code>${esc(join(runPath, 'judgement.json'))}</code>; <b>JUDGING.md</b> is how. Re-run this after and the
   scores appear beside the turns.</div>`
+}
+
+/* --- who left, before any number ------------------------------------------ */
+
+/**
+ * The most consequential thing a drive can produce, in the position that says so.
+ *
+ * `record.json` has carried `extra.departures` — persona, day, and the last thing
+ * they typed — for as long as the seats have been agents, and this page has never
+ * printed it. The turn-level tag exists, two hundred rows down an accordion, and
+ * that is not the same as saying it.
+ *
+ * WHAT THAT COST, and it is the reason this block sits ABOVE the stat row rather
+ * than beside it: on `2026-08-22-16-51-sim-b8xo` the OWNER of the business walked
+ * out on day 20 — *"i told you 1000 both times and you said it was recorded. if
+ * it's not stuck by now this isnt working, im done setting this up"* — and the
+ * run was read, five times over the following six hours, as *"233 turns, ZERO
+ * errors, the business live, the whole standing surface running."* Every one of
+ * those readings is true of the numbers. All five commits that came out of them
+ * improved messages sent to a man who had already left, and two of them ADDED
+ * standing asks, when the recorded cause of death was being asked something he
+ * had already answered.
+ *
+ * A run that ends with its operator gone is not a run with a good mean score. It
+ * is a run whose remaining days measured an empty room, and the reader has to say
+ * that before it says anything else.
+ */
+const departures = Array.isArray(rec.extra?.departures) ? rec.extra.departures : []
+if (departures.length) {
+  body += `<div class="lead bad"><b>${departures.length} ${departures.length === 1 ? 'person' : 'people'} left during this run.</b>
+  Everything below is measured over a world that got smaller as it went.
+  <ul>${departures
+    .map(
+      (d) =>
+        `<li><b>${esc(d.persona ?? '?')}</b> — day ${esc(String(d.day ?? '?'))}${d.window ? `, ${esc(d.window)}` : ''}:
+         <i>“${esc(d.say ?? '(left without a word)')}”</i></li>`,
+    )
+    .join('')}</ul></div>`
 }
 
 /* --- the numbers ---------------------------------------------------------- */

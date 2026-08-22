@@ -33,7 +33,8 @@
     "runs": "node scripts/report.mjs --list",
     "findings": "tsx scripts/_findings.ts",
     "record:backfill": "tsx scripts/record-from-probe.ts --all",
-    "verify:static": "node scripts/verify-static.mjs"
+    "verify:static": "node scripts/verify-static.mjs",
+    "watch": "node scripts/watch.mjs"
   },
   "dependencies": {
     "jose": "^6.1.0",
