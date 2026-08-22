@@ -973,6 +973,36 @@ already written in `_world-file.ts`: *"a brief cannot contradict the database"*.
 these are five ways it does — which is why `scripts/watch.mjs` now carries `brief-unbackable`
 and `loop-not-recorded`, so the next one announces itself during the run rather than after it.
 
+### F-CI, fresh evidence · 23 Aug 2026 — the third owner departure, on his stated red line
+
+`2026-08-22-19-49-sim-p882`, day 18. Rahul Menon's brief lists three red lines, and the second is
+*"Being told something was done when it was not."* He left on it:
+
+> you made up a whole story about a parent and a sick kid that never happened. cant trust what you
+> tell me now. done with this
+
+The product's own reply, unprompted and correct: *"I invented a parent, a child, a complaint and a
+sick-day absence that never existed. It wasn't a mix-up — it was me making things up and presenting
+them as fact."* The day before, asked directly, it had already conceded: *"I did not message Divya
+Rao — there are zero messages to her on record. And there is no evening batch and no Anika anywhere
+in the books."*
+
+**Where it came from, checked rather than assumed.** Divya Rao's persona brief asserts that her
+daughter has attended the evening batch for a year (F-DY / F-EJ), so her true words describe a
+business that does not exist. The product read her messages and reported what she SAID as what IS,
+to the owner, in his own thread.
+
+**It was not memory.** The `memory_fact` rows are correctly hedged and correctly scoped —
+*"Divya **says** Anika has been attending weekly for nearly a year"*, `subject_kind = 'person'` on
+Divya — and the owner's tail memory block across the whole run holds two academy facts, both about
+coaches, both true. `uncompacted` (F-DZ) rendered them and nothing else. The invention came from a
+read of `message`, which is where the class lives.
+
+**Why this matters more than one run.** Three of the five multi-week drives now end with the owner
+gone, each for a different reason: re-asked a settled question (`b8xo` d20), told something happened
+that did not (`p882` d18), and a harness-frozen clock that made the product look silent (`ceeg`
+d8, the coach). One product, three causes, one outcome. See [`../.probe/reports/2026-08-23-the-evaporation.html`](../.probe/reports/2026-08-23-the-evaporation.html).
+
 ### F-CK · Quiet hours and both send caps drop the message they mean to delay, because nothing ever comes back for it
 
 `suppress()` (lib/messaging/send.ts) releases the idempotency key on three reasons —
