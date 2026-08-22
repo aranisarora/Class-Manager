@@ -300,7 +300,13 @@ if (args.includes('--text')) {
   if (rec.arm) P(`arm: ${rec.arm}`)
   if (rec.world) P(`world: ${J(rec.world)}`)
   // Above everything, for the reason the page states above `departures`.
-  const left = Array.isArray(rec.extra?.departures) ? rec.extra.departures : []
+  const left = (() => {
+    const fromTurns = turns
+      .filter((t) => actionOf(t) === 'giveup')
+      .map((t) => ({ persona: t.who ?? t.persona, day: t.day, window: t.window, say: t.say || reasonOf(t) }))
+    if (fromTurns.length) return fromTurns
+    return Array.isArray(rec.extra?.departures) ? rec.extra.departures : []
+  })()
   if (left.length) {
     P('')
     P(`!! ${left.length} PEOPLE LEFT DURING THIS RUN — every day after is a smaller world:`)
@@ -440,7 +446,21 @@ if (judgement?.verdict) {
  * is a run whose remaining days measured an empty room, and the reader has to say
  * that before it says anything else.
  */
-const departures = Array.isArray(rec.extra?.departures) ? rec.extra.departures : []
+/**
+ * Derived from the TURNS, with `extra.departures` as a fallback rather than the
+ * source. `extra` is only assembled on a full close and came back `{}` on
+ * `2026-08-22-19-36-sim-4xsq` — a run whose day-2 departure is sitting in
+ * `personaReasoning.action` on the turn itself, where `actionOf` has always been
+ * able to see it. Reading the roll-up alone reintroduced the very silence this
+ * block exists to end, through a different door.
+ */
+const departures = (() => {
+  const fromTurns = turns
+    .filter((t) => actionOf(t) === 'giveup')
+    .map((t) => ({ persona: t.who ?? t.persona, day: t.day, window: t.window, say: t.say || reasonOf(t) }))
+  if (fromTurns.length) return fromTurns
+  return Array.isArray(rec.extra?.departures) ? rec.extra.departures : []
+})()
 if (departures.length) {
   body += `<div class="lead bad"><b>${departures.length} ${departures.length === 1 ? 'person' : 'people'} left during this run.</b>
   Everything below is measured over a world that got smaller as it went.
