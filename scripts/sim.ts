@@ -1614,6 +1614,8 @@ async function main(): Promise<void> {
   const rec = await reopenRun(dir, {
     academyId,
     q: sql,
+    // The second tenant a founding turn creates and answers from — see `alsoRead`.
+    qIn: (academyId: string, statement: string) => q(academyId, statement),
     domainNow: () => clock.now(academyId),
   })
   const { run } = await rec.close({

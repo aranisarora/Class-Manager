@@ -401,6 +401,22 @@ export type OpenOpts = {
   variant?: Record<string, unknown>
   /** Reads the database as the harness — used only to collect evidence. */
   q: Sql
+  /**
+   * The same read, in a tenant this run is not pinned to.
+   *
+   * `cm_service` is not an RLS bypass — every service policy in `0003_rls.sql` is
+   * `academy_id = app.academy_id()` — so `q` above can only ever see ONE business, and a
+   * founding turn re-enters `runTurn` INSIDE the business it just created. Without this,
+   * the single most important conversation in the product records as silence: on
+   * `2026-08-22-13-29-sim-8528` the turn that founded Rahul Tennis Academy shows
+   * `sent: 0`, `wrote: 0`, `reply: null`, `rounds` from the desk alone and no tokens,
+   * while the database holds an onward turn of 85,082 prompt tokens that replied to him.
+   * The `strayed` note below has always said so in words; this is what lets the record
+   * carry the rows instead of only the sentence.
+   *
+   * Optional, so a driver that cannot open a second tenant simply keeps the note.
+   */
+  qIn?: (academyId: string, sql: string) => Promise<any[]>
   /** The tenant's own clock. Host time is never a valid cursor here (F-N). */
   domainNow: () => Promise<Date>
 }
@@ -822,11 +838,39 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
      * of becoming an empty array that reads as "nothing happened".
      */
     const notes: string[] = []
-    const ask = async <T>(what: string, statement: string): Promise<T[]> =>
-      opts.q<T>(statement).catch((e) => {
+    /**
+     * Set below, once `strayed` is known: the tenants this turn's work ran in that
+     * `opts.q` cannot see. Declared here because `ask` closes over it and is defined
+     * first; empty on every turn that stayed put, which is almost all of them.
+     */
+    let alsoRead: string[] = []
+    const ask = async <T>(what: string, statement: string, byContact = true): Promise<T[]> => {
+      const here = await opts.q<T>(statement).catch((e) => {
         notes.push(`${what} could not be read: ${e instanceof Error ? e.message : String(e)}`)
         return [] as T[]
       })
+      if (!alsoRead.length || !opts.qIn) return here
+      /**
+       * The same window, read again under each tenant the statements strayed into.
+       *
+       * Scoped by TIME alone rather than by contact, and that is a real difference worth
+       * stating: a hand-over gives the person a new `contact` row in the new business, so
+       * the id this record is keyed on matches nothing there. Inside one turn's window
+       * that is tight enough to be honest — a business seconds old has no other traffic —
+       * and it is named in a note rather than assumed away.
+       */
+      const strayedRows: T[] = []
+      for (const other of alsoRead) {
+        const rows = await opts
+          .qIn(other, byContact ? statement.split(/and contact_id = '[^']*'::uuid/).join('') : statement)
+          .catch((e) => {
+            notes.push(`${what} in ${other} could not be read: ${e instanceof Error ? e.message : String(e)}`)
+            return [] as any[]
+          })
+        strayedRows.push(...(rows as T[]))
+      }
+      return [...here, ...strayedRows]
+    }
 
     /**
      * Did this turn's work happen somewhere this record cannot see?
@@ -847,10 +891,26 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
       ...new Set(sql.map((r) => r.academyId).filter((a): a is string => !!a && a !== scope)),
     ]
     if (scope && strayed.length) {
+      /**
+       * @mechanism alsoRead — the evidence queries are re-run under every tenant this turn
+       *   strayed into, so a founding turn records the business it created rather than
+       *   recording silence. The note below has stated this gap in words since it was
+       *   written — "the rows are not missing from the run, they are missing from the
+       *   record" — and a reader who did not read the note took `sent: 0` on the most
+       *   important conversation in the product as a product failure. Measured on
+       *   `2026-08-22-13-29-sim-8528`: three hand-over turns, each carrying the note, each
+       *   recording no reply, no tokens and no cost against an onward turn of 85,082
+       *   prompt tokens that had answered the person. Every rupee figure in every record
+       *   was a floor.
+       */
+      alsoRead = opts.qIn ? strayed : []
       notes.push(
-        `this turn ran statements in ${strayed.join(', ')} but its evidence was read as ${scope}: ` +
-          'cm_service is not an RLS bypass, so any reply, turn row or audit row written in another ' +
-          'tenant is missing from this record rather than absent from the run.',
+        `this turn ran statements in ${strayed.join(', ')} and its own tenant is ${scope}` +
+          (opts.qIn
+            ? ': the evidence below is read in both, the strayed half scoped by time rather than ' +
+              'by contact, because a hand-over gives this person a different contact row there.'
+            : ': cm_service is not an RLS bypass, so any reply, turn row or audit row written in ' +
+              'another tenant is missing from this record rather than absent from the run.'),
       )
     }
 
