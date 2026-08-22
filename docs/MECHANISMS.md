@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-211 mechanisms · 33 findings closed by one · 25 findings still open
+213 mechanisms · 33 findings closed by one · 25 findings still open
 
 ## The scan
 
@@ -105,6 +105,7 @@ One line each. Find a candidate here, then read its entry below.
 `failedReasons` — refusals are counted by tool name plus the reason with ids, quoted literals and numbers stripped out, so th…  
 `saidNothingDone` — a round that answers in words while the turn has touched NOTHING does not end the turn.  
 `stagedTapAwaitingThem` — a job turn's trailing prose is discarded UNLESS the turn staged a confirmation somebody has to tap.  
+`askedForAMessage` — the discard asks what the JOB asked for, not what the model produced.  
 `affordanceFits` — the confirmation button on trailing prose is the RUNTIME's addition, and attaching it drops the body cap fr…  
 `landed` — the trailing send is the LAST send of a turn, and it was the only one with nothing underneath it.  
 `reflectionOpening` — the reflection preamble is DERIVED from what reached the asker, not asserted over it.  
@@ -117,6 +118,7 @@ One line each. Find a candidate here, then read its entry below.
 `policyShapedFact` — refuses a fact that reads as a rule about how the business runs, and names `business_rule` as its home:  
 `rowShapedFact` — the placement gate, enforced at the record and not only at the tool:  
 `hotSet` — the memory read the prompt carries, with the three states nothing else here distinguished:  
+`uncompacted` — below the threshold the hot set IS the facts, in the order they were learned, rather than a count of them a…  
 `curate` — rebuilds the hot set from the live fact set on a schedule, never per turn:  
 `resolvePlayerPerson` — the single answer to "is this human already here?" for every write path that mints a player, matched agains…  
 `rosterOf` — the one place any operation reads a class roster, taken as the service role rather than as the caller, beca…  
@@ -378,43 +380,45 @@ One line each. Find a candidate here, then read its entry below.
   the one predicate for "this draft must not go out even if the repair round fails". Lives beside the rules rather than at the send site, so the list of what counts as machinery has one author: `lib/agent/loop.ts` asks this question instead of re-deciding it, which is the drift `proseViolations` itself exists to avoid. Today exactly one rule sets it — a wire-shape object in the body — and the narrowness is the point: every other violation leaves a sentence a person can still read and act on.
 - **`vocabularyPreferences`** — `lib/agent/lint.ts:614`  
   their own words are told to the model, never applied to its message. This reads a stored FACT, which is a pattern over data; the same pattern over a message about to be sent is an unsupervised judge standing between the author and the reader, which is what `applyVocabulary` was before it was deleted. Telling the model that they say "batch" and letting it choose is the half that ever worked, and a preference is not a falsehood, so there is nothing here to refuse either.
-- **`runTurn`** — `lib/agent/loop.ts:150`  
+- **`runTurn`** — `lib/agent/loop.ts:167`  
   opens one SQL capture per turn, so what the model actually sent to Postgres is recorded in production and not only under a harness. The capture is async-scoped (`lib/agent/sql-trace.ts`), which is what makes it safe here: Fluid Compute reuses one function instance across concurrent requests, and the module variable this replaced would have had two overlapping turns writing into each other's record and then closing it early. `rows: false` — a read's rows already come back in the tool result and a write's come back as before/after images in `row_snapshot`, so storing them again would be a third copy of the same bytes.
-- **`handover`** — `lib/agent/loop.ts:499`  
+- **`handover`** — `lib/agent/loop.ts:516`  
   performed HERE rather than inside the tool that decided it, and that inversion is the whole reason `lib/frontdesk/` can exist without a cycle back into this file. It is the shape `executeAction` already uses for a button whose payload was a reply: the text "re-enters as if it had been typed". Two turn rows are written, in two academies, and that is the honest record — the front desk answered a stranger, and a business answered its first customer, and neither is the other.
-- **`ToolTrace`** — `lib/agent/loop.ts:928`  
+- **`ToolTrace`** — `lib/agent/loop.ts:945`  
   the flight recorder carries the model's OWN rounds beside the tool calls, under the `(model)` and `(context)` markers that `isToolCall` keeps out of tool counts: what it wrote, what it deliberated (`reasoning`, a field of its own, capped at 24k rather than folded into `args` and cut at 2k), what it spent and why it stopped — per round, in order. `evidence` caps these rows in production and clips nothing while an instrument holds a capture open, so a run can also be asked what the model was GIVEN. Without it a turn reads back as a list of tool calls with the reasoning removed, and a turn that cost 128k tokens over six rounds cannot be asked which round was expensive.
-- **`evidence`** — `lib/agent/loop.ts:1047`  
+- **`evidence`** — `lib/agent/loop.ts:1064`  
   records the value WHOLE and carries the cap that its own call site chose, so the one clip happens once, at the end, in `projectTrace`. Twenty-six sites each pass a different limit — 400 for a button diagnostic, 24,000 for a round's reasoning — and the alternative shapes were both wrong: capping here means the complete record can never be recovered, and dropping the per-site limits in favour of one number per field silently grows `turn.tool_calls`, which `recentToolTurns` reads back in full on the hot path of every turn. The marker costs an allocation and buys both records from one traversal.
-- **`projectTrace`** — `lib/agent/loop.ts:1101`  
+- **`projectTrace`** — `lib/agent/loop.ts:1118`  
   the same rounds twice: `stored` is what `turn.tool_calls` has always held, clipped at each site's own limit and without the `(context)` round; `full` is the whole thing, for `turn_record`. The split is what lets production record everything without touching the hot path — `recentToolTurns` reads `tool_calls` back in full for four turns on EVERY turn, so a column that grows is a read that grows forever. Under a harness the stored projection is the full one, exactly as `captureFullTrace` always made it, because `_capture.ts` reads the `(context)` round back out of `tool_calls` to count `contextCuts`.
-- **`tapBlock`** — `lib/agent/loop.ts:1131`  
+- **`tapBlock`** — `lib/agent/loop.ts:1148`  
   a committed tap enters the turn as a stated fact in the variable tail, not as a fabricated tool call the model never made. The distinction is the same one `spokeAsTrailingProse` exists for: this runtime does not let the model hold a false picture of its own turn, and inventing an assistant `act` call to carry the tap would have done exactly that. So the block says who tapped what, that it ran before this round with nothing inferred, and hands over the plan's result in `committedResult`'s shape — the same object `act` returns — with `seedFromCommitted` making `turnState` agree with it.
-- **`refusedTapBlock`** — `lib/agent/loop.ts:1157`  
+- **`refusedTapBlock`** — `lib/agent/loop.ts:1174`  
   a tap refused AT THE GATE opens an ordinary turn and arrives here as a stated fact, instead of ending the turn with a fixed sentence.
-- **`spoke`** — `lib/agent/loop.ts:1400`  
+- **`spoke`** — `lib/agent/loop.ts:1417`  
   the turn's test for "was this person answered" is what arrived at the ASKER's contact, not what left the building: a proposal routed to the owner is a turn that sent something and told the person who asked nothing. When it is false and nothing was drafted either, the turn spends one toolless recovery round putting what it already learned into words, and apologises only if that fails too — one of three sentences, and a census of this turn's `message` rows suppresses even that if the runtime already said something true, because a second message reads as the first being withdrawn. Going quiet is the one failure a person cannot tell apart from being ignored.
-- **`failedReasons`** — `lib/agent/loop.ts:1516`  
+- **`failedReasons`** — `lib/agent/loop.ts:1533`  
   refusals are counted by tool name plus the reason with ids, quoted literals and numbers stripped out, so three attempts that differed only in which irrelevant argument was edited read as one refusal repeating: the second says so in the result the model reads, the third stalls the turn out of the loop and into the recovery round. With `failedCalls` beside it, which blocks a byte-identical repeat before `runTool` sees it, this is what stops a stuck turn spending every remaining round — 93 seconds and 165k tokens, measured — on a call the world will not let succeed, and ending in an apology that invents a cause.
-- **`saidNothingDone`** — `lib/agent/loop.ts:1646`  
+- **`saidNothingDone`** — `lib/agent/loop.ts:1663`  
   a round that answers in words while the turn has touched NOTHING does not end the turn. It costs one round, once (`saidNothingDone`), (the flag this is named for) and only where the model called no tool at all this turn — not a turn that read and then answered, which has looked at something. The runtime states its own emptiness rather than guessing at intent: `consumeAction` is the one path with no model in it and this is the same discipline, so the round says what is true (nothing changed) and leaves what it means (was a change asked for?) to the only thing that can read the sentence. Calling nothing again is the correct answer to a question and exits on the next pass, which is what the round C30 removed used to do for no reason at all.
-- **`stagedTapAwaitingThem`** — `lib/agent/loop.ts:2081`  
+- **`stagedTapAwaitingThem`** — `lib/agent/loop.ts:2098`  
   a job turn's trailing prose is discarded UNLESS the turn staged a confirmation somebody has to tap. Deliberation is not an offer: F-B's discard is about a job narrating itself, and it stays. But a staged plan is the one thing a job can produce that REQUIRES a sentence, because the button is minted onto the trailing message and nothing else on this path can carry it. Discarding the prose discards the offer with it, silently, and the job records as done.
-- **`affordanceFits`** — `lib/agent/loop.ts:2266`  
+- **`askedForAMessage`** — `lib/agent/loop.ts:2124`  
+  the discard asks what the JOB asked for, not what the model produced. `stagedTapAwaitingThem` above lifted it for the one case that had been measured — a staged plan, whose button cannot ride anything but a sentence — and left the larger one standing: a job whose whole deliverable IS the sentence.
+- **`affordanceFits`** — `lib/agent/loop.ts:2314`  
   the confirmation button on trailing prose is the RUNTIME's addition, and attaching it drops the body cap from 4096 to 1024 (`validateOutbound`: an interactive message is the shorter shape). It is checked against the body actually going out, because gate 5 in `send.ts` states that what reaches it over the cap is a runtime compose bug — and this is the one composer in the product that never checked. Over the cap the button is not minted, and the answer goes as plain text rather than as nothing at all.
-- **`landed`** — `lib/agent/loop.ts:2317`  
+- **`landed`** — `lib/agent/loop.ts:2365`  
   the trailing send is the LAST send of a turn, and it was the only one with nothing underneath it. `spoke()`, the `told` census and the whole apology ladder run BEFORE it and are never asked again, so a trailing message the send gates refuse ended the turn with every outbound suppressed and the person holding nothing: on `adv-wall-of-text` that was 22 rounds and Rs 4.98 spent to produce two suppressed rows and silence, with `error` null and nothing anywhere saying so. Asked once more AFTER the send — `spoke()` plus this turn's own unsuppressed rows, because a runtime send from `plan.ts` never enters `outcomes` — and answered with one short sentence carrying no affordance, which is the one shape that cannot fail the gate that has just fired.
-- **`reflectionOpening`** — `lib/agent/loop.ts:2431`  
+- **`reflectionOpening`** — `lib/agent/loop.ts:2479`  
   the reflection preamble is DERIVED from what reached the asker, not asserted over it. It opened with the flat sentence "The reply has gone and nobody is waiting" on every turn that reached this round, including turns where the model's own `reply` had been REFUSED and the runtime had sent something else in its place.
-- **`frontDeskTrace`** — `lib/agent/loop.ts:2637`  
+- **`frontDeskTrace`** — `lib/agent/loop.ts:2685`  
   the front desk's turn is rendered into trace rows by the SAME author that renders a tenant turn's, so `(context)` and `(model)` exist on both and one set of caps governs both. `lib/frontdesk/turn.ts` hands back plain data (`FrontDeskRecord`) rather than rows, because it cannot import `evidence` or the markers from this file without closing an import cycle — so the shape lives here, once, instead of being copied there and drifting.
-- **`flattenToolTurns`** — `lib/agent/loop.ts:2724`  
+- **`flattenToolTurns`** — `lib/agent/loop.ts:2772`  
   a flattened tool CALL is narrated in the runtime's voice, never in the model's. A call is something the model DID; only `content` is something it SAID. This function already draws that line for the other half — a tool RESULT goes out as `role: 'user'`, `[name came back: …]` — and put the call itself into `role: 'assistant'`, so the flattened history claimed the model had uttered `[you called reply with {"body": …}]`.
-- **`recentHistory`** — `lib/agent/loop.ts:2837`  
+- **`recentHistory`** — `lib/agent/loop.ts:2885`  
   a conversation prefetch that fails returns `why` beside the messages instead of an empty array, and the caller states it in the tail: an empty history is not a degraded turn but a DIFFERENT one, in which a family the business has served for months has never written before — so the model greets them, re-asks what they answered yesterday and re-offers what they already declined, all of it correctly derived from what it was given. The reason travels BESIDE the messages and never among them, because a runtime sentence in the message list arrives as something a person said; `historyGaps` rides the same channel with the thread's real time breaks.
-- **`recentToolTurns`** — `lib/agent/loop.ts:2904`  
+- **`recentToolTurns`** — `lib/agent/loop.ts:2952`  
   the last few turns' tool calls, read once and replayed into the tail as two labelled blocks. `recentLookups` keeps the reads, stamped with `ageOf`, because an unstamped two-day-old zero-row result reads as current data and is how an owner was reassured that every register was marked; `recentActions` keeps the writes, carrying their OUTCOME — `staged behind a confirmation button — NOT committed`, `failed … nothing was written` — so "did I actually do that" is answerable without the model thinking to query `audit_entry`, and a refusal cannot be replayed as a row to act on. A read that fails comes back with `why` rather than nothing, so a turn that could not see its own history stops looking exactly like a turn with no history to see.
-- **`writeTurn`** — `lib/agent/loop.ts:3268`  
+- **`writeTurn`** — `lib/agent/loop.ts:3316`  
   the complete turn goes down in the SAME transaction as the row it belongs to, so there is never a `turn` whose record is missing and never a record for a turn that rolled back — and it costs one statement inside an open transaction rather than four more round trips. Behind a SAVEPOINT, because the priority between the two rows is not symmetric: `turn` is operational and read back on the hot path of every turn, the record is instrumentation. Without the savepoint an oversized or malformed payload would poison the transaction and take the turn row with it — an instrument deleting the thing it measures.
 - **`memory_fact`** — `lib/agent/memory.ts:4`  
   the append-only record, kept separate from the bounded hot set (`academy.memory` / `person.memory`) the prompt actually carries. A fact is never edited and never deleted; a correction writes a superseding row, and the live set everywhere is "not retired and not superseded". Collapsing the two into one capped blob puts the pruning decision inside a model under context pressure, where what it drops is invisible — everything outside the hot set stays reachable with `read`, so forgetting is a context decision and never a storage one.
@@ -424,7 +428,9 @@ One line each. Find a candidate here, then read its entry below.
   the placement gate, enforced at the record and not only at the tool: a fact carrying a rupee figure, a phone number, a payment handle or a multi-day timetable is refused, because every one of those lives in a row and a memory copy is a future wrong answer waiting for the row to change. The generator is a model and the gate cannot be, so it tests the one thing the string decides — shape — and the refusal says what to keep instead. Deliberately partial: a time or a single day is how preferences are said.
 - **`hotSet`** — `lib/agent/memory.ts:316`  
   the memory read the prompt carries, with the three states nothing else here distinguished: `null` is a FAILED read, `''` is a subject with genuinely nothing recorded, and a subject whose facts exist but have not yet been compacted says so and says where they are. That third one was the common case and it read as the second: the summary is written by `curate` on crossing a multiple of CURATE_THRESHOLD live facts, so everything stored before the twelfth was invisible while the tail said "(nothing recorded yet)" — 38 of 38 context-bearing turns of `2026-08-22-08-13-sim-7bo8`, over a run in which `remember` was called and succeeded. A tool whose output the model can never see is a tool it has no reason to keep using. The tail renders an empty hot set as "(nothing recorded yet)", so a refused or timed-out read told the model, in as many words, that it had never been told anything about a business it has served for months. The reason for the failure rides back with the null, and the required `academyId` closes the other door to the same wrong answer — the process-local tenant map is empty on every cold start.
-- **`curate`** — `lib/agent/memory.ts:472`  
+- **`uncompacted`** — `lib/agent/memory.ts:380`  
+  below the threshold the hot set IS the facts, in the order they were learned, rather than a count of them and an address to go and read.
+- **`curate`** — `lib/agent/memory.ts:516`  
   rebuilds the hot set from the live fact set on a schedule, never per turn: `writeFact` enqueues a `memory_curate` job only when a subject crosses CURATE_THRESHOLD live facts, under a dedupe key that makes a second crossing of the same threshold a no-op. Curating per turn is a model call after every turn, roughly doubling the model calls in the product; enqueuing in its own session after the fact has committed makes a scheduling failure a stale cache and never a lost fact, and nothing usable back twice running leaves the existing hot set alone.
 - **`resolvePlayerPerson`** — `lib/agent/operations.ts:144`  
   the single answer to "is this human already here?" for every write path that mints a player, matched against the names this contact already holds rather than by an exact `=`. Retires the class where one human becomes two `person` rows behind one phone — one holding the money, one holding the attendance — which is what an unconditional insert did to every self-paying adult. Deliberately conservative: it reuses only on a whole-name match, so a child booked from a parent's phone stays a new person.

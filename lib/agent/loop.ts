@@ -56,7 +56,24 @@ export type TurnInput = {
   actionId?: string
   source: 'inbound' | 'job' | 'sim'
   /** Runtime-internal: a self-scheduled task's instruction and its data (§13.1). */
-  task?: { instruction: string; queryResults?: unknown }
+  task?: {
+    instruction: string
+    queryResults?: unknown
+    /**
+     * What this job asked the model FOR, declared by the job that wrote the
+     * instruction, because it is the only thing that knows.
+     *
+     * `'a decision'` — the default and `agent_task`'s case. The instruction is
+     * *"look at this again and work out whether anything is owed"*, silence is a
+     * real answer (§13.1), and trailing prose is the model narrating itself. It
+     * is discarded, which is F-B and still right.
+     *
+     * `'a message'` — `runSynthesis`'s case. The instruction is *"write them their
+     * morning brief"*. Prose is then the DELIVERABLE, not deliberation, and
+     * discarding it destroys the only thing the job existed to produce.
+     */
+    asked?: 'a message' | 'a decision'
+  }
 }
 
 export type TurnOutput = { turnId: string; sent: SendOutcome[]; toolCalls: number; error?: string }
@@ -2103,8 +2120,39 @@ async function modelTurn(
    *   and put it behind a button they tap"* — the runtime was throwing away the only half
    *   of that it cannot do without the model.
    */
+  /**
+   * @mechanism askedForAMessage — the discard asks what the JOB asked for, not what the
+   *   model produced. `stagedTapAwaitingThem` above lifted it for the one case that had
+   *   been measured — a staged plan, whose button cannot ride anything but a sentence —
+   *   and left the larger one standing: a job whose whole deliverable IS the sentence.
+   *
+   *   `runSynthesis` writes *"Write Rahul their morning brief, as a reply to them … If
+   *   that is nothing, say so in one line — or send nothing at all"*. Three outcomes are
+   *   offered and the runtime implemented one: whichever the model chose, if it came out
+   *   as prose rather than through `reply`, it became silence, and the job recorded
+   *   `:done`.
+   *
+   *   What that cost, on the four runs recorded on 22 Aug 2026 — all three of the later
+   *   ones carrying `stagedTapAwaitingThem`, so this is the class AFTER F-CX was called
+   *   closed: 30 discards on `b8xo` and 24 on `ceeg`, ~23,000 characters of composed
+   *   message, including ten morning briefs on `ceeg` and three briefs and two digests on
+   *   `b8xo`. Among them, on day 19, the only message in the month that named what was
+   *   actually wrong with the business — *"Two weeks in, all three classes are still
+   *   running to empty courts. 13 sessions have gone by with zero players on any register
+   *   … That's not a backlog to clear; it's the roster itself."* — written, dropped here,
+   *   and recorded as an evening digest delivered. Two commits were then merged to build
+   *   machinery that would say that same thing.
+   *
+   *   The run WITHOUT the fix, `7bo8`, discarded once. The number went up because the
+   *   narrow rescue taught nothing about the wide case.
+   *
+   *   Deliberation is still discarded and F-B still holds: `'a decision'` is the default,
+   *   and a watch that concludes in silence is the system working. What changed is that a
+   *   job may now say it asked for words, and be given them.
+   */
   const stagedTapAwaitingThem = pendingConfirmation(toolCtx)
-  if (text.trim() && !spoke() && input.source === 'job' && !stagedTapAwaitingThem) {
+  const askedForAMessage = input.task?.asked === 'a message'
+  if (text.trim() && !spoke() && input.source === 'job' && !stagedTapAwaitingThem && !askedForAMessage) {
     trace.push({ round: rounds, name: '(job turn: trailing prose discarded, tools are how a job speaks)', ms: 0, args: evidence(text, 2000) })
     text = ''
   }

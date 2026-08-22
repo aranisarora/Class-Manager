@@ -258,6 +258,36 @@ function evaluate(turns) {
     else say(`  ·· ${gaveUp.map((t) => `${t.who} left (day ${t.day})`).join(', ')} — not the principal seat, watch continues`)
   }
 
+  /**
+   * Messages the model wrote and the runtime destroyed.
+   *
+   * A turn whose model composed a message and sent nothing is indistinguishable,
+   * in every count this record keeps, from a turn that had nothing to say — and
+   * the job behind it records `:done` either way. On `b8xo` that hid three morning
+   * briefs, two evening digests and, on day 19, the only message in the month that
+   * named the actual business failure: *"Two weeks in, all three classes are still
+   * running to empty courts."* Twelve thousand characters, composed and dropped.
+   * On `ceeg`, ten morning briefs.
+   *
+   * Counted here rather than judged: this says nothing about whether the message
+   * was any good, only that the drive paid a model call for it and no phone ever
+   * saw it — which is the same question every other tripwire asks.
+   */
+  const dropped = turns.flatMap((t) =>
+    (t.rounds ?? [])
+      .filter((r) => /discarded/.test(String(r.name ?? '')))
+      .map((r) => ({ t, chars: String(typeof r.args === 'string' ? r.args : JSON.stringify(r.args ?? '')).length })),
+  )
+  const droppedSilent = dropped.filter((d) => Number(d.t.sent ?? 0) === 0)
+  if (droppedSilent.length >= 3)
+    trip(
+      'composed-and-dropped',
+      `${dropped.length} composed message(s) were discarded by the runtime (${dropped.reduce((a, d) => a + d.chars, 0)} characters), ` +
+        `${droppedSilent.length} of them on turns that then sent NOTHING — ` +
+        `${[...new Set(droppedSilent.flatMap((d) => (d.t.jobs ?? []).filter((j) => /:done/.test(j) && !/lane/.test(j))))].join(', ') || 'no named job'} ` +
+        `recorded done regardless. Every count in this run treats those turns as quiet ones.`,
+    )
+
   if (suppressed.length >= 5)
     trip(
       'suppressed',

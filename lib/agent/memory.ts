@@ -376,20 +376,64 @@ export async function hotSet(
      * copy of it — but the count and where to read them, which is what turns "nothing
      * recorded" from a false statement into a true one with a route out of it.
      */
-    const [{ n } = { n: 0 }] = await withSession(serviceCtx(tenant), async (tx) => {
+    /**
+     * @mechanism uncompacted — below the threshold the hot set IS the facts, in the order
+     *   they were learned, rather than a count of them and an address to go and read.
+     *
+     *   The third state this replaces was right that the tail must stop saying "(nothing
+     *   recorded yet)" over a subject with facts on file, and it fixed that sentence
+     *   completely. What it did not do was put the fact in front of the model: it handed
+     *   over `n` and a `select`, on the argument that rendering them here would be a
+     *   second uncompacted copy of what `curate` compacts. That argument holds ABOVE the
+     *   threshold and inverts below it — `curate` writes the summary on crossing a
+     *   multiple of `CURATE_THRESHOLD` live facts, so under twelve there is no first copy
+     *   for this to be the second of. This branch is only ever reached when none exists.
+     *
+     *   Measured over the four runs of 22 Aug 2026, three of them carrying that third
+     *   state: 46 `remember` calls and 4 reads of `memory_fact`. On `b8xo` the tail said
+     *   "3 fact(s) recorded … read memory_fact if what you need is not in front of you" on
+     *   34 turns and the model went and looked ONCE. A pointer followed one time in
+     *   thirty-four is not a route, and the facts it pointed at were about an owner who
+     *   left on day 20 because the product kept asking him something he had answered.
+     *
+     *   Every business is under twelve facts for the whole of its setup, which is the
+     *   stretch where what it has just been told is the only thing worth remembering.
+     *
+     *   Bounded by the SAME budget `curate` writes against — `HOT_SET_MAX_LINES` and
+     *   `HOT_SET_MAX_CHARS`, the ~400 tokens §4.4 allows a hot set — so the prompt cannot
+     *   grow past what a compacted summary would have cost, and the two states of this
+     *   field are the same size. Oldest first, so what falls off is what curation would
+     *   have folded away, and the address still rides along whenever anything was left
+     *   out — the case the third state was built for, now reached only when it is true.
+     */
+    const uncompacted = await withSession(serviceCtx(tenant), async (tx) => {
       const r = subjectKind === 'academy'
-        ? await tx`select count(*)::int as n from memory_fact
-                    where academy_id = ${subjectId} and subject_kind = 'academy' and retired_at is null`
-        : await tx`select count(*)::int as n from memory_fact
-                    where subject_kind = 'person' and subject_id = ${subjectId} and retired_at is null`
-      return r as unknown as { n: number }[]
+        ? await tx`select fact from memory_fact
+                    where academy_id = ${subjectId} and subject_kind = 'academy' and retired_at is null
+                    order by created_at asc limit ${HOT_SET_MAX_LINES + 1}`
+        : await tx`select fact from memory_fact
+                    where subject_kind = 'person' and subject_id = ${subjectId} and retired_at is null
+                    order by created_at asc limit ${HOT_SET_MAX_LINES + 1}`
+      return r as unknown as { fact: string }[]
     })
-    if (!n) return { value: '', why: null }
+    if (!uncompacted.length) return { value: '', why: null }
+
+    const lines: string[] = []
+    let budget = HOT_SET_MAX_CHARS
+    for (const { fact } of uncompacted.slice(0, HOT_SET_MAX_LINES)) {
+      const line = `- ${String(fact ?? '').trim()}`
+      if (line.length > budget) break
+      budget -= line.length + 1
+      lines.push(line)
+    }
+    const shown = lines.length
     return {
       value:
-        `${n} fact(s) recorded and not yet compacted into a summary — they are real and they are yours. ` +
-        `Read memory_fact (subject_kind = '${subjectKind}'${subjectKind === 'person' ? `, subject_id = '${subjectId}'` : ''}, ` +
-        'retired_at is null) if what you need is not in front of you.',
+        lines.join('\n') +
+        (shown < uncompacted.length
+          ? `\n(${shown} of what is on file; the rest is in memory_fact — subject_kind = '${subjectKind}'` +
+            `${subjectKind === 'person' ? `, subject_id = '${subjectId}'` : ''}, retired_at is null)`
+          : ''),
       why: null,
     }
   } catch (e) {

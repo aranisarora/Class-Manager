@@ -366,6 +366,9 @@ async function runSynthesis(job: Job, kind: 'brief' | 'digest'): Promise<void> {
             `unpaid. Drop any section that would be filler. Read what the sentences need; the counts below ` +
             `are only what changed.`),
       queryResults: { changed_since_the_last_one: news, note: 'Counts, not content. Look at whatever these point at.' },
+      // The instruction two lines up asks for words. See `askedForAMessage`
+      // (lib/agent/loop.ts) for what happened while this went undeclared.
+      asked: 'a message',
     },
   })
   note(`${kind} for ${isoDate(nowAt, academy.timezone)}: opened a turn — ${total} thing(s) had changed`)
