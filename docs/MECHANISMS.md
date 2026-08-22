@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-208 mechanisms · 32 findings closed by one · 25 findings still open
+209 mechanisms · 32 findings closed by one · 25 findings still open
 
 ## The scan
 
@@ -220,6 +220,7 @@ One line each. Find a candidate here, then read its entry below.
 `materializeSessions` — rewrites the horizon from `class_slot` idempotently on `unique (class_id, starts_at)`:  
 `postClassRegister` — the register's universe is the UNRESOLVED roster, not the whole one.  
 `registerExpiry` — where §18 rule 2 rightly drops an escalation about the recipient to the recipient, the same fact is REFRAME…  
+`owedList` — the message names ALL the registers still open rather than the one that just expired, which is what its own…  
 
 **`lib/messaging/`**  
 `CATALOG` — one row per moment code raises, with the policy riding on it as DATA rather than as prose at each call site:  
@@ -624,6 +625,8 @@ One line each. Find a candidate here, then read its entry below.
   the register's universe is the UNRESOLVED roster, not the whole one. "Already marked" used to mean any attendance row existed, so one parent's advance cancellation suppressed the entire register and the coach was never asked about anybody else; it now means every enrolled player is resolved, and the ask — including what `[All present]` carries — covers the remainder only, so a tap cannot clobber a cancellation already on record.
 - **`registerExpiry`** — `lib/jobs/handlers/sessions.ts:283`  
   where §18 rule 2 rightly drops an escalation about the recipient to the recipient, the same fact is REFRAMED and sent anyway: "two hours since Kabir's session and nothing is billed for it yet" carries neither `isEscalation` nor a subject, so nothing drops it, and it is news rather than a scolding. For a solo per-session business the unmarked register IS the invoice, and the drop cost one month ~21 sessions with a single register marked. Its `stateKey` is the SET of registers still owed, so three unmarked ones are one message and a fourth is a change worth saying. **Closes F-AS, F-AN.**
+- **`owedList`** — `lib/jobs/handlers/sessions.ts:385`  
+  the message names ALL the registers still open rather than the one that just expired, which is what its own `stateKey` has claimed since F-AN. One message per distinct SET was always the design; one message that describes the set is the half that was missing. It is not a cap — nothing is sent less often — it is the same send carrying the information the person needs to act on it, and the tap now takes them to the whole pile instead of the newest item in it.
 
 ## `lib/messaging/`
 

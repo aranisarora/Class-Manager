@@ -347,27 +347,54 @@ export async function registerExpiry(job: Job): Promise<void> {
     // otherwise. An empty array cast to uuid[] would have thrown here on every
     // unassigned session, which is a job that dies rather than a message that
     // repeats.
-    const outstanding = coachIds.length
-      ? (
-          await tx<{ session_id: string }[]>`
-            select s.id as session_id
+    const outstandingRows = coachIds.length
+      ? await tx<{ session_id: string; class_name: string; starts_at: Date }[]>`
+            select s.id as session_id, cl.name as class_name, s.starts_at
               from session s
+              join class cl on cl.id = s.class_id
               join session_coach sc on sc.session_id = s.id and sc.declined_at is null
              where s.academy_id = ${academyId}
                and sc.coach_id = any (${coachIds}::uuid[])
                and s.status = 'scheduled'
                and s.ends_at < app.now()
                and not exists (select 1 from attendance a where a.session_id = s.id)
-             order by s.id`
-        ).map((r) => r.session_id)
-      : [sessionId]
+             order by s.starts_at`
+      : []
+    const outstanding = outstandingRows.length ? outstandingRows.map((r) => r.session_id) : [sessionId]
 
-    return { academy, session, coaches, recipients, outstanding }
+    return { academy, session, coaches, recipients, outstanding, outstandingRows }
   })
 
-  const { academy, session, coaches, recipients, outstanding } = plan
+  const { academy, session, coaches, recipients, outstanding, outstandingRows } = plan
   const tz = academy.timezone
   const when = `${dayLabel(session.starts_at, tz, nowAt)} ${timeLabel(session.starts_at, tz)}`
+
+  /**
+   * Every register still owed, named — not only the one this job happens to be about.
+   *
+   * `stateKey` below has always been the SET (F-AN), and the docstring above has always
+   * said "three unmarked ones are one message". The BODY never got that far: it named
+   * `session.class_name` alone, so each newly-unmarked register changed the set, produced
+   * a new state, and sent a message about the newest session only. Driven over thirty days
+   * on `2026-08-22-15-21-sim-ceeg`: 30 sessions ran, 5 registers were marked, and the owner
+   * received "Two hours since Morning Juniors", "Two hours since Adults Batch", "Two hours
+   * since Saturday Junior" as three separate messages — each true, none of them telling him
+   * he had a growing pile. ₹15,000 of coach ledger against ₹4,000 of family charges, and the
+   * register is what closes that gap.
+   *
+   * @mechanism owedList — the message names ALL the registers still open rather than
+   *   the one that just expired, which is what its own `stateKey` has claimed since F-AN. One
+   *   message per distinct SET was always the design; one message that describes the set is
+   *   the half that was missing. It is not a cap — nothing is sent less often — it is the
+   *   same send carrying the information the person needs to act on it, and the tap now takes
+   *   them to the whole pile instead of the newest item in it.
+   */
+  const NL = String.fromCharCode(10)
+  const owed = outstandingRows.map(
+    (r) => `• ${r.class_name} — ${dayLabel(r.starts_at, tz, nowAt)} ${timeLabel(r.starts_at, tz)}`,
+  )
+  const owedList = owed.join(NL)
+  const theWholeSet = outstandingRows.length > 1
 
   const coachPeople = new Set(coaches.map((c) => c.person_id))
   for (const admin of recipients) {
@@ -381,19 +408,30 @@ export async function registerExpiry(job: Job): Promise<void> {
       toContactId: admin.contact_id as string,
       header: clamp(academy.name, LIMITS.headerChars),
       body: clamp(
-        aboutThemselves
+        // ALL of them, not just the newest one — see `everyRegisterOwed`.
+        theWholeSet
+          ? (aboutThemselves
+              ? `${outstandingRows.length} registers are still open and nothing is billed for any of them — ` +
+                `the register is what writes the charges.${NL}${NL}${owedList}`
+              : `${outstandingRows.length} registers still aren't marked.${NL}${NL}${owedList}`)
           // News, in the order a person cares about it: how long, whose session,
           // and the consequence that is actually theirs — nothing is billed until
           // this is marked. No "still isn't", because there is nobody to have
           // been waiting on.
-          ? `Two hours since ${session.class_name} (${when}) and nothing is billed for it yet — ` +
-            `the register is what writes the charges.`
-          : `The register for ${session.class_name} (${when}) still isn't marked.`,
+          : aboutThemselves
+            ? `Two hours since ${session.class_name} (${when}) and nothing is billed for it yet — ` +
+              `the register is what writes the charges.`
+            : `The register for ${session.class_name} (${when}) still isn't marked.`,
         LIMITS.bodyChars,
       ),
       buttons: [{
         title: buttonTitle(aboutThemselves ? 'Take the register' : 'Mark it myself'),
-        action: { kind: 'reply', text: `Mark the register for ${session.class_name}, ${when}` },
+        action: {
+          kind: 'reply',
+          text: theWholeSet
+            ? `Mark the registers still open: ${owed.join('; ')}`
+            : `Mark the register for ${session.class_name}, ${when}`,
+        },
       }],
       catalogId: 'AD-REGISTER-MISSING',
       // Neither flag when it is their own: an escalation about the recipient is
