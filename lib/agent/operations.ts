@@ -265,6 +265,16 @@ type RosterRow = {
   rate_amount: string | null
   rate_unit: string | null
   rate_count: number | null
+  /**
+   * The same three, resolved AS OF the day this roster was asked for rather than
+   * as of now. Everything pricing something that ALREADY HAPPENED reads these;
+   * everything answering "what does this cost" reads the three above and is
+   * unchanged. `rosterOf` has taken `onDate` all along — the fix is passing it
+   * one layer further down (F-CJ).
+   */
+  rate_amount_then: string | null
+  rate_unit_then: string | null
+  rate_count_then: number | null
 }
 
 /**
@@ -314,12 +324,16 @@ async function rosterOf(ctx: SessionCtx, classId: string, onDate: string): Promi
             ac.holder_person_id, e.id as enrollment_id, e.is_trial,
             coalesce(e.rate_amount, c.rate_amount) as rate_amount,
             coalesce(e.rate_unit, c.rate_unit)     as rate_unit,
-            coalesce(e.rate_count, c.rate_count)   as rate_count
+            coalesce(e.rate_count, c.rate_count)   as rate_count,
+            rt.amount as rate_amount_then,
+            rt.unit   as rate_unit_then,
+            rt.cnt    as rate_count_then
        from enrollment e
        join player p  on p.id = e.player_id and p.active
        join person pe on pe.id = p.person_id
        join account ac on ac.id = p.account_id
        join class c   on c.id = e.class_id
+       left join lateral app.rate_on(e.id, date ${lit(onDate)}) rt on true
       where e.class_id = ${uid(classId)}
         and e.academy_id = ${uid(ctx.academyId)}
         and e.started_on <= date ${lit(onDate)}
@@ -1617,8 +1631,22 @@ const markAttendance: OperationDef = {
       })
 
       if (!r) continue
-      const unit = r.rate_unit
-      const amount = num(r.rate_amount)
+      /**
+       * The rate the session RAN at, not the one it is being marked at.
+       *
+       * `onDate` is the session's own local date and `rosterOf` has always taken
+       * it; these three are that date carried one layer further down. A register
+       * marked a week late used to bill whatever the price had become in the
+       * meantime — F-CJ, where a 25 August one-to-one that ran at 900 answered
+       * 1100 because the owner had raised it on the 30th.
+       *
+       * The fallback is for a row that predates 0043's backfill and should never
+       * fire; reading null as zero would silently bill nobody, which is the F-BA
+       * shape and worse than billing the wrong number.
+       */
+      const unit = r.rate_unit_then ?? r.rate_unit
+      const amount = num(r.rate_amount_then ?? r.rate_amount)
+      const cnt = r.rate_count_then ?? r.rate_count
       const billable = e.status === 'present' || e.status === 'late' || e.status === 'absent'
 
       // §6.4 — a `session` line for present/late/absent, never for
@@ -1628,10 +1656,12 @@ const markAttendance: OperationDef = {
           e.status === 'absent' ? ' (absent)' : ''
         }`
         steps.push({
-          write: `insert into tally_line (academy_id, account_id, player_id, class_id, period, kind, description, amount, session_id, dedupe_key)
+          write: `insert into tally_line (academy_id, account_id, player_id, class_id, period, kind, description, amount, session_id, dedupe_key,
+                                          rate_amount, rate_unit, rate_count)
                   select ${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)}, ${uid(s.class_id)}, date ${lit(period)},
                          'session', ${lit(desc)}, ${moneyLit(amount)}, ${uid(s.id)},
-                         ${lit(billingKey.session(r.player_id, s.id))}
+                         ${lit(billingKey.session(r.player_id, s.id))},
+                         ${moneyLit(amount)}, ${lit(unit)}, ${cnt === null || cnt === undefined ? 'null' : lit(cnt)}
                    where not exists (select 1 from tally_line t
                                       where t.session_id = ${uid(s.id)} and t.player_id = ${uid(r.player_id)})`,
           service: true,
