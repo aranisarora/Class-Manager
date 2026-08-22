@@ -272,8 +272,24 @@ function evaluate(turns) {
   const got = {}
   for (const t of turns)
     for (const m of t.messages ?? []) if (!m.suppressedReason) got[String(m.to)] = (got[String(m.to)] ?? 0) + 1
-  const busiest = Object.entries(got).sort((a, b) => b[1] - a[1])[0]?.[0]
-  const principal = Object.keys(phoneOf).find((w) => phoneOf[w] === busiest)
+  /**
+   * Who the product reports to, and only once that is a fact rather than a tie.
+   *
+   * Measured on `2026-08-22-19-49-sim-p882`: at day 2, fourteen turns in, the
+   * owner and a coach had each received exactly two messages and the sort picked
+   * the coach — so the watch stopped a healthy run announcing that the seat the
+   * product reports to had walked out, while the owner was still typing. A
+   * departure on day 2 of 30 is worth a line; it is worth stopping a drive only
+   * when the person who leaves is demonstrably the one it was about.
+   *
+   * Two conditions, both cheap: enough of the run to have a shape, and a clear
+   * margin over the next person. Below either, the departure still prints — it is
+   * just not treated as the end of the experiment.
+   */
+  const ranked = Object.entries(got).sort((a, b) => b[1] - a[1])
+  const decisive = day >= 5 && ranked.length > 1 && ranked[0][1] >= ranked[1][1] * 1.5
+  const busiest = decisive ? ranked[0][0] : null
+  const principal = busiest ? Object.keys(phoneOf).find((w) => phoneOf[w] === busiest) : undefined
   const seats = new Set(turns.map((t) => t.who).filter((w) => w && w !== 'queue'))
 
   if (gaveUp.length) {
