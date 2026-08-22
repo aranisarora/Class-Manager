@@ -313,8 +313,15 @@ export async function writeFact(
 /**
  * The academy is REQUIRED, and that is the whole fix.
  *
- * @mechanism hotSet — the memory read the prompt carries, with the two states nothing else
- *   here distinguished: `null` is a FAILED read and `''` is a subject with nothing recorded.
+ * @mechanism hotSet — the memory read the prompt carries, with the three states nothing else
+ *   here distinguished: `null` is a FAILED read, `''` is a subject with genuinely nothing
+ *   recorded, and a subject whose facts exist but have not yet been compacted says so and
+ *   says where they are. That third one was the common case and it read as the second: the
+ *   summary is written by `curate` on crossing a multiple of CURATE_THRESHOLD live facts, so
+ *   everything stored before the twelfth was invisible while the tail said "(nothing recorded
+ *   yet)" — 38 of 38 context-bearing turns of `2026-08-22-08-13-sim-7bo8`, over a run in which
+ *   `remember` was called and succeeded. A tool whose output the model can never see is a tool
+ *   it has no reason to keep using.
  *   The tail renders an empty hot set as "(nothing recorded yet)", so a refused or timed-out
  *   read told the model, in as many words, that it had never been told anything about a
  *   business it has served for months. The reason for the failure rides back with the null,
@@ -350,7 +357,41 @@ export async function hotSet(
           : await tx`select memory from person where id = ${subjectId}`
       return r as unknown as { memory: string | null }[]
     })
-    return { value: (rows[0]?.memory ?? '').trim(), why: null }
+    const value = (rows[0]?.memory ?? '').trim()
+    if (value) return { value, why: null }
+
+    /**
+     * A THIRD state, because `''` was two different facts wearing one string.
+     *
+     * The hot set is a compacted summary written by `curate`, which runs on crossing a
+     * multiple of `CURATE_THRESHOLD` live facts — twelve. Everything `remember` stores
+     * before the twelfth is real, is in `memory_fact`, and is invisible: the tail renders
+     * an empty hot set as "(nothing recorded yet)", so the model is told it has learned
+     * nothing about a business it has been storing facts about all week. Measured on
+     * `2026-08-22-08-13-sim-7bo8`: "## About this business — (nothing recorded yet)" on 38
+     * of 38 context-bearing turns, over a run in which `remember` was called and succeeded.
+     *
+     * So an empty summary now says whether there is anything BEHIND it. Not the facts
+     * themselves — that is `curate`'s job and this must not become a second, uncompacted
+     * copy of it — but the count and where to read them, which is what turns "nothing
+     * recorded" from a false statement into a true one with a route out of it.
+     */
+    const [{ n } = { n: 0 }] = await withSession(serviceCtx(tenant), async (tx) => {
+      const r = subjectKind === 'academy'
+        ? await tx`select count(*)::int as n from memory_fact
+                    where academy_id = ${subjectId} and subject_kind = 'academy' and retired_at is null`
+        : await tx`select count(*)::int as n from memory_fact
+                    where subject_kind = 'person' and subject_id = ${subjectId} and retired_at is null`
+      return r as unknown as { n: number }[]
+    })
+    if (!n) return { value: '', why: null }
+    return {
+      value:
+        `${n} fact(s) recorded and not yet compacted into a summary — they are real and they are yours. ` +
+        `Read memory_fact (subject_kind = '${subjectKind}'${subjectKind === 'person' ? `, subject_id = '${subjectId}'` : ''}, ` +
+        'retired_at is null) if what you need is not in front of you.',
+      why: null,
+    }
   } catch (e) {
     /**
      * **null is a failed read; '' is a subject with nothing recorded.** These were

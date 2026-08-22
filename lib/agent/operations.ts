@@ -3346,8 +3346,15 @@ const setUpBusiness: OperationDef = {
 const dropWatch: OperationDef = {
   name: 'drop_watch',
   ownScope: true,
-  description: 'Stop watching something.',
-  params: z.object({ slug: z.string().min(1) }),
+  description:
+    'Stop watching something. The slug is the exact string printed beside that watch at the top of this ' +
+    'conversation — every live watch is listed there with its own, and nothing else is a valid slug.',
+  params: z.object({
+    slug: z
+      .string()
+      .min(1)
+      .describe('the slug copied from the ALREADY WATCHING line, not the subject sentence beside it'),
+  }),
   async build(ctx, args, id) {
     return [
       { note: `dropping a watch` },

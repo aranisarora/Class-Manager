@@ -1395,10 +1395,22 @@ async function standing(id: Identity): Promise<string[]> {
       for (const w of mine.slice(0, 8)) {
         const subject = String(w.subject ?? w.slug ?? '').replace(/\s+/g, ' ').slice(0, 80)
         const when = inZone(w.run_at, id.academy.timezone || 'Asia/Kolkata').label
+        /**
+         * The SLUG, beside the subject, because it is the only thing `drop_watch` accepts.
+         *
+         * This block exists so the model stops reconstructing pending state from memory,
+         * and it named the watch by its `subject` — the human sentence — while
+         * `drop_watch(slug)` takes the machine key. So the one tool for stopping a watch
+         * asked for a string that appeared nowhere the model could see it, and the row
+         * being formatted here has held both values all along (`liveAgentTasks` selects
+         * `coalesce(payload->>'slug', split_part(dedupe_key, ':', 3)) as slug`).
+         */
+        const slug = String(w.slug ?? '').trim()
         out.push(
-          `ALREADY WATCHING "${subject}" — it next looks on ${when}. You promised this and it is real: do not ` +
-            `mint a second watch for it, and do not say it is not set up. Scheduling this same subject again ` +
-            `REPLACES this one rather than adding to it, so restating the promise is safe.`,
+          `ALREADY WATCHING "${subject}"${slug ? ` (slug: ${slug})` : ''} — it next looks on ${when}. You ` +
+            `promised this and it is real: do not mint a second watch for it, and do not say it is not set up. ` +
+            `Scheduling this same subject again REPLACES this one rather than adding to it, so restating the ` +
+            `promise is safe.${slug ? ` To stop it, drop_watch with slug "${slug}".` : ''}`,
         )
       }
     } catch {
