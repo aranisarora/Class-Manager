@@ -73,7 +73,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { academyOf, drive, logSeat, q, readPhone, renderPhone, type Seen, type Session } from './_seat'
+import { academyOf, drive, logSeat, q, readPhone, renderPhone, takeHeldBack, type Seen, type Session } from './_seat'
 
 /**
  * Forced before anything is imported that can send, exactly as `_seat.ts` and
@@ -252,7 +252,16 @@ const said: string[] = (await readTurns(DIR))
   .filter((t) => t.who === persona.name && typeof t.say === 'string' && t.say.trim())
   .map((t) => String(t.say))
 
-/** The reply to the last thing they said, already past their cursor. See the header. */
+/**
+ * The reply to the last thing they said, already past their cursor. See the header.
+ *
+ * Held on DISK by `heldBack` (`_seat.ts`) rather than only here, because this process is
+ * restarted deliberately — once at founding, again per mover — and everything in it goes.
+ * Measured on `2026-08-22-08-13-sim-7bo8` turn 0030: Farah Sheikh's phone renders
+ * "(nothing arrived. Your phone stayed silent.)" and she writes "?" against a reply the
+ * product had sent her the window before. She is one of the two customers that run reads
+ * as having lost. This variable is now a cache of the file, not the only copy.
+ */
 let pending: Seen[] = []
 
 /* ---------------------------------------------------------------- tap */
@@ -325,7 +334,11 @@ async function move(ask: Ask): Promise<Told> {
    * waiting for, and it is the unasked-for traffic — the reminder, the digest,
    * the dunning nudge — that lands late.
    */
-  const seen = [...pending, ...(await readPhone(s, KEY, true, ask.lag ?? 0))]
+  // Drained from disk, so a worker that restarted since the last window still knows what
+  // its person is holding. `pending` in this process is only ever the same rows sooner.
+  const held = pending.length ? pending : ((await takeHeldBack(s, KEY)) as Seen[])
+  if (pending.length) await takeHeldBack(s, KEY)
+  const seen = [...held, ...(await readPhone(s, KEY, true, ask.lag ?? 0))]
   pending = []
 
   // The one rendering, kept: the seat decides from these bytes and the record

@@ -529,6 +529,59 @@ async function writeCursor(s: Session, key: string, at: string): Promise<void> {
 }
 
 /**
+ * `pending/<persona>` — what arrived on this phone that its owner has not looked at.
+ *
+ * The messages a `drive()` turn produced are past the cursor the moment it advances,
+ * so until now they lived in a module array in the worker process and nowhere else.
+ * `sim.ts` restarts every worker deliberately — once at founding, again per mover —
+ * under a comment calling the restart "lossless", which is true of what the person
+ * SAID (rebuilt from the run log) and false of what they were SHOWN.
+ *
+ * Measured on `2026-08-22-08-13-sim-7bo8` turn 0030: Farah Sheikh's phone renders
+ * "(nothing arrived. Your phone stayed silent.)" and she writes "?" reasoning *"two
+ * messages sent, total silence since, so I'm just poking it to get any response"* —
+ * against turn 0020 the day before, `sent: 1`, *"I'm sorry, Farah — there are no
+ * classes running from this number…"*. The product answered her and the harness ate
+ * it. She is one of the two customers that run is read as having lost.
+ *
+ * A file rather than a longer-lived variable, and beside `cursors/` rather than
+ * inside `session.json`, for the reason `cursors/` is already one file per persona:
+ * a shared blob lost a seat's place, and this is the same lesson one level in.
+ *
+ * @mechanism heldBack — replies a persona has not looked at yet survive their worker.
+ *   `drive()` writes what it just produced here after advancing the cursor past it; the
+ *   next `move()` drains and clears it. Reading without advancing was the other candidate
+ *   and is wrong twice: it re-shows rows the person has already seen, which `readPhone`'s
+ *   own comment calls a defect that would have been written up as a product bug, and after
+ *   a hand-over the persona holds a DIFFERENT contact row in a different tenant, so no
+ *   cursor position can reach those messages at all.
+ *   Closes F-DX.
+ */
+function heldBackPath(s: Session, key: string): string {
+  const safe = String(key).toLowerCase().replace(/[^a-z0-9_-]+/g, '-').slice(0, 48) || 'seat'
+  return join(s.dir, 'pending', safe + '.json')
+}
+
+export async function writeHeldBack(s: Session, key: string, seen: unknown[]): Promise<void> {
+  if (!seen.length) return void (await rm(heldBackPath(s, key), { force: true }).catch(() => {}))
+  await mkdir(join(s.dir, 'pending'), { recursive: true })
+  await writeFile(heldBackPath(s, key), JSON.stringify(seen))
+}
+
+/** Drains: what was waiting, and it is not waiting any more. */
+export async function takeHeldBack(s: Session, key: string): Promise<any[]> {
+  const raw = await readFile(heldBackPath(s, key), 'utf8').catch(() => '')
+  await rm(heldBackPath(s, key), { force: true }).catch(() => {})
+  if (!raw.trim()) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+/**
  * Everything this contact's phone has shown since they last looked, and nothing
  * else.
  *
@@ -726,7 +779,10 @@ export async function drive(
     },
     fn,
   )
-  return readPhone(s, key, true)
+  const seen = await readPhone(s, key, true)
+  // Past the cursor now, so the only place they exist is here — see `heldBack`.
+  await writeHeldBack(s, key, seen)
+  return seen
 }
 
 /**

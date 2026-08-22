@@ -1,6 +1,6 @@
 # What is open
 
-26 findings. This file is the source of truth for what is broken — hand-written, and short on
+25 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -38,7 +38,6 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-CR** | A rate that begins after the work was done silently unpays it, and nothing says so | [detail](#f-cr--a-rate-that-begins-after-the-work-was-done-silently-unpays-it-and-nothing-says-so) |
 | **F-DI** | A read result keeps the model's own column alias, so a mislabel becomes durable and is built into a write five turns later | [detail](#f-di--a-read-result-keeps-the-models-own-column-alias-so-a-mislabel-becomes-durable-and-is-built-into-a-write-five-turns-later) |
 | **F-DV** | The seat COULD always press a button and was never told so, so every mechanism behind a tap was measured at a fifteenth of its rate | [detail](#f-dv--the-seat-could-always-press-a-button-and-was-never-told-so-so-every-mechanism-behind-a-tap-was-measured-at-a-fifteenth-of-its-rate) |
-| **F-DX** | A worker restart deletes the reply the person was holding, so the product reads as never having answered | [detail](#f-dx--a-worker-restart-deletes-the-reply-the-person-was-holding-so-the-product-reads-as-never-having-answered) |
 | **F-DY** | A persona brief asserts a history the world never builds, so the model is argued out of a correct read of its own database | [detail](#f-dy--a-persona-brief-asserts-a-history-the-world-never-builds-so-the-model-is-argued-out-of-a-correct-read-of-its-own-database) |
 | **F-DW** | The seat sends one message per half-day and has never sent two in a day, so "the product is slow to set a business up" is partly measuring the harness | [detail](#f-dw--the-seat-sends-one-message-per-half-day-and-has-never-sent-two-in-a-day-so-the-product-is-slow-to-set-a-business-up-is-partly-measuring-the-harness) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
@@ -963,44 +962,6 @@ from DIFFERENT people is already real; this is the same thing from one person. T
 must stay rare and short, or every run becomes a stress test of a shape that is itself uncommon —
 the seat rules should reach for it when a person would (annoyed, correcting, dictating), not by
 default.
-
-### F-DX · A worker restart deletes the reply the person was holding, so the product reads as never having answered
-
-**Status, 22 Aug 2026: real by construction, UNOBSERVED in four runs.** Recorded rather than
-fixed, because a fix for a defect nobody has caught firing is a change made on a reading of the
-code, and this session has already paid twice for that.
-
-The one case that looked like it was not: `2026-08-22-12-25-sim-bqc0`, Arjun Shetty on day 3,
-`move: quiet` with an empty message. The record shows `shown: 1` and the body — *"Here's the honest
-state of it: nothing is on record yet…"* — so he received the founding reply and put the phone
-down, which is a real and recorded decision rather than a lost message. Any future instance looks
-exactly like that one and is told apart from it by `shown` being EMPTY on a window where the
-database holds an outbound the cursor has already passed.
-
-**Saw:** the seat holds what arrived on its phone in a `pending` array in the worker process's
-heap, and `drive()` advances the persona's cursor as it reads. A worker that restarts loses the
-array; the cursor has already moved past those messages, so they can never be read again. The
-persona then acts as though the product said nothing.
-
-**Why it would be worse than a lost message.** The restart is not hypothetical and it is not
-random: `sim.ts` restarts every worker deliberately, once per run, at the moment a business is
-FOUNDED — *"They are restarted rather than patched: `_seat-worker.ts` rebuilds what its person has
-already said from the run's own log, which is precisely the machinery that makes a restart cheap
-and lossless."* That claim is true of what the person SAID and false of what they were SHOWN, and
-the moment it is made is the moment the funnel's most important reply lands.
-
-Every turn downstream would be judged against a conversation that did not happen: the persona escalates about a thing it was already told, the product
-apologises for a silence it did not commit, and a departure — Farah's and Divya's are the ones in
-the record — reads as the product having ignored somebody. Those are the most consequential turns
-in any run and they are the ones this corrupts.
-
-**Where it lives:** `drive()` in `scripts/_seat.ts`. The fix has two halves and both are small.
-Stop `drive()` advancing the cursor — return `readPhone(s, key, false)` and let the seat's next
-look advance it, so the reply lives in the database behind a cursor rather than in a process's
-heap, which removes `pending` entirely and makes the loss structurally impossible. Then rebuild the
-thread at worker boot the way `said` is already rebuilt from `readTurns`. The per-persona cursor
-files under `cursors/` exist precisely because a shared blob lost a seat's place; this is the same
-lesson one level in.
 
 ### F-DY · A persona brief asserts a history the world never builds, so the model is argued out of a correct read of its own database
 

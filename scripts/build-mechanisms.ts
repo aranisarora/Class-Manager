@@ -50,7 +50,23 @@ import { c } from './_env'
 import { readFindings } from './_findings'
 
 const OUT = join('docs', 'MECHANISMS.md')
-const ROOTS = ['lib']
+/**
+ * `scripts/` is in here, and its absence is how a mechanism came to be recorded closed
+ * having never once executed.
+ *
+ * `alsoRead` (`_capture.ts`) was built on 22 Aug 2026 so a founding turn would record the
+ * business it creates instead of recording silence, wired into `sim.ts`, gated green, and
+ * its finding closed — while both `reopenRun` calls on the SEAT path, which is the whole
+ * simulation, passed no `qIn` and the mechanism never fired. `check:mechanisms` could not
+ * have caught it and neither could `check:findings`: the index only ever looked at `lib`,
+ * so a tag under `scripts/` was unindexed, its symbol unverified, and its `Closes F-XX`
+ * clause never read against the ledger.
+ *
+ * The instruments are as load-bearing as the brain — a lying instrument invalidates every
+ * measurement taken through it — and they now carry the same three checks: the symbol is
+ * real, the index matches the tags, and a finding it claims to close is actually open.
+ */
+const ROOTS = ['lib', 'scripts']
 
 type Mechanism = {
   name: string

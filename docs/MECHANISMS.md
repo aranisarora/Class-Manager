@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-201 mechanisms · 30 findings closed by one · 26 findings still open
+206 mechanisms · 31 findings closed by one · 25 findings still open
 
 ## The scan
 
@@ -250,6 +250,13 @@ One line each. Find a candidate here, then read its entry below.
 `confirmation` — records the question a message puts on somebody's screen as state at send time, so an unanswered ask still…  
 `MessageStatus` — keeps `suppressed` off the delivery ladder and distinct from `failed`, so a deliberate non-send is never re…  
 `validateOutbound` — enumerates every way a message would fail on the real wire (LIMITS are the Cloud API's own numbers) and ret…  
+
+**`scripts/`**  
+`alsoRead` — the evidence queries are re-run under every tenant this turn strayed into, so a founding turn records the b…  
+`departed` — chaos is not rolled for somebody who has left the run, retiring the class of defect where the record of a w…  
+`heldBack` — replies a persona has not looked at yet survive their worker.  
+`requiredPolicyClauses` — named policies must CONTAIN the clause that makes them safe, retiring the class of defect where a migration…  
+`parseSignatures` — reads a signature wherever it sits on the line, and counts what it read, retiring the class of defect where…  
 
 ---
 
@@ -675,8 +682,21 @@ One line each. Find a candidate here, then read its entry below.
 - **`validateOutbound`** — `lib/messaging/types.ts:342`  
   enumerates every way a message would fail on the real wire (LIMITS are the Cloud API's own numbers) and returns reasons instead of repairing anything: a 21-character button title is a compose bug, and cutting it to 20 produces a message that renders, so nobody ever finds the bug. Refusing and recording it is what makes §17's "if it cannot render in the emulator, it does not ship" enforceable rather than aspirational.
 
+## `scripts/`
+
+- **`alsoRead`** — `scripts/_capture.ts:895`  
+  the evidence queries are re-run under every tenant this turn strayed into, so a founding turn records the business it created rather than recording silence. The note below has stated this gap in words since it was written — "the rows are not missing from the run, they are missing from the record" — and a reader who did not read the note took `sent: 0` on the most important conversation in the product as a product failure. Measured on `2026-08-22-13-29-sim-8528`: three hand-over turns, each carrying the note, each recording no reply, no tokens and no cost against an onward turn of 85,082 prompt tokens that had answered the person. Every rupee figure in every record was a floor.
+- **`departed`** — `scripts/_events.ts:906`  
+  chaos is not rolled for somebody who has left the run, retiring the class of defect where the record of a week describes people who were not in it. `giveup` is a first-class seat action and a persona who takes it is never seated again; nothing here knew that, so the roll kept going. On the 30-day run of 22 Aug 2026 divya-rao and farah-sheikh both gave up on day 5, were correctly never driven after it, and between them account for 17 of the 45 chaos events `truth.json` records — dated days 10 to 30, every one of them a fact about nobody. A reader counting "how messy was this week" counted a third again more weather than the week actually had.
+- **`heldBack`** — `scripts/_seat.ts:551`  
+  replies a persona has not looked at yet survive their worker. `drive()` writes what it just produced here after advancing the cursor past it; the next `move()` drains and clears it. Reading without advancing was the other candidate and is wrong twice: it re-shows rows the person has already seen, which `readPhone`'s own comment calls a defect that would have been written up as a product bug, and after a hand-over the persona holds a DIFFERENT contact row in a different tenant, so no cursor position can reach those messages at all. **Closes F-DX.**
+- **`requiredPolicyClauses`** — `scripts/check-rls-doc.ts:145`  
+  named policies must CONTAIN the clause that makes them safe, retiring the class of defect where a migration is in the repo and not in the database and every gate still reports success. Presence of a policy is not the property anybody cares about: `player_cm_user_select` existed throughout, in 0003's form, and 0003's form lets a parent read the whole academy's children. What was missing was one clause, and a check that never names a clause cannot miss one.
+- **`parseSignatures`** — `scripts/check-schema-doc.ts:123`  
+  reads a signature wherever it sits on the line, and counts what it read, retiring the class of defect where a gate passes because its own reader matched nothing. The anchor used to be `\n([a-z_]+)\(` — column zero or nothing — so the twelve indented signatures under `## The views`, and the one real TABLE filed among them, were never compared to the database at all. Two spaces of indentation, chosen for layout, silently switched the check off for a table the model writes to. Leading whitespace is now allowed, and the openings it walked are counted and asserted against `MIN_SIGNATURE_OPENINGS`, so the next reader that stops matching fails instead of congratulating itself.
+
 ## Still open
 
-No mechanism claims 26 findings. They are listed in
+No mechanism claims 25 findings. They are listed in
 [`../findings/OPEN.md`](../findings/OPEN.md), which is generated from the ledger and is the
 one place that list lives.
