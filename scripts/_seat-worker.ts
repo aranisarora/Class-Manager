@@ -149,6 +149,12 @@ export type Told =
       intent: string
       /** The words on the affordance this was resolved to, or null for plain text. */
       tapped: string | null
+      /**
+       * A press the seat DECLARED and the harness could not resolve — the title it
+       * reached for, kept so a turn that reads as the product ignoring a confirmation
+       * can be told apart from a harness that missed one. Absent on every ordinary move.
+       */
+      tapMissed?: string
       /** Whose contact cards went with the message, by name. Absent when none did. */
       shared?: string[]
       /**
@@ -383,6 +389,22 @@ async function move(ask: Ask): Promise<Told> {
   const tapped = actionId ? m.say : null
 
   /**
+   * A press that DECLARED itself and did not resolve, said out loud.
+   *
+   * `buttonAction` downgrades an unmatched title to ordinary text on purpose — a
+   * person typing words that happen to read like a button is typing, not pressing.
+   * But `action: 'tap'` is the seat saying it reached for something on its screen,
+   * and when that resolves to nothing the turn that follows reads as the product
+   * ignoring a confirmation. This file's own header calls that a fabricated defect
+   * and measured it: two of five presses silently downgraded across three weeks,
+   * one of them a staged date change that consequently never committed.
+   *
+   * So the intent and the outcome are both in the record and a reader can tell a
+   * product that ignored a tap from a harness that missed one.
+   */
+  const tapMissed = m.action === 'tap' && m.say && !actionId ? m.say : null
+
+  /**
    * The names they attached, turned into cards — and the ones that were not there.
    *
    * A name the book does not hold is dropped rather than invented, and the drop is
@@ -465,6 +487,7 @@ async function move(ask: Ask): Promise<Told> {
     say: m.say,
     intent: m.intent,
     tapped,
+    ...(tapMissed ? { tapMissed } : {}),
     ...(shared.length ? { shared: shared.map((c) => c.name) } : {}),
     ...(unknownNames.length ? { notInContacts: unknownNames } : {}),
     arrived: pending.length,

@@ -698,6 +698,10 @@ export async function drive(
     // the one place the head should follow the founding. This seat's tenant goes
     // on the TURN instead — otherwise every desk seat would flap the head back.
     q: (sql: string) => q(acad, sql),
+    // The tenant a founding turn creates and then answers from — see `alsoRead` in
+    // `_capture.ts`. Without this the mechanism is unreachable and every hand-over turn
+    // records silence, which is exactly what it was built to stop.
+    qIn: (academyId: string, statement: string) => q(academyId, statement),
     domainNow: () => clock.now(acad),
   })
   await rec.turn(
@@ -813,6 +817,7 @@ export async function queueTurn(
   const rec = await reopenRun(s.dir, {
     academyId: s.academyId,
     q: (sql: string) => q(s.academyId, sql),
+    qIn: (academyId: string, statement: string) => q(academyId, statement),
     domainNow: () => clock.now(s.academyId),
   })
   const t = await rec.turn(

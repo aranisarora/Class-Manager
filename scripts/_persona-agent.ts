@@ -118,7 +118,7 @@ import { INPUT_REALISM, MACHINE_POSTURE, type Persona, type Window } from './_pe
 
 /* ------------------------------------------------------------------ shape */
 
-export type SeatAction = 'say' | 'quiet' | 'giveup'
+export type SeatAction = 'say' | 'tap' | 'quiet' | 'giveup'
 
 export type SeatMove = {
   /** What the person did. `quiet` and `giveup` are outcomes, not failures. */
@@ -302,7 +302,13 @@ you do not care. Do not name its features, do not suggest what it ought to be ab
 to do, and do not help it along. You are not testing it. You are a person trying
 to get something you need before you have to go and do something else.
 
-THE THREE THINGS YOU CAN DO
+THE FOUR THINGS YOU CAN DO
+
+  tap      Press one of the buttons on a message you can see. Put its words in
+           "say", exactly as they are printed on your phone. It is one movement of
+           a thumb against typing a sentence, so it is what you would really do
+           whenever one of them says the thing you were about to type — and if
+           none of them does, do not force it: type instead.
 
   say      Type the next message. ONE message, the length you would really send —
            usually well under twenty words, sometimes a single word, occasionally
@@ -331,8 +337,8 @@ somebody who is paying for something normally asks twice before they walk.
 ANSWER WITH ONE JSON OBJECT AND NOTHING ELSE:
 
 {
-  "action":    "say" or "quiet" or "giveup",
-  "say":       "the message exactly as you would type it, or an empty string",
+  "action":    "say" or "tap" or "quiet" or "giveup",
+  "say":       "the message exactly as you would type it — or, for a tap, the button's words exactly as printed",
   "attach":    ["a name from your contacts"],   // leave it out unless you mean it
   "intent":    "what you are trying to get out of them, in your own words, one line",
   "reasoning": "how you read the last reply and why you have put it this way, a sentence or two"
@@ -509,7 +515,7 @@ function validateMove(v: unknown): SeatMove | null {
   const o = v as Record<string, unknown>
 
   const action = typeof o.action === 'string' ? o.action.trim().toLowerCase() : ''
-  if (action !== 'say' && action !== 'quiet' && action !== 'giveup') return null
+  if (action !== 'say' && action !== 'tap' && action !== 'quiet' && action !== 'giveup') return null
 
   const say = typeof o.say === 'string' ? o.say.trim() : ''
   const intent = typeof o.intent === 'string' ? o.intent.trim() : ''
@@ -526,7 +532,7 @@ function validateMove(v: unknown): SeatMove | null {
    * `intent` is a move, and the record simply holds an empty one.
    */
   if (!reasoning) return null
-  if (action === 'say' && !say) return null
+  if ((action === 'say' || action === 'tap') && !say) return null
 
   /**
    * Names, trimmed, deduped, and never sent with a message that does not exist.

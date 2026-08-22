@@ -1372,7 +1372,7 @@ async function main(): Promise<void> {
           : told.notInContacts?.length ? c.yellow(` 📎 not in contacts: ${told.notInContacts.join(', ')}`)
           : ''
         console.log(
-          `      ${c.dim(key.padEnd(7))} ${told.action === 'giveup' ? c.red('giveup ') : told.action === 'quiet' ? c.yellow('quiet  ') : 'say    '}` +
+          `      ${c.dim(key.padEnd(7))} ${told.action === 'giveup' ? c.red('giveup ') : told.action === 'quiet' ? c.yellow('quiet  ') : told.action === 'tap' ? c.green('tap    ') : 'say    '}` +
             `${what}${attached} ${c.dim(`· ${told.arrived} back · ${Math.round(told.ms / 1000)}s`)}` +
             // Printed beside the move, because a quiet turn on a lagged phone and
             // a quiet turn on a phone that showed everything are different

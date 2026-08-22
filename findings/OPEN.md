@@ -1,6 +1,6 @@
 # What is open
 
-23 findings. This file is the source of truth for what is broken — hand-written, and short on
+25 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -38,6 +38,8 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-CR** | A rate that begins after the work was done silently unpays it, and nothing says so | [detail](#f-cr--a-rate-that-begins-after-the-work-was-done-silently-unpays-it-and-nothing-says-so) |
 | **F-DH** | `pre_launch` suppresses a plan-staged message to a COACH about their own work, and nothing tells anyone it did | [detail](#f-dh--pre_launch-suppresses-a-plan-staged-message-to-a-coach-about-their-own-work-and-nothing-tells-anyone-it-did) |
 | **F-DI** | A read result keeps the model's own column alias, so a mislabel becomes durable and is built into a write five turns later | [detail](#f-di--a-read-result-keeps-the-models-own-column-alias-so-a-mislabel-becomes-durable-and-is-built-into-a-write-five-turns-later) |
+| **F-DV** | The seat cannot press a button, only retype one, so every mechanism behind a tap is measured at a fraction of its rate | [detail](#f-dv--the-seat-cannot-press-a-button-only-retype-one-so-every-mechanism-behind-a-tap-is-measured-at-a-fraction-of-its-rate) |
+| **F-DW** | The seat sends one message per half-day and has never sent two in a day, so "the product is slow to set a business up" is partly measuring the harness | [detail](#f-dw--the-seat-sends-one-message-per-half-day-and-has-never-sent-two-in-a-day-so-the-product-is-slow-to-set-a-business-up-is-partly-measuring-the-harness) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-DS** | A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn | [detail](#f-ds--a-staged-plan-can-only-be-committed-by-tapping-it-an-owner-who-answers-go-ahead-in-words-is-re-staged-instead-because-the-plan-handle-does-not-survive-the-turn) |
 
@@ -913,3 +915,46 @@ predicate to be able to see "owed but not sent", which `message.suppressed_reaso
 durably; the shape to build is a handler that reads its own suppressed rows back, not a runner that
 re-runs the job blind. `DUNNING_MAX`/`RECONCILE_MAX` are the precedent for the ceiling any such
 retry needs.
+
+### F-DV · The seat cannot press a button, only retype one, so every mechanism behind a tap is measured at a fraction of its rate
+
+**Status: half fixed 22 Aug 2026.** `_persona-agent.ts` now offers a fourth move, `tap`, carrying
+the affordance's words as printed; `buttonAction` (`_seat-worker.ts`) already resolved a title to
+an `action` id and is unchanged. A declared press that resolves to nothing is recorded as
+`tapMissed` rather than downgrading to text in silence — this file's own header calls that
+silent downgrade a *fabricated defect* and measured it at two of five presses across three weeks,
+one of them a staged date change that consequently never committed.
+
+**What is still open** is the measurement. Before the change the persona had to spontaneously type
+a button's exact words: 47 seat turns that said something produced 3 resolved taps. Every mechanism
+that only exists behind a tap — `consumeAction`, `superseded`, `committingTtl`, `resolveAction`,
+`awaitsATap`, `refusedTapBlock`, `staleAsks`, `undo`, `commit` — has therefore been exercised at a
+rate the product will never see, and the whole F-CT story (a button expiring 11.354 seconds before
+its owner reached it) rests on a harness where reaching for a button at all was rare. **Nothing in
+this repo's measured history of the tap path should be trusted until a run with `tap` in it has
+been read**, and that run does not exist yet.
+
+**Where it lives:** the instrument, and the remaining work is a reading rather than a build.
+
+### F-DW · The seat sends one message per half-day and has never sent two in a day, so "the product is slow to set a business up" is partly measuring the harness
+
+**Saw:** every run in `.probe/runs/`. A window deals each persona at most one `say`, and a window is
+half a simulated day, so the fastest possible conversation is one exchange per twelve hours. Founding
+a business took three days in `2026-08-22-13-20-sim-67ai` and `2026-08-22-13-57-sim-b8nn`: one
+exchange to route, one to name it, one to found. That is three messages, and a real owner sends
+three messages in ninety seconds.
+
+**Why it matters beyond speed.** The whole class of defect where somebody corrects themselves
+mid-flow — *"mon and thu 6-7. no wait, thu is 7-8"* — has never been driven, because a correction
+always arrives twelve hours after the thing it corrects, by which time the product has already
+answered and possibly acted. `repliedTo`, the one-message-per-person guard, has never been
+exercised against a burst. §7.1's central claim — *"bring the timetable in one message, however
+messy"* — is measured only in the shape where there is nothing else in flight.
+
+**Where it lives:** `_persona-agent.ts`'s move (`say: string` → a small ordered list), and
+`_seat-worker.ts` posting them back to back through the existing inbound path without awaiting the
+product between them. `inFlight` in `sim.ts` already runs seats concurrently, so concurrent inbound
+from DIFFERENT people is already real; this is the same thing from one person. The trap: a burst
+must stay rare and short, or every run becomes a stress test of a shape that is itself uncommon —
+the seat rules should reach for it when a person would (annoyed, correcting, dictating), not by
+default.
