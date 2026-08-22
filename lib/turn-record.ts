@@ -263,9 +263,13 @@ export async function turnRecordsFor(o: {
         where t.academy_id = '${o.academyId}'::uuid
           and t.created_at >= '${since.replace(/'/g, "''")}'::timestamptz
           ${untilClause} ${contactClause}
-        order by t.created_at asc
+        order by t.created_at desc
         limit ${limit}`,
     )) as unknown as Row[]
+    // Newest N, rendered oldest-first. A window read wants the most RECENT turns
+    // in it — `--limit 20` against a live business that has run thousands would
+    // otherwise answer with its first twenty ever, which is never the question.
+    turns.reverse()
 
     if (turns.length === 0) return []
     const ids = turns.map((t) => String(t.turn_id))

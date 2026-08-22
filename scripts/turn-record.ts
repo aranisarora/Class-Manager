@@ -116,7 +116,7 @@ function toRunTurn(t: TurnRecord, n: number): Record<string, unknown> {
     who: t.who,
     // Production has no persona and inventing one would be a claim. The role the
     // product actually acted for is the honest answer to "who was this".
-    persona: t.roleActed ?? 'live',
+    persona: t.roleActed || 'live',
     say: t.say ?? '',
     ...(t.phone ? { phone: t.phone } : {}),
     rounds: t.rounds,
