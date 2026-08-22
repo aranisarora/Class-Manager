@@ -1312,26 +1312,144 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
  * repair C16 made for write refusals and the same reason: a database error is only
  * useless because nobody translated it.
  */
-async function whereThatColumnLives(ctx: ToolCtx, error: string): Promise<Record<string, unknown>> {
-  const m = /column\s+"?([a-z_][a-z0-9_]*)"?\s+does not exist/i.exec(error)
-  const column = m?.[1]
-  if (!column) return {}
+/**
+ * Every relation a statement names, so the repair can be about the thing the model
+ * was actually reading. Matches `from x`, `join x`, `update x`, `insert into x`, an
+ * optional schema and optional quotes, and stops before an alias.
+ */
+const NAMES_IN_STATEMENT =
+  /\b(?:from|join|update|into)\s+(?:only\s+)?("?[a-z_][a-z0-9_]*"?\.)?("?[a-z_][a-z0-9_]*"?)/gi
+
+function relationsNamedIn(statement: string): string[] {
+  const out = new Set<string>()
+  for (const m of statement.matchAll(NAMES_IN_STATEMENT)) {
+    const bare = String(m[2] ?? '').replace(/"/g, '')
+    if (bare && !['select', 'lateral', 'values'].includes(bare.toLowerCase())) out.add(bare)
+  }
+  return [...out].slice(0, 6)
+}
+
+/**
+ * `column "full_name" does not exist` — and the runtime knows exactly where it does.
+ *
+ * §6.2 splits a human into `person`, `contact` and the role rows, which is the right
+ * model and the one every reader gets wrong the same way: `select id, full_name from
+ * coach`. Postgres answers with a true sentence containing nothing to act on, and the
+ * observed next move — watched, twice — was not to fix the join. It was to ask the admin
+ * *"could you confirm Ravi Menon's coach ID?"*, which is a uuid, on WhatsApp, to someone
+ * who has never seen one.
+ *
+ * The catalog has the answer and is one query away. A refusal that names the table the
+ * column is actually on turns a burnt turn into a corrected join, which is the same
+ * repair C16 made for write refusals and the same reason: a database error is only
+ * useless because nobody translated it.
+ *
+ * @mechanism columnsOfWhatYouNamed — the repair leads with the columns of the relations the
+ *   STATEMENT named, and only then with where the missing column lives, because those are
+ *   opposite answers and the second one was being given to the first one's question.
+ *
+ *   Measured over the nine model-authored statements that failed on
+ *   `2026-08-22-16-51-sim-b8xo`: the old matcher fired on FOUR. It reads `column "x" does
+ *   not exist` and a model aliases its tables, so `column c.status does not exist`,
+ *   `column c.contact_state does not exist` and `column c.full_name does not exist` all
+ *   passed it in silence, as did `column reference "session_id" is ambiguous` and
+ *   `function to_char(text, unknown) does not exist`. On the four it did fire on it
+ *   answered the wrong half: asked why `select id … from session_detail` failed, it
+ *   replied that `id` is on *academy, academy_admin, account, action, arrival,
+ *   attendance* — the first six tables alphabetically — when the sentence that fixes the
+ *   statement is `session_detail(academy_id, session_id, class_id, …)`.
+ *
+ *   What that cost is the run's largest single outcome. On day 19 a watch fired to check
+ *   whether the owner had answered a coach's question about Saturday pay. Both of its
+ *   reads failed here — `column "to_contact_id" does not exist`, `function to_char(text,
+ *   unknown) does not exist` — and its instruction said *"if no answer has reached Arjun,
+ *   nudge the owner once more"*. A failed lookup is not a negative finding, but with no
+ *   route out of the error it became one, and the owner was chased for the third time for
+ *   a rate he had given twice. He left the next morning: *"i told you 1000 both times and
+ *   you said it was recorded … im done setting this up."*
+ *
+ *   Both schemas, because `app.session_roster` is the one relation under `app` and
+ *   getting told it does not exist is how a reader concludes the register is unreadable.
+ *   Views are in `information_schema.columns` exactly as tables are, so a view added
+ *   tomorrow is covered by this the day it is created and by no sentence anyone has to
+ *   write.
+ */
+async function whereThatColumnLives(
+  ctx: ToolCtx,
+  error: string,
+  statement?: string,
+): Promise<Record<string, unknown>> {
+  /**
+   * Every shape Postgres uses to say "that is not there", including the qualified
+   * form a model produces whenever it aliases — which was five of the nine.
+   */
+  const missing =
+    /column\s+"?([a-z_][a-z0-9_]*)"?\s+does not exist/i.exec(error) ??
+    /column\s+[a-z_][a-z0-9_]*\.("?)([a-z_][a-z0-9_]*)\1\s+does not exist/i.exec(error)
+  const ambiguous = /column reference\s+"?([a-z_][a-z0-9_]*)"?\s+is ambiguous/i.exec(error)
+  const column = ambiguous?.[1] ?? missing?.[missing.length - 1]
+  const named = statement ? relationsNamedIn(statement) : []
+  if (!column && !named.length) return {}
+
   try {
-    const found = await withSession(serviceFrom(ctx.session), async (tx) => {
-      return (await tx.unsafe(
-        `select table_name from information_schema.columns
-          where table_schema = 'public' and column_name = ${lit(column)}
-          order by table_name limit 6`,
-      )) as unknown as { table_name: string }[]
+    return await withSession(serviceFrom(ctx.session), async (tx) => {
+      const columnsOfWhatYouNamed = named.length
+        ? ((await tx.unsafe(
+            `select table_name, string_agg(column_name, ', ' order by ordinal_position) as cols
+               from information_schema.columns
+              where table_schema in ('public', 'app')
+                and table_name in (${named.map((n) => lit(n)).join(', ')})
+              group by table_name order by table_name`,
+          )) as unknown as { table_name: string; cols: string }[])
+        : []
+
+      /**
+       * "session_id is on both of the things you joined" is a different sentence
+       * from "session_id does not exist", and it is the one that fixes the join.
+       */
+      if (ambiguous && columnsOfWhatYouNamed.length) {
+        const carriers = columnsOfWhatYouNamed.filter((c) => c.cols.split(', ').includes(column!)).map((c) => c.table_name)
+        return {
+          relations: Object.fromEntries(columnsOfWhatYouNamed.map((c) => [c.table_name, c.cols])),
+          hint:
+            `"${column}" is on ${carriers.join(' and ') || 'more than one of these'}, so the reader cannot tell ` +
+            'which you meant — qualify it with the alias you gave that relation. The columns of everything ' +
+            'this statement named are above.',
+        }
+      }
+
+      const found = column
+        ? ((await tx.unsafe(
+            `select table_name from information_schema.columns
+              where table_schema in ('public', 'app') and column_name = ${lit(column)}
+              order by table_name limit 6`,
+          )) as unknown as { table_name: string }[])
+        : []
+
+      const relations = columnsOfWhatYouNamed.length ? { relations: Object.fromEntries(columnsOfWhatYouNamed.map((c) => [c.table_name, c.cols])) } : {}
+      const lead = columnsOfWhatYouNamed.length
+        ? `${columnsOfWhatYouNamed.map((c) => `${c.table_name}(${c.cols})`).join('  ·  ')}. Those are the columns that exist on what ` +
+          'you named — the fix is almost always one of them rather than a different query. '
+        : ''
+
+      if (!column) return { ...relations, hint: lead || undefined }
+      if (!found.length)
+        return {
+          ...relations,
+          hint:
+            lead +
+            `Nothing in this database has a column called "${column}" at all, so it is not a join you are missing.`,
+        }
+      return {
+        ...relations,
+        column_lives_on: found.map((r) => r.table_name),
+        hint:
+          lead +
+          `"${column}" itself is on ${found.map((r) => r.table_name).join(', ')} — join to it rather than ` +
+          "selecting it where it is not. A person's name is always on `person`; `coach`, `player` and " +
+          '`account` carry a person_id and no name of their own.',
+      }
     })
-    if (!found.length) return { hint: `No table has a column called "${column}". Check the schema above.` }
-    return {
-      column_lives_on: found.map((r) => r.table_name),
-      hint:
-        `"${column}" is on ${found.map((r) => r.table_name).join(', ')} — join to it rather than selecting it ` +
-        'where it is not. A person\'s name is always on `person`; `coach`, `player` and `account` carry a ' +
-        'person_id and no name of their own.',
-    }
   } catch {
     return {}
   }
@@ -1732,7 +1850,7 @@ export async function runTool(
         }
       }
       const res = await modelQuery(ctx.session, query)
-      if (res.error) return { result: { error: res.error, rows: [], ...(await whereThatColumnLives(ctx, res.error)) } }
+      if (res.error) return { result: { error: res.error, rows: [], ...(await whereThatColumnLives(ctx, res.error, query)) } }
       const scope = await scopeLine(ctx.session, res.rows, res.truncated)
       /**
        * Empty and withheld arrive as the same zero rows, and only the runtime
@@ -1841,7 +1959,7 @@ export async function runTool(
       // could say which table x is actually on and was simply never asked.
       if (!preview.ok)
         return {
-          result: { ok: false, error: preview.error, ...(await whereThatColumnLives(ctx, String(preview.error ?? ''))) },
+          result: { ok: false, error: preview.error, ...(await whereThatColumnLives(ctx, String(preview.error ?? ''), JSON.stringify(steps))) },
         }
       const handle = newId()
       const gate = needsPreview(preview, steps, {
@@ -2010,7 +2128,7 @@ export async function runTool(
       // could say which table x is actually on and was simply never asked.
       if (!preview.ok)
         return {
-          result: { ok: false, error: preview.error, ...(await whereThatColumnLives(ctx, String(preview.error ?? ''))) },
+          result: { ok: false, error: preview.error, ...(await whereThatColumnLives(ctx, String(preview.error ?? ''), JSON.stringify(steps))) },
         }
       if (needsPreview(preview, steps, { actorContactId: ctx.identity.contact.id })) {
         const handle = newId()
@@ -2722,7 +2840,7 @@ export async function runTool(
                 'It is checked now rather than on the day it fires, because a watch that errors weeks from ' +
                 'now runs blind on its instruction and nobody finds out. Read the schema, fix the query, and ' +
                 'mint it again — or drop context_query and let the task read what it needs when it runs.',
-              ...(await whereThatColumnLives(ctx, String(planned))),
+              ...(await whereThatColumnLives(ctx, String(planned), contextQuery)),
             },
           }
         }

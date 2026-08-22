@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-213 mechanisms · 33 findings closed by one · 25 findings still open
+214 mechanisms · 33 findings closed by one · 25 findings still open
 
 ## The scan
 
@@ -154,6 +154,7 @@ One line each. Find a candidate here, then read its entry below.
 `turnState` — states the turn's own facts to the model on every round:  
 `resolveAction` — the one gate every button and every list row passes before it is minted:  
 `pendingConfirmation` — the affirmative action on a read-back belongs to the runtime, not to the model:  
+`columnsOfWhatYouNamed` — the repair leads with the columns of the relations the STATEMENT named, and only then with where the missin…  
 `scopeDenominator` — the "of N" on a scope line is counted through the CALLER's own session, the same session the model's read r…  
 `compactDiff` — hands back the rows a write produced rather than counts of them, beside the statements that matched NO rows…  
 `committedResult` — the account of a plan that has already run is built in one place and read identically whether the model ran…  
@@ -500,17 +501,19 @@ One line each. Find a candidate here, then read its entry below.
   the one gate every button and every list row passes before it is minted: a `commit` handle is resolved into the steps it refers to, the shapes the model reaches for out of habit (`form`, `replyOption`, a bare `op` with no `kind`) are meant rather than refused, and a payload carrying a parameter only a person's own tap may set is rejected here. A tap replays the payload with nothing reading it, so an action that is wrong at mint time is wrong on somebody's phone: the turn that follows the tap can now explain a refusal and offer another route, but it cannot make the button they pressed have worked, and a promise apologised for is still a promise broken.
 - **`pendingConfirmation`** — `lib/agent/tools.ts:805`  
   the affirmative action on a read-back belongs to the runtime, not to the model: `reply` puts every plan this turn left waiting behind the first button, as one plan, and adds a decline when the model wrote only the yes. Left to the model it commits the newest plan while the sentence promised two, or replays "yes, do it" as text — which sends the next turn off to re-derive a plan this one already validated, with no guarantee it lands in the same place.
-- **`scopeDenominator`** — `lib/agent/tools.ts:1358`  
+- **`columnsOfWhatYouNamed`** — `lib/agent/tools.ts:1347`  
+  the repair leads with the columns of the relations the STATEMENT named, and only then with where the missing column lives, because those are opposite answers and the second one was being given to the first one's question.
+- **`scopeDenominator`** — `lib/agent/tools.ts:1476`  
   the "of N" on a scope line is counted through the CALLER's own session, the same session the model's read ran under, so policy has narrowed both numbers identically and the only thing left that can separate them is the query's own predicates. It is therefore labelled as what it measures — rows of this kind THIS SESSION can see — rather than as how many exist, and it is dropped whenever it cannot be the superset the numerator came out of. It retires the class of defect where the line built to catch a plausible-wrong total teaches the model to distrust a correctly narrowed one.
-- **`compactDiff`** — `lib/agent/tools.ts:1502`  
+- **`compactDiff`** — `lib/agent/tools.ts:1620`  
   hands back the rows a write produced rather than counts of them, beside the statements that matched NO rows (named), the clashes, the people whose arrangements changed while the plan tells them nothing, and a `check` line saying whether this is what is now true or what a tap WOULD write. Without the rows a read-back is composed from the model's intention — "6:30 to 7:30pm" over a `start_time` of 06:30 — and without the executed/staged split a preview of rows still NULL reads as a receipt.
-- **`committedResult`** — `lib/agent/tools.ts:1595`  
+- **`committedResult`** — `lib/agent/tools.ts:1713`  
   the account of a plan that has already run is built in one place and read identically whether the model ran it itself (`act`) or a person's tap did (`tapBlock` · lib/agent/loop.ts). Before this the tap path had no account at all: it went to `buildSummary`, whose sentence is composed from row counts and a snapshot taken *before* the transaction, and straight to a phone with no model in between. Two callers sharing one builder is what stops the tap path quietly acquiring a thinner picture than the tool path — the asymmetry that let `emptyWrites`, `clashes` and `untold` be reported to the model on one route and to nobody on the other. **Closes F-CD.**
-- **`CLOSED_TO_EVERY_SESSION`** — `lib/agent/tools.ts:1669`  
+- **`CLOSED_TO_EVERY_SESSION`** — `lib/agent/tools.ts:1787`  
   a read whose relations are ALL closed to every session comes back carrying the ANSWER's address rather than only the boundary. The one such read in 218 turns asked `kind ilike '%session%' or '%slot%' or '%material%'` — "has the schedule ladder actually run for the class I just made?" — which is a fair question with a readable answer: the `session` rows are what that ladder produces. A refusal that only says "you may not look" answers a question nobody asked; the route is the point and the boundary is incidental. Only when every relation is closed: a join from `session` to `job` still returns the session rows, and calling that a refusal would hide real data. The route matters as much as the refusal — `standing()` already puts every live watch in the tail, so the answer the model wanted is above it in the same prompt.
-- **`awaitsATap`** — `lib/agent/tools.ts:2419`  
+- **`awaitsATap`** — `lib/agent/tools.ts:2537`  
   a committing button records the question it puts on a screen whoever that screen belongs to, so the expiry sweep in `lib/jobs/plan-ahead.ts` is armed for the commonest ask in the product — "here is the plan, tap to confirm", put to the person who just asked for it — and not only for the rare one routed to somebody else. It retires the class of defect where a question dies unanswered and nothing anywhere knows a question was asked.
-- **`context_query`** — `lib/agent/tools.ts:2676`  
+- **`context_query`** — `lib/agent/tools.ts:2794`  
   the SELECT a watch carries is parsed and PLANNED at mint time, against the real schema, and never executed: a table that does not exist is a refusal while the model can still fix it, and a column read off the wrong table comes back naming the table it is actually on. Without it the query first fails on its fire day, weeks later, when the task runs blind on its instruction alone and nobody is watching. **Closes F-AP.**
 - **`traceabilityNote`** — `lib/agent/traceability.ts:4`  
   compares every scalar a reply states (times, dates, prices, headcounts) against what this turn's tools actually returned, and records the unbacked ones on the flight recorder. Shadow mode by design: it records and blocks nothing, because a false refusal costs more than a recorded miss. **Closes F-E.**
