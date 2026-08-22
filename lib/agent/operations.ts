@@ -2243,7 +2243,11 @@ const clientCancel: OperationDef = {
     const windowHours = args.decided_window_hours ?? a.cancellation_window_hours
     const hoursOut = (new Date(s.starts_at).getTime() - nowD.getTime()) / 3_600_000
     const inWindow = args.decided_timely ?? hoursOut >= windowHours
-    const perSession = r.rate_unit === 'per_session'
+    // As of the session's own day, like every other money read here: rosterOf
+    // was already asked for that date. A late cancellation on a class that ran
+    // at 900 is a 900 charge however many raises have landed since (F-CJ).
+    const perSession = (r.rate_unit_then ?? r.rate_unit) === 'per_session'
+    const cancelRate = num(r.rate_amount_then ?? r.rate_amount)
 
     /**
      * Look at the register before asking about it.
@@ -2401,13 +2405,13 @@ const clientCancel: OperationDef = {
     // §6.4 — the cancellation window carries money meaning only for
     // per_session. For per_month it is a headcount signal to the coach: same
     // interface, different consequence, no extra code.
-    if (perSession && !inWindow && num(r.rate_amount) > 0) {
+    if (perSession && !inWindow && cancelRate > 0) {
       steps.push({
         write: `insert into tally_line (academy_id, account_id, player_id, period, kind, description, amount, session_id)
                 select ${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)},
                        date ${lit(periodOf(s.starts_at, a.timezone))}, 'session',
                        ${lit(`${s.class_name} — ${zoned(s.starts_at, a.timezone).toFormat('d LLL')} (late cancellation)`)},
-                       ${moneyLit(num(r.rate_amount))}, ${uid(s.id)}
+                       ${moneyLit(cancelRate)}, ${uid(s.id)}
                  where not exists (select 1 from tally_line t
                                     where t.session_id = ${uid(s.id)} and t.player_id = ${uid(r.player_id)})
                    -- And never charge for a session the register still records as a

@@ -124,8 +124,12 @@ try {
   await exec(`insert into academy_admin (academy_id, person_id) values (${A}, '${ravi.id}'::uuid)`)
   await exec(`insert into contact (academy_id, person_id, phone_e164)
               values (${A}, '${ravi.id}'::uuid, '+919999000041')`)
-  const coach = await one(`insert into coach (academy_id, person_id, status, pay_amount, pay_unit)
-                           values (${A}, '${ravi.id}'::uuid, 'active', 500, 'per_session') returning id`)
+  // Created sixty days ago on purpose: block B works a session thirty-five days
+  // back, and a coach who did not exist then has no rate in force then either.
+  // The trigger dates an opening rate from the subject's own beginning.
+  const coach = await one(`insert into coach (academy_id, person_id, status, pay_amount, pay_unit, created_at)
+                           values (${A}, '${ravi.id}'::uuid, 'active', 500, 'per_session',
+                                   app.now() - interval '60 days') returning id`)
   const venue = await one(`insert into venue (academy_id, name) values (${A}, 'Lake Club') returning id`)
 
   const meera = await one(`insert into person (academy_id, full_name) values (${A}, 'Meera Iyer') returning id`)
@@ -211,6 +215,114 @@ try {
     twoLevel,
   )
   assert('today the enrolment overrides at 750', num(twoLevel.now_amount) === 750, twoLevel)
+
+  /* ======================================================================= *
+   * BLOCK B - F-CL. A closed month pays the rate in force while it was being
+   * worked, not the rate on the morning it closed. The session is worked in the
+   * PREVIOUS month and closed in this one, which is the boundary a seven-day
+   * drive can never reach.
+   * ======================================================================= */
+  section('B - coach pay across a month boundary (F-CL)')
+
+  const worked = await one(`insert into session (academy_id, class_id, starts_at, ends_at, status)
+                            values (${A}, '${cls.id}'::uuid, app.now() - interval '35 days',
+                                    app.now() - interval '35 days' + interval '1 hour', 'scheduled')
+                            returning id`)
+  await exec(`insert into session_coach (academy_id, session_id, coach_id, confirmed_at)
+              values (${A}, '${worked.id}'::uuid, '${coach.id}'::uuid, app.now() - interval '36 days')`)
+
+  // The raise, typed today, long after that session was worked.
+  await exec(`update coach set pay_amount = 800 where id = '${coach.id}'::uuid`)
+
+  const cp = await one(`select amount_for_session::text as now_amount, amount_then::text as then_amount
+                          from coach_pay where session_id = '${worked.id}'::uuid`)
+  assert('coach_pay still answers 800 for TODAY, unchanged', num(cp.now_amount) === 800, cp)
+  assert('and 500 for the day it was worked', num(cp.then_amount) === 500, cp)
+
+  const lastPeriod = String(
+    (await one(`select date_trunc('month', (app.now() - interval '35 days')
+                  at time zone 'Asia/Kolkata')::date::text as p`)).p,
+  ).slice(0, 10)
+  const { coachMonthLines } = await import('@/lib/jobs/handlers/money')
+  try {
+    await coachMonthLines({ payload: { academy_id: academyId, coach_id: coach.id, period: lastPeriod } } as never)
+  } catch (e) {
+    console.log(`        coachMonthLines said: ${String((e as Error).message).slice(0, 120)}`)
+  }
+  const led = await one(`select amount::text as amount, rate_amount::text as rate_amount
+                           from coach_ledger where session_id = '${worked.id}'::uuid`)
+  assert('the closed month pays 500, the rate he was on then', num(led.amount) === 500, led)
+  assert('and the line records the rate it was computed at', num(led.rate_amount) === 500, led)
+
+  /* ======================================================================= *
+   * BLOCK C - F-CM. A pack keeps the size it was sold at.
+   * ======================================================================= */
+  section('C - package size (F-CM)')
+
+  const pkgCls = await one(`insert into class (academy_id, name, venue_id, rate_amount, rate_unit, rate_count, starts_on)
+                            values (${A}, 'Ten pack', '${venue.id}'::uuid, 5000, 'per_package', 10,
+                                    ${TODAY} - 30) returning id`)
+  await exec(`insert into enrollment (academy_id, class_id, player_id, started_on)
+              values (${A}, '${pkgCls.id}'::uuid, '${player.id}'::uuid, ${TODAY} - 30)`)
+  await exec(`insert into tally_line (academy_id, account_id, player_id, class_id, period, kind,
+                                      description, amount, rate_amount, rate_unit, rate_count)
+              values (${A}, '${account.id}'::uuid, '${player.id}'::uuid, '${pkgCls.id}'::uuid,
+                      date_trunc('month', app.now() at time zone 'Asia/Kolkata')::date, 'package',
+                      'Ten pack - 10 sessions', 5000, 5000, 'per_package', 10)`)
+
+  // The restructure: ten-class packs become four-class packs.
+  await exec(`update class set rate_count = 4 where id = '${pkgCls.id}'::uuid`)
+
+  const { packRemaining } = await import('@/lib/jobs/handlers/money')
+  const packs = await withSession(ctx, async (tx) => packRemaining(tx as never, academyId, String(account.id)))
+  const pack = (packs as any[]).find((x) => x.class_name === 'Ten pack')
+  assert('a pack already sold keeps the size it was sold at', pack?.size === 10, packs)
+  assert('so the count remaining is out of ten, not four', pack?.remaining === 10, packs)
+
+  // A line written before 0043 has no frozen count and must fall back to the
+  // live one rather than read as zero.
+  await exec(`update tally_line set rate_count = null
+               where class_id = '${pkgCls.id}'::uuid and kind = 'package'`)
+  const legacy = await withSession(ctx, async (tx) => packRemaining(tx as never, academyId, String(account.id)))
+  const legacyPack = (legacy as any[]).find((x) => x.class_name === 'Ten pack')
+  assert('a pre-0043 pack line falls back to the live size', legacyPack?.size === 4, legacy)
+
+  /* ======================================================================= *
+   * BLOCK E - the catch-up tail. A period billed LATE is billed at the rate in
+   * force then. This is the leak 0038's "frozen into a row on 1 August"
+   * sentence does not cover: BILLING_CATCHUP_MONTHS lets plan-ahead enqueue a
+   * period months old, and monthlyLines resolves the rate when it RUNS.
+   *
+   * Ninety-five days back is the quarter mark, and the reason this block exists
+   * rather than a per_term one: the defect is the distance, not the unit.
+   * ======================================================================= */
+  section('E - a period billed a quarter late')
+
+  const monthCls = await one(`insert into class (academy_id, name, venue_id, rate_amount, rate_unit, starts_on)
+                              values (${A}, 'Squad', '${venue.id}'::uuid, 2000, 'per_month',
+                                      ${TODAY} - 130) returning id`)
+  const monthEnr = await one(`insert into enrollment (academy_id, class_id, player_id, started_on)
+                              values (${A}, '${monthCls.id}'::uuid, '${player.id}'::uuid, ${TODAY} - 130)
+                              returning id`)
+  const oldPeriod = String(
+    (await one(`select date_trunc('month', (app.now() - interval '95 days')
+                  at time zone 'Asia/Kolkata')::date::text as p`)).p,
+  ).slice(0, 10)
+
+  // Raised today, a quarter after the period that never got billed.
+  await exec(`update class set rate_amount = 3000 where id = '${monthCls.id}'::uuid`)
+
+  const { monthlyLines } = await import('@/lib/jobs/handlers/money')
+  try {
+    await monthlyLines({ payload: { academy_id: academyId, enrollment_id: monthEnr.id, period: oldPeriod } } as never)
+  } catch (e) {
+    console.log(`        monthlyLines said: ${String((e as Error).message).slice(0, 120)}`)
+  }
+  const oldLine = await one(`select amount::text as amount, rate_amount::text as rate_amount
+                               from tally_line
+                              where class_id = '${monthCls.id}'::uuid and period = date '${oldPeriod}'`)
+  assert('a period billed late bills at the rate in force then', num(oldLine.amount) === 2000, oldLine)
+  assert('and freezes it onto the line', num(oldLine.rate_amount) === 2000, oldLine)
 
   /* ======================================================================= *
    * BLOCK D — the anti-drift invariant, which is what makes rate_period a

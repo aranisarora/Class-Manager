@@ -130,8 +130,26 @@ export async function monthlyLines(job: Job): Promise<void> {
     // itself; converting the enrollment is what starts billing.
     if (e.is_trial) skip('a trial is free — converting it is what starts billing')
 
-    const unit = e.rate_unit
-    const amount = num(e.rate_amount)
+    /**
+     * The rate in force ON THE PERIOD BEING BILLED, not the rate now.
+     *
+     * These two are the same number on the ordinary path, because the job runs
+     * at 00:05 on the 1st of its own period. They come apart in the tail, and
+     * the tail is real: BILLING_CATCHUP_MONTHS lets plan-ahead enqueue a period
+     * months old (plan-ahead.ts), and this resolved when it RAN. So 0038's
+     * "August's number was frozen into a row on 1 August" was true only when the
+     * job actually ran on 1 August, and a catch-up pass in October billed August
+     * at October's price.
+     *
+     * Falls back to the live columns for a row that predates 0043's backfill,
+     * which should never happen and must not read as zero.
+     */
+    const [asOf] = await tx<{ amount: string | null; unit: string | null; cnt: number | null }[]>`
+      select amount::text as amount, unit, cnt from app.rate_on(${e.enrollment_id}::uuid, ${period}::date)
+    `
+    const unit = asOf?.unit ?? e.rate_unit
+    const amount = num(asOf?.amount ?? e.rate_amount)
+    const rateCount = asOf?.cnt ?? e.rate_count
     if (!unit) skip('no rate on the enrollment or its class — nothing to bill')
     if (unit === 'per_session') skip('per-session bills on attendance, not on the 1st')
     if (amount === 0) skip('rate is zero')
@@ -142,7 +160,7 @@ export async function monthlyLines(job: Job): Promise<void> {
       partial.months = 1
       await writeLine(
         tx, academyId, e, period, 'monthly', description, amount,
-        billingKey.monthly(e.player_id, e.class_id, period),
+        billingKey.monthly(e.player_id, e.class_id, period), null,
         partial,
       )
       note(`${e.player_name}: ${description} ${formatINR(amount)}`)
@@ -152,7 +170,7 @@ export async function monthlyLines(job: Job): Promise<void> {
     if (unit === 'per_term') {
       // A term is a month with a longer stride. Anchored on the enrollment's own
       // start so a mid-term joiner is not billed on someone else's cycle.
-      const months = Math.max(1, e.rate_count ?? 1)
+      const months = Math.max(1, rateCount ?? 1)
       const anchor = DateTime.fromISO(
         (e.started_on > e.class_starts_on ? e.started_on : e.class_starts_on), { zone: tz },
       ).startOf('month')
@@ -164,7 +182,7 @@ export async function monthlyLines(job: Job): Promise<void> {
       partial.months = months
       await writeLine(
         tx, academyId, e, period, 'term', description, amount,
-        billingKey.term(e.player_id, e.class_id, period),
+        billingKey.term(e.player_id, e.class_id, period), months,
         partial,
       )
       note(`${e.player_name}: ${description} ${formatINR(amount)}`)
@@ -172,7 +190,7 @@ export async function monthlyLines(job: Job): Promise<void> {
     }
 
     if (unit === 'per_package') {
-      const size = Math.max(1, e.rate_count ?? 1)
+      const size = Math.max(1, rateCount ?? 1)
       const description = packageDescription(e.class_name, size)
       const { opened, consumed } = await packageState(tx, academyId, e, description)
       /**
@@ -204,7 +222,7 @@ export async function monthlyLines(job: Job): Promise<void> {
       // two. Re-running this check writes pack N once however often it fires.
       await writeLine(
         tx, academyId, e, period, 'package', description, amount,
-        billingKey.package(e.player_id, e.class_id, opened + 1),
+        billingKey.package(e.player_id, e.class_id, opened + 1), size,
       )
       note(`${e.player_name}: opened ${description} ${formatINR(amount)}`)
       return
@@ -429,6 +447,14 @@ async function writeLine(
   kind: 'monthly' | 'term' | 'package', description: string, amount: number,
   dedupeKey: string,
   /**
+   * The terms this line was computed at, frozen onto it — 0038's coach_ledger
+   * pattern, arriving on the family side. `rate_unit` is derivable from `kind`
+   * and `rate_amount` IS the amount for these three kinds, so the only thing
+   * that has to be passed is the count: a term's length and a pack's size.
+   * Without it a pack knew what it cost and not what it bought (F-CM).
+   */
+  rateCount: number | null,
+  /**
    * Where a partly-covered period is reported, if this line is one.
    *
    * Collected rather than acted on, because this runs inside the handler's
@@ -438,11 +464,14 @@ async function writeLine(
    */
   partial?: { found: PartialPeriod | null; tz: string; months: number },
 ): Promise<void> {
+  const rateUnit = kind === 'monthly' ? 'per_month' : kind === 'term' ? 'per_term' : 'per_package'
   const written = await tx<{ id: string }[]>`
     insert into tally_line (academy_id, account_id, player_id, class_id, period,
-                            kind, description, amount, dedupe_key)
+                            kind, description, amount, dedupe_key,
+                            rate_amount, rate_unit, rate_count)
     values (${academyId}, ${e.account_id}, ${e.player_id}, ${e.class_id}, ${period}::date,
-            ${kind}, ${description}, ${amount}, ${dedupeKey})
+            ${kind}, ${description}, ${amount}, ${dedupeKey},
+            ${amount}, ${rateUnit}, ${rateCount})
     on conflict (academy_id, dedupe_key) where dedupe_key is not null
     do nothing
     returning id
@@ -592,15 +621,18 @@ async function writeLine(
  */
 async function oneClassOf(
   tx: Tx, academyId: string, e: EnrollmentRow, period: string, amount: number,
+  /** The count this period was BILLED at, not the class's current one (F-CM). */
+  rateCount?: number | null,
 ): Promise<number | null> {
+  const count = rateCount ?? e.rate_count
   // A pack's size is its own definition of how many classes the charge buys, and
   // it does not depend on which month they fall in.
   if (e.rate_unit === 'per_package') {
-    const size = Math.max(1, e.rate_count ?? 1)
+    const size = Math.max(1, count ?? 1)
     return Math.round((amount / size) * 100) / 100
   }
 
-  const months = e.rate_unit === 'per_term' ? Math.max(1, e.rate_count ?? 1) : 1
+  const months = e.rate_unit === 'per_term' ? Math.max(1, count ?? 1) : 1
   const [row] = await tx<{ n: number }[]>`
     select count(*)::int as n
       from session s
@@ -634,9 +666,19 @@ async function oneClassOf(
  */
 async function packageState(
   tx: Tx, academyId: string, e: EnrollmentRow, description: string,
-): Promise<{ opened: number; consumed: number }> {
-  const [row] = await tx<{ opened: number; consumed: number }[]>`
+): Promise<{ opened: number; consumed: number; soldSize: number | null }> {
+  const [row] = await tx<{ opened: number; consumed: number; sold_size: number | null }[]>`
     select
+      -- THE SIZE THE PACK WAS SOLD AT, off the line that opened it. Null for a
+      -- line written before 0043, which falls back to the live size rather than
+      -- reading as zero. Restructuring a pack from ten to four used to resize
+      -- every pack already sold, because this number lived only on the class
+      -- (F-CM).
+      (select t.rate_count from tally_line t
+        where t.academy_id = ${academyId} and t.player_id = ${e.player_id}
+          and t.kind = 'package' and t.class_id = ${e.class_id}
+          and t.rate_count is not null
+        order by t.created_at desc limit 1) as sold_size,
       (select count(*) from tally_line t
         where t.academy_id = ${academyId} and t.player_id = ${e.player_id}
           and t.kind = 'package'
@@ -646,7 +688,7 @@ async function packageState(
         where a.player_id = ${e.player_id} and s.class_id = ${e.class_id}
           and a.status in ('present', 'late', 'absent'))::int as consumed
   `
-  return { opened: row?.opened ?? 0, consumed: row?.consumed ?? 0 }
+  return { opened: row?.opened ?? 0, consumed: row?.consumed ?? 0, soldSize: row?.sold_size ?? null }
 }
 
 type LineRow = { kind: string; description: string; amount: number; player_name: string | null }
@@ -749,7 +791,7 @@ export async function monthEndTally(job: Job): Promise<void> {
 type PackRemaining = { player_name: string; class_name: string; size: number; remaining: number }
 
 /** §6.4 — "the count remaining rides on the tally." */
-async function packRemaining(tx: Tx, academyId: string, accountId: string): Promise<PackRemaining[]> {
+export async function packRemaining(tx: Tx, academyId: string, accountId: string): Promise<PackRemaining[]> {
   const rows = await tx<EnrollmentRow[]>`
     select e.id as enrollment_id, e.class_id, cl.name as class_name,
            e.player_id, pp.full_name as player_name,
@@ -770,9 +812,15 @@ async function packRemaining(tx: Tx, academyId: string, accountId: string): Prom
   `
   const out: PackRemaining[] = []
   for (const e of rows) {
-    const size = Math.max(1, e.rate_count ?? 1)
-    const { opened, consumed } = await packageState(tx, academyId, e, packageDescription(e.class_name, size))
+    // The class's CURRENT size, used only to match pre-0023 rows by description.
+    const liveSize = Math.max(1, e.rate_count ?? 1)
+    const { opened, consumed, soldSize } = await packageState(
+      tx, academyId, e, packageDescription(e.class_name, liveSize),
+    )
     if (opened === 0) continue
+    // What the family actually bought. A pack is a purchase, and its size is a
+    // term of that purchase, not a property of the class as it stands today.
+    const size = Math.max(1, soldSize ?? liveSize)
     out.push({
       player_name: e.player_name,
       class_name: e.class_name,
@@ -847,7 +895,21 @@ export async function coachMonthLines(job: Job): Promise<void> {
     // into a number, and writing a zero line would read as "worked for nothing".
     if (coach.pay_amount === null) skip('pay is not tracked for this coach')
 
-    const rate = num(coach.pay_amount)
+    /**
+     * The rate in force during the month being closed, not the rate on the
+     * morning it closed.
+     *
+     * 0038 froze the month into a row and said so, and it was right that the
+     * freeze was the fix. What it could not see is that the freeze happens at
+     * 00:20 on the 1st of the NEXT month (plan-ahead.ts) and read pay_amount at
+     * that moment — so a raise typed on the 25th repriced all of the month
+     * already worked. 24 sessions at 500 raised to 700 on the 25th were written
+     * as 16,800 against the 12,000 actually earned (F-CL).
+     */
+    const [payThen] = await tx<{ amount: string | null; unit: string | null }[]>`
+      select amount::text as amount, unit from app.pay_on(${coachId}::uuid, ${period}::date)
+    `
+    const rate = num(payThen?.amount ?? coach.pay_amount)
     const unit = coach.pay_unit
     const monthName = monthLabel(period, tz)
 
@@ -882,11 +944,13 @@ export async function coachMonthLines(job: Job): Promise<void> {
         local_start: string
         session_hours: string
         amount_for_session: string | null
+        pay_amount_then: string | null
       }[]
     >`
       select session_id, class_name, local_start,
              session_hours::text as session_hours,
-             amount_for_session::text as amount_for_session
+             amount_then::text as amount_for_session,
+             pay_amount_then::text as pay_amount_then
         from coach_pay
        where coach_id = ${coachId}
          and academy_id = ${academyId}
@@ -914,7 +978,7 @@ export async function coachMonthLines(job: Job): Promise<void> {
                     ? `${r.class_name} — ${r.local_start} (${num(r.session_hours)}h)`
                     : `${r.class_name} — ${r.local_start}`
                 },
-                ${amount}, ${rate}, ${unit}, ${r.session_id},
+                ${amount}, ${num(r.pay_amount_then) || rate}, ${unit}, ${r.session_id},
                 ${
                   unit === 'per_hour'
                     ? coachLedgerKey.hourly(coachId, r.session_id)
