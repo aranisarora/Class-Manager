@@ -130,6 +130,16 @@ const fired = new Set()
  */
 let baseline = true
 
+/**
+ * How a turn is named in a tripwire.
+ *
+ * `n` is added by `_derive.ts` when the run is folded up, so it does not exist in
+ * `turns.jsonl` — which is the file this watches, because it is the one written
+ * as the drive walks. The id is stable, present from the first line, and says the
+ * day and the person out loud.
+ */
+const label = (t) => t.id ?? `#${t.n ?? '?'}`
+
 const say = (s) => process.stdout.write(s + '\n')
 const trip = (name, msg) => {
   if (fired.has(name)) return
@@ -203,7 +213,7 @@ function evaluate(turns) {
   if (errs.length)
     trip(
       'errors',
-      `${errs.length} turn(s) carry an error. First: #${errs[0].n ?? '?'} ${errs[0].id} — "${errs[0].error}". ` +
+      `${errs.length} turn(s) carry an error. First: ${label(errs[0])} — "${errs[0].error}". ` +
         `Read it before spending more: a turn that errors this early usually errors every time.`,
     )
 
@@ -323,6 +333,33 @@ function evaluate(turns) {
       `day ${day} and ${unbacked.map((p) => `${p.name} is seated as a ${p.role} with no ${NEEDS[p.role]} row`).join('; ')}. ` +
         `Their brief describes a relationship to this business that no row in it supports, so every turn they take ` +
         `is against a product that cannot answer them — and whatever they do next is the harness's doing, not the product's.`,
+    )
+
+  /**
+   * A turn whose statements are in the record and whose LOOP is not.
+   *
+   * The signature of evidence written somewhere this record cannot read it: the
+   * SQL capture is in-process and always lands, while the turn rows, the messages
+   * and the tokens are read back out of the database through one tenant's session
+   * over one window. When those disagree, the turn reads as `rounds: 0, sent: 0,
+   * ₹0` — byte for byte a turn where the product had nothing to say.
+   *
+   * On `2026-08-22-15-21-sim-ceeg` that was four of Arjun Shetty's five turns. The
+   * product had answered every one within fifteen seconds; the replies are still
+   * in the tenant the desk founded for him and readable today. He saw the same
+   * silence the record did, wrote "hello??", then "useless", and left on day 8.
+   *
+   * Cheap and exact: statements ran, so something happened; no rounds came back,
+   * so this record cannot say what.
+   */
+  const blind = turns.filter((t) => (t.sql ?? []).length > 0 && (t.rounds ?? []).length === 0)
+  if (blind.length >= 2)
+    trip(
+      'loop-not-recorded',
+      `${blind.length} turn(s) ran statements and recorded no model loop at all — ` +
+        `${blind.slice(0, 4).map((t) => label(t)).join(', ')}${blind.length > 4 ? ' …' : ''}. ` +
+        `Their evidence was written somewhere this record cannot read, so they read as the product ` +
+        `saying nothing when it may have answered. Every count on those turns is a floor.`,
     )
 
   if (suppressed.length >= 5)

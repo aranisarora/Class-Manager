@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-218 mechanisms · 33 findings closed by one · 26 findings still open
+219 mechanisms · 33 findings closed by one · 26 findings still open
 
 ## The scan
 
@@ -269,6 +269,7 @@ One line each. Find a candidate here, then read its entry below.
 `heldBack` — replies a persona has not looked at yet survive their worker.  
 `requiredPolicyClauses` — named policies must CONTAIN the clause that makes them safe, retiring the class of defect where a migration…  
 `parseSignatures` — reads a signature wherever it sits on the line, and counts what it read, retiring the class of defect where…  
+`everyTenantOnTheNumber` — every business on this sender is moved to the same moment, not only the desk and the one the run adopted.  
 
 ---
 
@@ -730,6 +731,8 @@ One line each. Find a candidate here, then read its entry below.
   named policies must CONTAIN the clause that makes them safe, retiring the class of defect where a migration is in the repo and not in the database and every gate still reports success. Presence of a policy is not the property anybody cares about: `player_cm_user_select` existed throughout, in 0003's form, and 0003's form lets a parent read the whole academy's children. What was missing was one clause, and a check that never names a clause cannot miss one.
 - **`parseSignatures`** — `scripts/check-schema-doc.ts:123`  
   reads a signature wherever it sits on the line, and counts what it read, retiring the class of defect where a gate passes because its own reader matched nothing. The anchor used to be `\n([a-z_]+)\(` — column zero or nothing — so the twelve indented signatures under `## The views`, and the one real TABLE filed among them, were never compared to the database at all. Two spaces of indentation, chosen for layout, silently switched the check off for a table the model writes to. Leading whitespace is now allowed, and the openings it walked are counted and asserted against `MIN_SIGNATURE_OPENINGS`, so the next reader that stops matching fails instead of congratulating itself.
+- **`everyTenantOnTheNumber`** — `scripts/sim.ts:1192`  
+  every business on this sender is moved to the same moment, not only the desk and the one the run adopted.
 
 ## Still open
 

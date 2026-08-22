@@ -1185,7 +1185,44 @@ async function main(): Promise<void> {
    */
   const keepDeskInStep = async (): Promise<void> => {
     if (!founded || academyId === world.frontDeskId) return
-    await clock.setTo(await clock.now(academyId), world.frontDeskId)
+    const at = await clock.now(academyId)
+    await clock.setTo(at, world.frontDeskId)
+
+    /**
+     * @mechanism everyTenantOnTheNumber — every business on this sender is moved to the same
+     *   moment, not only the desk and the one the run adopted.
+     *
+     *   The paragraph above argues the whole case and then implements it for a set of two.
+     *   `adopt` takes `limit 1` from `app.businesses_on_sender`, so a SECOND business the
+     *   desk founds — a coach who says "arjun coaching" and is taken at his word — is never
+     *   adopted and its clock is set once, at birth, and never again.
+     *
+     *   Everything the paragraph above predicts then happens to it. On
+     *   `2026-08-22-15-21-sim-ceeg` the desk founded "Arjun Coaching" on day 3 and its
+     *   `sim_clock.offset_ms` finished the run at 343,301,302 — three days and 23 hours,
+     *   against the 30 days the business next to it walked. Arjun's five turns all carry a
+     *   `created_at` inside one 14-minute band, and the record's window for days 4, 5, 7 and
+     *   8 opens after all of them.
+     *
+     *   So four turns read back as `rounds: 0, sent: 0, tokens: 0` — the product ignoring a
+     *   coach four times over five days. It had answered every one of them within fifteen
+     *   seconds: *"Nobody — nothing's scheduled for tonight, or any night yet."*, *"Still
+     *   here. Sorry — I've been giving you essay-length answers."* Ten messages, all `sent`,
+     *   still in that tenant and readable today. His phone was read on the same frozen
+     *   clock, so he saw the silence the record saw, wrote "hello??", then "useless", and
+     *   left on day 8 — and the run recorded a departure caused by the product.
+     *
+     *   One number, one week, one wall clock, which is what the paragraph above already
+     *   says. A tenant is only ever moved FORWARD, the same monotonicity 0027 relies on.
+     */
+    const everyTenantOnTheNumber = await q<{ id: string }>(
+      world.frontDeskId,
+      `select id::text from app.businesses_on_sender('${world.senderId}'::uuid)`,
+    ).catch(() => [] as { id: string }[])
+    for (const o of everyTenantOnTheNumber) {
+      if (o.id === academyId) continue
+      await clock.setTo(at, o.id)
+    }
   }
 
   for (let day = 1; day <= cfg.days && !stoppedBy; day++) {
