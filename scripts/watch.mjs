@@ -94,15 +94,27 @@ const LOOPS = {
 }
 
 /**
- * How long a drive may go without entering a loop before that is worth saying.
+ * How long a loop may wait AFTER THE ONE BEFORE IT before that is worth saying.
  *
- * In simulated DAYS, not turns, because a drive's turn count is a function of how
- * chatty its personas are and its day count is what the operator actually chose.
- * The defaults are deliberately late — a business genuinely has nobody on its
- * books for the first few days — and the point is not to be strict, it is to fire
- * long before day 30.
+ * Absolute day numbers were the first shape and they are wrong, which took three
+ * misfires to see: they assume every business reaches every rung on the operator's
+ * calendar. On `2026-08-22-19-49-sim-p882` the owner did not put a class on the
+ * board until day 16 — the product asked on day 10 and he answered on day 13, all
+ * of it working — so `charging` fired at day 17 about a business that had been
+ * teaching for one day. A drive whose owner is slow is not a drive that has
+ * stopped measuring anything, and telling those two apart is the whole job here.
+ *
+ * So the ladder is relative: each rung is due this many simulated days after the
+ * rung below it was actually entered. A business that founds on day 12 gets the
+ * same patience as one that founds on day 2, and a business that goes live and
+ * then never bills anybody is still caught — which is the case this exists for,
+ * and `b8xo` is still caught by it.
+ *
+ * `setup` alone counts from the start of the run, because there is no rung under
+ * it and a drive that never founds a business is the emptiest run there is.
  */
-const DUE = { setup: 5, coaches: 9, roster: 12, register: 14, charging: 17, paid: 21 }
+const AFTER = { setup: 5, coaches: 4, roster: 5, register: 3, charging: 4, paid: 5 }
+const LADDER = ['setup', 'coaches', 'roster', 'register', 'charging', 'paid']
 
 const SILENT_TURNS = num('silent', 25) // turns in a row with nothing sent
 const SPEND_CAP = num('spend', Infinity) // rupees
@@ -222,13 +234,36 @@ function evaluate(turns) {
     }
   })()
 
-  for (const [loop, tabs] of Object.entries(LOOPS)) {
-    const entered = tabs.some((t) => tables.has(t)) || (loop === 'setup' && adopted)
-    if (!entered && day >= DUE[loop])
+  /**
+   * The day each rung was first reached, off the turn that wrote its first row —
+   * `changed` carries the table, and the turn carries the day.
+   */
+  const enteredOn = {}
+  for (const t of turns) {
+    for (const c of t.changed ?? []) {
+      for (const [loop, tabs] of Object.entries(LOOPS)) {
+        if (tabs.includes(String(c.table)) && enteredOn[loop] === undefined) enteredOn[loop] = Number(t.day ?? 0)
+      }
+    }
+  }
+  if (adopted && enteredOn.setup === undefined) {
+    const first = turns.find((t) => (t.notes ?? []).some((n) => /ran statements in/.test(String(n))))
+    enteredOn.setup = Number(first?.day ?? 1)
+  }
+
+  for (let i = 0; i < LADDER.length; i++) {
+    const loop = LADDER[i]
+    if (enteredOn[loop] !== undefined) continue
+    const below = i === 0 ? 0 : enteredOn[LADDER[i - 1]]
+    // A rung whose predecessor has not been reached is not late; the one below it is.
+    if (below === undefined) continue
+    const dueOn = below + AFTER[loop]
+    if (day >= dueOn)
       trip(
         `coverage:${loop}`,
-        `day ${day} and not one row has been written to ${tabs.join(', ')} in the tenant this record ` +
-          `is scoped to. Nothing this drive records from here can say anything about ${loop}. ` +
+        `${LADDER[i - 1] ?? 'this run'} was reached on day ${below || 1} and ${AFTER[loop]} days later, on day ` +
+          `${day}, not one row has been written to ${LOOPS[loop].join(', ')} in the tenant this record is ` +
+          `scoped to. Nothing this drive records from here can say anything about ${loop}. ` +
           `b8xo ran all thirty days in exactly this state.`,
       )
   }
@@ -367,7 +402,8 @@ function evaluate(turns) {
   })()
   const NEEDS = { client: 'enrollment', coach: 'coach' }
   const unbacked = seatRoles.filter((p) => NEEDS[p.role] && !tables.has(NEEDS[p.role]))
-  if (unbacked.length && day >= DUE.roster)
+  // Same patience the roster rung gets: not before the business has had time to have one.
+  if (unbacked.length && enteredOn.setup !== undefined && day >= enteredOn.setup + AFTER.coaches + AFTER.roster)
     trip(
       'brief-unbackable',
       `day ${day} and ${unbacked.map((p) => `${p.name} is seated as a ${p.role} with no ${NEEDS[p.role]} row`).join('; ')}. ` +
@@ -420,7 +456,7 @@ say(
   `  ${config.days ?? '?'} days · ${manifest.models?.brain ?? '?'} · ${manifest.git?.sha?.slice(0, 7) ?? '?'}` +
     `${manifest.git?.dirty ? ` (+${manifest.git.dirty} dirty)` : ''} · world ${config.world?.ref ?? '?'}`,
 )
-say(`  tripwires: coverage ${Object.entries(DUE).map(([k, v]) => `${k}≥d${v}`).join(' ')} · silence ${SILENT_TURNS} turns`)
+say(`  tripwires: ladder ${LADDER.map((k) => `${k}+${AFTER[k]}d`).join(' → ')} · silence ${SILENT_TURNS} turns`)
 say('')
 
 function pass() {
@@ -450,7 +486,7 @@ if (ONCE) {
     `  ${turns.length} turns · day ${s.day} · ₹${s.spend.toFixed(2)} · ${s.errs} errors · ` +
       `tables touched: ${[...s.tables].join(', ') || '(none)'}`,
   )
-  const missing = Object.entries(LOOPS).filter(([, tabs]) => !tabs.some((t) => s.tables.has(t))).map(([k]) => k)
+  const missing = LADDER.filter((k) => !LOOPS[k].some((t) => s.tables.has(t)))
   if (missing.length) say(`  loops never entered: ${missing.join(', ')}`)
   process.exit(tripped ? 3 : 0)
 }
