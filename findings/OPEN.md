@@ -1,6 +1,6 @@
 # What is open
 
-17 findings. This file is the source of truth for what is broken — hand-written, and short on
+18 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -34,6 +34,7 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-CC** | A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule | [detail](#f-cc--a-commercial-term-nobody-agreed-to--first-class-is-free--volunteered-in-a-parenthetical-and-stated-as-the-businesss-own-rule) |
 | **F-CI** | The product reports what it TRIED as what HAPPENED — 26 unbacked claims in 33 turns, while `turnState` is already telling it otherwise | [detail](#f-ci--the-product-reports-what-it-tried-as-what-happened-and-turnstate-is-already-telling-it-otherwise) |
 | **F-CK** | Quiet hours drops the message it means to delay, because nothing ever comes back for it | [detail](#f-ck--quiet-hours-drops-the-message-it-means-to-delay-because-nothing-ever-comes-back-for-it) |
+| **F-CN** | `npm run ab` cannot drive either arm, because it refuses the config it just wrote | [detail](#f-cn--npm-run-ab-cannot-drive-either-arm-because-it-refuses-the-config-it-just-wrote) |
 
 ---
 
@@ -704,3 +705,54 @@ mechanism here needs an attempt count on the payload and a ceiling, and a messag
 is an admin's problem rather than a silent drop — which is the same shape `DUNNING_MAX` and
 `RECONCILE_MAX` already use.
 
+---
+
+### F-CN · `npm run ab` cannot drive either arm, because it refuses the config it just wrote
+
+Found 22 Aug 2026 trying to A/B a mechanism change (`--variant ref=`). **Both arms fail
+identically, at second zero, before a single model call.** Arm B was an unmodified `main`
+checkout, so this is not a property of the branch under test — it is the instrument.
+
+`ab.ts` resolves one `DriveConfig`, writes it to `config.json` with `recordedConfig`
+(`scripts/_drive-config.ts:999-1009`), and hands both children `--config <that file>`. The
+children then re-parse it. Two fields cannot survive the round trip:
+
+```
+--variant ref=<path> --days 14                    config.json: seats must be at least 1, not 0
+--variant ref=<path> --days 14 --seats 4          config.json: personas is empty
+--variant ref=<path> --world ace-tennis --seats 4 config.json: personas is empty
+```
+
+- **`seats`.** Its default is `0`, documented as *"all of them"* (`_drive-config.ts:141-148`).
+  But a `seats` arriving from a config file is parsed `num(value, at, { int: true, min: 1 })`
+  (`:574`), so the parser refuses the very default the writer emits. `0` is expressible in the
+  type and not in the file.
+- **`personas`.** `recordedConfig` writes `personas: [...world.seats]` — but `ab.ts` never
+  builds a world, because building it is the child's job. So `world.seats` is empty, the file
+  gets `personas: []`, and `list()` refuses an empty list (`:515`). `sim.ts:696-699` says
+  empty means *"everybody this world has"*, which is exactly the meaning the file cannot carry.
+
+Both are the same shape: **a sentinel that means "unspecified" in memory becomes a literal
+value on disk, and the reader has no way to tell the two apart.** It is the config-file
+sibling of the `suppressed`-vs-`failed` distinction 0032 drew — "not set" and "set to zero"
+are different facts and this file has one slot for them.
+
+**What it costs.** `--dry-run` does not catch it: it stops before any child runs, so it
+reports two healthy arms and a prepared parent directory (verified — the dry run passes and
+prints both prefix hashes). The failure appears only when money would have been spent, and
+the run then exits **0**, with `A1  no record` in the summary rather than an error. A caller
+reading the exit code learns nothing.
+
+**Why nobody hit it.** The `doctrine=` path is the one that gets used, and `--preset smoke`
+freezes `seats: 2` (`:327`) — a preset that happens to name a seat count masks both bugs.
+`ref=` with no preset is the combination that has no working spelling at all.
+
+**Where it lives.** `recordedConfig` (`scripts/_drive-config.ts:999-1009`) writes a resolved
+config that its own parser will not accept; the `seats` rule at `:574` and the `list()` guard
+at `:515` are the two refusals. `ab.ts` is the only caller that round-trips a config through a
+file, which is why it is the only instrument that cannot run.
+
+**Not fixed here.** This PR is a money change and the instrument is a separate concern; fixing
+the round trip means deciding how "unspecified" is spelled on disk, which is a design
+question, not a patch. Verification for this branch was done with `check-rate-history.ts`, the
+four existing money checks and a direct `sim.ts` drive instead.
