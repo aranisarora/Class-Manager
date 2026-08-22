@@ -909,13 +909,38 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
       const recipientCap = capFrom(row.settings, 'per_recipient_24h', DEFAULT_RECIPIENT_CAP_24H)
       const tenantCap = capFrom(row.settings, 'per_tenant_24h', DEFAULT_TENANT_CAP_24H)
 
-      // The admin is not a recipient to be protected, they are the operator. This cap
-      // exists so a parent does not get eight messages because eight things happened;
-      // an owner running their business through this passes six before breakfast, and
-      // capping them means their own tool goes silent on them mid-task — which is
-      // exactly how a confirmed plan lost its confirmation card and executed unseen.
-      // The per-tenant cap below still applies: that one protects the shared number.
-      if (!msg.solicited && !row.is_admin && counts[0].recipient_24h >= recipientCap) {
+      /**
+       * The admin is not a recipient to be protected, they are the operator. This cap
+       * exists so a parent does not get eight messages because eight things happened;
+       * an owner running their business through this passes six before breakfast, and
+       * capping them means their own tool goes silent on them mid-task — which is
+       * exactly how a confirmed plan lost its confirmation card and executed unseen.
+       * The per-tenant cap below still applies: that one protects the shared number.
+       *
+       * @mechanism operatorWhileOperating — the exemption is keyed on ENGAGEMENT rather than
+       *   on role, because the argument above is entirely about an admin mid-task and
+       *   `is_admin` cannot tell mid-task from gone. `inWindow` can, and is already in hand
+       *   three gates up: an operator working through this has written inside 24 hours by
+       *   definition, so every case the exemption was written for keeps it, unchanged.
+       *
+       *   Out of window they are not mid-task and the exemption is inverted from its own
+       *   reasoning: nothing free is being protected, because an out-of-window send leaves
+       *   as one of the eight approved templates, metered and quality-scored by Meta against
+       *   a number §16.1 shares with every other tenant — *"one policy strike, one wave of
+       *   blocks from one badly-run academy, and everybody goes dark at the same moment"*.
+       *
+       *   Measured on `2026-08-22-16-51-sim-b8xo`: the owner left on day 20 and the product
+       *   sent him THIRTY-FIVE more templates over the following ten days. He replied to
+       *   none of them, none was suppressed, and the cap that exists to notice exactly this
+       *   never looked at him because he was still `is_admin`.
+       *
+       *   `fixed` rows and solicited replies are untouched — they are already exempt on the
+       *   line above and for a better reason, that they exist for something other than
+       *   engagement. What this stops is the sixth cheerful digest of the week to somebody
+       *   who has not answered since the first.
+       */
+      const operatorWhileOperating = row.is_admin && inWindow
+      if (!msg.solicited && !operatorWhileOperating && counts[0].recipient_24h >= recipientCap) {
         return suppress(tx, row, msg, 'recipient_frequency_cap', inWindow)
       }
       if (counts[0].tenant_24h >= tenantCap) {

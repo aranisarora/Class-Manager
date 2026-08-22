@@ -1,6 +1,6 @@
 # What is open
 
-25 findings. This file is the source of truth for what is broken — hand-written, and short on
+26 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -41,6 +41,7 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-DY** | A persona brief asserts a history the world never builds, so the model is argued out of a correct read of its own database | [detail](#f-dy--a-persona-brief-asserts-a-history-the-world-never-builds-so-the-model-is-argued-out-of-a-correct-read-of-its-own-database) |
 | **F-EB** | A person taps when ONE thing is waiting and types when several are, and several things reach one person from DIFFERENT paths between two looks at a phone | [detail](#f-eb--a-person-taps-when-one-thing-is-waiting-and-types-when-several-are-and-several-things-reach-one-person-from-different-paths-between-two-looks-at-a-phone) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
+| **F-EE** | §16.3's per-tenant quality proxies — delivery failures, read rate, **response rate**, opt-outs — have no reader, so nothing notices a tenant shouting into silence on a shared number | [detail](#f-ee--1633s-per-tenant-quality-proxies-have-no-reader) |
 | **F-DS** | A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn | [detail](#f-ds--a-staged-plan-can-only-be-committed-by-tapping-it-an-owner-who-answers-go-ahead-in-words-is-re-staged-instead-because-the-plan-handle-does-not-survive-the-turn) |
 
 ---
@@ -874,6 +875,55 @@ The trap either way: letting the model decide that a sentence means yes is the m
 keeps out of the commit path — *"no model inference decides what a tap runs, because a misread there
 commits someone to being somewhere."* The runtime has to be the thing that matches consent to a
 specific outstanding action, and it has to be as unambiguous as a tap.
+
+### F-EE · §16.3's per-tenant quality proxies have no reader
+
+§16.3 lists them as a built-in guardrail: *"**Per-tenant quality proxies** — delivery failures,
+read rate, response rate, opt-outs, bucketed by academy — to find a bad actor before the
+number-level rating does."* §16.1 explains why that is not a messaging detail: *"one policy
+strike, one wave of blocks from one badly-run academy, one quality drop, and everybody goes dark
+at the same moment — including the tenants who did nothing wrong."* It calls this **the largest
+single business risk in the product**.
+
+`grep -rni "response rate\|read rate\|quality prox" lib/` returns three COMMENTS, in
+`lib/emulator/state.ts`, `lib/messaging/send.ts` and `lib/ops-guard.ts`, each of which refers to
+the proxies as a thing that exists. Nothing computes one. Nothing reads one. `message.status`,
+`read_at`, `failed_reason` and `suppressed_reason` are all written and are all only ever read back
+per-message.
+
+**What it costs, measured.** `2026-08-22-16-51-sim-b8xo`: the owner left on day 20 and the product
+sent him **35 more templates over ten days**, none answered, none suppressed. `2026-08-22-15-21-sim-ceeg`:
+four of five seats gone by day 21 and the standing surface kept running at all of them. On the
+emulator that is a wasted model call. On `TRANSPORT=cloud` it is 35 business-initiated
+conversations to a number that is not answering, against a quality rating §16.1 shares with every
+other academy on the sender.
+
+**Partly addressed, and the rest is the finding.** `operatorWhileOperating` (lib/messaging/send.ts)
+now keys the admin's exemption from the per-recipient cap on the 24-hour window rather than on the
+role, so a departed owner is capped like anybody else. That bounds the rate. It does not notice
+the SHAPE — 35 sends and 0 replies is a different fact from 6 sends in a day, and only the second
+one has a gate.
+
+**Where it lives.** Two things, and they are different stages:
+
+  - **A per-recipient silence backoff, at the send path**, beside the two caps and under the same
+    `!msg.fixed` exemption those already respect — `fixed` rows *"exist for a reason that is not
+    about engagement"* (§10.4) and are exactly the ones that must still go when somebody is dark.
+    The input is `contact.last_inbound_at` against the unsolicited sends since it, both of which
+    are already selected in `send()`. What it needs and this ledger cannot supply is the NUMBER:
+    how many unanswered templates is a business allowed before it is shouting. That is a policy
+    decision about a real business, not a value to guess, and it should be a per-sender setting
+    with a default argued from a real quality rating rather than from a simulated month.
+  - **The per-tenant proxies themselves**, which are a scheduled roll-up rather than a send-path
+    gate — `message` grouped by academy over a window, against `contact` inbound. §16.1's stated
+    mitigation is *"being able to move a tenant to their own number in a config change"*, and
+    `academy.sender_id → sender` already makes that a config change. What is missing is the
+    signal that would tell anybody to make it.
+
+**This one blocks `TRANSPORT=cloud`.** Not because it will fail on day one, but because the
+failure it guards against is the one that cannot be undone from inside the product: a number whose
+quality rating has been dropped takes every tenant on it down together, and the first evidence
+would be parents silently not receiving messages.
 
 ### F-CK · Quiet hours and both send caps drop the message they mean to delay, because nothing ever comes back for it
 
