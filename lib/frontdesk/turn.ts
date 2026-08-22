@@ -14,9 +14,9 @@
  *      the short thread so far.
  *   2. Up to MAX_ROUNDS of generate → run tools → feed the results back.
  *   3. The desk speaks by calling `reply`, which is the only thing that can carry a
- *      button. A round that calls no tool is spent telling it so — once (`proseRefused`),
- *      after which prose is sent as written rather than becoming silence. A second message
- *      to the same person is refused (`spoke`) and every other verb stays reachable.
+ *      button, so the prefix says so; a round that calls no tool sends its prose as written.
+ *      A second message to the same person is refused (`spoke`) and every other verb stays
+ *      reachable.
  *   4. A hand-over ends it immediately, whatever else the model had planned. The
  *      caller re-enters an ordinary turn inside the business and the person is
  *      answered from there.
@@ -221,11 +221,8 @@ export async function runFrontDeskTurn(o: {
    * Whether the desk has already been told, this turn, that prose is not how it speaks.
    * One round of grace and never a second — see `deskSpeaksThroughReply`.
    */
-  let proseRefused = false
   /** Whether a message has already reached this person this turn — see the `reply` case. */
   let spoke = false
-  /** The draft written before the prose refusal, restored if the retry produces nothing better. */
-  let heldDraft: string | undefined
 
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     run.rounds = round
@@ -271,80 +268,26 @@ export async function runFrontDeskTurn(o: {
     messages.push(gen.assistant)
 
     /**
-     * A round that calls nothing is the desk speaking — and speaking this way costs
-     * the person the only affordance this conversation has.
+     * A round that calls nothing is the desk speaking, and what it says goes out as written.
      *
-     * Two paths reach a visitor's phone from here and they are not equivalent. `reply`
-     * carries up to three buttons whose `answer` replays as if typed; this path carries
-     * a string and there is nowhere in it to put one. The prefix called the prose path
-     * "the only way you speak", the `reply` declaration says "use this rather than plain
-     * prose whenever a tap would save them typing — which is almost always for the one
-     * question you are here to ask", and the model believed the prefix. Measured on
-     * `2026-08-22-12-25-sim-bqc0`, every desk message in three days went out through
-     * here: four messages reached a seat and NONE carried a button, while
-     * `d1-08:30-rahul-menon`'s own reasoning reads *"Let me ask with buttons."* and its
-     * round recorded `calls: []`. The desk asks one question with exactly two answers.
-     * That is the single most tappable moment in the product and it was being typed.
+     * It carries no buttons, and for one afternoon this path REFUSED prose for that reason
+     * and spent a round telling the model to use `reply` instead. That refusal fired ZERO
+     * times across four subsequent runs while 60 buttons were minted, because the thing
+     * that had actually been wrong was the prefix: it said prose was "the only way you
+     * speak" while the `reply` declaration said to use `reply` instead, and the model
+     * believed the prefix. Correcting the sentence fixed it completely; the refusal on top
+     * was machinery for a defect that no longer existed, and it caused a double-send of its
+     * own before it was removed.
      *
-     * @mechanism proseRefused — trailing prose at the desk is not a send. The
-     *   round is spent telling the model that nothing reached them and that `reply` is how
-     *   the desk speaks, which is the same round-of-grace shape `violationsAtDesk` above
-     *   already uses — a refusal that buys a round rather than a runtime edit. It fires at
-     *   most ONCE (`proseRefused`), and prose on the second attempt is sent as written,
-     *   because a desk that answers a stranger with silence is strictly worse than one that
-     *   answers without a button: this is the one conversation in the product where nobody
-     *   has any relationship to fall back on. The prefix sentence that taught the habit is
-     *   corrected beside this in `FRONT_DESK_PREFIX`, and `check:layout` cannot catch a
-     *   prompt contradicting a tool declaration, which is why the enforcement is here and
-     *   not there. It never spends the LAST round (`round < MAX_ROUNDS`): a refusal there
-     *   has no round left to be answered in, and would trade a message without a button for
-     *   no message at all — which is the one outcome a stranger cannot tell apart from
-     *   being ignored.
-     *   Closes F-DJ.
+     * The lesson is worth more than the code: an information failure looks exactly like a
+     * control failure from here, and the cheap test is to fix the information first and
+     * measure whether the gate ever fires.
      */
     if (gen.functionCalls.length === 0) {
       const body = (gen.text ?? '').trim()
       if (!body) {
         run.error = 'front desk produced neither a tool call nor anything to say'
         break
-      }
-      if (!proseRefused && round < MAX_ROUNDS) {
-        proseRefused = true
-        /**
-         * HELD, not discarded — the same shape `heldProse` uses in the tenant loop, and for
-         * the same reason: the refused round wrote to the PERSON and the round after it
-         * answers the RUNTIME, so letting the second one replace the first widens the gap
-         * between what the model wrote and what the person reads on the one path with no
-         * round of grace left.
-         *
-         * Measured over 23 refusals across four runs: 9 (39%) ended in escape-valve prose,
-         * and of the six read closely two were WORSE, four equal, none better. The clearest
-         * is 2026-08-22-13-20-sim-67ai turn 0012 — round 1 drafted "Great, that's the right
-         * place for it. What should I call the business on here — and what do you teach?"
-         * and what shipped was "…I can put the \"what do you teach\" part on buttons — just
-         * tell me the name and tap one", with buttons: []. Turn 0013 shipped "Type the name
-         * and I'll set you up right away", out of the refusal whose whole purpose is to stop
-         * people typing.
-         */
-        heldDraft = body
-        run.record.rounds.push({
-          round,
-          ms: 0,
-          prose: '',
-          calls: ['(prose refused: the desk speaks through reply, so a button is possible)'],
-          promptTokens: 0,
-          cachedTokens: 0,
-          outputTokens: 0,
-        })
-        messages.push({
-          role: 'user',
-          content:
-            '[That reached nobody. Prose is a note to yourself here — `reply` is how this desk speaks, and it ' +
-            'is the only thing that can carry a button. Send the same message through `reply`, and put the ' +
-            'answers on buttons: the person is on a phone with one hand, and a question they have to type ' +
-            'the answer to is a question many of them will not answer at all.]',
-        })
-        continue
       }
       const bad = proseChecked ? [] : violationsAtDesk(body, o.identity, businessNames)
       if (bad.length) {
@@ -374,9 +317,8 @@ export async function runFrontDeskTurn(o: {
         })
         break
       }
-      const ship = heldDraft && heldDraft !== body ? heldDraft : body
-      run.replyText = ship
-      run.outcomes.push(await sendFromDesk(o.session, o.identity, ship))
+      run.replyText = body
+      run.outcomes.push(await sendFromDesk(o.session, o.identity, body))
       spoke = true
       await noteAsked(o.identity, arrival?.id, at)
       break
@@ -484,8 +426,8 @@ export async function runFrontDeskTurn(o: {
          * One message per person per turn — and the turn goes ON.
          *
          * While prose was the only route out of this loop it `break`s, so nothing here
-         * ever ran twice and the missing guard was invisible. The moment `proseRefused`
-         * sent the desk through `reply` instead, it showed up in one drive: on
+         * ever ran twice and the missing guard was invisible. The moment the desk started
+         * calling `reply`, it showed up in one drive: on
          * `2026-08-22-12-47-sim-s4hg` three of nine desk turns sent the SAME question
          * twice, and the second was caused by the refusal itself — the model replied,
          * correctly wrote "I'll wait for their answer." on the next round, and was told

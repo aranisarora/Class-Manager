@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-209 mechanisms · 33 findings closed by one · 25 findings still open
+208 mechanisms · 32 findings closed by one · 25 findings still open
 
 ## The scan
 
@@ -155,7 +155,7 @@ One line each. Find a candidate here, then read its entry below.
 `scopeDenominator` — the "of N" on a scope line is counted through the CALLER's own session, the same session the model's read r…  
 `compactDiff` — hands back the rows a write produced rather than counts of them, beside the statements that matched NO rows…  
 `committedResult` — the account of a plan that has already run is built in one place and read identically whether the model ran…  
-`CLOSED_TO_EVERY_SESSION` — a read whose relations are ALL closed to every session comes back as a refusal naming the table and the rou…  
+`CLOSED_TO_EVERY_SESSION` — a read whose relations are ALL closed to every session comes back carrying the ANSWER's address rather than…  
 `awaitsATap` — a committing button records the question it puts on a screen whoever that screen belongs to, so the expiry…  
 `context_query` — the SELECT a watch carries is parsed and PLANNED at mint time, against the real schema, and never executed:  
 `traceabilityNote` — compares every scalar a reply states (times, dates, prices, headcounts) against what this turn's tools actu…  
@@ -176,7 +176,6 @@ One line each. Find a candidate here, then read its entry below.
 `stopMessagingVisitor` — "leave me alone" is answerable at the front desk, where there is no tenant to record it against and therefo…  
 `runFrontDeskTool` — the four verbs, and every one of them answers in words the model can act on rather than in a status.  
 `runFrontDeskTurn` — the visitor's turn, on the second stable prefix and four verbs.  
-`proseRefused` — trailing prose at the desk is not a send.  
 
 **`lib/jobs/`**  
 `dedupe_key` — the column is unique and every insert here, single or bulk, is `on conflict (dedupe_key) do nothing`, so en…  
@@ -499,10 +498,10 @@ One line each. Find a candidate here, then read its entry below.
 - **`committedResult`** — `lib/agent/tools.ts:1595`  
   the account of a plan that has already run is built in one place and read identically whether the model ran it itself (`act`) or a person's tap did (`tapBlock` · lib/agent/loop.ts). Before this the tap path had no account at all: it went to `buildSummary`, whose sentence is composed from row counts and a snapshot taken *before* the transaction, and straight to a phone with no model in between. Two callers sharing one builder is what stops the tap path quietly acquiring a thinner picture than the tool path — the asymmetry that let `emptyWrites`, `clashes` and `untold` be reported to the model on one route and to nobody on the other. **Closes F-CD.**
 - **`CLOSED_TO_EVERY_SESSION`** — `lib/agent/tools.ts:1669`  
-  a read whose relations are ALL closed to every session comes back as a refusal naming the table and the route that works, instead of as an empty result that reads as absence. Only when every relation is closed: a join from `session` to `job` still returns the session rows, and calling that a refusal would hide real data. The route matters as much as the refusal — `standing()` already puts every live watch in the tail, so the answer the model wanted is above it in the same prompt.
-- **`awaitsATap`** — `lib/agent/tools.ts:2414`  
+  a read whose relations are ALL closed to every session comes back carrying the ANSWER's address rather than only the boundary. The one such read in 218 turns asked `kind ilike '%session%' or '%slot%' or '%material%'` — "has the schedule ladder actually run for the class I just made?" — which is a fair question with a readable answer: the `session` rows are what that ladder produces. A refusal that only says "you may not look" answers a question nobody asked; the route is the point and the boundary is incidental. Only when every relation is closed: a join from `session` to `job` still returns the session rows, and calling that a refusal would hide real data. The route matters as much as the refusal — `standing()` already puts every live watch in the tail, so the answer the model wanted is above it in the same prompt.
+- **`awaitsATap`** — `lib/agent/tools.ts:2419`  
   a committing button records the question it puts on a screen whoever that screen belongs to, so the expiry sweep in `lib/jobs/plan-ahead.ts` is armed for the commonest ask in the product — "here is the plan, tap to confirm", put to the person who just asked for it — and not only for the rare one routed to somebody else. It retires the class of defect where a question dies unanswered and nothing anywhere knows a question was asked.
-- **`context_query`** — `lib/agent/tools.ts:2671`  
+- **`context_query`** — `lib/agent/tools.ts:2676`  
   the SELECT a watch carries is parsed and PLANNED at mint time, against the real schema, and never executed: a table that does not exist is a refusal while the model can still fix it, and a column read off the wrong table comes back naming the table it is actually on. Without it the query first fails on its fire day, weeks later, when the task runs blind on its instruction alone and nobody is watching. **Closes F-AP.**
 - **`traceabilityNote`** — `lib/agent/traceability.ts:4`  
   compares every scalar a reply states (times, dates, prices, headcounts) against what this turn's tools actually returned, and records the unbacked ones on the flight recorder. Shadow mode by design: it records and blocks nothing, because a false refusal costs more than a recorded miss. **Closes F-E.**
@@ -539,8 +538,6 @@ One line each. Find a candidate here, then read its entry below.
   the four verbs, and every one of them answers in words the model can act on rather than in a status. Layer 2's rule is that results tell the truth: a refusal here says what to do next ("ask what theirs is called", "that id is not on this number"), because the record is that every honest refusal was repaired in-turn and every opaque one became a false sentence to a person. A successful hand-over says *say nothing further here*, because the runtime is about to answer them from inside the business and two answers to one message is the failure that shape can produce.
 - **`runFrontDeskTurn`** — `lib/frontdesk/turn.ts:138`  
   the visitor's turn, on the second stable prefix and four verbs. It ends the moment a hand-over lands rather than letting the model add a parting sentence, because the business is about to answer the same message from inside itself and two answers to one question is what that shape produces if nothing stops it. It writes no `turn` row and owns no recorder: `runTurn` records this exactly as it records every other turn, so a front-desk turn is visible in the same table, the same report and the same drive as a parent's.
-- **`proseRefused`** — `lib/frontdesk/turn.ts:289`  
-  trailing prose at the desk is not a send. The round is spent telling the model that nothing reached them and that `reply` is how the desk speaks, which is the same round-of-grace shape `violationsAtDesk` above already uses — a refusal that buys a round rather than a runtime edit. It fires at most ONCE (`proseRefused`), and prose on the second attempt is sent as written, because a desk that answers a stranger with silence is strictly worse than one that answers without a button: this is the one conversation in the product where nobody has any relationship to fall back on. The prefix sentence that taught the habit is corrected beside this in `FRONT_DESK_PREFIX`, and `check:layout` cannot catch a prompt contradicting a tool declaration, which is why the enforcement is here and not there. It never spends the LAST round (`round < MAX_ROUNDS`): a refusal there has no round left to be answered in, and would trade a message without a button for no message at all — which is the one outcome a stranger cannot tell apart from being ignored. **Closes F-DJ.**
 
 ## `lib/jobs/`
 

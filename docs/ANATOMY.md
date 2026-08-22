@@ -116,7 +116,7 @@ re-bills the whole conversation (stage 3, and `verify:static`'s fifth absolute).
 | 1 | A second stable prefix — byte-identical for every stranger on every number, ~2% the size of the tenant one | `FRONT_DESK_PREFIX` · `lib/frontdesk/context.ts` |
 | 2 | The tail: whether the question has already been on their screen, and whether their own words name a business | `frontDeskTail` · `lib/frontdesk/context.ts` |
 | 3 | Five verbs, and no sixth at any privilege: `reply`, `find_business`, `join_business`, `start_business`, `stop_messaging` | `frontDeskToolDecls` · `lib/frontdesk/tools.ts` |
-| 4 | Up to three rounds over them. The desk speaks by calling `reply`, which is the only thing that can carry a button; the FIRST round that calls nothing is spent saying so (`proseRefused`), holding its draft, and a later one ships prose rather than becoming silence. One message per person (`spoke`), on both paths | `runFrontDeskTurn` · `lib/frontdesk/turn.ts` |
+| 4 | Up to three rounds over them. The desk speaks by calling `reply`, which is the only thing that can carry a button, and the prefix says so; a round that calls no tool still sends its prose as written rather than becoming silence. One message per person (`spoke`), on both paths | `runFrontDeskTurn` · `lib/frontdesk/turn.ts` |
 | 5 | The name matcher is evidence now, not a routing decision — it decides nothing on its own | `matchAcademiesByName` · `lib/identity.ts` |
 | 6 | A destination: a prospect contact in an existing business, or a business that did not exist a second ago | `joinBusiness` · `foundBusiness` · `lib/frontdesk/route.ts` |
 | 7 | The words that brought them here are written into that business as the first row of its thread | `carryOpeningMessage` · `lib/frontdesk/route.ts` |

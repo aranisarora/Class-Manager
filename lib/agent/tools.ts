@@ -1667,8 +1667,11 @@ export function seedFromCommitted(
  * job where kind ilike '%session%' …`, zero rows, no mark of any kind.
  *
  * @mechanism CLOSED_TO_EVERY_SESSION — a read whose relations are ALL closed to every session
- *   comes back as a refusal naming the table and the route that works, instead of as an empty
- *   result that reads as absence. Only when every relation is closed: a join from `session` to
+ *   comes back carrying the ANSWER's address rather than only the boundary. The one such read in
+ *   218 turns asked `kind ilike '%session%' or '%slot%' or '%material%'` — "has the schedule ladder
+ *   actually run for the class I just made?" — which is a fair question with a readable answer: the
+ *   `session` rows are what that ladder produces. A refusal that only says "you may not look" answers
+ *   a question nobody asked; the route is the point and the boundary is incidental. Only when every relation is closed: a join from `session` to
  *   `job` still returns the session rows, and calling that a refusal would hide real data. The
  *   route matters as much as the refusal — `standing()` already puts every live watch in the
  *   tail, so the answer the model wanted is above it in the same prompt.
@@ -1717,12 +1720,14 @@ export async function runTool(
             rows: [],
             closed: named.join(', '),
             error:
-              `${named.join(', ')} ${named.length === 1 ? 'is' : 'are'} the runtime own books and no session may ` +
-              'read them — not a coach, not a family, not an admin. This came back empty because the policy ' +
-              'refused it, NOT because there is nothing there, so do not report it as nothing. What you were probably ' +
-              'after is already in front of you: every watch this business holds is listed at the top of this ' +
-              'conversation, what this turn has done is on the turn-state line, and what a plan changed comes back in ' +
-              'the plan own result — a plan says what it changed.',
+              `${named.join(', ')} ${named.length === 1 ? 'is' : 'are'} the runtime own books and no session reads ` +
+              'them, so this came back empty because the policy refused it and NOT because there is nothing there. ' +
+              'Do not report it as nothing. Every question people ask of this table has an answer somewhere you CAN ' +
+              'read, and here is where: whether the schedule ladder has run is the `session` rows themselves, ' +
+              'because sessions are what it produces — select from session for the class and the dates answer it. ' +
+              'What this business has promised to come back to is listed as ALREADY WATCHING at the top of this ' +
+              'conversation, with the slug that stops it. What this turn has done is on the turn-state line, and ' +
+              'what a plan changed comes back in the plan own result. Ask the question again against one of those.',
           },
         }
       }
