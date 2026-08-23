@@ -3178,7 +3178,9 @@ export async function runTool(
       if (live.length >= AGENT_TASK_CAP) {
         return {
           result: {
-            error: `there are already ${live.length} things on the watch list, which is the cap. Ask what I am watching and drop one first.`,
+            error:
+              `there are already ${live.length} things on the watch list, which is the cap. ` +
+              `Free a slot with drop_watch({slug}) — the slugs are in "watching" below.`,
             watching: live.map((t) => ({ slug: t.slug, instruction: t.instruction })),
           },
         }

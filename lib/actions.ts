@@ -334,6 +334,16 @@ export type ConsumeResult =
        *   and what somebody else was being asked is not this person's to be told.
        */
       intent?: string
+      /**
+       * Why an `expired` card actually died, when the row says more than the clock.
+       * `sibling_claimed` — another button on the same message was tapped and its
+       * action ran, so the question this card asked was ANSWERED; `newer_ask` — a
+       * newer question on the same subject replaced this card. Absent on a plain
+       * TTL expiry. Reporting all three as "expired" handed the turn a wrong
+       * cause with instruction force: the expired copy invites re-staging, which
+       * is exactly wrong when the sibling already committed the decision.
+       */
+      supersession?: 'sibling_claimed' | 'newer_ask'
     }
 
 type ClaimedRow = { payload: unknown; message_id: string | null }
@@ -599,12 +609,14 @@ export async function consumeAction(
         minted_for_contact_id: string
         consumed_at: Date | null
         expired: boolean
+        expired_reason: string | null
         payload: unknown
       }[]
     >`
       select minted_for_contact_id,
              consumed_at,
              (expires_at is not null and expires_at <= app.now()) as expired,
+             expired_reason,
              payload
         from action
        where id = ${actionId}
@@ -617,15 +629,27 @@ export async function consumeAction(
     const intent = intentOf(row.payload)
     if (row.consumed_at) return { ok: false, reason: 'already_used', ...(intent ? { intent } : {}) }
     if (row.expired) {
-      // A button retired by its sibling lands here, and `expired` is what it must report:
-      // `TAP_REFUSAL.expired` in lib/agent/loop.ts says *"That button has expired — tell me
-      // what you'd like and I'll sort it out"*, which is true of this row and invites the
-      // correction. It is emphatically NOT `already_used` — "that one's already done" about
-      // a `[Cancel]` whose sibling committed is the same lie 0016 exists to kill, told from
-      // the other end. The row keeps the whole truth in `expired_reason`, which is where the
-      // emulator and anyone asking "why did Cancel stop working?" reads it — this path stays
-      // quiet because a sibling being retired is the system working, not a fault.
-      return { ok: false, reason: 'expired', ...(intent ? { intent } : {}) }
+      // A button retired by its sibling lands here as `expired` — emphatically NOT
+      // `already_used`: "that one's already done" about a [Cancel] whose sibling
+      // committed is the lie 0016 exists to kill, told from the other end. But
+      // `expired` alone was a HALF-truth with instruction force: the refused-tap
+      // turn reads "its window has closed" and is invited to re-stage, which is
+      // exactly wrong when the sibling COMMITTED (the decision is made) or a newer
+      // card replaced this one (a live ask is already waiting). The row has held
+      // the whole truth in `expired_reason` all along; now the one reader that
+      // composes what the person hears gets it too, instead of only the emulator.
+      const er = String(row.expired_reason ?? '')
+      const supersession = er.startsWith('superseded_by_action:')
+        ? ('sibling_claimed' as const)
+        : er === 'superseded_ask'
+          ? ('newer_ask' as const)
+          : undefined
+      return {
+        ok: false,
+        reason: 'expired',
+        ...(intent ? { intent } : {}),
+        ...(supersession ? { supersession } : {}),
+      }
     }
     return { ok: false, reason: 'missing' }
   })

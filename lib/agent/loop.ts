@@ -257,6 +257,7 @@ async function runTurnBody(input: TurnInput, turnId: string): Promise<TurnOutput
           ok: false,
           neverRan: true,
           refusalReason: consumed.reason,
+          ...(consumed.supersession ? { supersession: consumed.supersession } : {}),
           account: { tap: 'refused', reason: consumed.reason, ran: false, changed: [] },
           backstop: TAP_REFUSAL[consumed.reason],
         }
@@ -669,6 +670,8 @@ type TapNarration = {
   neverRan?: true
   /** Which refusal, for the model to read. Never shown as-is. */
   refusalReason?: 'expired' | 'already_used' | 'wrong_contact' | 'missing'
+  /** Why an `expired` card actually died, when the row knows more than the clock. */
+  supersession?: 'sibling_claimed' | 'newer_ask'
 }
 
 /** What running a tapped payload produced, for the caller that has to record it. */
@@ -1202,7 +1205,16 @@ function projectTrace(trace: ToolTrace[], mode: 'stored' | 'full'): ToolTrace[] 
 function refusedTapBlock(tap: TapNarration, tapped: string): string {
   const why =
     tap.refusalReason === 'expired'
-      ? 'it had expired — it was minted earlier in this conversation and its window has closed'
+      ? // The row knows more than the clock, and the difference decides the right
+        // move below: a card retired by its tapped sibling is a DECIDED question,
+        // and re-staging it re-opens something already settled; a card replaced
+        // by a newer ask has a live twin waiting. Only the plain TTL case is
+        // actually about time.
+        tap.supersession === 'sibling_claimed'
+        ? 'it had been retired when another button on that same card was tapped — the question the card asked has already been decided, and the decided action ran'
+        : tap.supersession === 'newer_ask'
+          ? 'it had been retired when a newer question on the same subject replaced that card'
+          : 'it had expired — it was minted earlier in this conversation and its window has closed'
       : tap.refusalReason === 'already_used'
         ? 'it had already been used, so whatever it carried has been dealt with once already'
         : tap.refusalReason === 'wrong_contact'
@@ -1214,14 +1226,25 @@ function refusedTapBlock(tap: TapNarration, tapped: string): string {
       : tap.intent
         ? `\n\nWhat that button was going to do, in the words it was minted with: ${tap.intent}`
         : '\n\nThe payload behind it cannot be read, so you do not know what it was going to do.'
+  const advice =
+    tap.supersession === 'sibling_claimed'
+      ? `The decision was already made by the earlier tap, so do NOT re-stage this button's action as if ` +
+        `the question were still open. Work out what the earlier tap actually did — the rows will say — ` +
+        `tell them plainly what now stands, and offer the next real step from there.`
+      : tap.supersession === 'newer_ask'
+        ? `A newer card asking about the same subject replaced this one and may still be live — your ` +
+          `standing states list every open question with its card id. Point them at the live question, or ` +
+          `commit it if their words already answer it, rather than staging a third copy of the same ask.`
+        : `They did the one thing they were asked to do. Do not make them type it out again: say plainly ` +
+          `that the button had gone stale, and put it back in front of them — re-stage the same thing and ` +
+          `offer a fresh confirmation if that is still what they want, or ask the single question you need ` +
+          `if something has changed since. Do not describe any of it as done.`
   return (
     `# They tapped ${tapped}, and it did not go through\n\n` +
-    `Nothing ran and nothing changed — ${why}. They have not been told any of this yet; ` +
+    `${tap.supersession === 'sibling_claimed' ? 'This tap itself ran nothing' : 'Nothing ran and nothing changed'} — ${why}. ` +
+    `They have not been told any of this yet; ` +
     `you are the first thing that will speak to them about it.${what}\n\n` +
-    `They did the one thing they were asked to do. Do not make them type it out again: say plainly ` +
-    `that the button had gone stale, and put it back in front of them — re-stage the same thing and ` +
-    `offer a fresh confirmation if that is still what they want, or ask the single question you need ` +
-    `if something has changed since. Do not describe any of it as done.`
+    advice
   )
   }
 
