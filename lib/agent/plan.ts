@@ -1824,15 +1824,24 @@ export async function executePlan(
        * Mondays get in — and a receipt that names the overlap is the only
        * warning that path has.
        */
-      return {
+      const out = {
         diffs,
         clashes: await noteClashes(tx, ctx, diffs, state),
         untold: await noteUntold(tx, ctx, diffs, state),
       }
+      // INSIDE the transaction, after the guards, so CHANGED_NOTHING is a
+      // ROLLBACK — which is what its own tag ("aborts instead of committing"),
+      // ANATOMY's sub-pipeline A order 6, and every caller already believe it
+      // is. It spent its whole life below the commit line under this function:
+      // by the time it threw, the plan's audit entry and any schedule-step job
+      // rows had already committed — so the model was told "Nothing was changed
+      // and nobody was messaged" by a turn that had just armed a job, and that
+      // job later fires out of a turn whose own account says it did nothing.
+      assertSomethingChanged(expanded, out.diffs)
+      return out
     })
     // ---- committed. Only now does anything reach the wire. ----
     const merged = inTx.diffs
-    assertSomethingChanged(expanded, merged)
     // Rule 7 — one event, one person, one message. Assigned back onto the state
     // so the receipt's staged-vs-sent arithmetic counts the messages that were
     // actually attempted.
