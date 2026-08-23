@@ -1564,8 +1564,23 @@ async function standing(id: Identity): Promise<string[]> {
             `promise is safe.${slug ? ` To stop it, drop_watch with slug "${slug}".` : ''}`,
         )
       }
-    } catch {
-      /* Never a precondition. A turn without this line is worse, not broken. */
+    } catch (e) {
+      // Never a precondition — but never a silent hole either. This block exists
+      // because `job` is closed to the model in both directions, so its own
+      // standing promises reach it no other way; a failed read rendered as an
+      // absent block is "nothing is scheduled" said by omission, and the model
+      // re-promising (or re-minting) a watch it cannot see is the exact class
+      // the block was built against. A failed read and an empty one are
+      // opposite facts here like everywhere else.
+      out.push(
+        unread(
+          'the watches already promised',
+          'This is NOT "nothing is being watched" — the list could not be read. Do not say a watch is or is ' +
+            'not set up, and do not mint one to be safe: a duplicate of a live watch is what this line ' +
+            'normally prevents.',
+          firstLine(errorMessage(e)),
+        ).replace(/^- /, ''),
+      )
     }
 
     // The other half, and the more dangerous one to lose: a mute that fails to load
@@ -1609,7 +1624,22 @@ async function standing(id: Identity): Promise<string[]> {
      *   contradicted; a model shown nothing had nothing to check against.
      *   Closes F-BW.
      */
-    if (!rules.error) {
+    if (rules.error) {
+      // The mirror of the mutes branch above, for the same reason: this block's
+      // empty state is itself a stated fact ("no rules on file — a policy this
+      // business has not stated does not exist", the F-CC guard), so a failed
+      // read that renders as an absent block deletes the guard exactly when the
+      // model has nothing to check an invented policy against. A failed read
+      // licenses neither "no rules exist" nor any particular rule.
+      out.push(
+        unread(
+          'the business rules on file',
+          'This is NOT "this business has stated no rules" — the read failed. Read business_rule before you ' +
+            'assert, rely on, or rule out any policy (trials, discounts, makeups, "first class free").',
+          firstLine(rules.error),
+        ).replace(/^- /, ''),
+      )
+    } else {
       const statedRules = rules.rows as Record<string, unknown>[]
       if (statedRules.length === 0 && isAdmin) {
         out.push(

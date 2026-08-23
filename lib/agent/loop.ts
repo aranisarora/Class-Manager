@@ -2054,6 +2054,7 @@ async function modelTurn(
    * which the in-loop version could not, being upstream of it, and that gap is
    * how a runtime answer could still be followed by a composed second message.
    */
+  let heardWhy: string | null = null
   const heard = silent()
     ? await withSession(
         { role: 'service', academyId: identity.academyId },
@@ -2066,10 +2067,27 @@ async function modelTurn(
                (select count(*) from message
                  where turn_id = '${turnId}' and catalog_id = 'AD-NEEDS-YOU')::int as raised`,
           )) as unknown as { told: number; raised: number }[],
-      ).catch(() => [] as { told: number; raised: number }[])
+      ).catch((e) => {
+        // A blind census is not an empty one. `told = 0` off a failed read asserts
+        // "they heard nothing", and the ladder below composes on the strength of
+        // it — on top of whatever a plan's runtime send already put on their
+        // phone. The doubt is handed to the recovery round, which is the thing
+        // that composes; the count stays 0 because the ladder needs a number,
+        // but the round is told the number is blind.
+        heardWhy = errorMessage(e).split(/\r?\n/)[0].trim().slice(0, 200)
+        return [] as { told: number; raised: number }[]
+      })
     : []
   const told = Number(heard[0]?.told ?? 0)
   const raised = Number(heard[0]?.raised ?? 0)
+  if (heardWhy) {
+    trace.push({
+      round: rounds,
+      name: '(sent-census failed — told/raised are unknown, not zero)',
+      ms: 0,
+      error: heardWhy,
+    })
+  }
 
   // Going quiet is the one failure a person cannot tell apart from being ignored.
   // A model that returns an empty candidate — out of output budget, done
@@ -2108,6 +2126,12 @@ async function modelTurn(
               // gone wrong, which makes it the round most likely to reach for a
               // sentence about work that did not happen. It gets the same fact
               // every other round gets.
+              (heardWhy
+                ? 'One more thing: the check of what has already reached this person FAILED ' +
+                  `(${heardWhy}), so a message this turn's plan sent may already be on their phone. ` +
+                  'Write as if your words may land beside a receipt — do not contradict one, and do ' +
+                  'not repeat one.\n\n'
+                : '') +
               turnState(toolCtx),
           },
         ],
@@ -2508,6 +2532,7 @@ async function modelTurn(
      *   that cannot fail the gate that has just fired.
      */
     if (!landed) {
+      let stillHeardWhy: string | null = null
       const stillHeard = await withSession(
         { role: 'service', academyId: identity.academyId },
         async (tx) =>
@@ -2516,13 +2541,22 @@ async function modelTurn(
                where turn_id = '${turnId}' and contact_id = '${identity.contact.id}'
                  and direction = 'outbound' and suppressed_reason is null`,
           )) as unknown as { n: number }[],
-      ).catch(() => [] as { n: number }[])
+      ).catch((e) => {
+        // The behaviour stands on a failed read — the fallback below is the last
+        // rung and silence is the worse miss — but the record must not claim the
+        // census said zero when the census said nothing.
+        stillHeardWhy = errorMessage(e).split(/\r?\n/)[0].trim().slice(0, 200)
+        return [] as { n: number }[]
+      })
       const heard = Number(stillHeard[0]?.n ?? 0)
       trace.push({
         round: rounds,
         name: '(trailing message not delivered — nothing reached them)',
         ms: 0,
-        args: evidence({ outcome: trailing, heard, draft: outgoing }, 2000),
+        args: evidence(
+          { outcome: trailing, heard: stillHeardWhy ? `unknown — census failed: ${stillHeardWhy}` : heard, draft: outgoing },
+          2000,
+        ),
       })
       // Job turns never take the fallback: nobody typed, so "ask me for it a couple
       // of things at a time" would reach a person who asked nothing — the

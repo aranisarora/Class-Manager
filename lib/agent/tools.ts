@@ -2484,7 +2484,25 @@ export async function runTool(
        */
       let to = String(args?.to_contact_id ?? ctx.identity.contact.id)
       if (/^(the )?(admin|owner)$/i.test(to.trim())) {
-        const adminIds = await adminContactIds(ctx.session.academyId).catch(() => [] as string[])
+        // A failed lookup is not an empty one. `.catch(() => [])` here taught the
+        // model, off a transient error, the false and unfalsifiable fact that this
+        // business has no admin — the exact class the `Read` type exists to kill,
+        // one layer down from where it enforces it.
+        let adminLookupFailed: string | null = null
+        const adminIds = await adminContactIds(ctx.session.academyId).catch((e) => {
+          adminLookupFailed = (e instanceof Error ? e.message : String(e)).split(/\r?\n/)[0].slice(0, 200)
+          return [] as string[]
+        })
+        if (adminLookupFailed !== null) {
+          return {
+            result: {
+              error: `the admin lookup failed just now: ${adminLookupFailed}`,
+              hint:
+                'This is NOT "this business has no admin" — the read failed. Try once more, or use handoff, ' +
+                'which records the escalation either way.',
+            },
+          }
+        }
         if (!adminIds.length) {
           return {
             result: {
