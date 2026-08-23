@@ -1,6 +1,6 @@
 # What is open
 
-20 findings. This file is the source of truth for what is broken — hand-written, and short on
+23 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -35,6 +35,9 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-DV** | The seat COULD always press a button and was never told so, so every mechanism behind a tap was measured at a fifteenth of its rate | [detail](#f-dv--the-seat-could-always-press-a-button-and-was-never-told-so-so-every-mechanism-behind-a-tap-was-measured-at-a-fifteenth-of-its-rate) |
 | **F-DY** | A persona brief asserts a history the world never builds, so the model is argued out of a correct read of its own database | [detail](#f-dy--a-persona-brief-asserts-a-history-the-world-never-builds-so-the-model-is-argued-out-of-a-correct-read-of-its-own-database) |
 | **F-EB** | A person taps when ONE thing is waiting and types when several are, and several things reach one person from DIFFERENT paths between two looks at a phone | [detail](#f-eb--a-person-taps-when-one-thing-is-waiting-and-types-when-several-are-and-several-things-reach-one-person-from-different-paths-between-two-looks-at-a-phone) |
+| **F-EM** | A person minted by name alone can never be messaged, and the real human arriving mints a second one — the coach's pay and classes end the run on a person with no phone | [detail](#f-em--a-person-minted-by-name-alone-can-never-be-messaged-and-the-real-human-arriving-mints-a-second-one) |
+| **F-EN** | A slot written in the evening has no sessions until the overnight beat, and the same evening's turns fall into the gap | [detail](#f-en--a-slot-written-in-the-evening-has-no-sessions-until-the-overnight-beat-and-the-same-evenings-turns-fall-into-the-gap) |
+| **F-EO** | The hand-over carries the opening message and nothing after it, so what was said at the desk is retyped inside the business | [detail](#f-eo--the-hand-over-carries-the-opening-message-and-nothing-after-it-so-what-was-said-at-the-desk-is-retyped-inside-the-business) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-EE** | §16.3's per-tenant quality proxies — delivery failures, read rate, **response rate**, opt-outs — have no reader, so nothing notices a tenant shouting into silence on a shared number. **The send-path half is built** (`silenceBackoff`); the scheduled roll-up is what remains | [detail](#f-ee--1633s-per-tenant-quality-proxies-have-no-reader) |
 
@@ -130,6 +133,66 @@ by the front desk — 0039, `lib/frontdesk/`, 21 Aug 2026):
   safety language are supposed to raise a human automatically; `handoff` sat at 0 calls
   in 464 turns and 0 again this pass. The refusal path already performs its own
   escalation — that mechanism, extended, is the fix direction; another prompt line is R8.
+
+Four more, 23 Aug 2026, from the week sims:
+
+- **The recovery flatten drops the empty-read ambiguity marking.** Blank #40: the final read's
+  scope line carried the empty-vs-withheld note; `flattenToolTurns` summarised it away, and the
+  toolless recovery round — the one round with no way to re-read — composed the false *"no dated
+  sessions have materialised"*. The fact was delivered and then destroyed one stage before
+  composing. Where: `flattenToolTurns` (lib/agent/loop.ts). One instance; verify it recurs
+  before building.
+- **Trailing prose can promise a tap that was never minted.** Blank #45 shipped *"Tap below once
+  the classes look right"* with no button: `pendingConfirmation` mints only from validated staged
+  steps, and no plan was staged that round. A false affordance is worse than F-BC's absent one —
+  the person hunts for a button that does not exist.
+- **`reflect:schedule` renders as "ran — nothing was written" in the action ledger** for a
+  successful watch mint that wrote a `job` row — F-EL's family with the opposite sign, same home
+  (`outcome`, lib/agent/loop.ts).
+- **A promise whose only mechanism was remembering, beside four that were watches.** Blank #61:
+  *"I'll sort it with Rahul"* (the unmarked register); reflection then explicitly decided not to,
+  and nothing carried it. The four promises in the same two runs that were backed by `schedule`
+  all fired and did what they said, to the hour. Recorded as a measured contrast, not a proposal:
+  the only obvious build is a prose-scanner, and that is the banned fix.
+
+And four from the eager week's judging, each **suspected** until verified against the trace:
+
+- **The model hand-minted a second confirm button re-implementing an already-staged plan, and
+  the copy dropped `set_up_business`'s setup→roster transition** — `onboarding_state` sat at
+  `setup` all run (4hy3 #20/#31). F-DR's shape one level up: two representations of one confirm,
+  and nothing diffs them or retires the duplicate. F-DS's card block names live cards to the
+  model, so either the block did not show this one or the model re-minted past it — which of the
+  two is the finding, and the trace knows.
+- **F-DJ (closed) may have re-fired**: 4hy3 #64, the desk's two-answer routing question shipped
+  as buttonless round-1 prose with no `proseRefused` grace round visible in the trace. A CLOSED
+  finding's class firing again is exactly the exit-bar item — verify before the month drive.
+- **An escalation minted from a no-role session has no follow-up machinery.** 4hy3 #42:
+  reflection correctly reasoned a watch under Meenakshi's scope would be blind, so none was set —
+  and then nothing verified the admin acted on Dev's absence. Same open question as F-R's
+  `client-leaves`: routing to the admin is right, and nothing guarantees the admin acts. The
+  people whose scope is empty are exactly the ones whose escalations need chasing.
+- **`recentToolTurns` labels a previous turn's reads "[read just now]"** — 4hy3 #46 replayed
+  pre-materialization reads under that label beside a fresh census saying 18 sessions, and the
+  model paid rounds reconciling. The stamp exists (F-BS closed the unstamped conversation); the
+  label's WORDING asserts a recency the stamp contradicts.
+
+And two from the 23 Aug line review, both pre-existing:
+
+- **`refusalHint`'s service re-run records no SQL.** `hintFor` re-runs a refused plan's writes
+  in a rolled-back service transaction with no `recordSql` around them, so those statements
+  appear nowhere in the record — and the new `SqlRecord.rolledBack` flag is vacuous exactly
+  there. Where: `lib/agent/plan.ts`, the `checkNothingChanged` re-run.
+- **An unsent trailing draft can record as "what was said".** `replyText` falls back to the
+  turn's trailing text when nothing was said (`runTurnBody`), including when `spoke()` blocked
+  the trailing send — so a draft that never left records in the turn row as the reply. The new
+  held-draft disposition rows say "dropped" beside it now, but the fallback itself still
+  mislabels. Where: `lib/agent/loop.ts`, `runTurnBody`'s replyText fallback.
+- **The HTML report renders no runtime-authored round.** `report.mjs`'s page shows rounds
+  through three lenses — reasoning, drafted, and calls filtered on `!name.startsWith('(')` —
+  so every `(`-named runtime row (the granted-round marker, the new held-draft dispositions,
+  the job-discard traces) is invisible on the default page and visible only in `--text`. A
+  reader who only opens the page cannot see the runtime intervene. Where: `scripts/report.mjs`,
+  the rounds section of the HTML render.
 
 ### F-R · The lifecycle arc re-driven, 16 Aug 2026 — a button deleted on the way out, and nobody told
 
@@ -769,6 +832,15 @@ gone, each for a different reason: re-asked a settled question (`b8xo` d20), tol
 that did not (`p882` d18), and a harness-frozen clock that made the product look silent (`ceeg`
 d8, the coach). One product, three causes, one outcome. See [`../.probe/reports/2026-08-23-the-evaporation.html`](../.probe/reports/2026-08-23-the-evaporation.html).
 
+**23 Aug 2026, week sims — two more faces, both small, both this class.** Blank, day 5: the
+pay-rate threads genuinely crossed inside one window (the staged plan in the morning; Dinesh's
+*"no rate no go"* spawning an ask to Rahul while Rahul tapped the already-staged figure); asked
+*"which is it"*, the model explained with a mechanism account it never verified — *"a stale
+message on my side… it fired late"* — a claim about its own machinery the owner cannot falsify,
+where "the two messages crossed" was both true and checkable in `message` rows it can read.
+Blank, day 7: the go-live pitch said *"just Dinesh (he hasn't confirmed yet)"* against the same
+turn's census line reading 1 active coach — he had confirmed the day before.
+
 ### F-DV · The seat COULD always press a button and was never told so, so every mechanism behind a tap was measured at a fifteenth of its rate
 
 **The first draft of this finding was wrong and the correction is the interesting part.** It said
@@ -853,4 +925,77 @@ generalising past.
 
 **Do not fix it by sending less.** Every one of those three messages was worth sending, and the
 person answered all three — in prose, which is the cost being measured.
+
+### F-EM · A person minted by name alone can never be messaged, and the real human arriving mints a second one
+
+**Saw:** `2026-08-23-07-44-sim-4hy3` (eager-owner week). Sunil's timetable plan created person
+"Kiran" — no contact, no surname — and hung the coach row, the ₹400/session pay and the class
+assignment off it. Sunil never sent Kiran's number, so `sendInvite` had nobody to send to and the
+coach waited six days for an invite that could not exist. When the real Kiran Joshi messaged in on
+day 7, the front desk minted a SECOND person — correctly, by `prospectContactIn`'s find-or-create,
+which matches on contact and cannot see a contactless person. The model then found the split
+itself (20 rounds, ₹0.73), explained it to both parties, routed the fix to Sunil and set a watch —
+the best available play, and the run still ends with the pay and the classes on a person that can
+never be messaged and the messageable person holding nothing.
+
+**Why this is a capability gap, checked against the index.** `resolvePlayerPerson` is the shipped
+answer to exactly this question for PLAYERS — *"is this human already here?"* for every write path
+that mints a player. No equivalent guards the paths that mint a staff person, and once the split
+exists there is no merge route at all: the model detected it and had nothing to reach for, which
+is the definition of the third class.
+
+**Where it lives.** Two structural homes, complementary rather than alternatives: (1) at mint —
+the write paths that create a staff person state, in the plan result, what a contactless person
+cannot do (be invited, be messaged, confirm anything), so the ask for a number happens while the
+owner is still in the conversation that created him; (2) a merge operation — the route the model
+reached for and did not have, and the only fix once a split exists. Merging people touches RLS
+and history, so it is a design task, not a patch.
+
+**Noted here, not separately:** the surname invention alongside ("Dev Kulkarni", "Aarav Kulkarni"
+assumed in rows; flagged in reasoning, absent from the read-back) is F-CC's class — a fact sourced
+from plausibility rather than from anybody — arriving in `person.full_name` rather than in a
+parenthetical.
+
+### F-EN · A slot written in the evening has no sessions until the overnight beat, and the same evening's turns fall into the gap
+
+**Saw:** both 23 Aug week sims, and the gap has two halves — the judge pass sharpened the first.
+Blank, day 5: the `session` rows existed from day-4 morning; what did not exist were Dinesh's
+`session_coach` stamps, because his `class_coach` assignment went in at 17:20 and the stamps
+materialise on the overnight pass — so his "who's on today" read empty, the model burned its round
+cap investigating, and the recovery round asserted *"no dated sessions have materialised — this is
+a setup thing on my side"* (false twice over). Eager, day 4: slot inserts at 17:20 produced zero
+sessions until the overnight beat; Sunil's tap aftermath landed inside, and the model noticed,
+verified with four reads, set a watch that fired next morning and correctly went silent — handled
+perfectly, and the gap still cost the most expensive investigation in the run (₹0.80, 86s).
+
+**Where it lives.** The plan that writes `class_slot` or `class_coach` should leave the horizon
+existing the moment the timetable does — enqueue an immediate materialize for that class (or run
+it in the plan's own transaction, the way `cancelJobsForSession` sweeps in-transaction).
+`materializeSessions` is idempotent on `unique (class_id, starts_at)` by its own design, so an
+immediate pass is safe and the overnight beat stays as the horizon-extender. Until then every
+evening timetable or staffing edit manufactures a gap that either misleads a turn (blank) or
+taxes one (eager).
+
+### F-EO · The hand-over carries the opening message and nothing after it, so what was said at the desk is retyped inside the business
+
+**Saw:** `2026-08-23-07-44-sim-xn2e`, days 1–2. Rahul gave the desk his full batch schedule on
+day-1 evening — still a visitor, in a message that was not his opening one — and founded the
+business on day 2. `carryOpeningMessage` carries exactly one row across the hand-over: the words
+that brought him here (*"how much and wat does it actually do"*). The timetable survived nowhere;
+he was asked for it again and answered *"already told you the timings yesterday"*, and the
+founding turn — which could have staged the whole timetable in its first breath — started from
+zero. The eager week shows the adjacent shape: Meenakshi declared *"6400 cash, two boys two
+months"* to a desk with no business to keep it, and the figure re-entered only when Sunil retyped
+it on day 5.
+
+**Root:** an information failure at the hand-over (stage 7). The desk's transcript exists; the
+tenant turn starts from the opening message alone; and §10.1's routing means the useful sentence
+is usually NOT the opening one — a person warms up before they commit. Both runs' front-desk
+phases are where personas first got visibly annoyed, and retyping is what annoyed them.
+
+**Where it lives:** `carryOpeningMessage` (lib/frontdesk/route.ts) is the shipped precedent and
+the natural home — carry the visitor's desk messages since arrival (bounded, and only their own
+side needs to be data; the desk's replies are context) instead of the first one. `arrivedAs`
+(F-EC, closed) is the same lesson learned one field at a time; this is the transcript-sized
+version of it.
 

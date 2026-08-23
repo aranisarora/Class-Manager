@@ -987,8 +987,12 @@ async function census(id: Identity): Promise<string> {
               return (
                 `money: ${formatINR(owed)} owed to coaches for work already done, ` +
                 `${formatINR(charged)} charged to families, ${formatINR(paid)} actually collected` +
-                (owed > charged
-                  ? ` — this business is paying out more than it has billed` +
+                // `owed > 0` matters: a credit note makes `charged` negative, and 0 > -6400
+                // read out as "paying out more than it has billed" over a business that owed
+                // nobody anything (first live sighting, 2026-08-23-07-44-sim-4hy3). And the
+                // verb is accrual, not cash — nothing has been paid out until a settlement.
+                (owed > 0 && owed > charged
+                  ? ` — this business owes its coaches more than it has billed its families` +
                     (n(row, 'enrolled') === 0 ? ', and nobody is enrolled to bill' : '')
                   : '')
               )

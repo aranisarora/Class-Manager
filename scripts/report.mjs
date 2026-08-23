@@ -231,13 +231,17 @@ const whenOf = (t) =>
  * The kind out of a job string.
  *
  * `_seat.ts`'s drain writes `<kind>:<outcome>` — `materialize_sessions:done`,
- * `first_contact_batch:skipped` — and every instrument now gets its jobs from
- * that one function, `probe-model` included since it stopped keeping a drain of
- * its own. Twenty-one runs still on disk predate that and say `ran <kind>` or
- * `skip <kind> — why`, which a plain split on the colon renders as a job kind
- * called "ran materialize_sessions". One reader has to read every record shape
- * that was ever written, so the old prefix comes off here rather than in a
- * second renderer.
+ * `first_contact_batch:skipped — <why>` — and since 23 Aug 2026 an `agent_task`
+ * carries its watch slug in the kind: `agent_task(who-asked):done`, because a
+ * record full of bare `agent_task:done` is how a fired mechanism was read as
+ * never having run. The slug stays in the head deliberately, so the split below
+ * surfaces one "kind" per watch rather than one bucket for all of them. Every
+ * instrument gets its jobs from that one function, `probe-model` included since
+ * it stopped keeping a drain of its own. Twenty-one runs still on disk predate
+ * that and say `ran <kind>` or `skip <kind> — why`, which a plain split on the
+ * colon renders as a job kind called "ran materialize_sessions". One reader has
+ * to read every record shape that was ever written, so the old prefix comes off
+ * here rather than in a second renderer.
  */
 const kindOf = (job) => {
   const s = String(job)
@@ -345,6 +349,10 @@ if (args.includes('--text')) {
         })`,
       )
     if (t.tapped) P(`\nTHEY TAPPED: ${J(t.tapped)}`)
+    // The screen they decided against. The HTML render has always shown this and the
+    // text render never did, so a giveup could only be judged by trusting the persona's
+    // stated reasoning rather than by seeing what it saw (23 Aug week-sims read-back).
+    if (t.phone) P(`\n--- WHAT THEIR PHONE SHOWED (when they decided) ---\n${t.phone}`)
 
     P(`\n--- ROUNDS (${(t.rounds ?? []).length}) ---`)
     for (const r of t.rounds ?? []) {
@@ -361,7 +369,7 @@ if (args.includes('--text')) {
     const runtimeSql = sql.filter(isRuntime)
     P(`\n--- SQL THE MODEL WROTE (${modelSql.length}) ---`)
     for (const q of modelSql) {
-      P(`\n  [${q.kind}] role=${q.role} rows=${q.rowCount}${q.truncated ? ' TRUNCATED' : ''} ms=${q.ms}`)
+      P(`\n  [${q.kind}] role=${q.role} rows=${q.rowCount}${q.truncated ? ' TRUNCATED' : ''}${q.rolledBack ? ' PREVIEW — ROLLED BACK, wrote nothing durable' : ''} ms=${q.ms}`)
       P(indent(q.sql, '    '))
       P(`  ROWS: ${J(q.rows)}`)
       if (q.error) P(`  SQL ERROR: ${J(q.error)}`)
@@ -938,6 +946,8 @@ for (const t of turns) {
         : `<span class="${x.kind === 'read' ? 'read' : 'write'}">${esc(x.kind)}</span> · ${x.rowCount} row${
             x.rowCount === 1 ? '' : 's'
           }${x.truncated ? ' <span class="bad">(TRUNCATED at the cap)</span>' : ''}${
+            x.rolledBack ? ' <span class="amber">— preview pass, rolled back</span>' : ''
+          }${
             x.kind !== 'read' && x.rowCount === 0 ? ' <span class="amber">— matched nothing, raised nothing</span>' : ''
           }`
       body += `<div class="stmt"><div class="hd">${head}</div><pre>${esc(x.sql)}</pre>`

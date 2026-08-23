@@ -79,6 +79,13 @@ export type SqlRecord = {
   rows?: unknown[]
   /** The whole error text. Never clipped: the useful half of a Postgres error is the end of it. */
   error?: string
+  /**
+   * The statement ran inside a preview's transaction and its effects were rolled back.
+   * Without this a staged plan's writes and the commit's writes are byte-identical in the
+   * record — the same statements, the same row counts, twice — and which pass wrote durable
+   * rows is a fact a reader had to reconstruct from the plan results beside them.
+   */
+  rolledBack?: boolean
   /** Free-form label from the call site — the plan's intent, the read's stated purpose. */
   note?: string
   /**

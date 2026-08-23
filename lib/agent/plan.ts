@@ -793,6 +793,8 @@ async function expand(
 type Staged = MessageStep & { toContactId: string }
 
 type RunState = {
+  /** True under `previewPlan`: every statement this state sees will be rolled back, and the SQL record says so. */
+  preview: boolean
   staged: Staged[]
   scheduled: { kind: string; run_at: string }[]
   notes: string[]
@@ -923,6 +925,7 @@ async function runSteps(
         recordSql(() => ({
               kind: 'write' as const,
           sql: step.write,
+          ...(state.preview ? { rolledBack: true } : {}),
           role: step.service ? 'service' : ctx.role,
           academyId: ctx.academyId ?? null,
           personId: 'personId' in ctx ? (ctx.personId ?? null) : null,
@@ -1019,6 +1022,7 @@ async function runSteps(
       recordSql(() => ({
           kind: 'adjust' as const,
         sql,
+        ...(state.preview ? { rolledBack: true } : {}),
         role: ctx.role,
         academyId: ctx.academyId ?? null,
         personId: 'personId' in ctx ? (ctx.personId ?? null) : null,
@@ -1389,8 +1393,8 @@ function previewOf(m: MessageStep): string {
  * previewPlan / executePlan
  * ------------------------------------------------------------------------- */
 
-function emptyState(): RunState {
-  return { staged: [], scheduled: [], notes: [], personalNotes: [], exec: [], emptyWrites: [], unaddressed: 0 }
+function emptyState(preview: boolean): RunState {
+  return { preview, staged: [], scheduled: [], notes: [], personalNotes: [], exec: [], emptyWrites: [], unaddressed: 0 }
 }
 
 /**
@@ -1535,7 +1539,7 @@ export async function previewPlan(
    */
   opts?: { noHints?: boolean },
 ): Promise<PlanResult> {
-  const state = emptyState()
+  const state = emptyState(true)
   // Hoisted so the catch can tell a refusal from a missing row — that diagnosis
   // needs the steps, and inside the try they are out of scope by the time it throws.
   let expanded: PlanStep[] = []
@@ -1791,7 +1795,7 @@ export async function executePlan(
   /** Who the receipt is for. Defaults to the operator wording this has always used. */
   audience: PlanAudience = 'operator',
 ): Promise<PlanResult & { auditId: string; outcomes: SendOutcome[] }> {
-  const state = emptyState()
+  const state = emptyState(false)
   let auditId = newId()
   // Hoisted for the same reason as in `previewPlan`: the catch needs the steps
   // to tell an RLS refusal from a WHERE that matched nothing.

@@ -138,7 +138,9 @@ function printTurn(t) {
   console.log(`(A write that matched nothing raised nothing — Postgres reports success —`)
   console.log(` so a reply claiming the change is indistinguishable from one that made it.)`)
   for (const s of writes) {
-    const flagText = s.error ? `!! ERROR: ${s.error}` : s.rowCount === 0 ? `!! MATCHED NOTHING` : `-- ${s.rowCount} rows`
+    const flagText =
+      (s.error ? `!! ERROR: ${s.error}` : s.rowCount === 0 ? `!! MATCHED NOTHING` : `-- ${s.rowCount} rows`) +
+      (s.rolledBack ? '  (PREVIEW — rolled back, wrote nothing durable)' : '')
     console.log(`\n${flagText}`)
     console.log(j(s.sql))
     if (s.rows !== undefined) console.log(`   returned: ${j(s.rows)}`)

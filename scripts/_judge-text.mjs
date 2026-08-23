@@ -123,7 +123,7 @@ function queried(t, cap) {
   const out = ['\n--- WHAT IT QUERIED (this is the LOG\'s copy, uncut) ---']
   for (const s of sql) {
     const flag = s.error ? `!! ERROR: ${s.error}` : s.rowCount === 0 ? '!! MATCHED NOTHING' : `-- ${s.rowCount} rows`
-    out.push(`\n[${s.kind}${s.note ? ` · ${s.note}` : ''}] ${flag}\n${clip(s.sql, cap)}`)
+    out.push(`\n[${s.kind}${s.rolledBack ? ' · PREVIEW — rolled back' : ''}${s.note ? ` · ${s.note}` : ''}] ${flag}\n${clip(s.sql, cap)}`)
     if (s.rows !== undefined) out.push(`  came back: ${clip(s.rows, cap)}`)
   }
   return out.join('\n')

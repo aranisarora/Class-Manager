@@ -1630,13 +1630,63 @@ async function modelTurn(
      * So the draft is HELD across the granted round and restored if that round calls
      * nothing, which is also what makes the runtime's sentence below true when it says so.
      */
-    // The held draft is restored on ANY later round that ends in silence, not only
-    // the granted one — the grant's own promise is "act now, and your held message
-    // goes out with it": a model that spends the granted round acting (the whole
-    // point) and calls nothing NEXT round must get its draft back, or the drafted
-    // answer is silently dropped and the turn falls to the recovery ladder.
+    /**
+     * The held draft is restored on ANY later round that ends in silence, not only
+     * the granted one — the grant's own promise is "act now, and your held message
+     * goes out with it": a model that spends the granted round acting (the whole
+     * point) and calls nothing NEXT round must get its draft back, or the drafted
+     * answer is silently dropped and the turn falls to the recovery ladder.
+     *
+     * @mechanism heldProse — on the granted round itself the held draft wins UNCONDITIONALLY,
+     *   because that round's prose answers the runtime's own question ("This round is mine,
+     *   not theirs") and was never addressed to the person. The first shape of this line
+     *   restored the draft only into silence (`!prose.trim()`), and the grant's instruction
+     *   is what defeated it: told that its typing reaches nobody, the model narrates —
+     *   "Nothing to change here — the answer stands as written. Letting it ship." — and the
+     *   narration, being non-empty, shipped in place of the answer it narrates. Measured on
+     *   the two week sims of 23 Aug 2026: 9 of 9 granted rounds' prose shipped in place of
+     *   the held draft, 0 held drafts ever reached a phone — eight narrations and one lucky
+     *   retype of the same sentence — and the blank-world owner quit on the third narration
+     *   ("twice now it's claimed the answer stands as written but never actually sent me an
+     *   answer"). A round AFTER the granted one is back on normal semantics — a
+     *   silent round is speaking — so there fresh prose supersedes the draft and only
+     *   silence restores it. Every disposition of a held draft is now a runtime-authored
+     *   trace row (stands / superseded / restored), so what stood versus what was held is a
+     *   stated fact rather than a diff a reader has to run — "stands", because whether the
+     *   text then LANDS is the send ladder's record, not this row's claim. Closes F-EK.
+     */
+    let heldDisposition: string | undefined
+    let heldOutcome: string | undefined
     if (!res.functionCalls.length) {
-      text = round >= grantedRound && heldProse && !prose.trim() ? heldProse : prose
+      // `spoke()` is the one send-gate already decided at this point, and it is final in
+      // this direction: the trailing block is gated on `!spoke()`, and spoke cannot go
+      // false again — so "dropped" below is a fact, not a prediction. On the !spoke()
+      // paths "stands" is as far as this row may claim; whether the standing text then
+      // LANDS is the send ladder's record (`landed`, `trailingWentOutRefused`), and a
+      // disposition worded as a receipt two stages before those gates was this row's
+      // own first defect (review find, same day it shipped).
+      const answered = spoke()
+      if (round === grantedRound && heldProse) {
+        text = heldProse
+        heldDisposition = answered
+          ? '(held draft dropped — they were already answered this turn, so no trailing text sends)'
+          : prose.trim()
+            ? "(held draft stands — the granted round's prose answered the runtime, not them, and is not sent)"
+            : '(held draft stands — the granted round ended in silence)'
+      } else if (round > grantedRound && heldProse) {
+        text = prose.trim() ? prose : heldProse
+        heldDisposition = answered
+          ? '(held draft dropped — they were already answered this turn, so no trailing text sends)'
+          : prose.trim()
+            ? '(held draft superseded — this round wrote the trailing text)'
+            : '(held draft restored — the round after acting ended in silence)'
+      } else {
+        text = prose
+      }
+      // Both judge feeds print a runtime `(`-row only when it carries a result —
+      // without this line one drops the disposition silently and the other prints
+      // "null" after it (review find, same day).
+      if (heldDisposition) heldOutcome = answered ? 'nothing more sends this turn' : 'the trailing text, as it stands after this round'
     }
 
     // Every round leaves a record, not just the ones that went wrong. What the
@@ -1678,6 +1728,21 @@ async function modelTurn(
           ? `finishReason: ${res.finishReason ?? 'unknown'} · ${res.usage.outputTokens} output tokens`
           : undefined,
     })
+
+    // The runtime states what it decided about a held draft, in its own voice and in
+    // the trace only — `args` carries what now stands as the trailing text, so the
+    // record answers "did the answer or the narration stand" without a per-turn diff.
+    // "Stands", not "ships": the send ladder's gates run later, and whether the text
+    // LANDED is their record (`trailingWentOutRefused`), never this row's claim.
+    if (heldDisposition) {
+      trace.push({
+        round: round + 1,
+        name: heldDisposition,
+        ms: 0,
+        args: evidence(text, 2000),
+        ...(heldOutcome ? { result: heldOutcome } : {}),
+      })
+    }
 
     /**
      * The model stopped calling tools. That is not the same fact as the work being done,
@@ -1739,8 +1804,8 @@ async function modelTurn(
           role: 'user',
           content:
             '[Your message is written and HELD, not sent — it goes as it stands the moment you call nothing, ' +
-            'and you do not need to write it again. This round is mine, not theirs: nothing you type in it ' +
-            'reaches anybody. You have called no tool this turn, so nothing in this business has been read ' +
+            'and retyping it here does nothing: to send different words, call reply. This round is mine, not ' +
+            'theirs: nothing you type in it reaches anybody. You have called no tool this turn, so nothing in this business has been read ' +
             'and no row has changed. If what they asked for was a CHANGE, it has not happened — make it now, ' +
             'or stage it and put it behind a button, and your held message goes out with it. If they asked a ' +
             'question you have already answered, call nothing and it ships. ' +
@@ -3138,7 +3203,10 @@ function recentLookups(rows: { created_at: Date; tool_calls: ToolTrace[] }[], at
  * the turn that composed the false claim could not see that nothing had been
  * written, and the turn after it could not see the attempt at all.
  */
-async function recentActions(
+// Exported for `scripts/replay-ledger.ts`, which replays a recorded run's tool calls
+// through this REAL rendering — F-EL was a guard in here that shipped gate-green and
+// could never fire, and nothing could exercise it offline against a run to find out.
+export async function recentActions(
   rows: { created_at: Date; tool_calls: ToolTrace[] }[],
   identity: Identity,
 ): Promise<string | undefined> {
@@ -3175,22 +3243,32 @@ async function recentActions(
       // its own reasoning — and then believed the context over the row, and told
       // a customer mid-refund-dispute that the cancellation was "done and
       // recorded". The row said otherwise the whole time.
-      // Committed work outranks the `asked` spelling: `committedResult` sets `asked`
-      // whenever ANY outcome staged a confirmation, including on a plan that ALSO
-      // executed real writes — and rendering that as "NOT committed" is the
-      // believed-context-over-rows failure with the sign flipped. Only a result with
-      // no changes behind it is staged.
+      /**
+       * @mechanism outcome — a `needs_preview:true` or `executed:false` result is staged NO
+       *   MATTER what its `changes` carry, because for those two shapes `changes` IS the
+       *   preview diff: `compactDiff(preview, false)` renders would-write counts into the
+       *   same `changes[].count` a committed plan uses. The first shape of this guard
+       *   required `committedChanges === 0` for every spelling — added so a plan that ALSO
+       *   executed real writes would not render "NOT committed" — and that premise is false
+       *   for the plan shape, so the guard could never fire on the commonest staged result.
+       *   Measured on the two week sims of 23 Aug 2026, which launched four minutes after
+       *   the guard shipped: "done — wrote N row(s)" appeared 124 times across 25 turns'
+       *   ledgers, "staged behind a confirmation button" zero times, while each run held a
+       *   staged preview its own census contradicted for days (a 21-row timetable against
+       *   0 classes; an 11-row family against 0 accounts). The zero-changes condition now
+       *   applies only to the `asked`/`needs_confirmation` spellings, where `changes`
+       *   really are committed rows — `committedResult` sets `asked` on a plan that also
+       *   wrote, and rendering THAT staged is the same defect with the sign flipped.
+       *   Closes F-EL.
+       */
+      if (r.needs_preview === true || r.executed === false) {
+        return 'staged behind a confirmation button — NOT committed'
+      }
       const committedChanges =
         r.ok === true && Array.isArray(r.changes)
           ? (r.changes as { count?: unknown }[]).reduce((a, c) => a + Number(c?.count ?? 0), 0)
           : 0
-      if (
-        committedChanges === 0 &&
-        (r.needs_confirmation ||
-          r.needs_preview === true ||
-          r.executed === false ||
-          typeof r.asked === 'string')
-      ) {
+      if (committedChanges === 0 && (r.needs_confirmation || typeof r.asked === 'string')) {
         return 'staged behind a confirmation button — NOT committed'
       }
       if (r.ok === true) {

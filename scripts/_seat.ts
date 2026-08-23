@@ -350,18 +350,31 @@ export async function drain(academyId: string, opts: DrainOpts = {}): Promise<st
         await q(academyId, `update job set status='failed', last_error='no handler', locked_at=null where id='${job.id}'::uuid`)
         continue
       }
+      // WHICH watch, not only that A watch ran: a record full of bare `agent_task:done`
+      // is why the who-asked task's firing was read as "never happened" on the 23 Aug
+      // week sims — the one fact that named it lived in a payload nothing rendered. A
+      // skip's reason rides along for the same cost; `client_outcome:skipped` with the
+      // why unrecoverable was the same gap one branch over.
+      // The `schedule` tool sanitizes slugs; a plan-staged agent_task payload does not,
+      // so the log's copy is sanitized here — a stray `:` in a slug would otherwise
+      // truncate the kind every reader splits out of this string.
+      const rawSlug = job.kind === 'agent_task' && typeof job.payload?.slug === 'string' ? job.payload.slug : ''
+      const slug = rawSlug ? `(${String(rawSlug).replace(/[^a-z0-9_-]/gi, '').slice(0, 60)})` : ''
       try {
         await handler(job)
         await q(academyId, `update job set status='done', last_error=null, locked_at=null where id='${job.id}'::uuid`)
-        log.push(`${job.kind}:done`)
+        log.push(`${job.kind}${slug}:done`)
       } catch (e) {
         const skip = e instanceof JobSkip
-        const why = String((e as any)?.reason ?? (e as Error)?.message ?? e).slice(0, 200).replace(/'/g, "''")
+        // The record gets the reason as thrown; only the SQL literal gets the quote
+        // escaping, or the log carries doubled quotes ("can''t") forever.
+        const whyRaw = String((e as any)?.reason ?? (e as Error)?.message ?? e).slice(0, 200)
+        const why = whyRaw.replace(/'/g, "''")
         await q(
           academyId,
           `update job set status='${skip ? 'skipped' : 'failed'}', last_error='${why}', locked_at=null where id='${job.id}'::uuid`,
         )
-        log.push(`${job.kind}:${skip ? 'skipped' : `FAILED ${why}`}`)
+        log.push(`${job.kind}${slug}:${skip ? `skipped — ${whyRaw}` : `FAILED ${whyRaw}`}`)
       }
     }
   }
