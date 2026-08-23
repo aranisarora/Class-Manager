@@ -2575,9 +2575,15 @@ export async function runTool(
       // What was downgraded comes back in the result — on every send, partial
       // or not — so the model learns inside the same turn.
       const downgraded: { title: string; why: string }[] = []
+      // The slice below is the platform's cap, not a judgement — but a cut with no
+      // marker is invisible, and the prose likely enumerates the option whose
+      // button just vanished. The cut comes back in the result beside
+      // `downgraded_buttons`, for the same reason that one does.
+      const overCap: string[] = []
       let buttons: { title: string; action: any }[] | undefined
       if (Array.isArray(args?.buttons)) {
         buttons = []
+        for (const b of args.buttons.slice(LIMITS.buttons)) overCap.push(String((b as any)?.title ?? '').trim() || '(untitled)')
         for (const b of args.buttons.slice(0, LIMITS.buttons)) {
           const resolved = resolveAction((b as any)?.action, ctx)
           const title = String((b as any)?.title ?? '').trim()
@@ -2742,6 +2748,7 @@ export async function runTool(
         const sections: any[] = []
         for (const s of list.sections) {
           const rows: any[] = []
+          for (const r of (s?.rows ?? []).slice(LIMITS.listRows)) overCap.push(String(r?.title ?? '').trim() || '(untitled row)')
           for (const r of (s?.rows ?? []).slice(0, LIMITS.listRows)) {
             const resolved = resolveAction(r?.action, ctx)
             if (!resolved.ok) {
@@ -3112,6 +3119,15 @@ export async function runTool(
                 altered_note:
                   'The message went out, but not exactly as written — the changes above are what the person actually ' +
                   'received. Reason from that version, not your draft, and do not resend to fix it.',
+              }
+            : {}),
+          ...(overCap.length
+            ? {
+                dropped_over_cap: overCap,
+                dropped_over_cap_note:
+                  `The platform allows ${LIMITS.buttons} buttons and ${LIMITS.listRows} list rows per section; these went ` +
+                  'out WITHOUT the options named above. If the prose promises one of them, the person cannot tap it — ' +
+                  'offer it again next turn, or as a list.',
               }
             : {}),
           ...(downgraded.length

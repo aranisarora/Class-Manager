@@ -1434,7 +1434,7 @@ async function standing(id: Identity): Promise<string[]> {
                              where a.message_id = pr.message_id
                                and a.consumed_at is not null
                                and a.payload ->> 'kind' in ('operation', 'steps', 'noop', 'handoff'))
-          order by pr.created_at desc limit 5`,
+          order by pr.created_at desc limit 6`,
         'prefetch: standing — questions asked and unanswered',
       ),
       modelQuery(
@@ -1454,7 +1454,7 @@ async function standing(id: Identity): Promise<string[]> {
         `select statement, provenance, enforced_by, blessed_at is not null as blessed
            from business_rule
           where retired_at is null
-          order by created_at desc limit 12`,
+          order by created_at desc limit 13`,
         'prefetch: standing — the rules this business has stated',
       ),
     ])
@@ -1486,7 +1486,17 @@ async function standing(id: Identity): Promise<string[]> {
         ).replace(/^- /, ''),
       )
     } else {
-      for (const r of pending.rows as Record<string, unknown>[]) {
+      // The query fetches one past the cap so the cut can be STATED: a clipped
+      // list with no marker reads as the whole of it, and an open ask past the
+      // clip is a card the commit-by-words route can never reach.
+      const pendingRows = (pending.rows as Record<string, unknown>[]).slice(0, 5)
+      if ((pending.rows as unknown[]).length > 5) {
+        out.push(
+          'MORE open questions exist than the 5 newest listed below — pending_request holds the rest; read it ' +
+            'before treating this list as complete.',
+        )
+      }
+      for (const r of pendingRows) {
         const q = String(r.question ?? '').replace(/\s+/g, ' ').slice(0, 160)
         /**
          * @mechanism card — a live committing card is named to the model BY ID, beside the
@@ -1543,6 +1553,14 @@ async function standing(id: Identity): Promise<string[]> {
       const mine = id.roles.includes('admin')
         ? watches
         : watches.filter((w) => w.minted_by_contact_id === id.contact.id)
+      if (mine.length > 8) {
+        // The cap is fine; the silence about it was not. Nine watches with eight
+        // shown and no marker is one watch the model will re-promise or deny.
+        out.push(
+          `${mine.length} watches are live and only the 8 next-due are listed below — the rest are just as ` +
+            'real. Do not say something is not being watched from this list alone.',
+        )
+      }
       for (const w of mine.slice(0, 8)) {
         const subject = String(w.subject ?? w.slug ?? '').replace(/\s+/g, ' ').slice(0, 80)
         const when = inZone(w.run_at, id.academy.timezone || 'Asia/Kolkata').label
@@ -1640,7 +1658,13 @@ async function standing(id: Identity): Promise<string[]> {
         ).replace(/^- /, ''),
       )
     } else {
-      const statedRules = rules.rows as Record<string, unknown>[]
+      const statedRules = (rules.rows as Record<string, unknown>[]).slice(0, 12)
+      if ((rules.rows as unknown[]).length > 12) {
+        out.push(
+          'MORE business rules are on file than the 12 newest listed below — read business_rule before ' +
+            'treating this list as the whole policy.',
+        )
+      }
       if (statedRules.length === 0 && isAdmin) {
         out.push(
           `No business rules are on file. A policy this business has not stated does not exist — there is no ` +

@@ -3374,6 +3374,13 @@ export async function recentActions(
   {
     const lines: string[] = []
     let used = 0
+    // The same deal `droppedAtBudget` gives the lookups above, because this block
+    // is the one that answers "did I actually do that?": an early return here cut
+    // the list with no marker, so an action past the budget was indistinguishable
+    // from an action never taken — and the model's correct move on "never taken"
+    // is to take it, which is the double-write. The count keeps walking so the
+    // marker is exact.
+    let droppedAtBudget = 0
     for (const row of rows) {
       for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
         const name = String(call.name ?? '')
@@ -3387,10 +3394,20 @@ export async function recentActions(
           const args = JSON.stringify(call.args ?? {}).slice(0, 140)
           line = `- ${name} ${args} → ${outcome(call)}`
         }
-        if (used + line.length > BUDGET) return lines.length ? lines.join('\n') : undefined
+        if (used + line.length > BUDGET) {
+          droppedAtBudget++
+          continue
+        }
         lines.push(line)
         used += line.length
       }
+    }
+    if (droppedAtBudget > 0) {
+      lines.push(
+        `- (${droppedAtBudget} more prior action${droppedAtBudget === 1 ? '' : 's'} did not fit here — ` +
+          `this list is INCOMPLETE, not the whole of what was done. Check the audit or read the rows ` +
+          `before concluding something was never done.)`,
+      )
     }
     return lines.length ? lines.join('\n') : undefined
   }
