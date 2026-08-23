@@ -1048,13 +1048,14 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
       if (!wanted) {
         return suppress(tx, row, msg, 'out_of_window_no_template', inWindow)
       }
+      const firstCommits = await committingButton(tx, msg.buttons?.[0]?.actionId)
       try {
         wire = asTemplateMessage(
           msg,
           wanted,
           row,
           await subjectName(tx, msg, row),
-          await committingButton(tx, msg.buttons?.[0]?.actionId),
+          firstCommits,
           now,
         )
       } catch (e) {
@@ -1095,6 +1096,37 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
             `${Math.max(0, composed.length - PARAM_MAX_CHARS)} characters did not go. Whatever you left ` +
             `until last is what they did not read.`,
         )
+      }
+
+      // The affordance downgrades were the half `altered` never reported. Every
+      // one of them is deliberate and argued inside `asTemplateMessage` — the
+      // committing button may not ride a frozen label, the extra buttons, the
+      // list and the link have no template to ride — but a deliberate cut the
+      // author is not told about still leaves the author describing a card the
+      // person does not hold: the model's next sentence about its own message
+      // ("tap Confirm below") was a guess, and `saidHowMuchWasCut` had already
+      // established that a change the model cannot see is a change it narrates
+      // wrongly. Reported, not refused, like everything else on this channel.
+      const btns = msg.buttons ?? []
+      if (btns.length) {
+        if (firstCommits || !wire.buttons?.length) {
+          altered.push(
+            `every button was dropped: a committing action may not ride a template's fixed quick-reply ` +
+              `label, so the person has to reply in words — any reply opens the window, and the real ` +
+              `buttons can follow in-window.`,
+          )
+        } else {
+          altered.push(
+            `your first button "${String(btns[0]?.title ?? '')}" went out relabelled as the template's fixed ` +
+              `quick-reply "${TEMPLATES[wanted].quickReply}"` +
+              `${btns.length > 1 ? `, and the other ${btns.length - 1} button(s) were dropped` : ''} — ` +
+              `a template's buttons are frozen at approval.`,
+          )
+        }
+      }
+      if (msg.list) altered.push('the list did not go out — a template cannot carry one.')
+      if (msg.link) {
+        altered.push('the link button did not go out — a template cannot carry one; offer it in-window once they reply.')
       }
     }
 
