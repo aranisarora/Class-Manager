@@ -29,6 +29,18 @@ export async function agentTask(job: Job): Promise<void> {
   const instruction = need(p, 'instruction')
   const nowAt = await now(academyId)
 
+  // A sibling that fired first this tick may have merged this watch into its own
+  // turn and superseded this row. The runner dispatches from an in-memory batch
+  // and cannot see that; this row's CURRENT status can. Anything but 'running'
+  // means this job's moment now belongs to somebody else — delivered by the
+  // merge, or restored to 'pending' for the next tick after a failed one.
+  const [current] = await withInfra((tx) => tx<{ status: string }[]>`
+    select status from job where id = ${job.id}
+  `)
+  if (current && current.status !== 'running') {
+    skip(`no longer this job's moment — status is '${current.status}' (merged or restored)`)
+  }
+
   // §13.1 — "expires_at is required. A watch with no expiry is a leak; the
   // runtime rejects a task without one." `enqueue` refuses to mint one without
   // it; this is the second half of the same rule, at run time.
@@ -72,7 +84,16 @@ export async function agentTask(job: Job): Promise<void> {
    *   notice that the go-live offer and the timetable correction are the same conversation.
    *
    *   `running` as well as `pending`, because the runner claims the whole due batch before
-   *   any handler starts and same-tick siblings are the common case.
+   *   any handler starts and same-tick siblings are the common case. Superseding a claimed
+   *   row used to stop NOTHING — the runner ran each job from its in-memory batch with no
+   *   status re-check and `finish()` overwrote any status unconditionally, so every merged
+   *   watch was delivered twice, in the mechanism's own declared common case. Three guards
+   *   now make the supersede real: this handler re-reads its OWN status on entry and skips
+   *   unless it is still 'running'; `finish()` refuses to overwrite a row that is no longer
+   *   'running'; and a merge whose primary turn then FAILS restores its siblings to
+   *   'pending' before rethrowing, so the watches it swallowed are re-claimed next tick
+   *   rather than silently lost. Expired siblings are superseded but NOT carried — a watch
+   *   past its own expires_at is the staleness §13.1's required expiry exists to kill.
    *
    *   **It is NOT the fix for F-EB and was wrongly credited with it.** Driven on
    *   `2026-08-22-14-58-sim-yy3z` it fired ZERO times, and the reason is that the premise
@@ -97,8 +118,16 @@ export async function agentTask(job: Job): Promise<void> {
     return siblings
   }).catch(() => [] as { id: string; payload: Record<string, unknown> }[])
 
-  if (merged.length) {
-    const all = [p, ...merged.map((m) => m.payload)]
+  // Superseded, but not carried: a watch past its own expiry is exactly the
+  // staleness the required expires_at exists to kill, and this handler's own
+  // gate above skips an expired primary for the same reason.
+  const carried = merged.filter((m) => {
+    const e = m.payload?.expires_at
+    return typeof e !== 'string' || Number.isNaN(Date.parse(e)) || nowAt.getTime() <= Date.parse(e)
+  })
+
+  if (carried.length) {
+    const all = [p, ...carried.map((m) => m.payload)]
     const instructions = all
       .map((x, i) => `${i + 1}. ${String(x.instruction ?? '').trim()}`)
       .filter((line) => line.length > 3)
@@ -119,10 +148,27 @@ export async function agentTask(job: Job): Promise<void> {
         context: all.map((x) => x.context).filter((q) => typeof q === 'string' && q.trim()),
       },
     } as Job
-    note(`merged ${merged.length} other watch(es) into this turn`)
+    note(`merged ${carried.length} other watch(es) into this turn`)
   }
 
-  await runAgentTask(job)
+  try {
+    await runAgentTask(job)
+  } catch (e) {
+    // The supersede committed before the turn ran, so a failed primary would
+    // silently take its merged siblings down with it — the runner retries only
+    // THIS job, and the retry's merge query finds nothing. Restore them to
+    // 'pending' (only the ones still superseded — a later tick may have moved
+    // on) so the next tick re-claims what this turn swallowed, then rethrow so
+    // the runner records the failure exactly as before.
+    if (merged.length) {
+      await withInfra((tx) => tx`
+        update job set status = 'pending'
+         where id = any(${merged.map((m) => m.id)})
+           and status = 'superseded'
+      `).catch(() => {})
+    }
+    throw e
+  }
 
   // Deciding to do nothing is the common and correct outcome (§13.1). A task
   // that fires and stays quiet is the system working, so this note says it ran,

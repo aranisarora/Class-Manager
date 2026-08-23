@@ -19,10 +19,33 @@ Four files. A finding's status is **which file its code is in** — there is no 
 
 ## How a finding is retired
 
-**By a mechanism, not by a paragraph.**
+**By a mechanism, not by a paragraph — and "mechanism" is wider than "gate."**
 
-1. **Build the mechanism.** Every finding names a structural home. The repo's evidence is that
-   instructions do not close behavioural classes on their own — do not fix one by adding doctrine.
+The working theory of this product is *a capable model, told the truth*. When a run goes wrong,
+work out which of three things actually failed, in this order:
+
+1. **The instrument.** The harness ate a reply, froze a clock, briefed a persona against the
+   world, or recorded a gap as a silence. Three of the five owner departures in this repo's
+   multi-week drives trace at least partly here. Check this FIRST — a product fixed against a
+   harness artefact is bloat with a green gate.
+2. **Information.** The model lacked a fact, was handed a wrong one, or was handed one it could
+   not falsify (a runtime sentence, a misleading row, a promise the schema doc made that the
+   context did not keep). This is the commonest class by far, and its mechanism is *delivering
+   the fact where the composing happens* — `windowRightHere`, `uncompacted`, `statedRules`. The
+   deleted `proseRefused` gate is the standing precedent: the information fix did all of it, the
+   gate did none.
+3. **Capability.** No tool or route existed to do the right thing, a tool was broken, the runtime
+   discarded or altered what the model produced, or state could not be written. The mechanism is
+   the missing route — `redeliver`, `commitByActionId`, `sendInvite`.
+
+What the evidence rules out is a fourth move: a paragraph of doctrine, or a gate built where
+information was the failure. A gate is a last resort, for classes where a single miss is
+irreversible (money to the wrong person, another family's child, the shared number's quality
+rating) — and it must prove its hit rate on a recorded run before it refuses anything (the R10
+shadow measured 44% precision and was correctly left off). Trust the model: given the fact and
+the route, it uses them.
+
+1. **Build the mechanism** in the sense above. Every finding names a structural home.
 2. **Tag it beside the code**, in a block comment on the thing itself:
    ```
     * @mechanism <realSymbol> — <what it does, and the class of defect it retires>.

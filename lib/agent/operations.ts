@@ -113,7 +113,19 @@ function shiftEnd(oldStart: string, oldEnd: string, newStart: string): string {
   return n.plus(b.diff(a)).toFormat('HH:mm')
 }
 function isoDate(d: string | Date, tz: string): string {
-  return zoned(d, tz).toFormat('yyyy-MM-dd')
+  // A bare date is a date in the ACADEMY's zone, not UTC midnight re-rendered:
+  // `new Date('2026-09-01')` is UTC midnight, which any UTC-negative zone renders
+  // as 31 Aug — one day early on what is now a money-effective path (set_rate).
+  // And garbage in renders 'Invalid DateTime', which downstream becomes a raw PG
+  // error mid-transaction; refusing here names the shape while a round exists.
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.trim())) {
+    const parsed = DateTime.fromISO(d.trim(), { zone: tz })
+    if (!parsed.isValid) throw new Error(`"${d}" is not a real date — use YYYY-MM-DD`)
+    return parsed.toFormat('yyyy-MM-dd')
+  }
+  const out = zoned(d, tz)
+  if (!out.isValid) throw new Error(`"${String(d)}" is not a date — use YYYY-MM-DD or an ISO timestamp`)
+  return out.toFormat('yyyy-MM-dd')
 }
 
 /**
@@ -1710,7 +1722,11 @@ const markAttendance: OperationDef = {
       // §6.4 — per_package: sessions consume the package on the per_session
       // rule, and when rate_count are consumed the next one opens a new package.
       if (unit === 'per_package' && billable && amount > 0) {
-        const size = r.rate_count && r.rate_count > 0 ? r.rate_count : 10
+        // The AS-OF count, computed three lines up for exactly this — sizing from the
+        // live class made a register marked after a restructure roll a pack over at a
+        // different size than the month close would (F-CM's own defect, on the
+        // register path the tag claimed retired).
+        const size = cnt && cnt > 0 ? cnt : r.rate_count && r.rate_count > 0 ? r.rate_count : 10
         // `opened` rides along with `opened_at` because the pack's ordinal is its
         // identity — see `billingKey.package`. Counting it here costs nothing; the
         // row was already being read for its timestamp.
@@ -1736,10 +1752,15 @@ const markAttendance: OperationDef = {
             // cannot open a second copy of the same pack — and `money.ts` computes
             // the identical key, so the two writers agree by construction rather
             // than by both spelling a sentence the same way.
-            write: `insert into tally_line (academy_id, account_id, player_id, class_id, period, kind, description, amount, dedupe_key)
+            // The terms frozen onto the line, the way the session-line insert above and
+            // `writeLine` in money.ts both do: a pack that does not carry its own sold
+            // size is a pack sized forever by the class as it stands today (F-CM).
+            write: `insert into tally_line (academy_id, account_id, player_id, class_id, period, kind, description, amount, dedupe_key,
+                                            rate_amount, rate_unit, rate_count)
                     values (${uid(ctx.academyId)}, ${uid(r.account_id)}, ${uid(r.player_id)}, ${uid(s.class_id)}, date ${lit(period)},
                             'package', ${lit(packageDescription(s.class_name, size))}, ${moneyLit(amount)},
-                            ${lit(billingKey.package(r.player_id, s.class_id, num(pkg?.opened) + 1))})
+                            ${lit(billingKey.package(r.player_id, s.class_id, num(pkg?.opened) + 1))},
+                            ${moneyLit(amount)}, 'per_package', ${lit(size)})
                     on conflict (academy_id, dedupe_key) where dedupe_key is not null do nothing`,
             service: true,
           })
@@ -2983,8 +3004,14 @@ const sendInvite: OperationDef = {
           },
         },
         {
+          // `('added','invited')`, not `= 'added'`: a RE-invite — the nudge to a coach
+          // who never tapped, on the product's only invite route — matched zero rows
+          // under the narrower predicate, the staged message produced no diff, and
+          // CHANGED_NOTHING rolled the whole plan back with nothing sent. Re-inviting
+          // refreshes invited_at, which is the true statement about what just happened.
           write: `update coach set status = 'invited', invited_at = app.now()
-                   where id = ${uid(args.coach_id)} and academy_id = ${uid(ctx.academyId)} and status = 'added'`,
+                   where id = ${uid(args.coach_id)} and academy_id = ${uid(ctx.academyId)}
+                     and status in ('added', 'invited')`,
         },
         {
           note: `${name}'s invite is sent — it went to them directly. When they tap it I read their classes and `
@@ -3718,33 +3745,41 @@ const setRate: OperationDef = {
      * an owner is most likely to be surprised by. Saying it here, with the
      * number, is the whole difference between F-CJ's two sentences.
      */
-    const [waiting] = await q<{ n: string; owed: string | null }>(
-      svc(ctx),
-      `select count(*)::text as n, sum(unbilled_amount)::text as owed
-         from unmarked_billable_session u
-        where u.academy_id = ${uid(ctx.academyId)}
-          and (u.starts_at at time zone ${lit(a.timezone)})::date < date ${lit(from)}
-          ${kind === 'class' ? `and u.class_id = ${uid(args.subject_id)}` : ''}
-          ${
-            kind === 'enrollment'
-              ? `and u.class_id = (select class_id from enrollment where id = ${uid(args.subject_id)})`
-              : ''
-          }`,
-    )
+    // For a COACH the view answers the wrong question entirely — it prices FAMILY
+    // billing, and unscoped it counted the whole academy against one coach's pay
+    // change — so the sentence is only computed for the two family-side kinds.
+    const [waiting] = kind === 'coach'
+      ? [{ n: '0' }]
+      : await q<{ n: string }>(
+          svc(ctx),
+          `select count(*)::text as n
+             from unmarked_billable_session u
+            where u.academy_id = ${uid(ctx.academyId)}
+              and (u.starts_at at time zone ${lit(a.timezone)})::date < date ${lit(from)}
+              ${kind === 'class' ? `and u.class_id = ${uid(args.subject_id)}` : ''}
+              ${
+                kind === 'enrollment'
+                  ? `and u.class_id = (select class_id from enrollment where id = ${uid(args.subject_id)})`
+                  : ''
+              }`,
+        )
     const stillWaiting = Number(waiting?.n ?? 0)
 
     const col = kind === 'coach' ? 'pay_amount' : 'rate_amount'
     const unitCol = kind === 'coach' ? 'pay_unit' : 'rate_unit'
-    const when = from <= today ? 'now' : monthLabel(periodOf(from, a.timezone), a.timezone)
     const rateLabel = `${formatINR(args.amount)}${unit ? ` ${String(unit).replace('_', ' ')}` : ''}`
 
     const lines = [
       from <= today
         ? `${subj.label} — ${rateLabel}, from today.`
         : `${subj.label} — ${rateLabel} from ${zoned(from, a.timezone).toFormat('d LLL')}. ` +
-          `Until then it stays ${formatINR(num(subj.cur_amount))}.`,
+          // A first-ever future-dated rate has nothing to "stay" at, and num(null)
+          // is 0 — "it stays ₹0" is a false money sentence in a confirmation.
+          (subj.cur_amount === null
+            ? `There is no rate on it until then.`
+            : `Until then it stays ${formatINR(num(subj.cur_amount))}.`),
       stillWaiting > 0
-        ? `${stillWaiting} session${stillWaiting === 1 ? '' : 's'} before that ` +
+        ? `${stillWaiting} session${stillWaiting === 1 ? '' : 's'} of ${kind === 'enrollment' ? 'this class' : 'it'} before that ` +
           `${stillWaiting === 1 ? 'is' : 'are'} still unmarked and will bill at the old rate.`
         : '',
       // 0038's boundary, said to the owner in their own terms. A line already
@@ -3788,7 +3823,6 @@ const setRate: OperationDef = {
       })
     }
 
-    void when
     return steps
   },
 }

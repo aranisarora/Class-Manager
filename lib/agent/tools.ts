@@ -17,6 +17,7 @@ import {
   type SessionCtx,
 } from '@/lib/db'
 import { newId } from '@/lib/ids'
+import { consumeAction } from '@/lib/actions'
 import type { ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { CATALOG, type CatalogId } from '@/lib/messaging/catalog'
@@ -40,6 +41,12 @@ export type ToolCtx = {
   session: SessionCtx
   identity: Identity
   turnId: string
+  /**
+   * True only when this turn is answering the person's own typed message. The
+   * commit-by-action-id route requires it: consent has to have a consenter, and a
+   * job turn — which runs with nobody speaking — must not be able to spend a card.
+   */
+  typedThisTurn?: boolean
   pendingPlans: Map<string, PlanStep[]>
   /**
    * What each pending plan is and how big it is, so the loop can mint the
@@ -610,15 +617,16 @@ const SUPPRESSION_HELP: Record<SuppressReason, string> = {
   self_confirmation: 'This message asks someone to confirm something about themselves. Send it to whoever actually decides, not to its subject.',
   escalation_about_self: 'This raises a concern about the person it is addressed to. Route it to an admin instead.',
   pre_launch: 'This academy has not launched, so its roster is not messaged yet. Only the admin can be written to during setup.',
-  recipient_frequency_cap: 'This person has already had their day\'s worth of unprompted messages. An answer to something they just asked is exempt; an interruption is not.',
-  tenant_send_cap: 'This academy has hit its 24-hour send ceiling on the shared number. Nothing more goes out today.',
+  recipient_frequency_cap: 'This person has already had their day\'s worth of unprompted messages. An answer to something they just asked is exempt; an interruption is not. This exact message will be re-attempted automatically once the window frees — do not resend it.',
+  tenant_send_cap: 'This academy has hit its 24-hour send ceiling on the shared number. Nothing more goes out today. This exact message will be re-attempted automatically once the ceiling frees — do not resend it.',
   out_of_window_no_template: 'The 24-hour window with this person is closed, so only one of the template categories can reach them. Free text cannot.',
   duplicate_idempotency: 'This exact message was already sent once. It is not sent twice.',
   repeat: 'They were told this, word for word, moments ago. Saying it again teaches them nothing — say what changed, or say nothing.',
   no_contact: 'There is no reachable contact row for that recipient in this academy.',
   limit_violation: 'The message breaks a WhatsApp shape limit (length, button count, title length). Rebuild it smaller — this one could not render.',
   muted: 'This person asked to hear nothing in this category (comm_preference). It is a scope, not a full opt-out, so other things still reach them — and their own question is always answerable. If this genuinely needs to reach them, the way is to ask them to lift the mute, never to send it under another heading.',
-  quiet_hours: 'It is the middle of the night where this business is. Nothing unprompted goes out during quiet hours — it is not a delay, this send is dropped. Schedule it for a waking hour instead, or let the standing job that owns this moment raise it at the right time.',
+  quiet_hours: 'It is the middle of the night where this business is. Nothing unprompted goes out during quiet hours. This exact message will be re-attempted automatically once morning comes — do not resend it, and do not promise it went.',
+  silence_backoff: 'This person has not answered many unprompted messages in a row — they have gone dark, and more sends spend the shared number\'s quality rating on somebody who is not reading. Their own next message lifts this instantly. If something genuinely must reach them, it is the admin\'s to take up off-platform.',
 }
 
 /* ------------------------------------------------------------------------- *
@@ -1119,6 +1127,32 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
         steps: STEPS_PARAM,
       },
       required: ['intent', 'steps'],
+    },
+  },
+  /**
+   * Declared for exactly one route: typed consent to a card already on this
+   * person's screen. `handle` is deliberately NOT in the schema — a plan staged
+   * THIS turn is still committed by the person's tap, never by the model deciding
+   * it has read back enough, and the decode-point note above `plan` still holds.
+   */
+  {
+    name: 'commit',
+    description:
+      'Run the card this person has already been shown, because their words just said yes to it. ' +
+      'The ASKED AND UNANSWERED lines name each live card\'s action_id beside the question it asks. ' +
+      'The stored payload runs exactly as the button would have — you decide only that they consented, ' +
+      'never what runs. A clear yes in any words counts ("go ahead", "haan karo", the button title typed ' +
+      'out); anything short of a clear yes does not. Never use it for a plan you staged this turn — ' +
+      'that one they have not seen yet, and their tap is what commits it.',
+    parametersJsonSchema: {
+      type: 'object',
+      properties: {
+        action_id: {
+          type: 'string',
+          description: 'The live card\'s id, from an ASKED AND UNANSWERED line of THIS turn.',
+        },
+      },
+      required: ['action_id'],
     },
   },
   /**
@@ -2072,6 +2106,82 @@ export async function runTool(
     // committed by the person's tap. This case is the backstop for a model that
     // calls it anyway, and its job is to name the route that works.
     case 'commit': {
+      /**
+       * Typed consent to a card ALREADY ON THEIR SCREEN — the one route from a yes
+       * said in words to the exact payload a tap would replay.
+       *
+       * @mechanism commitByActionId — `commit({action_id})` claims the minted card through
+       *   `consumeAction`, the single consumer every tap goes through, so the three checks
+       *   (this contact's own card, unconsumed, unexpired) are the SAME checks a tap gets
+       *   and the sibling buttons are retired in the same statement. §6.5 is intact: the
+       *   payload was authored at compose time and replays verbatim — the model decides
+       *   only that the person's words said yes, which is the decision it already makes
+       *   for every typed request. Before this, an owner who wrote "also tap build
+       *   timetable go ahead" had said yes to a read-back on his own screen and there was
+       *   no path from that sentence to the stored steps: the turn re-staged a fresh plan
+       *   with a second identical button, and the run ended at `class` empty, one write in
+       *   fifty-eight turns. The same-turn `needsConfirm` refusal below is untouched — a
+       *   plan the person has not yet SEEN still cannot be committed on the model's say-so.
+       *   Closes F-DS.
+       */
+      const commitByActionId = String(args?.action_id ?? '')
+      if (commitByActionId) {
+        if (!ctx.typedThisTurn) {
+          return {
+            result: {
+              ok: false,
+              committed: false,
+              error:
+                'nobody typed anything this turn, so nobody consented — a card is spent by its person\'s ' +
+                'own words or their tap, never by a job deciding for them',
+            },
+          }
+        }
+        const consumed = await consumeAction(ctx.session, commitByActionId, ctx.identity.contact.id)
+        if (!consumed.ok) {
+          const why =
+            consumed.reason === 'expired'
+              ? 'that card has expired — stage the change again and put a fresh button on the read-back'
+              : consumed.reason === 'already_used'
+                ? 'that card was already used — read the rows to see what it did before saying anything about it'
+                : consumed.reason === 'wrong_contact'
+                  ? 'that card was minted for somebody else — only the person it was put to can consent to it'
+                  : 'no live card exists under that id — the ids come from the ASKED AND UNANSWERED lines of this turn'
+          return { result: { ok: false, committed: false, error: why } }
+        }
+        const p = consumed.payload
+        if (p.kind !== 'steps' && p.kind !== 'operation') {
+          return {
+            result: {
+              ok: false,
+              committed: false,
+              error: 'that card does not commit anything — answer it by answering, not by committing it',
+            },
+          }
+        }
+        const cardSteps: PlanStep[] =
+          p.kind === 'operation'
+            ? [{ operation: { name: p.op as OperationName, args: p.args } }]
+            : p.steps
+        const intent = p.kind === 'operation' ? `typed consent: ${p.op}` : `typed consent: ${p.summary}`
+        const res = await executePlan(ctx.session, cardSteps, intent, audienceFor(ctx.identity))
+        ctx.outcomes?.push(...res.outcomes)
+        noteConfirmations(ctx, res.outcomes)
+        if (!res.ok) return { result: { ok: false, error: res.error, sent: 0 } }
+        ctx.worked = true
+        ctx.committed = true
+        recordExecuted(ctx, 'plan', res.diffs)
+        return {
+          result: {
+            ok: true,
+            audit_id: res.auditId,
+            ...compactDiff(res),
+            sent: res.outcomes.map((o) => o.status),
+          },
+          note: res.summary,
+        }
+      }
+
       const handle = String(args?.handle ?? '')
       const steps = ctx.pendingPlans.get(handle)
       // Commit by handle only: the model cannot commit a plan it did not just
@@ -2313,9 +2423,24 @@ export async function runTool(
       // So the runtime owns the affirmative action, not the model. The model's wording
       // is kept — it phrases these better than a constant does — but the payload behind
       // the first button becomes the plan.
+      let stagedFooter: string | undefined
       if (to === ctx.identity.contact.id) {
         const waiting = pendingConfirmation(ctx)
         if (waiting) {
+          /**
+           * @mechanism stagedFooter — a message carrying an uncommitted plan carries, in the
+           *   runtime's own furniture, the one fact the model's sentence kept contradicting:
+           *   nothing has happened yet. F-CA's instance is the shape — "Aarav's Learn to Swim
+           *   moved to 24 Aug" in the past tense over `changed: []`, with the buttons still
+           *   asking whether to move it, read by an owner whose brief is to act on the first
+           *   line. The footer is DERIVED from plan state (staged and uncommitted, read here,
+           *   not from prose), it rewrites nothing the model wrote, and it rides the same
+           *   message — so whatever tense the sentence takes, the screen itself says what is
+           *   true. Out of window the template drops it, and out of window the card's button
+           *   is already gone with it.
+           *   Closes F-CA.
+           */
+          stagedFooter = 'Not done yet — the button below is what does it.'
           const confirm = { kind: 'steps' as const, steps: waiting.steps, summary: waiting.summary }
           const carriesPlan = buttons?.some((b: any) => b?.action?.kind === 'steps')
           if (!buttons?.length) {
@@ -2652,7 +2777,7 @@ export async function runTool(
         toContactId: to,
         body,
         header: args?.header ? String(args.header) : undefined,
-        footer: args?.footer ? String(args.footer) : undefined,
+        footer: args?.footer ? String(args.footer) : stagedFooter,
         buttons,
         list,
         catalogId,

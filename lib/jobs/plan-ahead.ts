@@ -118,7 +118,92 @@ export async function planAhead(o?: { academyIds?: string[] }): Promise<number> 
   const ids = o?.academyIds?.length ? o.academyIds : await listAcademyIds()
   let written = 0
   for (const id of ids) written += await planAheadFor(id)
+  await sweepFrontDeskQuestions()
   return written
+}
+
+/**
+ * @mechanism promoteRates — the daily pass 0043 promised and never had: the latest
+ *   `rate_period` row whose day has arrived is written onto the live columns, per
+ *   subject, only where they disagree — so "₹1,100 from 1 September" stops being a row
+ *   the product wrote, confirmed, and never once read on the day it was for. The
+ *   trigger's no-op suppression keeps every pass phantom-free, which is the property
+ *   its own comment says it was built for.
+ */
+async function promoteRates(tx: Tx, academyId: string, today: string): Promise<void> {
+  await tx`
+    update enrollment e
+       set rate_amount = rp.amount,
+           rate_unit   = coalesce(rp.unit, e.rate_unit),
+           rate_count  = coalesce(rp.rate_count, e.rate_count)
+      from (select distinct on (p.enrollment_id) p.enrollment_id, p.amount, p.unit, p.rate_count
+              from rate_period p
+             where p.academy_id = ${academyId} and p.enrollment_id is not null
+               and p.effective_from <= ${today}::date
+             order by p.enrollment_id, p.effective_from desc) rp
+     where e.id = rp.enrollment_id and e.academy_id = ${academyId}
+       and (e.rate_amount is distinct from rp.amount
+         or (rp.unit is not null and e.rate_unit is distinct from rp.unit)
+         or (rp.rate_count is not null and e.rate_count is distinct from rp.rate_count))`
+  await tx`
+    update class c
+       set rate_amount = rp.amount,
+           rate_unit   = coalesce(rp.unit, c.rate_unit),
+           rate_count  = coalesce(rp.rate_count, c.rate_count)
+      from (select distinct on (p.class_id) p.class_id, p.amount, p.unit, p.rate_count
+              from rate_period p
+             where p.academy_id = ${academyId} and p.class_id is not null
+               and p.effective_from <= ${today}::date
+             order by p.class_id, p.effective_from desc) rp
+     where c.id = rp.class_id and c.academy_id = ${academyId}
+       and (c.rate_amount is distinct from rp.amount
+         or (rp.unit is not null and c.rate_unit is distinct from rp.unit)
+         or (rp.rate_count is not null and c.rate_count is distinct from rp.rate_count))`
+  await tx`
+    update coach co
+       set pay_amount = rp.amount,
+           pay_unit   = coalesce(rp.unit, co.pay_unit)
+      from (select distinct on (p.coach_id) p.coach_id, p.amount, p.unit
+              from rate_period p
+             where p.academy_id = ${academyId} and p.coach_id is not null
+               and p.effective_from <= ${today}::date
+             order by p.coach_id, p.effective_from desc) rp
+     where co.id = rp.coach_id and co.academy_id = ${academyId}
+       and (co.pay_amount is distinct from rp.amount
+         or (rp.unit is not null and co.pay_unit is distinct from rp.unit))`
+}
+
+/**
+ * The one planning duty a front desk DOES have. Excluding desks from `listAcademyIds`
+ * is right for every job the planner mints — a desk has no roster and must not
+ * initiate — but the pending_request expiry sweep is bookkeeping, not a send, and desk
+ * sends mint real `pending_request` rows ("are you looking for classes, or do you run
+ * them?") with real expiries. Nothing else visits them, so a visitor who never answered
+ * left a question open forever in the desk's own tail. Sweep only: no agent_task is
+ * opened for a stranger, because there is no business to owe them an answer from.
+ */
+async function sweepFrontDeskQuestions(): Promise<void> {
+  try {
+    const desks = await withInfra((tx) => tx<{ id: string }[]>`
+      select id from academy where is_front_desk
+    `)
+    for (const d of desks) {
+      await withAcademy(d.id, (tx) => tx`
+        update pending_request pr
+           set resolved_at = app.now(), resolution = 'expired'
+         where pr.academy_id = ${d.id}
+           and pr.resolved_at is null
+           and pr.expires_at is not null
+           and pr.expires_at < app.now()
+           and not exists (select 1 from action a
+                            where a.message_id = pr.message_id
+                              and a.consumed_at is not null
+                              and a.payload ->> 'kind' in ('operation', 'steps', 'noop', 'handoff'))
+      `).catch(() => {})
+    }
+  } catch {
+    // No desk list readable — nothing to sweep.
+  }
 }
 
 export async function planAheadFor(academyId: string): Promise<number> {
@@ -138,6 +223,12 @@ export async function planAheadFor(academyId: string): Promise<number> {
       if (!allowPast && runAt.getTime() < nowAt.getTime() - GRACE_MS) return
       out.push({ kind, runAt, dedupeKey, payload: { academy_id: academyId, ...payload }, academyId })
     }
+
+    // -- stated futures arrive ---------------------------------------------------
+    // A rate stated "from the 1st of next month" lives in `rate_period` until its
+    // day comes; `promoteRates` (tagged below) is what moves it onto the live
+    // columns when it does. FIRST, before anything this pass enqueues reads them.
+    await promoteRates(tx, academyId, today)
 
     // -- sessions exist first ---------------------------------------------------
     // Daily, per active class, rolling ~3-week horizon (§13).
@@ -704,8 +795,14 @@ async function proposeGoLive(
        * only: WALL_CLOCK refuses a model-run statement that reads the host clock.
        */
       context:
+        // The column computes what its name asserts: run-to-a-roster-nobody-was-told,
+        // which needs the same enrollment-exists predicate the plan-time `ran_dark`
+        // carries. Without it, the nothingHasRunYet branch's own instruction ("no
+        // session has run to a roster nobody was told about") was contradicted by the
+        // very row it told the model to read — the overclaim planted in the evidence.
         "select " +
-        "(select count(*) from session where status <> 'cancelled' and ends_at < app.now()) " +
+        "(select count(*) from session s where s.status <> 'cancelled' and s.ends_at < app.now() " +
+        "and exists (select 1 from enrollment e where e.class_id = s.class_id and e.ended_on is null)) " +
         "as sessions_already_run_with_nobody_told, " +
         "(select count(distinct pl.account_id) from enrollment e " +
         "join player pl on pl.id = e.player_id and pl.active where e.ended_on is null) " +
@@ -987,19 +1084,26 @@ async function tellThemWhoAsked(
   if (!owner?.contact_id) return
 
   /**
-   * Read as the SERVICE role and against the SENDER, because that is what these rows are
-   * about: a front desk is a different academy, and this business's own session cannot see
-   * into it. The join through `sender` is what keeps it to this number rather than every
-   * front desk in the deployment.
+   * Filtered on `arrival.sender_id` — the column the table carries for exactly this,
+   * because a table with no tenant is scoped by its number. The first draft joined
+   * through `academy fd` to reach the sender, and that join was DEAD under this
+   * session: `academy`'s cm_service policy is `using (id = app.academy_id())`, so the
+   * front desk's row is invisible to a session pinned to the business, the join
+   * matched nothing without an error, and `n` was permanently zero — the mechanism
+   * shipped, was cited in a closing row, and could never once fire. `arrival`'s own
+   * cm_service policy is `using (true)`, so reading it directly is the whole fix.
    */
-  const waiting = await tx<{ n: number }[]>`
-    select count(*)::int as n
+  const waiting = await tx<
+    { profile_name: string | null; first_text: string | null; asked_on: string }[]
+  >`
+    select ar.profile_name, ar.first_text, ar.created_at::date::text as asked_on
       from arrival ar
-      join academy fd on fd.id = ar.front_desk_id
-     where fd.sender_id = (select sender_id from academy where id = ${academy.id})
+     where ar.sender_id = (select sender_id from academy where id = ${academy.id})
        and ar.destination_academy_id is null
-       and ar.created_at > app.now() - interval '30 days'`
-  const n = waiting[0]?.n ?? 0
+       and ar.created_at > app.now() - interval '30 days'
+     order by ar.created_at
+     limit 20`
+  const n = waiting.length
   if (n === 0) return
 
   push(
@@ -1013,21 +1117,23 @@ async function tellThemWhoAsked(
       minted_roles: ['admin'],
       expires_at: new Date(nowAt.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString(),
       /**
-       * Their own words, read at run time under the owner's turn. `first_text` is what
-       * they typed, which is the whole value of the row — "anika's evening batch timings
-       * this week?" tells an owner more than a count ever could.
+       * Their own words, FROZEN into the instruction at plan time rather than read at run
+       * time — because at run time this turn runs under the owner's session and `arrival`
+       * has no cm_user policy at all (0039: "RLS denies the agent everything"), so a
+       * context query here would return nothing against a subject asserting N people
+       * asked, which is the unbacked-claim shape this product treats as its worst. The
+       * rows are static facts about people who already left; the planner reads them where
+       * they are readable and hands them over labelled as its own.
        */
-      context:
-        'select ar.profile_name, ar.first_text, ar.created_at::date as asked_on '
-        + 'from arrival ar join academy fd on fd.id = ar.front_desk_id '
-        + 'where fd.sender_id = (select sender_id from academy where id = app.academy_id()) '
-        + "and ar.destination_academy_id is null "
-        + "and ar.created_at > app.now() - interval '30 days' "
-        + 'order by ar.created_at limit 20',
       instruction:
         'People wrote to this number looking for classes before this business was set up on it, and were '
         + 'told there was nothing here, because at the time there was not. They are not customers and this '
-        + 'business has never contacted them. The rows carry what each of them actually typed. '
+        + 'business has never contacted them. What each of them typed, as recorded by the front desk when '
+        + 'they arrived (you cannot re-read these rows — they live outside this business):\n'
+        + waiting
+            .map((w) => `- ${w.asked_on} · ${w.profile_name || 'no name'}: "${(w.first_text || '').replace(/\s+/g, ' ').slice(0, 140)}"`)
+            .join('\n')
+        + '\n'
         + 'This product must not message them: on a shared number a re-approach to somebody who did not '
         + 'convert is a marketing classification charged to every business on it. The owner can, from '
         + 'their own phone, and send_invite with as_draft writes the message for them to forward.',

@@ -211,13 +211,19 @@ suppression is a fact, not a failure:
 | 7 | `pre_launch` | an academy that is not live does not message its roster |
 | 8 | `repeat` | a standing message reports a state once — keyed on the state (`stateKey`), then on the body |
 | 9 | `limit_violation` | every way the real wire would reject it, enumerated by `validateOutbound` |
-| 10 | `recipient_frequency_cap` · `tenant_send_cap` | volume, per person and per tenant |
-| 11 | `out_of_window_no_template` | outside 24 hours it is a frozen template or nothing |
-| 12 | `duplicate_idempotency` | this exact message has already been sent |
+| 10 | `silence_backoff` | somebody who has answered none of N straight unprompted sends is dark — §16.3's response-rate proxy, and their own next message resets it |
+| 11 | `recipient_frequency_cap` · `tenant_send_cap` | volume, per person and per tenant |
+| 12 | `out_of_window_no_template` | outside 24 hours it is a frozen template or nothing |
+| 13 | `duplicate_idempotency` | this exact message has already been sent |
 
 Past the ladder the row is written, the buttons are stamped into a family that dies together, a
 question that was asked becomes `pending_request` state, and only then does the transport run.
 `insertMessage` · `attachActionsToMessage` · `committingButton` · `lib/messaging/send.ts`
+
+A suppression for **timing** — quiet hours, either cap — is not the end of the message: `suppress`
+enqueues one `redeliver` job per suppressed row, and the stored message is replayed through this
+same ladder once the timing moves (`redeliverStored`). A suppression that is a decision keeps its
+silence.
 
 ## 4 · The exits
 

@@ -39,6 +39,7 @@ import {
 } from './handlers/admin'
 import { coachMonthLines, dunningRun, monthEndTally, monthlyLines, reconcile } from './handlers/money'
 import { agentTask, memoryCurate } from './handlers/agent-task'
+import { redeliver } from './handlers/redeliver'
 
 /** Every kind in the §13 table has a handler here, or it does not exist. */
 export const HANDLERS: Record<JobKind, (job: Job) => Promise<void>> = {
@@ -63,6 +64,7 @@ export const HANDLERS: Record<JobKind, (job: Job) => Promise<void>> = {
   coach_not_onboarded: coachNotOnboarded,
   reconcile: reconcile,
   agent_task: agentTask,
+  redeliver: redeliver,
 }
 
 export type RunReport = { ran: number; skipped: number; failed: number; log: string[] }
@@ -187,9 +189,13 @@ async function claim(limit: number): Promise<Job[]> {
 }
 
 async function finish(id: string, status: 'done' | 'skipped', reason: string | null): Promise<void> {
+  // `and status = 'running'` — a row a sibling superseded mid-batch (the merge in
+  // agent-task.ts) must stay superseded: overwriting it with 'done' was half of how
+  // every merged watch got delivered twice. A finish that matches nothing is the
+  // system working, not an error.
   await withInfra((tx) => tx`
     update job set status = ${status}, last_error = ${reason}, locked_at = null, locked_by = null
-     where id = ${id}
+     where id = ${id} and status = 'running'
   `)
 }
 
@@ -209,12 +215,12 @@ async function fail(job: Job, error: string): Promise<boolean> {
          set status = 'pending',
              run_at = app.now() + make_interval(mins => ${backoffMinutes}::int),
              last_error = ${error}, locked_at = null, locked_by = null
-       where id = ${job.id}
+       where id = ${job.id} and status = 'running'
     `)
   } else {
     await withInfra((tx) => tx`
       update job set status = 'failed', last_error = ${error}, locked_at = null, locked_by = null
-       where id = ${job.id}
+       where id = ${job.id} and status = 'running'
     `)
   }
   return retry

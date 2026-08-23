@@ -1000,12 +1000,25 @@ export function recordedConfig(
   cfg: DriveConfig,
   world: { is: string; seats: string[]; concurrency: number },
 ): Record<string, unknown> {
-  return {
+  const out: Record<string, unknown> = {
     ...cfg,
     personas: [...world.seats],
     concurrency: world.concurrency,
     world: { ref: cfg.world, is: world.is },
   }
+  /**
+   * @mechanism recordedConfig — "unspecified" is spelled by ABSENCE on disk, never by a
+   *   sentinel value. `seats: 0` means "all of them" in memory and the parser refuses it
+   *   from a file (`min: 1`); `personas: []` means "everybody this world has" and `list()`
+   *   refuses an empty list. Both round-tripped through `config.json` as literals, so
+   *   `npm run ab` handed its children a config its own parser would not accept and both
+   *   arms died at second zero. A key whose value is the unspecified sentinel is omitted,
+   *   and an absent key re-resolves to the same default on read.
+   *   Closes F-CN.
+   */
+  if (!world.seats.length) delete out.personas
+  if (!cfg.seats) delete out.seats
+  return out
 }
 
 /* ---------------------------------------------------------------- budget */

@@ -210,8 +210,14 @@ async function runTurnBody(input: TurnInput, turnId: string): Promise<TurnOutput
    */
   let tap: TapNarration | undefined
 
+  // Hoisted above the try: the hand-over below re-enters with the EFFECTIVE text —
+  // a reply-payload tap sets it (:the reply-replay branch), the contact-card fold
+  // rewrites it — and passing `input.text` instead handed the new business `undefined`
+  // as its founder's first message whenever the founding came off a tapped button,
+  // which the nothing-readable guard then answered with "That came through as
+  // something I can't read."
+  let text = input.text
   try {
-    let text = input.text
     /**
      * A shared contact card, folded into what this person said.
      *
@@ -453,7 +459,20 @@ async function runTurnBody(input: TurnInput, turnId: string): Promise<TurnOutput
      * caused it. Then there is genuinely nothing left to do, and the turn row below
      * is the only record — which is why it is written outside this block.
      */
-    if (!outcomes.length) {
+    /**
+     * Scoped to the ASKER, not the wire. `!outcomes.length` was the guard, and on
+     * the narrated-tap path it is the wrong question: the committed plan's own
+     * sends to OTHER people are already in `outcomes`, and narrate fires precisely
+     * when the tapper themselves heard nothing — so a plan that messaged three
+     * parents and then threw skipped the tap receipt, and the one person waiting
+     * on the answer was the one person the apology never reached.
+     */
+    const askerHeard = outcomes.some(
+      (o) =>
+        (o.status === 'sent' || o.status === 'queued') &&
+        (!('toContactId' in o) || !o.toContactId || o.toContactId === identity.contact.id),
+    )
+    if (!askerHeard) {
       try {
         outcomes.push(
           await composeAndSend(session, {
@@ -528,7 +547,7 @@ async function runTurnBody(input: TurnInput, turnId: string): Promise<TurnOutput
   if (handover) {
     const onward = await runTurn({
       contactId: handover.contactId,
-      text: input.text,
+      text,
       source: input.source,
     })
     return {
@@ -1241,8 +1260,12 @@ function tapBlock(tap: TapNarration, label: string | undefined): string {
       + `back — so nothing changed and nobody was messaged. They tapped, and so far they have heard nothing.`
 
   const tail = tap.ok
-    ? `They are waiting on an answer about this and nothing else has told them. Do not run it again — it `
-      + `has run. If the result names statements that matched no rows, a clash, or people whose `
+    ? // Not "nothing else has told them": the plan's own staged message may already have
+      // reached the tapper (seedFromCommitted counts it, and the reply guard would then
+      // refuse a second) — the account above says what went where, and it is the authority.
+      `Do not run it again — it has run. The account above says what already reached whom; if it `
+      + `shows a message landed with THEM, their receipt is on their phone and only the leftovers `
+      + `need this turn. If the result names statements that matched no rows, a clash, or people whose `
       + `arrangements this changed while nothing here reaches them, this turn is when those get dealt `
       + `with: you have the tools and the rounds.`
     : `You can see the refusal. Take a different route if there is one, or tell them plainly what did not `
@@ -1285,6 +1308,10 @@ async function modelTurn(
     session,
     identity,
     turnId,
+    // Consent needs a consenter: commit-by-action-id is reachable only on a turn
+    // that carries this person's own typed words. A job turn has nobody speaking,
+    // and its service-shaped claim path would skip the contact check entirely.
+    typedThisTurn: input.source !== 'job' && Boolean((input.text ?? '').trim()),
     pendingPlans: new Map<string, PlanStep[]>(),
     pendingMeta: new Map<string, { intent: string; summary: string; totalRows: number; needsConfirm: boolean }>(),
     outcomes,
@@ -1356,11 +1383,21 @@ async function modelTurn(
   const situation: string[] = [tail]
   if (tap) situation.push(tapBlock(tap, input.text))
   if (input.source === 'job' && input.task) {
+    // The note tells the truth of the PATH this job is on. The blanket "prose is
+    // discarded" contradicted both exemptions the runtime actually makes — a brief's
+    // prose IS its deliverable, and a staged confirmation rides the trailing sentence
+    // — so a model that believed the note wrote no prose, and the staged button had
+    // nothing to ride: the mechanism only rescued models that disobeyed the tail.
     situation.push(
-      'This is a task you scheduled for yourself. Deciding to do nothing is the common and correct outcome — ' +
-        'only send something if this person would have asked for it. If you DO decide to speak, `reply` is the ' +
-        'only path that reaches anyone on a job turn: prose you write here is discarded, not delivered. A report ' +
-        'you promised and then wrote as prose is a promise broken silently.',
+      input.task.asked === 'a message'
+        ? 'This is a task you scheduled for yourself, and what it asked for is A MESSAGE: the prose you end ' +
+            'with IS the deliverable and goes out as written (or send nothing at all if there is truly nothing ' +
+            'to say — silence is allowed, a filler line is not).'
+        : 'This is a task you scheduled for yourself. Deciding to do nothing is the common and correct outcome — ' +
+            'only send something if this person would have asked for it. If you DO decide to speak, `reply` is the ' +
+            'usual path. Trailing prose is normally discarded on a job turn, with ONE exception: if this turn STAGES ' +
+            'a plan waiting on a tap, your final sentence is delivered as the message carrying that button — so ' +
+            'write it as the read-back the button needs.',
     )
   }
 
@@ -1593,7 +1630,14 @@ async function modelTurn(
      * So the draft is HELD across the granted round and restored if that round calls
      * nothing, which is also what makes the runtime's sentence below true when it says so.
      */
-    if (!res.functionCalls.length) text = round === grantedRound && heldProse ? heldProse : prose
+    // The held draft is restored on ANY later round that ends in silence, not only
+    // the granted one — the grant's own promise is "act now, and your held message
+    // goes out with it": a model that spends the granted round acting (the whole
+    // point) and calls nothing NEXT round must get its draft back, or the drafted
+    // answer is silently dropped and the turn falls to the recovery ladder.
+    if (!res.functionCalls.length) {
+      text = round >= grantedRound && heldProse && !prose.trim() ? heldProse : prose
+    }
 
     // Every round leaves a record, not just the ones that went wrong. What the
     // model wrote, what it reached for, what it stopped for and what it spent —
@@ -2394,22 +2438,34 @@ async function modelTurn(
         ms: 0,
         args: evidence({ outcome: trailing, heard, draft: outgoing }, 2000),
       })
-      if (!spoke() && heard === 0) {
-        outcomes.push(
-          await composeAndSend(session, {
-            toContactId: identity.contact.id,
-            /*
-             * The tap's own receipt outranks this for F-CD's reason: after a committed
-             * write, any sentence saying nothing came of it is false. This sentence
-             * deliberately says nothing about state at all — it reports the send, which
-             * is the only thing it knows.
-             */
-            body: tap
-              ? tap.backstop
-              : "I worked that out but couldn't get the answer onto your screen in one message. "
-                + "Ask me for it a couple of things at a time and I'll go through them.",
-          }),
-        )
+      // Job turns never take the fallback: nobody typed, so "ask me for it a couple
+      // of things at a time" would reach a person who asked nothing — the
+      // bot-talking-to-itself class the job-prose discard exists to prevent. The
+      // trace entry above still records the non-delivery for both sources.
+      if (!spoke() && heard === 0 && input.source !== 'job') {
+        const fallbackBody = tap
+          ? tap.backstop
+          : "I worked that out but couldn't get the answer onto your screen in one message. "
+            + "Ask me for it a couple of things at a time and I'll go through them."
+        const fb = await composeAndSend(session, {
+          toContactId: identity.contact.id,
+          /*
+           * The tap's own receipt outranks this for F-CD's reason: after a committed
+           * write, any sentence saying nothing came of it is false. This sentence
+           * deliberately says nothing about state at all — it reports the send, which
+           * is the only thing it knows.
+           */
+          body: fallbackBody,
+        })
+        outcomes.push(fb)
+        if (fb.status === 'sent' || fb.status === 'queued') {
+          // The runtime is the author of what actually reached them, and every reader
+          // downstream — replyText, the reflection preamble, the turn row — must
+          // describe the fallback, never the suppressed draft.
+          runtimeAuthored = true
+          toolCtx.saidToUser?.push(fallbackBody)
+          text = fallbackBody
+        }
       }
     }
 
@@ -2419,6 +2475,7 @@ async function modelTurn(
     // "[The reply has gone and nobody is waiting]" over a person who had received
     // nothing, and the turn row recorded a reply that does not exist.
     if (landed) text = outgoing
+    else if (text === outgoing) text = ''
   }
 
   /* ----------------------------------------------------------------------- *
@@ -3025,6 +3082,7 @@ function recentLookups(rows: { created_at: Date; tool_calls: ToolTrace[] }[], at
 
     const blocks: string[] = []
     let used = 0
+    let droppedAtBudget = 0
     for (const row of rows) {
       const age = ageOf(row.created_at, at)
       for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
@@ -3038,10 +3096,30 @@ function recentLookups(rows: { created_at: Date; tool_calls: ToolTrace[] }[], at
         const block =
           `- [read ${age}] ${query}\n  → ${result.length > 1400 ? `${result.slice(0, 1400)}… (truncated)` : result}` +
           (call.error ? `\n  ! failed: ${call.error.split('\n')[0]}` : '')
-        if (used + block.length > BUDGET) return blocks.length ? blocks.join('\n') : undefined
+        if (used + block.length > BUDGET) {
+          /**
+           * @mechanism droppedAtBudget — the block's own budget states what it cut, the way
+           *   `unread` states a failed prefetch: an absence with no marker is invisible to
+           *   the model AND to every reader of the record, so "it was never shown that" and
+           *   "it was shown that and ignored it" were the same bytes. The count keeps
+           *   walking so the marker is exact, and it renders in the tail where the model
+           *   and the record both get it. The per-result 1,400-character cut already marks
+           *   itself; this was the cut that did not.
+           *   Closes F-BY.
+           */
+          droppedAtBudget++
+          continue
+        }
         blocks.push(block)
         used += block.length
       }
+    }
+    if (droppedAtBudget > 0) {
+      blocks.push(
+        `- (${droppedAtBudget} more prior lookup${droppedAtBudget === 1 ? '' : 's'} did not fit here — ` +
+          `this list is INCOMPLETE, not the whole of what was read. Re-read anything you need rather than ` +
+          `concluding it was never looked at.)`,
+      )
     }
     return blocks.length ? blocks.join('\n') : undefined
   }
@@ -3097,18 +3175,26 @@ async function recentActions(
       // its own reasoning — and then believed the context over the row, and told
       // a customer mid-refund-dispute that the cancellation was "done and
       // recorded". The row said otherwise the whole time.
+      // Committed work outranks the `asked` spelling: `committedResult` sets `asked`
+      // whenever ANY outcome staged a confirmation, including on a plan that ALSO
+      // executed real writes — and rendering that as "NOT committed" is the
+      // believed-context-over-rows failure with the sign flipped. Only a result with
+      // no changes behind it is staged.
+      const committedChanges =
+        r.ok === true && Array.isArray(r.changes)
+          ? (r.changes as { count?: unknown }[]).reduce((a, c) => a + Number(c?.count ?? 0), 0)
+          : 0
       if (
-        r.needs_confirmation ||
-        r.needs_preview === true ||
-        r.executed === false ||
-        typeof r.asked === 'string'
+        committedChanges === 0 &&
+        (r.needs_confirmation ||
+          r.needs_preview === true ||
+          r.executed === false ||
+          typeof r.asked === 'string')
       ) {
         return 'staged behind a confirmation button — NOT committed'
       }
       if (r.ok === true) {
-        const changes = Array.isArray(r.changes)
-          ? (r.changes as { count?: unknown }[]).reduce((a, c) => a + Number(c?.count ?? 0), 0)
-          : 0
+        const changes = committedChanges
         if (changes) return `done — wrote ${changes} row(s)`
         // Zero rows is not "done" under a heading that says done means it already
         // happened. Whether a message went is the other half of what happened, and
@@ -3410,6 +3496,14 @@ export async function runAgentTask(job: Job): Promise<void> {
           ? { error: res.error }
           : { rowCount: res.rowCount, truncated: res.truncated, rows: res.rows.slice(0, 100) },
       )
+    }
+    // A merged instruction numbers every watch; evidence cut past the sixth with no
+    // marker turns those watches' numbers back into unbacked claims — the exact
+    // thing the merge's own doctrine says it must not do. The stub keeps the
+    // positions aligned and says what is missing.
+    for (const q of contexts.slice(6)) {
+      void q
+      many.push({ error: 'context dropped: this merged turn carried more than 6 evidence queries — the numbers for this item have no rows behind them; do not assert them' })
     }
     queryResults = many
   }

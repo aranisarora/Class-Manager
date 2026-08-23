@@ -406,13 +406,21 @@ export async function hotSet(
      *   have folded away, and the address still rides along whenever anything was left
      *   out — the case the third state was built for, now reached only when it is true.
      */
+    // The LIVE set, with both halves of its definition (memory.ts's own header:
+    // "retired_at is null AND not superseded"). The first draft filtered only on
+    // retired_at, and corrections deliberately keep both rows — so a corrected-away
+    // fact rendered as current, FIRST (oldest-first ordering), while the correction
+    // could fall off the budget entirely. Same predicate as curate's query.
     const uncompacted = await withSession(serviceCtx(tenant), async (tx) => {
       const r = subjectKind === 'academy'
         ? await tx`select fact from memory_fact
                     where academy_id = ${subjectId} and subject_kind = 'academy' and retired_at is null
+                      and id not in (select supersedes from memory_fact
+                                      where supersedes is not null and academy_id = ${subjectId})
                     order by created_at asc limit ${HOT_SET_MAX_LINES + 1}`
         : await tx`select fact from memory_fact
                     where subject_kind = 'person' and subject_id = ${subjectId} and retired_at is null
+                      and id not in (select supersedes from memory_fact where supersedes is not null)
                     order by created_at asc limit ${HOT_SET_MAX_LINES + 1}`
       return r as unknown as { fact: string }[]
     })

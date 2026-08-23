@@ -35,6 +35,9 @@ import type { SessionCtx, Tx } from '@/lib/db'
 import { DEFAULT_ACTION_TTL_MINUTES } from '@/lib/actions'
 import { encodeForWhatsApp } from '@/lib/agent/lint'
 import { inZone, isQuietHour } from '@/lib/clock'
+import { enqueue } from '@/lib/jobs/enqueue'
+import { dedupe } from '@/lib/jobs/kinds'
+import { deferPastQuietHours } from '@/lib/jobs/util'
 import { CATALOG, isCatalogId, MUTE_SCOPE } from './catalog'
 import { TEMPLATES, sanitizeParam, renderTemplate, isTemplateName, PARAM_MAX_CHARS } from './templates'
 import type { TemplateName } from './templates'
@@ -56,6 +59,8 @@ import {
 /** §16.3 guardrails. Defaults; an academy may raise or lower them in `academy.settings`. */
 export const DEFAULT_RECIPIENT_CAP_24H = 6
 export const DEFAULT_TENANT_CAP_24H = 400
+/** Consecutive delivered unprompted sends with no reply before a recipient is dark (§16.3). */
+export const DEFAULT_SILENCE_BACKOFF_AFTER = 10
 
 type Row = {
   contact_id: string
@@ -510,6 +515,42 @@ async function suppress(
       retryable: releasesKey,
     }),
   })
+  /**
+   * "The key is released so the same moment may be attempted again once morning
+   * comes" was true of the key and false of the moment: nothing ever came back
+   * for the message, so the three "not now" reasons deleted what they meant to
+   * delay (F-CK — the go-live family invites were composed, suppressed at 2am,
+   * and never sent; the families' first contact was a dunning notice). The
+   * `redeliver` job is what comes back: enqueued here, at the moment of refusal,
+   * keyed to this message row, run when the timing that refused it has moved.
+   * Never for a re-attempt's own suppression — the handler owns its ladder — and
+   * never for a decision-shaped reason, which keeps its key and its silence.
+   */
+  if (releasesKey && !msg.redelivery) {
+    try {
+      const [t] = await tx<{ t: Date }[]>`select app.now() as t`
+      if (!t?.t) throw new Error('no domain clock — redelivery not scheduled')
+      const at = t.t
+      const runAt =
+        reason === 'quiet_hours'
+          ? deferPastQuietHours(at, row.academy_timezone, row.settings)
+          : deferPastQuietHours(
+              new Date(at.getTime() + 4 * 60 * 60 * 1000),
+              row.academy_timezone,
+              row.settings,
+            )
+      await enqueue(
+        'redeliver',
+        runAt,
+        dedupe.redeliver(messageId, 1),
+        { academy_id: row.academy_id, message_id: messageId, attempt: 1 },
+        row.academy_id,
+      )
+    } catch {
+      // The suppression row stands either way; a failed enqueue must not turn a
+      // deliberate non-send into a thrown turn.
+    }
+  }
   return { kind: 'suppressed', reason, messageId }
 }
 
@@ -893,7 +934,7 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     // stops mid-sentence once someone has had a busy day. The per-tenant cap still applies —
     // that one protects the shared number's capacity, which a reply spends like anything else.
     if (!msg.fixed) {
-      const counts = await tx<{ recipient_24h: number; tenant_24h: number }[]>`
+      const counts = await tx<{ recipient_24h: number; tenant_24h: number; unanswered: number }[]>`
         select
           (select count(*)::int from message m
             where m.contact_id = ${row.contact_id}
@@ -904,7 +945,13 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
             where m.academy_id = ${row.academy_id}
               and m.direction = 'outbound'
               and m.suppressed_reason is null
-              and m.queued_at > app.now() - interval '24 hours')  as tenant_24h`
+              and m.queued_at > app.now() - interval '24 hours')  as tenant_24h,
+          (select count(*)::int from message m
+            where m.contact_id = ${row.contact_id}
+              and m.direction = 'outbound'
+              and m.suppressed_reason is null
+              and (${row.last_inbound_at ?? null}::timestamptz is null
+                   or m.queued_at > ${row.last_inbound_at ?? null}::timestamptz)) as unanswered`
 
       const recipientCap = capFrom(row.settings, 'per_recipient_24h', DEFAULT_RECIPIENT_CAP_24H)
       const tenantCap = capFrom(row.settings, 'per_tenant_24h', DEFAULT_TENANT_CAP_24H)
@@ -940,6 +987,26 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
        *   who has not answered since the first.
        */
       const operatorWhileOperating = row.is_admin && inWindow
+
+      /**
+       * @mechanism silenceBackoff — a person who has not answered N straight unprompted
+       *   messages is dark, and the shape is invisible to every rate cap: 35 sends over
+       *   ten days is under every daily ceiling and it is exactly what b8xo's departed
+       *   owner received (§16.3 names response rate as a quality proxy; §16.1 calls a
+       *   quality drop on the shared number "the largest single business risk in the
+       *   product", because it takes every tenant down together). The count is consecutive
+       *   delivered unprompted sends since this contact's last inbound — both columns
+       *   already in hand — and one message from them resets it to zero. `fixed` rows,
+       *   solicited replies and the opt-out ack are exempt for the reason the caps exempt
+       *   them: they exist for something other than engagement. This is a decision, not a
+       *   delay, so it keeps its idempotency key and starts no redelivery ladder.
+       *   Closes the send-path half of F-EE.
+       */
+      const silenceBackoff = capFrom(row.settings, 'silence_backoff_after', DEFAULT_SILENCE_BACKOFF_AFTER)
+      if (!msg.solicited && !msg.optOutAck && counts[0].unanswered >= silenceBackoff) {
+        return suppress(tx, row, msg, 'silence_backoff', inWindow)
+      }
+
       if (!msg.solicited && !operatorWhileOperating && counts[0].recipient_24h >= recipientCap) {
         return suppress(tx, row, msg, 'recipient_frequency_cap', inWindow)
       }
@@ -1422,4 +1489,72 @@ export async function markStatus(
 /** §17 event-log helper: the cost of a category, without re-deriving the table. */
 export function costOf(category: ConversationCategory): number {
   return COST_PAISE[category]
+}
+
+/**
+ * Re-attempt one timing-suppressed message from its own stored row, through the full
+ * gate stack. Lives HERE, beside the gates it re-runs, because the stored buttons are
+ * post-mint (`{actionId, title}`) — the shape only `send` accepts — and §16.3's one-door
+ * rule ("nothing imports `send` except compose and the plan executor") is kept by
+ * exporting the replay rather than the door.
+ *
+ * The minted action rows are REUSED, not re-minted: they were validated at compose time,
+ * their TTLs are still running, and a fresh mint would orphan the originals as live rows
+ * pointing at a message that never went. A confirmation request is refused here — its
+ * asker owns the re-ask (see the handler's skip) — so nothing consequential rides a
+ * reused id whose `pending_request` bookkeeping named the suppressed row.
+ */
+export async function redeliverStored(
+  academyId: string,
+  messageId: string,
+  attempt: number,
+): Promise<SendOutcome | { status: 'skip'; reason: string }> {
+  const ctx: SessionCtx = { role: 'service', academyId }
+  const row = await withSession(ctx, async (tx) => {
+    const [m] = await tx<
+      {
+        id: string
+        contact_id: string
+        body: string
+        status: string
+        queued_at: Date
+        payload: Record<string, any> | null
+      }[]
+    >`
+      select id, contact_id, body, status, queued_at, payload
+        from message where id = ${messageId}`
+    if (!m) return null
+    const [later] = await tx<{ n: number }[]>`
+      select count(*)::int as n from message
+       where contact_id = ${m.contact_id} and direction = 'outbound'
+         and body = ${m.body}
+         and status in ('queued','sent','delivered','read')
+         and queued_at > ${m.queued_at}`
+    return { ...m, saidSince: (later?.n ?? 0) > 0 }
+  })
+
+  if (!row) return { status: 'skip', reason: 'the suppressed message row is gone' }
+  if (row.status !== 'suppressed') return { status: 'skip', reason: 'that message already went' }
+  if (row.saidSince) return { status: 'skip', reason: 'the same words have reached them since, another way' }
+  const stored = row.payload ?? {}
+  if (stored.is_confirmation_request) {
+    return { status: 'skip', reason: 'a confirmation request is not re-raised by a timer — its asker owns the re-ask' }
+  }
+
+  return send(ctx, {
+    toContactId: row.contact_id,
+    body: row.body,
+    header: stored.header ?? undefined,
+    footer: stored.footer ?? undefined,
+    buttons: stored.buttons ?? undefined,
+    list: stored.list ?? undefined,
+    link: stored.link ?? undefined,
+    subjectPersonIds: stored.subject_person_ids ?? undefined,
+    isEscalation: Boolean(stored.is_escalation),
+    fixed: Boolean(stored.fixed),
+    preLaunchOk: Boolean(stored.pre_launch_ok),
+    stateKey: stored.state_key ?? undefined,
+    idempotencyKey: `redeliver:${messageId}:${attempt}`,
+    redelivery: true,
+  })
 }

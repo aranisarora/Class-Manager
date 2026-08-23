@@ -826,6 +826,15 @@ export async function openEvents(o: {
     if (!missed.length) {
       return `You took the ${t.className} at ${t.at} ${when}. Everybody who should have been there was there.`
     }
+    // Everybody absent is its own sentence: "Everybody was there except <the whole
+    // roster>" briefed a coach with a contradiction about a session nobody came to (F-EJ).
+    if (missed.length === t.roster.length) {
+      const list = missed.map((p) => `${p.name} (${p.why ?? 'no reason given'})`).join(', ')
+      return (
+        `You took the ${t.className} at ${t.at} ${when} and nobody came — ${list}. ` +
+        `You have not written any of that down anywhere.`
+      )
+    }
     const list = missed.map((p) => `${p.name} (${p.why ?? 'no reason given'})`).join(', ')
     return (
       `You took the ${t.className} at ${t.at} ${when}. Everybody was there except ${list}. ` +

@@ -144,8 +144,15 @@ export async function monthlyLines(job: Job): Promise<void> {
      * Falls back to the live columns for a row that predates 0043's backfill,
      * which should never happen and must not read as zero.
      */
+    // Resolved at the first day the enrolment is LIVE within the period, not the
+    // period's own first day: the trigger dates a mid-month joiner's own rate row
+    // from their started_on, which is after the 1st — so resolving at the 1st found
+    // no enrolment row, fell to the CLASS rate, and a sibling-discounted joiner was
+    // billed the class price for their joining month.
     const [asOf] = await tx<{ amount: string | null; unit: string | null; cnt: number | null }[]>`
-      select amount::text as amount, unit, cnt from app.rate_on(${e.enrollment_id}::uuid, ${period}::date)
+      select amount::text as amount, unit, cnt
+        from app.rate_on(${e.enrollment_id}::uuid,
+                         greatest(${period}::date, ${e.started_on}::date))
     `
     const unit = asOf?.unit ?? e.rate_unit
     const amount = num(asOf?.amount ?? e.rate_amount)
@@ -558,7 +565,10 @@ async function writeLine(
    * class" to give away, and the credit is skipped rather than guessed at: an
    * invented number here is exactly the failure this is fixing.
    */
-  const perClass = await oneClassOf(tx, academyId, e, period, amount)
+  // The terms THIS LINE was billed at, threaded down — the credit must offset the
+  // line beside it, not the class as it stands today: a catch-up-billed trial in a
+  // restructured 10→4 pack credited amount/4 instead of amount/10 otherwise.
+  const perClass = await oneClassOf(tx, academyId, e, period, amount, rateCount, rateUnit)
   if (perClass === null) {
     note(`${e.player_name} is a trial but ${e.class_name} has no sessions this period — no credit sized`)
     return
@@ -623,16 +633,19 @@ async function oneClassOf(
   tx: Tx, academyId: string, e: EnrollmentRow, period: string, amount: number,
   /** The count this period was BILLED at, not the class's current one (F-CM). */
   rateCount?: number | null,
+  /** The unit this period was BILLED at — the live column may have changed since. */
+  rateUnit?: string | null,
 ): Promise<number | null> {
   const count = rateCount ?? e.rate_count
+  const unit = rateUnit ?? e.rate_unit
   // A pack's size is its own definition of how many classes the charge buys, and
   // it does not depend on which month they fall in.
-  if (e.rate_unit === 'per_package') {
+  if (unit === 'per_package') {
     const size = Math.max(1, count ?? 1)
     return Math.round((amount / size) * 100) / 100
   }
 
-  const months = e.rate_unit === 'per_term' ? Math.max(1, count ?? 1) : 1
+  const months = unit === 'per_term' ? Math.max(1, count ?? 1) : 1
   const [row] = await tx<{ n: number }[]>`
     select count(*)::int as n
       from session s
@@ -894,7 +907,7 @@ export async function coachMonthLines(job: Job): Promise<void> {
   const coachId = need(p, 'coach_id')
   const period = need(p, 'period')
 
-  await withAcademy(academyId, async (tx) => {
+  const toSend = await withAcademy(academyId, async (tx) => {
     const academy = await loadAcademy(tx, academyId)
     if (!academy) skip('academy gone')
     const tz = academy.timezone
@@ -903,20 +916,17 @@ export async function coachMonthLines(job: Job): Promise<void> {
     const [coach] = await tx<
       {
         id: string; full_name: string; pay_amount: string | null; pay_unit: string | null
-        status: string | null; started_on: string | null; ever_employed: boolean
+        status: string | null; ended_on: string | null; started_on: string | null; ever_employed: boolean
       }[]
     >`
       select c.id, pe.full_name, c.pay_amount::text as pay_amount, c.pay_unit,
-             c.status,
+             c.status, c.ended_on::text as ended_on,
              (coalesce(c.onboarded_at, c.created_at) at time zone ${tz})::date::text as started_on,
              (c.onboarded_at is not null or c.status in ('active', 'ended')) as ever_employed
         from coach c join person pe on pe.id = c.person_id
        where c.id = ${coachId} and c.academy_id = ${academyId}
     `
     if (!coach) skip('coach gone')
-    // Null pay is "not tracked", a first-class state (0002). No arithmetic turns it
-    // into a number, and writing a zero line would read as "worked for nothing".
-    if (coach.pay_amount === null) skip('pay is not tracked for this coach')
 
     /**
      * The rate in force during the month being closed, not the rate on the
@@ -932,8 +942,24 @@ export async function coachMonthLines(job: Job): Promise<void> {
     const [payThen] = await tx<{ amount: string | null; unit: string | null }[]>`
       select amount::text as amount, unit from app.pay_on(${coachId}::uuid, ${period}::date)
     `
+    /**
+     * The unit AND the gate follow the same tense as the amount. Pricing at THEN
+     * while branching and gating on NOW mixed two months' terms whenever a
+     * pay-unit change landed before a catch-up close (BILLING_CATCHUP_MONTHS is
+     * 3): a coach at ₹500 per_session in August, switched to ₹18,000 per_month
+     * in September, closed August through the per_month arm — writing the
+     * per-session ₹500 as a month's SALARY. Every term this close reads is the
+     * term in force during the month it is closing, falling back to the live
+     * columns only for a coach who predates 0043's backfill.
+     */
     const rate = num(payThen?.amount ?? coach.pay_amount)
-    const unit = coach.pay_unit
+    const unit = payThen?.unit ?? coach.pay_unit
+    // Null pay is "not tracked", a first-class state (0002) — judged for the
+    // MONTH being closed, not for today: a coach whose pay was tracked in August
+    // and untracked now still gets August's close.
+    if (payThen?.amount == null && coach.pay_amount === null) {
+      skip('pay is not tracked for this coach')
+    }
     const monthName = monthLabel(period, tz)
 
     if (unit === 'per_month') {
@@ -988,6 +1014,12 @@ export async function coachMonthLines(job: Job): Promise<void> {
       }
       if (!employedThatMonth) {
         skip(`${firstName(coach.full_name)} started on ${coach.started_on}, after ${monthName} ended`)
+      }
+      // The mirror of the start test: a month that began after the coach ended is not
+      // a month they were employed in, and a salary written for it is money to
+      // somebody who had already left.
+      if (coach.ended_on && coach.ended_on < period) {
+        skip(`${firstName(coach.full_name)} ended on ${coach.ended_on}, before ${monthName} began`)
       }
       // One line, and it may already be here: a rate agreed in advance writes
       // September's row in August under this exact key. Finding it is the feature.
@@ -1109,23 +1141,38 @@ export async function coachMonthLines(job: Job): Promise<void> {
       // machine. `is_admin` is exempt from the pre_launch gate, so this is one of the few
       // things that reaches anybody while a business is still in setup, which is exactly
       // when backdated work is entered.
+      //
+      // COLLECTED here, SENT after the commit — this file's own rule ("a message is
+      // not a thing to send from inside one: a rolled-back line never produces a
+      // moment about a charge that does not exist"), which every other handler here
+      // already follows. `composeAndSend` takes its own connection, so a send from
+      // inside this transaction would survive a close that rolled back — admins told
+      // a month closed that did not.
       const adminRows = (await admins(tx, academyId)).filter((a) => a.contact_id)
       const shown = unpricedWork.slice(0, 4).map((u) => `• ${u.label}`).join('\n')
       const more = unpricedWork.length > 4 ? `\n…and ${unpricedWork.length - 4} more.` : ''
-      for (const a of adminRows) {
-        await composeAndSend(serviceCtx(academyId), {
-          toContactId: a.contact_id as string,
-          isEscalation: true,
-          body:
-            `${firstName(coach.full_name)}'s ${monthName} is closed, and ${unpricedWork.length} session(s) ` +
-            `they worked are NOT on it — there was no pay rate on file covering the day each one ran, ` +
-            `so I have nothing to price them at and I will not guess.\n\n${shown}${more}\n\n` +
-            `Everything else came to ${formatINR(total)}. Tell me what these are worth and I will add ` +
-            `them, or set their rate from the date they started and I will work it out.`,
-        })
+      return {
+        adminContactIds: adminRows.map((a) => a.contact_id as string),
+        body:
+          `${firstName(coach.full_name)}'s ${monthName} is closed, and ${unpricedWork.length} session(s) ` +
+          `they worked are NOT on it — there was no pay rate on file covering the day each one ran, ` +
+          `so I have nothing to price them at and I will not guess.\n\n${shown}${more}\n\n` +
+          `Everything else came to ${formatINR(total)}. Tell me what these are worth and I will add ` +
+          `them, or set their rate from the date they started and I will work it out.`,
       }
     }
+    return null
   })
+
+  if (toSend) {
+    for (const contactId of toSend.adminContactIds) {
+      await composeAndSend(serviceCtx(academyId), {
+        toContactId: contactId,
+        isEscalation: true,
+        body: toSend.body,
+      })
+    }
+  }
 }
 
 export async function dunningRun(job: Job): Promise<void> {

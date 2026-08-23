@@ -241,8 +241,19 @@ export async function deriveRun(dir: string): Promise<{ turns: number; files: st
 
   await mkdir(join(dir, 'by-seat'), { recursive: true })
   const seats = new Map<string, string[]>()
+  /**
+   * @mechanism bySeatKey — the per-person axis is the PERSON (`who`), never the role
+   *   (`persona`): two people share a role, and keying the split on it filed both owner
+   *   departures in this corpus under `prospect.jsonl` beside a stranger who wandered off —
+   *   a business's operator walking out, invisible in the one view built for reading a run
+   *   person by person. `persona` stays in every row for filtering by role; it just no
+   *   longer names the file. Queue turns have no person and keep their own file, as before.
+   *   Closes F-EJ.
+   */
+  const bySeatKey = (t: { who?: unknown; persona?: unknown }): string =>
+    slug(String(t.who ?? '')) || slug(String(t.persona ?? '')) || 'unknown'
   for (const t of turns) {
-    const key = slug(t.persona) || 'unknown'
+    const key = bySeatKey(t)
     const rows = seats.get(key) ?? []
     rows.push(JSON.stringify(t))
     seats.set(key, rows)

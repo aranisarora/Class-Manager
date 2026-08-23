@@ -597,7 +597,12 @@ function partitionAround(
     if (i === refusedIndex) continue
     const step = steps[i] as PlanStep
     const label = `step ${i + 1} (${describeStep(step)})`
-    const sameGate = 'operation' in step && step.operation.name === refusedOp
+    // Only steps AFTER the refusal can "meet the same gate": expansion is
+    // sequential, so a same-operation step before the refused one already PASSED
+    // its own gate — the gates are argument-dependent, and telling the model not
+    // to re-send a step the runtime just validated steers it away from the half
+    // that works (two send_invites where only the second is bad).
+    const sameGate = i > refusedIndex && 'operation' in step && step.operation.name === refusedOp
     if (sameGate || (i > refusedIndex && refersToEarlierRow(step))) blocked.push(label)
     else independent.push(label)
   }

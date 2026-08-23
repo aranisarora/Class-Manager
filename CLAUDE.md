@@ -24,10 +24,19 @@ belongs.
 
 These are the conventions that are load-bearing and not guessable from the code.
 
-**Behaviour is not fixed by prompting.** Every finding in the ledger names a *structural*
-home. The repo's own evidence is that instructions do not close behavioural classes — so a
-defect gets a mechanism, not a paragraph of doctrine. `findings/README.md` says
-this in its own header, and it means it.
+**Enable the model; do not fence it.** This is a harness around a capable model, and the
+working theory is *a capable model, told the truth*. A defect is one of three things, checked
+in this order: the **instrument** (the harness manufactured or hid it — check first, always),
+an **information failure** (the model lacked a fact, was handed a wrong one, or one it could
+not falsify — the commonest class, fixed by delivering the fact where composing happens), or a
+**capability gap** (no route existed, a tool was broken, the runtime discarded what the model
+produced). What does not fix anything is a paragraph of doctrine, or a gate built where
+information was the failure — the deleted `proseRefused` gate is the precedent: the
+information fix did all of it, the gate did none. Gates are for classes where one miss is
+irreversible, and must prove a hit rate on a recorded run before they refuse anything.
+`findings/README.md` carries the full version. Beware fixing the instance in front of you:
+eleven one-commit-per-drive fixes in one day each closed an instance and left its class
+standing — name the class, fix the class.
 
 **Nothing in an instrument scores anything.** The instruments record; a person or a judge model
 writes the verdict into `judgement.json` beside the record. Deterministic pass/fail was removed
@@ -89,6 +98,35 @@ converts.
 `_danger.ts`, `_derive.ts`, `_drive-config.ts`, `_env.ts`, `_events.ts`, `_persona-agent.ts`,
 `_personas.ts`, `_record-from-probe.ts`, `_seat.ts`, `_seat-worker.ts`, `_world-file.ts` are
 shared modules. `_findings.ts` is the one exception and it runs.
+
+## The production-readiness loop
+
+The working process as of 23 Aug 2026, and the mindset it encodes. The failure it replaces is
+**using the drive for iteration** — fix one thing, drive, see the instance gone, call it good.
+That loop patches instances, manufactures false positives, and closed twenty-nine findings whose
+classes kept firing. The drive is a *measurement*, never a test of one patch.
+
+1. **Drive whole.** A month, both worlds when you can afford it — `eager-owner` (a motivated
+   owner; measures whether the product can succeed at all) and `ace-tennis` (hard mode; measures
+   robustness). `npm run watch` alongside, so a drive that stops measuring is stopped.
+2. **Read whole and judge.** Every turn, `report.mjs --text`, verdict into `judgement.json`
+   (`docs/JUDGING.md`). An unjudged run has no trend line.
+3. **Classify every problem** — instrument first, then information, then capability (the house
+   rule above). Fix the CLASS, at the root, never the instance in front of you.
+4. **Line-review the fixes before the next drive.** On 23 Aug a five-agent review of one
+   window's shipped, gate-green, well-argued code found three mechanisms that could never fire
+   (an unbuilt sweep two comments referenced, a supersede the runner ignored, a count whose
+   join RLS silently emptied) and four ways money could be miswritten. Gates prove shape, not
+   life; a review between fixing and driving is cheaper than a drive that measures dead code.
+5. **Repeat until the exit bar**, which is a bar and not "no issues": the money loop completes
+   (billed → paid → reconciled), no seat departs for a product-caused reason, zero
+   blocker-severity findings, and no CLOSED finding's class fires.
+
+Two standing cautions. **Never wipe the database to reset** — the live sender row carries the
+Meta credentials and approved templates, and old runs' worlds are `npm run truth`'s second
+column; `npx tsx scripts/sim.ts gc --hours 0` reaps sandbox worlds cleanly. And **archive
+`.probe` contents by moving them into `.probe/archive/<dated>/`**, keeping the directory
+skeleton `check:layout` describes.
 
 ## Commands
 

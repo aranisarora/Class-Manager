@@ -1,6 +1,6 @@
 # What is open
 
-27 findings. This file is the source of truth for what is broken — hand-written, and short on
+20 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -23,27 +23,20 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-AR** | The answer can die beside a tool call on the final round — the gap the leak fix uncovered | [detail](#f-ar--the-answer-can-die-beside-a-tool-call-on-the-final-round--the-gap-the-leak-fix-uncovered) |
 | **F-BA** | A hand-written attendance INSERT bills nobody **[decided]** | [detail](#f-ba--a-hand-written-attendance-insert-bills-nobody) |
 | **F-BB** | The plan reports "two places" and nothing makes the model say it | [detail](#f-bb--the-plan-reports-two-places-and-nothing-makes-the-model-say-it) |
-| **F-BW** | `business_rule` had no reader, so every stated rule behaved as null | [detail](#f-bw--business_rule-had-no-reader-so-every-stated-rule-behaved-as-null) |
 | **F-BC** | the affordance — an experiment, not a fix **[decided]** | [detail](#f-bc--the-affordance--an-experiment-not-a-fix) |
 | **F-BL** | `session_coach` cannot record a removal **[decided]** | [detail](#f-bl--session_coach-cannot-record-a-removal) |
 | **F-BU** | The proactive surface was unpriced, and it is most of what the product says | [detail](#f-bu--the-proactive-surface-was-unpriced-and-it-is-most-of-what-the-product-says) |
 | **F-BV** | A window over `job` cannot answer "what ran in this turn", and never could | [detail](#f-bv--a-window-over-job-cannot-answer-what-ran-in-this-turn-and-never-could) |
-| **F-BY** | The context budget drops whole lookups from the model's prompt and leaves no mark | [detail](#f-by--the-context-budget-drops-whole-lookups-from-the-models-prompt-and-leaves-no-mark) |
 | **F-BZ** | A statement cannot say which turn sent it, so a drain cannot be recorded as the several turns it is | [detail](#f-bz--a-statement-cannot-say-which-turn-sent-it-so-a-drain-cannot-be-recorded-as-the-several-turns-it-is) |
-| **F-CA** | A staged plan is described in the past tense, so the owner is told a change was made while the buttons still ask whether to make it | [detail](#f-ca--a-staged-plan-is-described-in-the-past-tense-so-the-owner-is-told-a-change-was-made-while-the-buttons-still-ask-whether-to-make-it) |
 | **F-CC** | A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule | [detail](#f-cc--a-commercial-term-nobody-agreed-to--first-class-is-free--volunteered-in-a-parenthetical-and-stated-as-the-businesss-own-rule) |
 | **F-CI** | The product reports what it TRIED as what HAPPENED — 26 unbacked claims in 33 turns, while `turnState` is already telling it otherwise | [detail](#f-ci--the-product-reports-what-it-tried-as-what-happened-and-turnstate-is-already-telling-it-otherwise) |
-| **F-CK** | Quiet hours and both send caps drop the message they mean to delay, because nothing ever comes back for it | [detail](#f-ck--quiet-hours-and-both-send-caps-drop-the-message-they-mean-to-delay-because-nothing-ever-comes-back-for-it) |
-| **F-CN** | `npm run ab` cannot drive either arm, because it refuses the config it just wrote | [detail](#f-cn--npm-run-ab-cannot-drive-either-arm-because-it-refuses-the-config-it-just-wrote) |
 | **F-CR** | A rate that begins after the work was done silently unpays it, and nothing says so | [detail](#f-cr--a-rate-that-begins-after-the-work-was-done-silently-unpays-it-and-nothing-says-so) |
 | **F-DI** | A read result keeps the model's own column alias, so a mislabel becomes durable and is built into a write five turns later | [detail](#f-di--a-read-result-keeps-the-models-own-column-alias-so-a-mislabel-becomes-durable-and-is-built-into-a-write-five-turns-later) |
 | **F-DV** | The seat COULD always press a button and was never told so, so every mechanism behind a tap was measured at a fifteenth of its rate | [detail](#f-dv--the-seat-could-always-press-a-button-and-was-never-told-so-so-every-mechanism-behind-a-tap-was-measured-at-a-fifteenth-of-its-rate) |
 | **F-DY** | A persona brief asserts a history the world never builds, so the model is argued out of a correct read of its own database | [detail](#f-dy--a-persona-brief-asserts-a-history-the-world-never-builds-so-the-model-is-argued-out-of-a-correct-read-of-its-own-database) |
 | **F-EB** | A person taps when ONE thing is waiting and types when several are, and several things reach one person from DIFFERENT paths between two looks at a phone | [detail](#f-eb--a-person-taps-when-one-thing-is-waiting-and-types-when-several-are-and-several-things-reach-one-person-from-different-paths-between-two-looks-at-a-phone) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
-| **F-EE** | §16.3's per-tenant quality proxies — delivery failures, read rate, **response rate**, opt-outs — have no reader, so nothing notices a tenant shouting into silence on a shared number | [detail](#f-ee--1633s-per-tenant-quality-proxies-have-no-reader) |
-| **F-EJ** | The instrument's per-person axis is a ROLE, and four smaller harness defects that manufacture losses the record then files against the product | [detail](#f-ej--the-instruments-per-person-axis-is-a-role) |
-| **F-DS** | A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn | [detail](#f-ds--a-staged-plan-can-only-be-committed-by-tapping-it-an-owner-who-answers-go-ahead-in-words-is-re-staged-instead-because-the-plan-handle-does-not-survive-the-turn) |
+| **F-EE** | §16.3's per-tenant quality proxies — delivery failures, read rate, **response rate**, opt-outs — have no reader, so nothing notices a tenant shouting into silence on a shared number. **The send-path half is built** (`silenceBackoff`); the scheduled roll-up is what remains | [detail](#f-ee--1633s-per-tenant-quality-proxies-have-no-reader) |
 
 ---
 
@@ -284,16 +277,6 @@ staged something has a tap; a question asked has its answers), and treat a
 button-less reply to a non-admin as the exception that has to earn itself,
 the way a long body already does.
 
-### F-BW · `business_rule` had no reader, so every stated rule behaved as null
-
-Recorded 17 Aug 2026; carried the code `F-BH` until 20 Aug, when that code was
-found to name this and the Part 8 definer-view finding at once — one of the two
-was invisible to every reader that parses by code.
-
-`enforced_by` was enforced by nothing. The partly-covered-period writer above is
-`business_rule`'s first reader, so the general case is still one reader and not a
-mechanism: the structural home is wherever a job composes from a query.
-
 ### F-BC · the affordance — an experiment, not a fix
 
 **The measurement, sharper than the count.** Six of twenty turns carried a button
@@ -432,35 +415,6 @@ behaviour needs it — `job_tick` (0029) already covers whether the beat is aliv
 column to the product's schema to serve an instrument inverts this repo's own layering. Recorded
 here so the next reader does not re-derive the choice.
 
-### F-BY · The context budget drops whole lookups from the model's prompt and leaves no mark
-
-`recentLookups` (`lib/agent/loop.ts`) replays recent reads into the turn's tail so the model can
-see what it already asked. It cuts in two places and only one of them is visible:
-
-- **Each result at 1,400 characters**, leaving `… (truncated)`. Measured across every run on
-  disk: 16 occurrences, every one landing at exactly 1,417 rendered characters, several bisecting
-  a UUID mid-token.
-- **The whole block at a 6,000-character `BUDGET`** — and this one `return`s early with **no
-  marker at all**. The model is shown some prior lookups and not others, and nothing in the
-  prompt, the trace or the record says a thing was dropped.
-
-The second is the worse of the two for the same reason F-BU was worse than it looked: an absence
-leaves nothing behind. A reader sees a short list of prior lookups and cannot tell it from a
-complete one, so *"it had already read that and ignored it"* and *"it was never shown that"* are
-the same bytes.
-
-**Half-addressed, 21 Aug 2026.** `Turn.contextCuts` now counts the visible cut and
-`scripts/report.mjs`, `_judge-text.mjs` and `judge-slice.mjs` warn where it bit — because the
-record was *more complete than the model's own context* and said nothing, which convicts a
-starved model of carelessness. That closes nothing here: it counts the marked cut and cannot
-count the unmarked one.
-
-**The structural home** is `recentLookups` itself, and the shape is already in this codebase:
-`context.ts`'s `unread` states the gap where a prefetch failed rather than removing its
-paragraph, on the grounds that a paragraph that was never there is invisible to everything
-downstream. The budget should do the same — say how many blocks it dropped, in the tail, where
-the model and the record both get it.
-
 ### F-BZ · A statement cannot say which turn sent it, so a drain cannot be recorded as the several turns it is
 
 `_capture.ts` attributes a beat's evidence to one record. For a seat that is right — a tap opens
@@ -495,48 +449,6 @@ Fluid Compute reuses one function instance across concurrent requests.
 **What is still open is the record-level split**, which is `_capture.ts`'s to make: a four-handler
 drain still lands in one record, and now that every statement in it says which turn sent it, that
 record can be split four ways without stranding its SQL.
-
-### F-CA · A staged plan is described in the past tense, so the owner is told a change was made while the buttons still ask whether to make it
-
-Blue Lane Swim School, day 5 of `2026-08-21-04-38-sim-td2w`. Kavitha Reddy, who owns it, types
-*"aarav start date - change to 24 aug like ramesh asked"*. The reply opens:
-
-> **Aarav's Learn to Swim moved to 24 Aug** — this puts him on the August month (1500, full month
-> since it's monthly). Ramesh gets told once it's done.
-
-and carries the buttons `[ Make the change ]` `[ Cancel ]`.
-
-Both halves are in one message and they contradict each other. The sentence is in the **past
-tense** and reports a completed write; the affordances underneath it are asking permission to
-perform that write. The turn's own evidence settles which is true: **`changed: []`, `wrote: 0`,
-and not one `insert`, `update` or `delete` in its SQL.** Across the whole seven days the
-`enrollment` table took three inserts and **zero updates** — Aarav's start date was never moved
-at all.
-
-The trailing clause is the tell. *"Ramesh gets told once it's done"* is the model correctly
-holding that the thing is **not** done, in the same breath as a first sentence asserting it is.
-The staged state is understood; only the sentence about it is wrong.
-
-**Why this one costs money rather than patience.** The whole design of this seat is a person who
-reads the first line and acts on it — Kavitha's brief says so, and so does Rahul's, and it is the
-commonest real behaviour this repo has measured. A first line that says *moved* is a first line
-that ends the conversation. Kavitha's own stated red line is anything about money going wrong,
-and this is a billing date: believing it moved to 24 Aug means believing Ramesh owes a full
-August month. He does not, because nothing moved.
-
-This is not the model failing to know the state, so it is not addressable by telling it to be
-careful — it *had* the state and said the opposite in the previous clause. The home is wherever
-a staged plan renders its confirmation sentence: a plan that has not been committed cannot be
-allowed to describe itself with a completed verb, and the tense should be composed from the
-plan's status rather than written by the model.
-
-**A harness bug sat on top of this one and is fixed.** The next day Kavitha pressed
-`[ Make the change ]` and it did not commit either — but that was the instrument, not the
-product. `_seat-worker.buttonAction` matched the button title literally while `renderPhone`
-draws it as `[ Make the change ]`, so the press resolved to nothing and went as text. Two
-presses were lost that way across the three weeks of 21 Aug, and the brackets are now stripped
-before matching. **The product half above is untouched by that fix**: the day-5 overclaim
-happened on a turn where nothing was tapped at all.
 
 ### F-CC · A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule
 
@@ -662,58 +574,6 @@ by deliberate design, and the deliberate design does not hold at this width.
 
 ---
 
-### F-CN · `npm run ab` cannot drive either arm, because it refuses the config it just wrote
-
-Found 22 Aug 2026 trying to A/B a mechanism change (`--variant ref=`). **Both arms fail
-identically, at second zero, before a single model call.** Arm B was an unmodified `main`
-checkout, so this is not a property of the branch under test — it is the instrument.
-
-`ab.ts` resolves one `DriveConfig`, writes it to `config.json` with `recordedConfig`
-(`scripts/_drive-config.ts:999-1009`), and hands both children `--config <that file>`. The
-children then re-parse it. Two fields cannot survive the round trip:
-
-```
---variant ref=<path> --days 14                    config.json: seats must be at least 1, not 0
---variant ref=<path> --days 14 --seats 4          config.json: personas is empty
---variant ref=<path> --world ace-tennis --seats 4 config.json: personas is empty
-```
-
-- **`seats`.** Its default is `0`, documented as *"all of them"* (`_drive-config.ts:141-148`).
-  But a `seats` arriving from a config file is parsed `num(value, at, { int: true, min: 1 })`
-  (`:574`), so the parser refuses the very default the writer emits. `0` is expressible in the
-  type and not in the file.
-- **`personas`.** `recordedConfig` writes `personas: [...world.seats]` — but `ab.ts` never
-  builds a world, because building it is the child's job. So `world.seats` is empty, the file
-  gets `personas: []`, and `list()` refuses an empty list (`:515`). `sim.ts:696-699` says
-  empty means *"everybody this world has"*, which is exactly the meaning the file cannot carry.
-
-Both are the same shape: **a sentinel that means "unspecified" in memory becomes a literal
-value on disk, and the reader has no way to tell the two apart.** It is the config-file
-sibling of the `suppressed`-vs-`failed` distinction 0032 drew — "not set" and "set to zero"
-are different facts and this file has one slot for them.
-
-**What it costs.** `--dry-run` does not catch it: it stops before any child runs, so it
-reports two healthy arms and a prepared parent directory (verified — the dry run passes and
-prints both prefix hashes). The failure appears only when money would have been spent, and
-the run then exits **0**, with `A1  no record` in the summary rather than an error. A caller
-reading the exit code learns nothing.
-
-**Why nobody hit it.** The `doctrine=` path is the one that gets used, and `--preset smoke`
-freezes `seats: 2` (`:327`) — a preset that happens to name a seat count masks both bugs.
-`ref=` with no preset is the combination that has no working spelling at all.
-
-**Where it lives.** `recordedConfig` (`scripts/_drive-config.ts:999-1009`) writes a resolved
-config that its own parser will not accept; the `seats` rule at `:574` and the `list()` guard
-at `:515` are the two refusals. `ab.ts` is the only caller that round-trips a config through a
-file, which is why it is the only instrument that cannot run.
-
-**Not fixed here.** This PR is a money change and the instrument is a separate concern; fixing
-the round trip means deciding how "unspecified" is spelled on disk, which is a design
-question, not a patch. Verification for this branch was done with `check-rate-history.ts`, the
-four existing money checks and a direct `sim.ts` drive instead.
-
----
-
 ### F-CR · A rate that begins after the work was done silently unpays it, and nothing says so
 
 **Status: the silence is retired, the unpaying is not.** `unpricedWork`
@@ -830,53 +690,6 @@ matches against ROWS). The honest options are a cheap structured pre-read whose 
 rather than a decision (the shape `frontDeskTail` already uses), or accepting the cost and
 measuring it. Do not add a regex over "coach", "my daughter" and "batch".
 
-### F-DS · A staged plan can only be committed by TAPPING it. An owner who answers "go ahead" in words is re-staged instead, because the plan handle does not survive the turn
-
-**Saw:** `2026-08-22-13-29-sim-8528`, day 6. The owner had a `[Build timetable]` card on his screen
-from day 5 and wrote *"sat squad 9-11am. dont have priyas number saved either tbh shes just always
-been there in person, ask arjun to cover he'll have it. **also tap build timetable go ahead**"*.
-Nothing was built. The turn composed a fresh plan — correctly, since he had also just added the
-Saturday squad — and put a second `[Build timetable]` button under it. The run ended on day 7 with
-`class` still empty, one write in fifty-eight turns, and the business at `onboarding_state='setup'`.
-
-**Root:** `toolCtx.pendingPlans` is constructed fresh per turn, so a handle minted yesterday cannot
-be committed today: `commit` takes a handle that no longer exists. The fully-resolved steps DO
-survive — they are sitting in `action.payload` — but the only thing that can consume an `action` is
-`consumeAction`, and the only thing that reaches `consumeAction` is a tap. There is no path at all
-from consent expressed in words to a committed plan, on the one surface where typing and tapping
-are equally natural.
-
-**Blast radius:** every staged plan, for every role. It is worse than one wasted exchange, because
-the person has said yes and watched nothing happen — which is the shape that produced *"this hasnt
-worked three times now"* in the thirty-day run. It also compounds with the affordance being the
-only commit route: an owner who never taps can never change anything.
-
-**Where it lives, and what was ruled out on 22 Aug 2026.** Two shapes were designed and neither
-was built, deliberately.
-
-*A `run_card(action_id)` tool.* It splits the two questions §6.5 answers with one gesture: WHAT
-RUNS stays model-free (the stored `action.payload`, replayed verbatim through `consumeAction`, so
-the model never sees the steps and cannot compose them) while WHO DECIDED becomes a declared verb.
-An adversarial pass ruled the gap REAL and this shape enabling. It was still not built, for a
-reason that is about ORDER rather than about safety: the tap path runs BEFORE the model turn — a
-committed tap arrives as a stated fact through `tapBlock`, which is what stops the runtime
-authoring a receipt — and a tool that consumes an action mid-turn inverts that, which is exactly
-the class `docs/ANATOMY.md` exists to catch. Anything built here has to answer where the narration
-lands first.
-
-*Matching the person's words against their own live button titles*, the way the seat harness's
-`buttonAction` already does. This is the better shape and it is decidable rather than
-interpretative — `maskBusinessNames` is the precedent, and it works because it matches against
-ROWS. The unresolved half is how loose the match may be: the owner wrote *"also tap build timetable
-go ahead"*, which CONTAINS the title and is not equal to it, and a substring rule over model-facing
-text is the prose-matching failure this repo has paid for repeatedly. An exact-match rule is safe
-and would not have caught this sentence.
-
-The trap either way: letting the model decide that a sentence means yes is the model inference §6.5
-keeps out of the commit path — *"no model inference decides what a tap runs, because a misread there
-commits someone to being somewhere."* The runtime has to be the thing that matches consent to a
-specific outstanding action, and it has to be as unambiguous as a tap.
-
 ### F-EE · §16.3's per-tenant quality proxies have no reader
 
 §16.3 lists them as a built-in guardrail: *"**Per-tenant quality proxies** — delivery failures,
@@ -926,53 +739,6 @@ failure it guards against is the one that cannot be undone from inside the produ
 quality rating has been dropped takes every tenant on it down together, and the first evidence
 would be parents silently not receiving messages.
 
-### F-EJ · The instrument's per-person axis is a role
-
-Found by a 44-agent read of four drives on 23 Aug 2026, verified against the record, and
-recorded together because they share one consequence: **the harness puts the product in a
-position it cannot pass, and the loss is filed against the product.** F-DY names the class;
-these are its live instances, each with an address.
-
-**The per-person axis is a role, not a person.** `scripts/_derive.ts` keys
-`by-seat/<persona>.jsonl` on `persona`, which is the seat's role in the world file, and two
-people share one. `b8xo`'s `prospect.jsonl` holds the owner, an active coach and a departed
-stranger — 49 turns, three humans, one file. Both owner departures in this corpus are filed
-under `prospect`, which is how a business's operator walking out reads, in the one view meant
-for splitting a run by person, as a stranger wandering off. `report.mjs`'s departures block
-now prints `who` rather than `persona` for this reason; the split view still does not.
-
-**`academy.created_on` is the one date in the product taken from the wall clock.**
-`supabase/migrations/0002_schema.sql:47` — `date not null default current_date` — and
-`app.found_business` does not name the column in its insert list, so the default applies even
-though the function already receives the domain instant as `p_at` and uses it for
-`last_inbound_at` two statements later. Every driven business is therefore older than it is by
-however far the sim clock had walked when it was founded, which feeds `daysStanding` in
-`proposeGoLive` and `askForTheTimetable` and the "this business is N days old" line in the
-tail. **Not a production defect** — with no offset, `current_date` and the domain date agree
-except between midnight and 05:30 IST — which is why it is here rather than fixed: the repair
-is one column in a migration, and a migration is not the thing to run at the end of a session
-on a defect that only distorts drives.
-
-**A seat's role is derived from `status = 'active'`.** `scripts/_arrivals.ts:90/108` reads
-`exists (select 1 from coach where status = 'active')`. A coach the product has just added is
-`added` or `invited` — that is the whole point of the ladder — so they fall through to
-`prospect` and are briefed as a stranger to the business that just employed them.
-
-**Two windows a day cannot answer a ladder built for three.** `scripts/_personas.ts:166` sets
-`WINDOW_AT = { morning: '08:30', evening: '20:15' }`, and the coach confirmation ladder asks at
-5:00pm, nudges at 5:30 and escalates to the admin at 5:45. Every one of those lands between the
-two moments a seat exists, so the escalation is recorded as a coach who did not answer, every
-time, and the drive can never observe the ladder working.
-
-**`coachLine` has no branch for everybody being absent.** `scripts/_events.ts:831` has one for
-no absences and one for an empty roster, so a session nobody attended renders as *"Everybody was
-there except …"* followed by the whole roster.
-
-**Where it lives.** All of it in `scripts/`, none of it in `lib/`. The rule this violates is
-already written in `_world-file.ts`: *"a brief cannot contradict the database"*. It can, and
-these are five ways it does — which is why `scripts/watch.mjs` now carries `brief-unbackable`
-and `loop-not-recorded`, so the next one announces itself during the run rather than after it.
-
 ### F-CI, fresh evidence · 23 Aug 2026 — the third owner departure, on his stated red line
 
 `2026-08-22-19-49-sim-p882`, day 18. Rahul Menon's brief lists three red lines, and the second is
@@ -1002,42 +768,6 @@ read of `message`, which is where the class lives.
 gone, each for a different reason: re-asked a settled question (`b8xo` d20), told something happened
 that did not (`p882` d18), and a harness-frozen clock that made the product look silent (`ceeg`
 d8, the coach). One product, three causes, one outcome. See [`../.probe/reports/2026-08-23-the-evaporation.html`](../.probe/reports/2026-08-23-the-evaporation.html).
-
-### F-CK · Quiet hours and both send caps drop the message they mean to delay, because nothing ever comes back for it
-
-`suppress()` (lib/messaging/send.ts) releases the idempotency key on three reasons —
-`quiet_hours`, `recipient_frequency_cap`, `tenant_send_cap` — and says why in its own words: *"the
-key is released so the same moment may be attempted again once morning comes: `send` has no queue
-of its own, and inventing one here would put a second scheduler beside the real one."* The
-reasoning is right and the second half is not true of anything. **Nothing attempts it again.**
-`runDueJobs` calls the handler and then, unconditionally, `finish(job.id, 'done', null)`; handlers
-return `void` and none reads a send outcome.
-
-**Verified, 22 Aug 2026:** `.probe/runs/2026-08-21-17-19-stress-69q0/turns/0003-d1-1721-sanjay-pillai-admin.json`
-carries, verbatim, `"body": "Hi Meera — I'm the class manager for Smash Badminton.
-Aarav has
-Beginners Monday at 6:30 pm at Green Park."`, `"status": "suppressed"`, `"origin": "job"`,
-`"suppressedReason": "quiet_hours"`. Four messages composed, written to `message`, and lost; two
-are the family invites at go-live. Meera and Kiran were never introduced to the business and then
-spent a fortnight receiving tallies and dunning about money from a number that had never said who
-it was.
-
-**A retry at the RUNNER is the wrong stage, and was tried and reverted on 22 Aug 2026.** A
-re-enqueue after the handler has already composed and burned the send does not fix the headline
-case: `firstContactBatch`'s batch predicate (lib/jobs/handlers/client.ts) selects contacts this
-academy has never messaged, and a `message` row exists for Meera the moment it is suppressed — so
-the re-run finds nobody and sends nothing. The existing answer to this class works at PLAN time and
-is the correct stage: `pullOutOfQuietHours` and `deferPastQuietHours` (lib/jobs/util.ts) already
-move a computed send time out of the window before the job is ever enqueued, and F-H closed exactly
-this for reminders.
-
-**Where it lives.** The gap is the sends whose time is NOT computed by the planner — a batch that
-walks a roster at run time, and the two caps, which are properties of the recipient and the tenant
-at the moment of sending rather than of the schedule. Both need the handler's own selection
-predicate to be able to see "owed but not sent", which `message.suppressed_reason` already records
-durably; the shape to build is a handler that reads its own suppressed rows back, not a runner that
-re-runs the job blind. `DUNNING_MAX`/`RECONCILE_MAX` are the precedent for the ceiling any such
-retry needs.
 
 ### F-DV · The seat COULD always press a button and was never told so, so every mechanism behind a tap was measured at a fifteenth of its rate
 

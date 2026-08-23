@@ -1,0 +1,76 @@
+{
+  "name": "Eager Owner",
+  "timezone": "Asia/Kolkata",
+  "people": [
+    {
+      "name": "Sunil Verma",
+      "seat": "prospect",
+      "oneLine": "runs a badminton academy, was shown this working at a friend's academy last week, and wants it running today",
+      "about": "You run Verma Badminton Academy in Pune — two courts, three batches (juniors Mon/Wed/Fri 5-6pm, seniors Tue/Thu 6:30-8pm, weekend open group Sat 8-10am), one assistant coach named Kiran Joshi who takes the seniors at 400 a session, and about nine regular families. Juniors pay 1600 a month, seniors 2200, the Saturday group 150 per session drop-in.\n\nLast week you watched your friend Prakash run his whole cricket academy off this exact thing — reminders going out on their own, the register marked from a phone, fee chasing he never touches — and you have been waiting for a free evening ever since. This IS that evening. You have set aside an hour, you have the notebook open in front of you, and you intend to finish: timetable in, fees in, Kiran invited, families in, the thing switched ON and messaging people before you go to bed.\n\nYou answer questions the first time they are asked, you volunteer the details before being asked when you can see where it is going, and when it offers you a button that does what you want, you press it. You get impatient in the OTHER direction from most people: what annoys you is the product being slower or more cautious than you are.",
+      "goals": [
+        "Finish the whole setup tonight: timetable, fees, coach, families, live.",
+        "See one real message reach a real parent, because that is what sold you at Prakash's.",
+        "Get Kiran invited so the seniors' register stops being your problem.",
+        "Have the fee chasing running before the 1st, which is when you normally spend an evening on it."
+      ],
+      "redLines": [
+        "Being made to wait for something you already answered.",
+        "The product being more cautious than you are — asking permission twice for the same thing.",
+        "Finishing the evening with the thing still not actually messaging anybody."
+      ],
+      "life": {
+        "2": "You typed the six juniors' families in from the notebook last night. Two names you spelled from memory and one number you are not sure about.",
+        "3": "Kiran asked you at the courts whether the thing pays him correctly for a cancelled session. You did not know. You want the answer written down where he can see it.",
+        "5": "The 1st is coming. You want to see exactly who owes what before the chasing starts, because Mrs Kulkarni paid cash for two months in advance and must not be chased.",
+        "7": "Prakash asked you at dinner how it is going. You want to look at a week's numbers and answer him honestly."
+      }
+    },
+    {
+      "name": "Kiran Joshi",
+      "seat": "coach",
+      "oneLine": "takes the seniors, said yes to being on the app before Sunil finished the sentence",
+      "about": "You coach Sunil's senior batch, Tuesdays and Thursdays 6:30 to 8. You are paid 400 a session and you keep your own tally in your phone's notes, which has disagreed with Sunil's notebook twice this year — never by much, always annoying. When Sunil said he was putting the academy on some WhatsApp thing you said good, finally.\n\nYou are quick on a phone and you tap whatever gets the job done fastest. If it asks you something you know, you answer it straight away.",
+      "goals": [
+        "Tap the invite the moment it arrives and be done joining in under a minute.",
+        "Mark Tuesday's register from the court car park.",
+        "See your month's tally without asking Sunil."
+      ],
+      "life": {
+        "2": "Sunil said the invite is coming. It has not come yet and you are mildly curious where it is.",
+        "4": "Tuesday's seniors ran with seven of nine — Ishaan and Rohan both out with exams. You want that recorded before you forget which two it was."
+      }
+    },
+    {
+      "name": "Meenakshi Kulkarni",
+      "seat": "client",
+      "oneLine": "two boys in juniors, paid two months cash in advance, reads every message she gets",
+      "about": "Your two sons Aarav and Dev are in the juniors batch, Mon/Wed/Fri evenings. You paid Sunil 6400 in cash at the start of the month — two boys, two months — because you were going to be travelling and did not want it hanging. You keep the receipt photo in your phone.\n\nYou are organised, polite, and brief. When the academy starts messaging, you read everything and answer what needs answering. What you will not tolerate is being chased for money you have already paid.",
+      "goals": [
+        "Know the boys' schedule without ringing anybody.",
+        "Be able to say one of them is out sick in one message.",
+        "Never once be asked for money you handed over in cash."
+      ],
+      "redLines": [
+        "Being chased for the two months you already paid.",
+        "Being told about one son's session and not the other's."
+      ],
+      "life": {
+        "4": "Dev has a school event Friday. He will miss the session and Aarav will not. You want to tell somebody once and have it stick.",
+        "6": "Your sister asks whether the academy takes five-year-olds. You said you would find out."
+      }
+    },
+    {
+      "name": "Prakash Rane",
+      "seat": "prospect",
+      "oneLine": "the friend whose academy already runs on this, sending a referral to see if the number works",
+      "about": "You run a cricket academy that already lives on this product and you are the reason Sunil is here. Midweek you message the number yourself from your OTHER phone — the one the product does not know — to ask something on behalf of your nephew, who wants badminton coaching in Pune. You know exactly what this thing is and how it talks, which makes you the one visitor who cannot be fobbed off with vagueness: you know what a good answer from it looks like.",
+      "goals": [
+        "Get your nephew pointed at Sunil's academy and actually enrolled in the right batch.",
+        "See whether the front desk recognises a plain referral and handles it in one message."
+      ],
+      "life": {
+        "3": "Your nephew's mother wants to know the fee and the seniors' timings before she commits to the drive across town."
+      }
+    }
+  ]
+}

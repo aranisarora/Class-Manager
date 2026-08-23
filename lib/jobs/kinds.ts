@@ -19,7 +19,7 @@ export type JobKind =
   | 'admin_morning_brief' | 'admin_evening_digest'
   | 'monthly_lines' | 'month_end_tally' | 'coach_month_lines' | 'dunning'
   | 'first_contact_batch' | 'memory_curate' | 'coach_not_onboarded'
-  | 'reconcile' | 'agent_task'
+  | 'reconcile' | 'agent_task' | 'redeliver'
 
 export const JOB_KINDS: readonly JobKind[] = [
   'materialize_sessions', 'coach_day', 'coach_coming', 'coach_nudge',
@@ -28,7 +28,7 @@ export const JOB_KINDS: readonly JobKind[] = [
   'admin_morning_brief', 'admin_evening_digest',
   'monthly_lines', 'month_end_tally', 'coach_month_lines', 'dunning',
   'first_contact_batch', 'memory_curate', 'coach_not_onboarded',
-  'reconcile', 'agent_task',
+  'reconcile', 'agent_task', 'redeliver',
 ] as const
 
 export function isJobKind(s: string): s is JobKind {
@@ -60,6 +60,9 @@ export const dedupe = {
   // Not in the §13 table; §12.4 rows that still need a moment behind them.
   coachNotOnboarded: (coachId: string, date: string) => `ad_notonb:${coachId}:${date}`,
   reconcile: (paymentId: string, n: number) => `recon:${paymentId}:${n}`,
+  /** The attempt is in the key, the way dunning's rung is: `job.dedupe_key` is unique
+   *  across every status, so a finished attempt 1 would otherwise absorb attempt 2. */
+  redeliver: (messageId: string, n: number) => `redeliver:${messageId}:${n}`,
 } as const
 
 /**

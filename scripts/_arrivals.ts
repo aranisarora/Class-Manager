@@ -89,7 +89,12 @@ export async function arrivals(o: {
     o.academyId,
     `select ct.id::text, ct.phone_e164, p.full_name,
             exists (select 1 from academy_admin aa where aa.person_id = p.id) as is_admin,
-            exists (select 1 from coach c where c.person_id = p.id and c.status = 'active') as is_coach,
+            -- Anybody the business has taken on and not lost: a coach the product just
+            -- added is 'added' or 'invited' — that is the whole point of the ladder —
+            -- and briefing them as a stranger to the business that employs them is how
+            -- the record filed an employed coach's week under prospect (F-EJ).
+            exists (select 1 from coach c where c.person_id = p.id
+                      and c.status in ('added','invited','active')) as is_coach,
             exists (select 1 from account ac where ac.holder_person_id = p.id) as is_client
        from contact ct join person p on p.id = ct.person_id
       where ct.opted_out_at is null

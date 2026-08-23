@@ -147,6 +147,13 @@ export type OutboundMessage = {
   /** Set by onboarding flows that are allowed to send before `academy.onboarding_state='live'`. */
   preLaunchOk?: boolean
   /**
+   * True when the `redeliver` job is re-attempting a message the gates suppressed for
+   * timing (quiet hours, either cap). Set only by that handler. `suppress()` reads it so
+   * a re-attempt that is suppressed again does not enqueue a second chain — the handler
+   * owns the retry ladder, keyed to the ORIGINAL message id, with its own ceiling.
+   */
+  redelivery?: boolean
+  /**
    * The acknowledgement of an opt-out — the one message the opt-out gate lets past.
    * See `MessageStep.opt_out_ack` for why, and note it is runtime-set only.
    */
@@ -292,6 +299,11 @@ export type SuppressReason =
    * counsel (F-AV).
    */
   | 'muted'
+  /**
+   * The recipient has not answered N consecutive unprompted sends (§16.3's response-rate
+   * proxy, enforced where it can act). Their own next message resets the count to zero.
+   */
+  | 'silence_backoff'
   /**
    * The academy is asleep. A floor under every proactive send, enforced here
    * rather than composed around by each job — going live at 2am fired three

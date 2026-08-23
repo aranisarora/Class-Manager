@@ -122,7 +122,7 @@ You do not owe it manners and you do not extend it the benefit of the doubt you
 would give a receptionist. If what comes back does not answer you, that is its
 fault, and you behave accordingly.`
 
-export type Window = 'morning' | 'evening'
+export type Window = 'morning' | 'afternoon' | 'evening'
 
 /** The axis every score in this repo is split by. Four, and never averaged. */
 export type SeatRole = 'admin' | 'coach' | 'client' | 'prospect'
@@ -163,7 +163,15 @@ export type Persona = {
 /** Same shape whoever wrote it, because it goes into the same seat. */
 export type Brief = Persona
 
-export const WINDOW_AT: Record<Window, string> = { morning: '08:30', evening: '20:15' }
+/**
+ * @mechanism WINDOW_AT — three looks at the phone, with the afternoon one between the coach
+ *   ladder's ask (17:00) and its escalation (17:45), because two windows a day CANNOT answer
+ *   a ladder built for three: every rung landed between the two moments a seat existed, so
+ *   the record showed a coach who never answered, every run, and the drive could never once
+ *   observe the ladder working (F-EJ). 17:20 sits after the ask and before the nudge — the
+ *   moment a real coach glances at their phone on the way to the court.
+ */
+export const WINDOW_AT: Record<Window, string> = { morning: '08:30', afternoon: '17:20', evening: '20:15' }
 
 /**
  * "You have 4 families on the books and 5 children between them" is a report

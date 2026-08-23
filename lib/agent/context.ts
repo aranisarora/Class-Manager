@@ -216,7 +216,10 @@ None of this is derivable, and all of it changes what is worth attempting.
   database with no connection free, a query that never finished — these happen, and
   they say nothing about what exists and nothing about what this person may see. A
   failed read and an empty one are opposite facts: empty means the answer is nothing,
-  failed means there is no answer yet.`
+  failed means there is no answer yet.
+- **This product costs the business nothing.** It is free to use — no charge, no
+  expiring trial, nothing to pay to start or keep it. An owner asking what it costs
+  them is asking exactly that, not about their own fees; answer it plainly and once.`
 
 /**
  * The business facts that used to live inside the behavior modules, extracted and
@@ -275,6 +278,13 @@ Money
   an ending.
 - Money from before this product existed is never chased. Billing starts where the
   admin said it starts.
+- The records begin when the product does, and the business is usually older. A
+  parent who says their child has attended for a year is probably describing the
+  notebook era, and an empty table is not evidence against them — it is evidence the
+  record starts later. Hold both facts as what they are: "you say X; nothing on file
+  here yet, because the records start with me." Never argue somebody out of their own
+  history off an empty read, and never repeat their account to anybody else as a fact
+  on file — what they SAY becomes a row when the admin confirms it, not before.
 
 Schedule and coverage
 - A repeating change is a class change, not many session changes: it edits the slot
@@ -829,7 +839,13 @@ async function census(id: Identity): Promise<string> {
           -- it is the same failure as uncovered_sessions: a merged predicate named
           -- after one of the two states it covers. The union is unchanged.
           (select count(*) from coach where status = 'added') as coaches_uninvited,
-          (select count(*) from coach where status = 'invited') as coaches_invited,
+          -- status='invited' is a CLAIM; invited_at is the wire's evidence. A plan can
+          -- write the status while send_invite fails its guard, and that row then reads
+          -- as an invitation for as long as it lives — five later turns repeated it in
+          -- the ramp (F-CI face 4). The two facts are counted apart so the sentence
+          -- built from them can only say what actually went out.
+          (select count(*) from coach where status = 'invited' and invited_at is not null) as coaches_invited,
+          (select count(*) from coach where status = 'invited' and invited_at is null) as coaches_marked_not_sent,
           (select count(*) from account) as families,
           (select count(*) from player where active) as players_active,
           (select count(*) from enrollment where ended_on is null) as enrolled,
@@ -872,6 +888,7 @@ async function census(id: Identity): Promise<string> {
           const archived = n(row, 'classes_archived')
           const uninvited = n(row, 'coaches_uninvited')
           const invited = n(row, 'coaches_invited')
+          const markedNotSent = n(row, 'coaches_marked_not_sent')
           const outbound = n(row, 'outbound_to_others')
           const sent = n(row, 'sent_to_others')
           /**
@@ -906,8 +923,8 @@ async function census(id: Identity): Promise<string> {
                 ? ` — but the slot count is every class's, ${archived} archived one(s) included, so it is not the weekly load`
                 : ''),
             `${n(row, 'coaches_active')} active coach(es)` +
-              (uninvited || invited
-                ? `, and ${uninvited + invited} who cannot see a session, will not be reminded, and will not know they are expected anywhere: ` +
+              (uninvited || invited || markedNotSent
+                ? `, and ${uninvited + invited + markedNotSent} who cannot see a session, will not be reminded, and will not know they are expected anywhere: ` +
                   [
                     // Naming the remedy, because the state alone was read as a
                     // thing to report rather than a thing to fix, and the fix is
@@ -916,6 +933,11 @@ async function census(id: Identity): Promise<string> {
                       ? `${uninvited} added but never invited — nothing has been sent to them at all; send_invite reaches them directly`
                       : '',
                     invited ? `${invited} invited and not yet confirmed — the invite is out; they have not tapped it` : '',
+                    markedNotSent
+                      ? `${markedNotSent} MARKED invited with no invite ever sent — the status was written but the ` +
+                        `wire shows nothing went (invited_at is empty); never describe their invite as out, and ` +
+                        `send_invite is what actually reaches them`
+                      : '',
                   ]
                     .filter(Boolean)
                     .join('; ')
@@ -1325,8 +1347,9 @@ async function standing(id: Identity): Promise<string[]> {
     contactId: id.contact.id,
   }
   const out: string[] = []
+  const isAdmin = id.roles.includes('admin')
   try {
-    const [pending, mutes] = await Promise.all([
+    const [pending, mutes, rules] = await Promise.all([
       modelQuery(
         ctx,
         /**
@@ -1353,7 +1376,13 @@ async function standing(id: Identity): Promise<string[]> {
          */
         `select kind, subject, question,
                 to_char(created_at, 'YYYY-MM-DD') as asked_on,
-                (expires_at is not null and expires_at < app.now()) as past_expiry
+                (expires_at is not null and expires_at < app.now()) as past_expiry,
+                (select a.id from action a
+                  where a.message_id = pr.message_id
+                    and a.consumed_at is null
+                    and (a.expires_at is null or a.expires_at > app.now())
+                    and a.payload ->> 'kind' in ('operation', 'steps')
+                  limit 1) as card_id
            from pending_request pr
           where pr.contact_id = '${id.contact.id}'::uuid and pr.resolved_at is null
             and not exists (select 1 from action a
@@ -1371,6 +1400,17 @@ async function standing(id: Identity): Promise<string[]> {
             and (until is null or until >= (app.now() at time zone '${(id.academy.timezone || 'Asia/Kolkata').replace(/'/g, '')}')::date)
           order by scope`,
         'prefetch: standing — mutes and opt-outs',
+      ),
+      modelQuery(
+        ctx,
+        // No visibility clause: business_rule_cm_user_select (0032) already scopes a
+        // non-admin to visibility = 'shared'. RLS is the boundary; restating it here
+        // would be a second author of the same rule.
+        `select statement, provenance, enforced_by, blessed_at is not null as blessed
+           from business_rule
+          where retired_at is null
+          order by created_at desc limit 12`,
+        'prefetch: standing — the rules this business has stated',
       ),
     ])
 
@@ -1403,11 +1443,28 @@ async function standing(id: Identity): Promise<string[]> {
     } else {
       for (const r of pending.rows as Record<string, unknown>[]) {
         const q = String(r.question ?? '').replace(/\s+/g, ' ').slice(0, 160)
+        /**
+         * @mechanism card — a live committing card is named to the model BY ID, beside the
+         *   question it asks, so consent given in WORDS has a route to the exact stored
+         *   payload a tap would replay: `commit({action_id})`. Without it the only spelling
+         *   of yes was the tap — an owner who wrote "also tap build timetable go ahead" was
+         *   re-staged instead, the run ended with `class` empty, and every staged plan for
+         *   every role could only ever be committed by a finger on a screen. The id is read
+         *   from rows, the payload replays verbatim through `consumeAction`, and the model
+         *   decides only WHETHER their words said yes — never what runs. The other half of
+         *   the route is `commitByActionId` (lib/agent/tools.ts), which is what the id here
+         *   is FOR.
+         */
+        const card = r.card_id
+          ? ` If THIS message says yes to it — plainly, in any words — commit it yourself: ` +
+            `commit({action_id: "${String(r.card_id)}"}) runs exactly what the button on their screen holds. ` +
+            `Anything short of a clear yes is not a yes.`
+          : ''
         out.push(
           `ASKED AND UNANSWERED (${String(r.kind)} · ${String(r.subject)}, put to them on ${String(r.asked_on)}` +
             `${r.past_expiry ? ', now past its expiry' : ''}): "${q}" — they have NOT answered. That is not a no ` +
             `and it is not a yes: nothing behind it has happened. Never describe it as done, and do not ask it ` +
-            `a second way — one question on a screen is answered by one tap.`,
+            `a second way — one question on a screen is answered by one tap.${card}`,
         )
       }
     }
@@ -1489,6 +1546,39 @@ async function standing(id: Identity): Promise<string[]> {
               `${r.stated ? ` — their words: "${String(r.stated)}"` : ''}. The standing jobs read this, so it ` +
               `actually stops; everything outside that scope still reaches them.`,
         )
+      }
+    }
+
+    /**
+     * The rules this business has actually stated — and, for its operator, the fact
+     * that it has stated none.
+     *
+     * @mechanism statedRules — `business_rule` gets its reader: every live rule is in the
+     *   tail in the owner's own words, with its provenance and whether any automation
+     *   reads it (`enforced_by`, whose NULL is said out loud, as its column comment has
+     *   always asked). The empty state is stated too, to the admin only, because the
+     *   worst instance of the class was composed INTO an emptiness: "(first class is
+     *   free)" volunteered as the business's own rule in a confirmation tail, about a
+     *   business that had stated nothing (F-CC). A model shown "no rules on file — a
+     *   policy this business has not stated does not exist" has the fact the invention
+     *   contradicted; a model shown nothing had nothing to check against.
+     *   Closes F-BW.
+     */
+    if (!rules.error) {
+      const statedRules = rules.rows as Record<string, unknown>[]
+      if (statedRules.length === 0 && isAdmin) {
+        out.push(
+          `No business rules are on file. A policy this business has not stated does not exist — there is no ` +
+            `trial, no discount, no makeup rule, no "first class free" — however usual such a thing is ` +
+            `elsewhere. If a moment seems to need one, ask the owner and store their answer as the rule.`,
+        )
+      }
+      for (const r of statedRules) {
+        const who = String(r.provenance) === 'owner_stated' ? 'owner stated' : r.blessed ? 'observed, owner blessed' : 'observed, NOT yet blessed — a suggestion, not a rule'
+        const gate = r.enforced_by
+          ? `automation reads it via ${String(r.enforced_by)}`
+          : `NO automation reads it — you honour it in conversation, and the standing jobs do not; say so if it matters`
+        out.push(`BUSINESS RULE (${who}; ${gate}): "${String(r.statement)}"`)
       }
     }
   } catch (e) {
