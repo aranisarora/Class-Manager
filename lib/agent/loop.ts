@@ -560,6 +560,20 @@ async function runTurnBody(input: TurnInput, turnId: string): Promise<TurnOutput
  * Each one names what it cannot do, says it plainly once, and asks for exactly
  * one thing back. None of them apologises twice.
  */
+function mediaBlock(media: { mimeType: string }[]): string {
+  const kinds = [...new Set(media.map((m) => (m.mimeType || '').split('/')[0].toLowerCase() || 'file'))]
+  return (
+    `# Their message also carried ${media.length === 1 ? 'an attachment' : `${media.length} attachments`} ` +
+    `(${kinds.join(', ')}) you cannot open\n\n` +
+    `You are text-only, so the attachment's content is not available to you. The runtime has ALREADY ` +
+    `answered it, before this round, with exactly this message:\n"${mediaRefusal(media)}"\n\n` +
+    `So do not repeat that, do not ask them to resend the file, and do not pretend to have seen it. Answer ` +
+    `their words on their own merits — and where the words imply the attachment carried the substance (a ` +
+    `payment screenshot, a timetable photo, a fee note), say exactly what you need typed out, or put it in ` +
+    `front of a person who can look.`
+  )
+}
+
 function mediaRefusal(media: { mimeType: string }[]): string {
   const kinds = new Set(media.map((m) => (m.mimeType || '').split('/')[0].toLowerCase()))
   if (kinds.has('audio')) {
@@ -1399,6 +1413,15 @@ async function modelTurn(
 
   const situation: string[] = [tail]
   if (tap) situation.push(tapBlock(tap, input.text))
+  // The other thing that happens before the model runs, stated the way the tap
+  // is. "A photo cannot be made into text" is true of the photo's CONTENT and
+  // was being applied to the photo's EXISTENCE — so on "paid ✅" plus a
+  // screenshot, the runtime guessed at the attachment (its fixed line offers
+  // the timetable road) while the model answered the words with no idea an
+  // attachment came, or that a sentence about it had already landed. Both
+  // facts are text; both are this turn's own events; the model composes what
+  // the person reads next.
+  if (input.media?.length) situation.push(mediaBlock(input.media))
   if (input.source === 'job' && input.task) {
     // The note tells the truth of the PATH this job is on. The blanket "prose is
     // discarded" contradicted both exemptions the runtime actually makes — a brief's
@@ -3078,19 +3101,30 @@ async function recentHistory(
   try {
     const at = await now(identity.academyId)
     const rows = await withSession({ role: 'service', academyId: identity.academyId }, async (tx) => {
+      // `body is not null` alone made a bare-photo inbound vanish from the
+      // thread while the bot's "I can't read photos yet…" reply stayed — an
+      // answer to a message that is not there, on every later turn. The person
+      // DID send something; the row says so in media_url; what the model reads
+      // is a bracketed rendering of that act, the same move
+      // `bodyWithSharedContacts` makes for the one attachment that is data.
       return (await tx.unsafe(
-        `select direction, body, queued_at from message
+        `select direction, body, media_url, queued_at from message
           where contact_id = ${uid(identity.contact.id)} and academy_id = ${uid(identity.academyId)}
-            and body is not null and coalesce(suppressed_reason, '') = ''
+            and (body is not null or media_url is not null) and coalesce(suppressed_reason, '') = ''
           order by queued_at desc limit ${HISTORY}`,
-      )) as unknown as { direction: string; body: string; queued_at: Date }[]
+      )) as unknown as { direction: string; body: string | null; media_url: string | null; queued_at: Date }[]
     })
     const oldestFirst = rows.reverse()
+    const rendered = (r: { body: string | null; media_url: string | null }): string => {
+      const marker = '[an attachment — a photo, voice note or file; media you cannot open]'
+      if (r.body == null) return marker
+      return r.media_url ? `${r.body}\n${marker}` : r.body
+    }
     return {
       messages: oldestFirst.map((r): Msg =>
         r.direction === 'inbound'
-          ? { role: 'user', content: r.body }
-          : { role: 'assistant', content: r.body },
+          ? { role: 'user', content: rendered(r) }
+          : { role: 'assistant', content: rendered(r) },
       ),
       why: null,
       gaps: historyGaps(oldestFirst, at),
