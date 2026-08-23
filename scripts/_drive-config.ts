@@ -996,12 +996,32 @@ export function describeConfig(cfg: DriveConfig): string {
  * repeats the run, because `worldRef` reads the object form and `resolveSeats`
  * carries a spec world's seat names through as written.
  */
+/**
+ * @mechanism omitUnspecified — every key whose value is its own "unspecified" sentinel is
+ *   dropped before a config reaches disk, because the parser refuses each sentinel BY
+ *   DESIGN and F-CN's first fix listed the two keys it had measured instead of the class:
+ *   on 23 Aug 2026 `npm run ab` died at second zero three times in a row — `seats: 0`,
+ *   then `personas: []`, then `events: ""` — each key surviving the previous fix's list,
+ *   because ab's parent sidecar never went through `recordedConfig` at all. Both writers
+ *   go through this one strip now, so a new sentinel key fails ONCE and is added HERE,
+ *   not discovered by a run of arms dying in sequence.
+ */
+export function omitUnspecified(cfg: DriveConfig): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...cfg }
+  if (!cfg.seats) delete out.seats
+  if (!Array.isArray(cfg.personas) || cfg.personas.length === 0) delete out.personas
+  if (!cfg.events) delete out.events
+  if (!cfg.chaos || Object.keys(cfg.chaos).length === 0) delete out.chaos
+  if (!cfg.concurrency) delete out.concurrency
+  return out
+}
+
 export function recordedConfig(
   cfg: DriveConfig,
   world: { is: string; seats: string[]; concurrency: number },
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {
-    ...cfg,
+    ...omitUnspecified(cfg),
     personas: [...world.seats],
     concurrency: world.concurrency,
     world: { ref: cfg.world, is: world.is },
@@ -1017,7 +1037,7 @@ export function recordedConfig(
    *   Closes F-CN.
    */
   if (!world.seats.length) delete out.personas
-  if (!cfg.seats) delete out.seats
+  if (!world.concurrency) delete out.concurrency
   return out
 }
 

@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-237 mechanisms · 46 findings closed by one · 24 findings still open
+238 mechanisms · 46 findings closed by one · 24 findings still open
 
 ## The scan
 
@@ -280,6 +280,7 @@ One line each. Find a candidate here, then read its entry below.
 **`scripts/`**  
 `alsoRead` — the evidence queries are re-run under every tenant this turn strayed into, so a founding turn records the b…  
 `bySeatKey` — the per-person axis is the PERSON (`who`), never the role (`persona`):  
+`omitUnspecified` — every key whose value is its own "unspecified" sentinel is dropped before a config reaches disk, because th…  
 `recordedConfig` — "unspecified" is spelled by ABSENCE on disk, never by a sentinel value.  
 `departed` — chaos is not rolled for somebody who has left the run, retiring the class of defect where the record of a w…  
 `WINDOW_AT` — three looks at the phone, with the afternoon one between the coach ladder's ask (17:00) and its escalation…  
@@ -771,7 +772,9 @@ One line each. Find a candidate here, then read its entry below.
   the evidence queries are re-run under every tenant this turn strayed into, so a founding turn records the business it created rather than recording silence. The note below has stated this gap in words since it was written — "the rows are not missing from the run, they are missing from the record" — and a reader who did not read the note took `sent: 0` on the most important conversation in the product as a product failure. Measured on `2026-08-22-13-29-sim-8528`: three hand-over turns, each carrying the note, each recording no reply, no tokens and no cost against an onward turn of 85,082 prompt tokens that had answered the person. Every rupee figure in every record was a floor.
 - **`bySeatKey`** — `scripts/_derive.ts:245`  
   the per-person axis is the PERSON (`who`), never the role (`persona`): two people share a role, and keying the split on it filed both owner departures in this corpus under `prospect.jsonl` beside a stranger who wandered off — a business's operator walking out, invisible in the one view built for reading a run person by person. `persona` stays in every row for filtering by role; it just no longer names the file. Queue turns have no person and keep their own file, as before. **Closes F-EJ.**
-- **`recordedConfig`** — `scripts/_drive-config.ts:1010`  
+- **`omitUnspecified`** — `scripts/_drive-config.ts:1000`  
+  every key whose value is its own "unspecified" sentinel is dropped before a config reaches disk, because the parser refuses each sentinel BY DESIGN and F-CN's first fix listed the two keys it had measured instead of the class: on 23 Aug 2026 `npm run ab` died at second zero three times in a row — `seats: 0`, then `personas: []`, then `events: ""` — each key surviving the previous fix's list, because ab's parent sidecar never went through `recordedConfig` at all. Both writers go through this one strip now, so a new sentinel key fails ONCE and is added HERE, not discovered by a run of arms dying in sequence.
+- **`recordedConfig`** — `scripts/_drive-config.ts:1030`  
   "unspecified" is spelled by ABSENCE on disk, never by a sentinel value. `seats: 0` means "all of them" in memory and the parser refuses it from a file (`min: 1`); `personas: []` means "everybody this world has" and `list()` refuses an empty list. Both round-tripped through `config.json` as literals, so `npm run ab` handed its children a config its own parser would not accept and both arms died at second zero. A key whose value is the unspecified sentinel is omitted, and an absent key re-resolves to the same default on read. **Closes F-CN.**
 - **`departed`** — `scripts/_events.ts:915`  
   chaos is not rolled for somebody who has left the run, retiring the class of defect where the record of a week describes people who were not in it. `giveup` is a first-class seat action and a persona who takes it is never seated again; nothing here knew that, so the roll kept going. On the 30-day run of 22 Aug 2026 divya-rao and farah-sheikh both gave up on day 5, were correctly never driven after it, and between them account for 17 of the 45 chaos events `truth.json` records — dated days 10 to 30, every one of them a fact about nobody. A reader counting "how messy was this week" counted a third again more weather than the week actually had.

@@ -134,7 +134,7 @@ loadEnvFiles()
  */
 process.env.TRANSPORT = 'emulator'
 
-const { describeConfig, resolveConfig } = await import('./_drive-config')
+const { describeConfig, resolveConfig, omitUnspecified } = await import('./_drive-config')
 const { runDir, writeSidecar } = await import('./_capture')
 
 type DriveConfig = import('./_drive-config').DriveConfig
@@ -930,7 +930,11 @@ async function main(): Promise<void> {
   )
 
   const cfgPath = join(parent, 'config.json')
-  await writeSidecar(parent, 'config.json', cfg)
+  // Through the sentinel strip, never raw: this is the config each arm re-parses, and
+  // the parser refuses every "unspecified" sentinel by design (`omitUnspecified`, F-CN —
+  // this call site bypassing the strip is how both arms died at second zero, three keys
+  // in a row, on 23 Aug 2026).
+  await writeSidecar(parent, 'config.json', omitUnspecified(cfg))
 
   /**
    * The pointer file, written BEFORE anything is driven and again after.
