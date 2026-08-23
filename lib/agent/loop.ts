@@ -1846,7 +1846,7 @@ async function modelTurn(
     // One `{role:'tool'}` message per call, carrying the id of the call it
     // answers. Matching is BY ID here, not by position.
     const responses: Msg[] = []
-    for (const call of res.functionCalls) {
+    for (const [callIdx, call] of res.functionCalls.entries()) {
       toolCalls++
 
       /**
@@ -1911,6 +1911,27 @@ async function modelTurn(
         responses.push({ role: 'tool', tool_call_id: call.id, content: toolContent(out.result) })
         if (priorFailures >= 2) {
           stalled = true
+          // The rest of this batch does not run — and a discard must be traced
+          // AND answered. Breaking with the remaining calls unanswered left the
+          // flattened history showing "[you called X with …]" with no result at
+          // all, so in the recovery round the model saw itself having made calls
+          // with unknown outcomes and could count them as attempted work — its
+          // picture of its own turn made false by the harness, in the round
+          // whose whole job is to put what happened into words.
+          for (const skipped of res.functionCalls.slice(callIdx + 1)) {
+            trace.push({
+              round: round + 1,
+              name: skipped.name,
+              ms: 0,
+              args: evidence(skipped.args, 500),
+              error: 'not run — the turn stalled on the repeated call before this one',
+            })
+            responses.push({
+              role: 'tool',
+              tool_call_id: skipped.id,
+              content: toolContent({ error: 'not run — the turn stalled on the repeated call before this one' }),
+            })
+          }
           break
         }
         continue
