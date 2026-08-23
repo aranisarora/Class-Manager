@@ -1,6 +1,6 @@
 # What is open
 
-25 findings. This file is the source of truth for what is broken — hand-written, and short on
+26 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -42,6 +42,7 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-ES** | A fact learned from one person never reaches the turn where another person's decision needs it | [detail](#f-es--a-fact-learned-from-one-person-never-reaches-the-turn-where-another-persons-decision-needs-it) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-EE** | §16.3's per-tenant quality proxies — delivery failures, read rate, **response rate**, opt-outs — have no reader, so nothing notices a tenant shouting into silence on a shared number. **The send-path half is built** (`silenceBackoff`); the scheduled roll-up is what remains | [detail](#f-ee--1633s-per-tenant-quality-proxies-have-no-reader) |
+| **F-EV** | `cancel_session`'s credit-back dedupe is keyed on prose with a relative day label, so a re-attempt double-credits and a same-day second session under-credits | [detail](#f-ev--cancel_sessions-credit-back-dedupe-is-keyed-on-prose) |
 
 ---
 
@@ -1139,3 +1140,24 @@ question (what names a person "the subject of this turn") deserves design rather
 and RLS/visibility has a say. Recorded with both instances so the next reader starts from
 evidence.
 
+
+### F-EV · `cancel_session`'s credit-back dedupe is keyed on prose
+
+**Saw:** static review, 23 Aug 2026 (`findings/REVIEW-2026-08-23-enable-the-model.md`, R14) —
+hand-verified against the code, not yet driven. `lib/agent/operations.ts`, `cancelSession`: the
+credit adjustment's `where not exists` guard matches on
+`t.description = 'Credit — <class_name> <dayLabel>'` plus the fixed reason string. `dayLabel`
+is relative ("today", "tomorrow"), so the same cancellation attempted again a day later writes
+a second credit — and two same-day sessions of one class collide on the description, so the
+second session's credit is silently suppressed. Both directions are money written or withheld
+by a sentence.
+
+**Root:** a money guard keyed on prose — the exact shape this same file already retired in
+`mark_attendance`'s retro credit (R5's sentence-keyed guard, per `findings/RULES.md`). The
+adjustment row deliberately carries `session_id = null` (§6.4: a cancelled session carries no
+`session` line), so the natural key was discarded with it.
+
+**Where it lives:** the dedupe belongs on ids, not words — the original `tally_line.id` being
+credited (e.g. carried in `reason` or a dedicated column), which survives renames, relative
+dates and same-day siblings. It is a money-behaviour change, so per the F-BA precedent it
+deserves a drive behind it rather than a unit-proof ship.

@@ -1,0 +1,547 @@
+[
+ {
+  "slice": "loop",
+  "findings": [
+   {
+    "file": "lib/agent/loop.ts",
+    "line": 2389,
+    "symbol": "modelTurn (trailing lint repair round)",
+    "claim": "The lint repair round asks the model to rewrite \"that last message\" without ever showing it the draft: a final no-calls round breaks out of the loop without pushing res.assistant into messages, so the draft exists only in `text`/`outgoing` and never in the history the repair call is given.",
+    "evidence": "`That last message cannot go out as written: ${violationMessage(violations)}\\n\\n` + 'Write it again with just those parts fixed. Everything else about it was fine,",
+    "why_it_conflicts": "An information failure at the exact place composing happens: the model is told to edit a string it cannot see (violationMessage carries only short samples of the violating parts). It must reconstruct the whole answer from tool results, so 'just those parts fixed' is an instruction it cannot follow — facts and numbers from the original draft can silently drop, and a second failure falls to the runtime's fixed sentence. This is also the 'state the model is implicitly asked to remember instead of being shown' trap, applied to the model's own words: the assistant message is only pushed on the granted-round path (line 1802) and on tool-call rounds (line 1827); the ordinary exit at line 1822 and the recovery round never push it.",
+    "proposed_fix": "Include the draft verbatim in the repair prompt: prepend 'Your message, as written:\\n\\n<outgoing>\\n\\n' before the violation list (or push a plain assistant message carrying `outgoing` into the flattened history before the repair user message). One string interpolation; no gate, no prompt-doctrine.",
+    "severity": "high"
+   },
+   {
+    "file": "lib/agent/loop.ts",
+    "line": 3362,
+    "symbol": "recentActions",
+    "claim": "recentActions truncates the replayed-actions block at its 2400-char budget with no marker that anything was cut — the exact unmarked-absence class droppedAtBudget was built to close in recentLookups (F-BY), one function above, and the sibling still has it.",
+    "evidence": "if (used + line.length > BUDGET) return lines.length ? lines.join('\\n') : undefined",
+    "why_it_conflicts": "Silent truncation is starving: 'a budget must state what it cut'. This block exists so 'did I actually do that?' is answerable without querying audit_entry; a write that fell past the budget disappears with nothing saying the list is incomplete, so the model concludes the action never happened and re-runs it — the double-message/double-write class F-K names. The mechanism comment on droppedAtBudget states the principle ('an absence with no marker is invisible to the model AND to every reader') and it was applied to reads only. The early `return` also stops the scan instead of counting drops, so the marker could not even be exact.",
+    "proposed_fix": "Mirror droppedAtBudget: replace the early return with `droppedAtBudget++; continue`, keep walking to count, and append '- (N more prior actions did not fit here — this list is INCOMPLETE; check before assuming something was not done)' when N > 0.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/loop.ts",
+    "line": 1882,
+    "symbol": "modelTurn (failedCalls repeat block)",
+    "claim": "The byte-identical-repeat block refuses with the cause 'Nothing has changed since, so it will keep failing', and never invalidates its cache — but the turn itself can move the world between the failure and the retry (e.g. a read/write fails on a missing row, the model creates the row, then legitimately repeats the identical call), so the refusal then carries a false cause and blocks a call that would now succeed.",
+    "evidence": "? 'Nothing has changed since, so it will keep failing. Read the earlier error, change the call, or stop and tell them what you need.'",
+    "why_it_conflicts": "RACE WORDS FOR PERMISSION: a refusal carrying the wrong cause makes the model misdiagnose perfectly. The measured incident behind failedCalls (93s/165k tokens) was repeats with nothing between them; the premise 'the world did not move between two rounds of the same turn' is false whenever an intervening call succeeded, and the gate refuses without checking it. The model is told its correct recovery plan (fix precondition, retry) will keep failing, and its only remaining routes are to reword the call or give up.",
+    "proposed_fix": "Invalidate the failure caches when the world moves: clear `failedCalls` (and the matching `failedReasons` entries) whenever any tool call in a later position succeeds — or at minimum whenever a write commits (`toolCtx.executed` grows). Cheap, no model call, and the measured stuck-loop protection is untouched for the case it was built on.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/loop.ts",
+    "line": 1897,
+    "symbol": "modelTurn (stall break inside the calls loop)",
+    "claim": "When a third identical repeat sets `stalled` and breaks out of the per-call loop, every remaining call in the same batch is silently discarded — never executed, never traced, and given no tool response — so the flattened history later shows '[you called X with …]' with no result and no statement that it never ran.",
+    "evidence": "if (priorFailures >= 2) {\n          stalled = true\n          break\n        }",
+    "why_it_conflicts": "'A discard must be traced' and THE RELABELED STATE: a call the model made vanishes from the record and from its own history without a residue, so in the recovery round the model sees itself having called a tool with an unknown outcome and can believe it ran (or count it as attempted work). The model's picture of its own turn is made false by the harness, in the round whose whole job is to put what happened into words.",
+    "proposed_fix": "Before breaking, iterate the remaining calls in the batch pushing one trace row and one tool response each: `{error: 'not run — the turn stalled before this call'}` with the true reason. Then the flatten shows '[X came back: not run — …]' and the record shows the discard.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/loop.ts",
+    "line": 484,
+    "symbol": "runTurnBody (catch apology)",
+    "claim": "The catch's apology asserts 'nothing was changed' on every non-tap path, but the model's own tools can commit writes in earlier rounds before a later throw (generate provider failure on round 2+, a compose/send throw), and the catch cannot see them — so a person can be told nothing changed about a turn that committed rows.",
+    "evidence": "\"Something broke on my side just then — it isn't you, and nothing was changed. \"",
+    "why_it_conflicts": "The comment above it claims the tap path is the only reachable committed-then-threw case, and that is false: `act`/`commit` execute inside rounds, and `outcomes` (sends) is the only state shared with the catch — committed writes with no send to the asker are invisible to it. The result is F-CD's exact defect (a runtime sentence denying a committed write) arriving through the error path, and the false 'nothing was changed' enters the transcript as an assistant message the next turn will read as fact — THE SECOND AUTHOR manufacturing a false belief.",
+    "proposed_fix": "Share committed-state the same way outcomes is shared: create the executed/committed array (or a counter object) in runTurnBody, hand it into modelTurn's toolCtx, and pick the catch sentence on it — commits present: the tap-shaped honest line ('part of this went through before I broke — ask me and I'll tell you exactly what changed'); none: keep the current sentence.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/loop.ts",
+    "line": 2075,
+    "symbol": "modelTurn (told/raised census, and stillHeard at 2525)",
+    "claim": "Both message-census reads swallow their failure into an empty array (`.catch(() => [])`), so a failed read renders as told=0/heard=0 — the ladder then speaks (recovery, apology, fallback) on top of a runtime send from plan.ts that may already have reached the person, and nothing anywhere records that the census was blind.",
+    "evidence": ").catch(() => [] as { told: number; raised: number }[])",
+    "why_it_conflicts": "NULL IS A FAILED READ; [] IS AN EMPTY ONE — merged here into the same bytes, in the one query whose comment says its purpose is to prevent 'an apology after an answer reads as the answer being withdrawn'. A DB blip makes the ladder LOUDER, while the file's own doctrine for ambiguous outcomes is 'it can only make the ladder quieter, never louder'. The swallowed error is also invisible to the record: no trace row says the census failed, so a drive cannot see it happened.",
+    "proposed_fix": "Return a sentinel from the catch (e.g. null) instead of []; on a failed census push a trace row stating the read failed and its reason, and treat unknown conservatively (as told>0) so the ladder goes quieter, not louder, when it cannot verify silence. Same change at the stillHeard census (line 2525).",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/loop.ts",
+    "line": 3516,
+    "symbol": "runAgentTask",
+    "claim": "runAgentTask's guard failures (no contact, identity unresolvable, academy mismatch, minted roles revoked, no roles left) all `return` void, indistinguishable from a task that ran and chose silence — and the job handler then records `note('watch ran: …')`, so a watch the model set, and which the tail advertises as standing, dies with a log line saying it ran.",
+    "evidence": "if (minted.length && !minted.some((r) => identity.roles.includes(r))) return",
+    "why_it_conflicts": "THE RELABELED STATE: 'ran' for a watch that never opened a turn is a false residue in the one log that exists to say 'what actually happened'. The role re-check itself is right (permission is not the model's), but the outcome is hidden from every reader — no turn row, no note, no reason — while the repo's own principle is 'a turn that vanished is an invisible failure'. A promise the model made ('I'll chase this Thursday') evaporates and nothing can ever explain why.",
+    "proposed_fix": "Return a discriminated result ({ran: true} | {ran: false, why: 'minter roles revoked' | 'contact unresolvable' | 'expired' | …}) and have agentTask note the real outcome ('watch NOT run: minter roles revoked') instead of 'watch ran'. No gate, one shape change, the record stops lying.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/loop.ts",
+    "line": 915,
+    "symbol": "sendMenu",
+    "claim": "sendMenu decides which menu item leads by regex-matching the person's memory hot set — natural-language prose — for topic words (/fee|collect|paid|money|unpaid/), a pattern judging meaning of language.",
+    "evidence": "const first = /fee|collect|paid|money|unpaid/i.test(memory)",
+    "why_it_conflicts": "THE PATTERN THAT JUDGES PROSE: 'every regex ever pointed at language here misfired both ways. Meaning is judged by a model or a human… never matched.' A memory line like 'annoyed when asked about unpaid fees — avoid leading with money' promotes Money to the top for exactly the wrong person. Low stakes (ordering only, no refusal), but it is the named trap applied to a person's memory, in a path with no model to overrule it.",
+    "proposed_fix": "Stop inferring from prose on the no-model path: either keep the fixed order (the menu tap is a nav surface, and the reply it mints goes through the model anyway), or derive the lead item from structured signal — e.g. counts of this person's recent turns' tool names (read of invoice/attendance tables) from the same `turn.tool_calls` data recentToolTurns already reads.",
+    "severity": "low"
+   },
+   {
+    "file": "lib/agent/loop.ts",
+    "line": 3539,
+    "symbol": "runAgentTask (queryResults)",
+    "claim": "The context query results are locally re-clipped (`rows.slice(0, 200)` / `slice(0, 100)`) while `truncated` is passed through from modelQuery unchanged, so when the local slice is the one that binds the payload says truncated:false about rows that were cut.",
+    "evidence": ": { rowCount: res.rowCount, truncated: res.truncated, rows: res.rows.slice(0, 200) }",
+    "why_it_conflicts": "TWO AUTHORS OF ONE TRUTH about the same clip: rowCount lets a careful reader notice rows.length < rowCount, but the explicit truncation flag — the field that exists to state the cut — says the opposite, handing the model a fact it can falsify only by cross-checking two fields. 'Rows shown must carry the true count beside the clip; a budget must state what it cut' — half of that is here, and the stated half is wrong.",
+    "proposed_fix": "Compute the flag over both cuts: `truncated: res.truncated || res.rows.length > 200` (and 100 in the merged branch), so the one field that claims to describe the clip is authored by the code that clips.",
+    "severity": "low"
+   }
+  ]
+ },
+ {
+  "slice": "tools",
+  "findings": [
+   {
+    "file": "lib/agent/tools.ts",
+    "line": 3408,
+    "symbol": "runTool ('handoff' case)",
+    "claim": "The admin-handoff branch hands the model a runtime-authored sentence claiming \"I've flagged this for the people who run the platform\" when no platform route exists — the only thing that happens is a memory_fact insert that nothing anywhere consumes (grep for \"Asked for a person\" finds zero readers outside this file).",
+    "evidence": "say: isAdmin ? \"I've flagged this for the people who run the platform, and I've kept the thread.\"",
+    "why_it_conflicts": "This is THE RELABELED STATE plus a runtime-authored receipt outside the documented exceptions: the `say` field is composed by the runtime for the model to relay, and it asserts a capability/route that does not exist. The owner who asked for a human is told someone was notified; nobody was, and nothing ever will be. The model is handed a wrong fact it cannot falsify — the exact information-failure class the repo names as commonest.",
+    "proposed_fix": "Return facts instead of a sentence: `{recorded: true, notified: 'nobody', reason: 'no platform notification route exists yet'}` and let the model compose the truth — or build the actual route (a job/row a platform-side consumer reads) before any result may claim flagging. Drop the `say` field on both branches; the non-admin branch can return `passed_to` facts the model phrases itself.",
+    "severity": "high"
+   },
+   {
+    "file": "lib/agent/tools.ts",
+    "line": 3406,
+    "symbol": "runTool ('handoff' case)",
+    "claim": "`told_admin: sent.length > 0` counts send ATTEMPTS, not landings — `sent.push(o.status)` pushes 'suppressed' and 'failed' the same as 'sent' — so an escalation every admin's gate refused still reports told_admin:true and hands the model \"Someone will come back to you\" to relay; the per-admin statuses and suppression reasons collected in `sent` are then discarded from the result.",
+    "evidence": "sent.push(o.status) … told_admin: sent.length > 0,",
+    "why_it_conflicts": "\"Sent\" for suppressed is the named RELABELED STATE trap, on the safety path (handoff is the child-injury/anger route). The runtime knows each outcome's status and reason and keeps both to itself, while `reply`'s own suppressed path returns reason + SUPPRESSION_HELP — two authors of one truth about what a refused send means, and the escalation path got the thin one.",
+    "proposed_fix": "Compute told_admin from landed outcomes only (`o.status === 'sent' || o.status === 'queued'`), and return the per-admin outcomes with their SuppressReason and the same SUPPRESSION_HELP sentence the reply path already owns, so the model can route around a refused escalation (e.g. handoff memory plus telling the asker the truth) instead of promising a callback nobody will make.",
+    "severity": "high"
+   },
+   {
+    "file": "lib/agent/tools.ts",
+    "line": 2568,
+    "symbol": "runTool ('reply' case)",
+    "claim": "Buttons beyond LIMITS.buttons and list rows beyond LIMITS.listRows (line 2732) are silently sliced off before the shape check, so validateOutbound's count violation can never fire, the message ships missing options the prose likely enumerates, and nothing in the result says anything was cut.",
+    "evidence": "for (const b of args.buttons.slice(0, LIMITS.buttons)) { … for (const r of (s?.rows ?? []).slice(0, LIMITS.listRows)) {",
+    "why_it_conflicts": "The same function's own doctrine says \"validation refuses, it never mutates\" and \"every one of these caps … used to be enforced by a silent trim or by dropping the affordance\" — this is the surviving silent trim. A body naming four choices over three buttons is the pointed-at-missing-affordance failure re-created by the runtime, and the model's picture of its own message is wrong with no `downgraded_buttons`-style marker to correct it.",
+    "proposed_fix": "Remove both slices and let the existing pre-send shape refusal (already built, names the cap, has its one round of grace via shapeChecked) refuse with the count named — the model shortens the set itself. If a hard clip is ever kept, it must come back in the result beside `downgraded_buttons` naming the titles that were dropped.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/tools.ts",
+    "line": 2492,
+    "symbol": "runTool ('reply' case)",
+    "claim": "A failed admin lookup is rendered as an empty one — `.catch(() => [])` — and the refusal then asserts \"no admin contact is reachable to route this to\", so a transient DB error teaches the model the false, unfalsifiable fact that this business has no admin.",
+    "evidence": "const adminIds = await adminContactIds(ctx.session.academyId).catch(() => [] as string[])",
+    "why_it_conflicts": "NULL IS A FAILED READ; [] IS AN EMPTY ONE — the two produce opposite sentences downstream, and here they are merged at exactly a routing decision. It is also RACE WORDS FOR PERMISSION: the refusal carries the wrong cause, so the model misdiagnoses perfectly — it hands off or tells the person the business has no owner, when the truth was \"the lookup failed this instant, try again\".",
+    "proposed_fix": "Catch separately: on a thrown lookup return `{error: 'the admin lookup failed just now — this is transient, call reply again this round', retryable: true}`; keep the existing 'no admin contact is reachable' refusal (with its handoff route) only for a lookup that completed and genuinely returned nothing.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/tools.ts",
+    "line": 1733,
+    "symbol": "diffRow",
+    "claim": "diffRow drops every null column from the `wrote` rows, so a write that deliberately cleared a value (ends_on = null, removing a UPI handle) is invisible in the diff, and a write that FAILED to set a column (still null) is indistinguishable from a noise-filtered one — while compactDiff's check line orders the model to treat `wrote` as the truth.",
+    "evidence": "if (v === null || v === undefined) continue",
+    "why_it_conflicts": "compactDiff exists because \"without the rows a read-back is composed from the model's intention\", and its own check says \"What is in the row is what is true — if it is not what they meant, fix it now\". A cleared column is part of what is now true and the runtime knows it (it holds before AND after) and does not say — the same knew-and-kept-it-to-itself shape as the F-CA staged-NULL receipt, one layer down.",
+    "proposed_fix": "Diff `after` against `before` per row and keep any column whose value CHANGED even when the new value is null, rendering it explicitly (e.g. `ends_on: null`); keep dropping columns that were null before and after. The before rows are already captured in TableDiff, so this is a comparison, not a new read.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/tools.ts",
+    "line": 2624,
+    "symbol": "runTool ('reply' case)",
+    "claim": "When a plan is pending and no button carries it, the runtime silently swaps the FIRST button's action for the commit payload — whatever that button's title says — and decides whether to append a Cancel via an English-only regex over the model's titles, and none of this rewriting appears in the tool result.",
+    "evidence": "i === 0 ? { title: b.title || 'Do it', action: confirm } … const declines = (b: any) => b?.action?.kind === 'noop' || /^(cancel|no\\b|don'?t|leave)/i.test(b?.title ?? '')",
+    "why_it_conflicts": "The pendingConfirmation mechanism (runtime owns the affirmative action) is argued and ledger-adjacent, but the rewrite being INVISIBLE is not: the model's only picture of its message is its draft, and `tappable`, `altered` and `downgraded_buttons` all exist precisely because that picture must be corrected in-result — this rewrite is the one affordance change that is never reported. A first button the model titled for a different choice now commits the plan under a mismatched label (the wrong-card shape, put on a screen), and the decline test is a regex judging natural-language titles, which misses every non-English decline.",
+    "proposed_fix": "Report the rewrite in the result the way downgrades are reported: `confirmation_button: {title: <the model's first title>, now_carries: 'the pending plan'}` plus `added_button: 'Cancel'` when one was appended — so the model can see the mismatch and re-send within its round if the title is wrong. For the decline test, key on action kind alone (`noop`) rather than title prose; a second decline beside a noop button is harmless and the regex buys nothing the kind does not.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/tools.ts",
+    "line": 3365,
+    "symbol": "runTool ('remember' case)",
+    "claim": "remember returns a bare `{ok: true}` that discards writeFact's returned fact id and the silently-coerced subject — so `supersedes`, which the declaration says takes \"the id of the fact this corrects\", can never name a fact written this turn, and the model cannot check where a coerced subject_kind actually landed.",
+    "evidence": "await writeFact(ctx.session, { … }) … return { result: { ok: true } }",
+    "why_it_conflicts": "UNADVERTISED CAPABILITY and a hidden coercion in one: writeFact hands back the id (Promise<string>) and the tool throws it away, making the correction route the declaration advertises unreachable for the newest fact; meanwhile an unknown subject_kind is silently mapped to 'person' with subject_id defaulting to the speaker, and the empty result gives the model nothing to falsify the landing against.",
+    "proposed_fix": "Return `{ok: true, fact_id: <writeFact's return>, subject_kind, subject_id}` — three facts the executor already holds — so a correction can pass supersedes immediately and a coerced subject is visible the round it happens.",
+    "severity": "low"
+   },
+   {
+    "file": "lib/agent/tools.ts",
+    "line": 3152,
+    "symbol": "runTool ('schedule' case)",
+    "claim": "The watch-cap refusal says \"drop one first\" without naming `drop_watch`, the declared operation that does exactly that — the refusal lists the watches but not the verb that frees a slot.",
+    "evidence": "error: `there are already ${live.length} things on the watch list, which is the cap. Ask what I am watching and drop one first.`",
+    "why_it_conflicts": "Refusal quality is enabling: the repo's own standard (CLOSED_TO_EVERY_SESSION, whereThatColumnLives) is that a refusal carries the address of the real answer. This one names the state and the goal but not the route, so the model must rediscover drop_watch across the declaration list mid-turn, at the moment a promise is usually already drafted.",
+    "proposed_fix": "Name the route in the same sentence: `…drop one first — call drop_watch with its slug from the list below`, since the `watching` array already carries each slug.",
+    "severity": "low"
+   }
+  ]
+ },
+ {
+  "slice": "operations",
+  "findings": [
+   {
+    "file": "lib/agent/operations.ts",
+    "line": 946,
+    "symbol": "cancelSession",
+    "claim": "cancel_session's credit-back dedupe is keyed on the prose description — class name plus a relative day label — instead of (player, session), the exact R5 sentence-keyed money guard the same file already retired in mark_attendance's retro credit.",
+    "evidence": "where not exists (select 1 from tally_line t where t.player_id = ... and t.kind = 'adjustment' and t.reason = 'session cancelled by the academy' and t.description = ${lit(`Credit — ${s.class_name} ${dayLabel(s.starts_at, a.timezone, today)} cancelled`)})",
+    "why_it_conflicts": "This is 'the pattern that judges prose' pointed at money: identity of a credit is decided by matching a rendered sentence. Cancel two sessions of one class that share a day label ('Credit — Beginners today cancelled') and the second family credit is silently suppressed while the staged message still asserts 'Anything charged for it has been credited back' — a false money sentence with no trace. Rename the class between replays and the guard misses the earlier credit, double-crediting. mark_attendance's own comment at the cancelled_timely credit names this defect class ('Keyed on (player, session), not on the sentence... the same R5 defect') and fixed it there but not here; the credit row also writes session_id as null, discarding the one fact that would have made the guard exact.",
+    "proposed_fix": "Key the credit on the row, not the sentence: add a billing-keys entry (e.g. billingKey.cancelCredit(player_id, session_id)), write it into dedupe_key with `on conflict (academy_id, dedupe_key) where dedupe_key is not null do nothing`, and drop the description/reason comparison from the guard. Description stays free prose; identity comes from ids, matching how the monthly, package and cancelled-in-time lines are already keyed.",
+    "severity": "high"
+   },
+   {
+    "file": "lib/agent/operations.ts",
+    "line": 3180,
+    "symbol": "undo",
+    "claim": "undo swallows any error from the inverse builder with .catch(() => []), collapsing 'the reversal failed to build' into 'there are no before-images', so the refusal carries a wrong cause.",
+    "evidence": "const inverse = await inverseOf(ctx, args.audit_id).catch(() => [] as PlanStep[])",
+    "why_it_conflicts": "Two named traps at once. 'Null is a failed read; [] is an empty one': lib/audit's undo() can throw (AppError bad_identifier from ident(), or any DB failure in loadSnapshots), and the catch renders that failure identically to a genuinely snapshot-less change. Downstream the person is then told \"I can't safely undo that one: I don't have before-images of what it changed\" — a refusal carrying the wrong cause ('race words for permission' shape): the images may exist and the read merely failed, so a transient error permanently reads as 'this change is irreversible', and neither the model nor the person is given the true reason or a route (retry) to the real answer.",
+    "proposed_fix": "Catch and branch instead of coercing: `let inverse: PlanStep[]; let inverseError: string | null = null; try { inverse = await inverseOf(...) } catch (e) { inverse = []; inverseError = String(e?.message ?? e) }`. When inverseError is set, the unconfirmed message says \"I couldn't rebuild the reversal for that change — <reason>; the before-images are recorded, so trying again may work\" and the empty-inverse copy stays reserved for a genuinely empty snapshot set.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/operations.ts",
+    "line": 1738,
+    "symbol": "markAttendance",
+    "claim": "The per_package consumption count reads attendance under the caller's own session, so for a coach RLS silently drops every attendance row marked on sessions they are not assigned to, undercounting pack consumption.",
+    "evidence": "const [used] = await q<{ n: string }>(\n          ctx,\n          `select count(*) as n from attendance att\n             join session se on se.id = att.session_id",
+    "why_it_conflicts": "This is exactly the RLS-emptied-read class the file's own rosterOf @mechanism retires ('an RLS-emptied read makes a write silently do nothing and still report success'), half-fixed in this very block: the pkg read three lines up goes through svc(ctx) because a coach fails app.sees_money(), but `used` stays on ctx, where attendance_cm_user_select and app.my_session_ids() limit a coach to sessions they are on. With rotating or covering coaches, each marker sees only their own weeks: `consumed` runs low, the `consumed > size` rollover fires late or never (the business silently never opens the next pack), and the 'has N of SIZE classes left' note tells the coach a wrong number — a false fact delivered where composing happens.",
+    "proposed_fix": "Read `used` as svc(ctx), like the pkg read beside it and like rosterOf — reachability is already established by sessionOf(ctx) at the top of build, so widening this count widens nothing. One-line change: pass svc(ctx) instead of ctx to that q().",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/operations.ts",
+    "line": 1353,
+    "symbol": "bookTrial",
+    "claim": "When a class has no scheduled future session, book_trial renders the empty read as the phrase 'the next session' and confirms a booking to the parent and admin as if a session existed, telling nobody — model included — that the calendar is empty.",
+    "evidence": "const whenText = firstSession ? whenLabel(firstSession.starts_at, a.timezone, today) : 'the next session'",
+    "why_it_conflicts": "'Null is a failed read; [] is an empty one' — an empty session lookup must render as a stated gap with its reason, not be smoothed into copy. The parent is told \"Done — X is booked into <class>, the next session... Come five minutes early\" and the admin \"New trial booked — ..., the next session\", about a session that does not exist; there is no date to arrive on and nothing on any calendar. The enrollment silently anchors startsOn to today instead. Both messages are runtime-authored claims about a world fact the build just failed to find, and the model never learns the class needs a session scheduled — so it cannot repair it this turn.",
+    "proposed_fix": "When firstSession is null (and no session_id was passed), refuse with the fact and the route: \"<class> has no scheduled session to book into — schedule its next session first (its slot is <weekday/time> if it has one), or pass session_id\". A round exists at build time, so the model can fix it; if a bookable-anyway path is wanted, the note and both messages must instead state the gap explicitly ('no session is on the calendar yet — I'll confirm the date when one is scheduled').",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/operations.ts",
+    "line": 3923,
+    "symbol": "operationSignature",
+    "claim": "The signature text used for error hints and the prefix is generated from the raw zod schema with no omit list, so it re-advertises confirmed / decided_timely / decided_window_hours — the exact human-assertion fields parametersFor deliberately hides from the model (F-Q).",
+    "evidence": "export function operationSignature(name: string): string | null {\n  const op = OPERATIONS[name as OperationName]\n  if (!op) return null\n  return `${name}${describe(op.params)} — ${op.description}`",
+    "why_it_conflicts": "Two authors of one truth: tools.ts declares operations via parametersFor(op.params, HUMAN_ASSERTION_PARAMS) precisely because 'a declared field is an invited one' — advertising `confirmed?: bool` is how the model came to assert a tap it never saw. But the repair path ('Here is what it takes', tools.ts:2161) and probe-prefix render describe(op.params) unomitted, so the model corrected mid-loop is shown client_cancel{..., confirmed?: bool, decided_timely?: bool, decided_window_hours?: number} and invited to assert the very money-deciding claims stripHumanAssertions will then strip. The two renderers of one signature drift by construction.",
+    "proposed_fix": "Give describe/operationSignature the same single authority: thread `omit: readonly string[] = HUMAN_ASSERTION_PARAMS` through operationSignature/operationSignatures into describe's ZodObject case (skip keys in omit at depth 0), so what the hint teaches is byte-identical in field set to what the tool declaration accepts.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/operations.ts",
+    "line": 3877,
+    "symbol": "describe",
+    "claim": "describe() collapses every nested object to '{…}', so mark_attendance's entries element shape — the ATT status enum (present|late|absent|cancelled_timely) and the note field — never reaches the model, even in the argument-error hint whose stated job is to 'say what would have worked'.",
+    "evidence": "return depth === 0 ? `{ ${keys.join(', ')} }` : '{…}'",
+    "why_it_conflicts": "Unadvertised capability plus starving at the repair moment: the model marking a register is shown `entries?: {…}[]` and must guess the element keys and the four legal status strings — cancelled_timely, the one that moves money, is guessable from nowhere in the signature. The file's own comment above operationSignature says a wrong-arguments rejection must carry the answer ('The registry holds the answer; this is how it reaches the model at the moment it is wrong'), yet the answer it delivers for the only two operations with nested shapes (mark_attendance entries, set_up_business venues) is an ellipsis, sending the model round another paid round per guessed key.",
+    "proposed_fix": "Expand one more level for object array elements and always render enums regardless of depth: in the ZodObject case, allow depth <= 1 (or expand when the parent is ZodArray) so `entries?: { player_id: string, status: present|late|absent|cancelled_timely, note?: string }[]` is what the hint and prefix say — the shape is small and the enum is the load-bearing part.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/operations.ts",
+    "line": 3620,
+    "symbol": "linkContact",
+    "claim": "When no admin exists to approve, link_contact tells the asker 'I have written down what you asked for' while the plan writes nothing anywhere — a claimed residue with no row behind it.",
+    "evidence": "`There is nobody set up to approve that here yet, so I cannot add a number. I have written down what you asked for.`",
+    "why_it_conflicts": "The relabeled state / a promise the machinery does not keep: the adminIds-empty branch stages only this message — no memory_fact, no job, no row of any kind — so next turn nothing anywhere records the request, and the person's stated belief ('they wrote it down') is false. The same operation's own comment two branches up insists a sentence is said only once the steps make it true ('\"I have asked the owner\" is true only once the owner has actually been sent it — and these steps are what makes it true'); this branch breaks that rule it quotes.",
+    "proposed_fix": "Make the sentence true with a step: append the memory_fact insert the remember operation builds (subject the player's person, fact 'asked to be reachable on <phone>; no admin existed to approve on <date>', source 'link_contact'), so the request survives as a row the next conversation retrieves — or, if recording is not wanted, drop the claim and state only the true half.",
+    "severity": "low"
+   }
+  ]
+ },
+ {
+  "slice": "plan",
+  "findings": [
+   {
+    "file": "lib/agent/plan.ts",
+    "line": 1839,
+    "symbol": "executePlan",
+    "claim": "assertSomethingChanged runs AFTER the transaction commits in executePlan, so a CHANGED_NOTHING abort tells the model 'Nothing was changed and nobody was messaged' and returns scheduled: [] while side-writes made inside the same plan — a schedule step's job row (inserted asService into `job`, which has no snapshot trigger and so never appears in the diff) and the audit entry — are already committed and live.",
+    "evidence": "// ---- committed. Only now does anything reach the wire. ----\n    const merged = inTx.diffs\n    assertSomethingChanged(expanded, merged)",
+    "why_it_conflicts": "The relabeled state / false residue: a plan of [RLS-refused write + schedule step] commits the job insert (runSteps continues past zero-row writes), then throws; failed() asserts 'A plan that rolled back put nobody anywhere' and hides the committed job behind scheduled: [] — but the follow-up is armed and its handler can message people later, while the model tells the person nothing happened. MECHANISMS.md's own line for assertSomethingChanged says 'aborts instead of committing', which the preview path honors and this path does not.",
+    "proposed_fix": "Move the assertSomethingChanged(expanded, diffs) call inside executePlan's withSession callback, after readDiffSafe and before the callback returns, so the throw aborts the transaction and the job insert and audit row roll back with it — restoring the file's headline guarantee ('All steps commit or none do') on the execute path exactly as previewPlan's rollback already gives it.",
+    "severity": "high"
+   },
+   {
+    "file": "lib/agent/plan.ts",
+    "line": 1055,
+    "symbol": "runSteps",
+    "claim": "`unaddressed` is a bare count that merges three opposite truths — the person has no contact row, every contact opted out (silently filtered by resolveContact's `opted_out_at is null` at line 892), and the contact exists but is invisible to the caller's RLS — and MessageStepSchema (steps.ts:117-119) accepts a message step with neither to_contact_id nor to_person_id, deferring a mint-repairable mistake to this same silent counter.",
+    "evidence": "if (!to) {\n        state.unaddressed++\n        continue\n      }",
+    "why_it_conflicts": "The file itself retired the emptyWrites COUNT for exactly this reason ('It was a COUNT, and the count is what made it useless... A result either says which, in words the model can act on, or it says nothing'), yet unaddressed stayed a number. 'They opted out' and 'they have no phone number' are opposite sentences downstream — one means respect the silence, the other means ask for a number — and the model cannot tell which, or even who. A recipient-less step is also a mint-time-refusable defect (the house pattern behind F-AW) that instead fails silently one layer later.",
+    "proposed_fix": "Make unaddressed a string[] like emptyWrites, each entry naming the person id and the true cause — resolveContact returns why it found nobody ('no contact row' / 'all contacts opted out' / 'not visible from this session', the last distinguished by one service-role read in the same tx, the pattern refusalHint already uses). Add a zod superRefine to MessageStepSchema requiring exactly one of to_contact_id/to_person_id, refusing at mint where a repair round still exists.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/plan.ts",
+    "line": 825,
+    "symbol": "tableOf",
+    "claim": "tableOf returns null for a data-modifying CTE (`with … update/insert …`) even though assertSingleWriteStatement explicitly allows the form ('it is how the model expresses \"update these, return what changed\"'), so a CTE write never enters state.exec; when the audit degrades (beginAuditSafe fallback → empty readDiff), synthDiffs is blind to it and a plan whose CTE writes genuinely changed rows aborts CHANGED_NOTHING with the wrong cause — 'every one of them matched no rows'.",
+    "evidence": "const s = sql.trim().replace(/^\\(+/, '')\n  let m = /^insert\\s+into\\s+\"?([a-z_][a-z0-9_]*)\"?/i.exec(s)",
+    "why_it_conflicts": "beginAuditSafe's degrade path claims '§2.3 still holds — those counts come from the statements themselves', but for a CTE-led write no count is taken, so the claim fails and the model is handed a false diagnosis (the race-words-for-permission class: a wrong cause is diagnosed perfectly — the model re-reads, finds the rows changed, and cannot reconcile it). The same null also degrades describeStep and emptyWrites naming to a raw SQL clip.",
+    "proposed_fix": "Extend tableOf to skip the CTE prologue structurally (after a leading `with`, scan past the balanced-paren `name as (…)` list to the main verb and match there — SQL structure, not prose), and when it still cannot name a table, push an exec entry with a placeholder table so synthDiffs preserves the row count instead of dropping it.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/plan.ts",
+    "line": 2100,
+    "symbol": "repairHint",
+    "claim": "The repairable-RLS hint prints policyExpressions — every policy on the table including SELECT quals, OR-joined — as 'the policy every row written must satisfy', while the accurate writePolicyExpressions exists in the same file and is consulted only for the role test.",
+    "evidence": "`every row written to \"${table}\" must satisfy the policy: ${checks || 'academy_id = app.academy_id()'}. `",
+    "why_it_conflicts": "A wrong fact delivered where composing happens: the OR-joined expression includes read quals a write does not pass through, so the model can conclude its INSERT satisfies the policy via a SELECT clause and retry a statement that can never pass. The code's own comment concedes '`checks` also folds in SELECT quals' — two functions describing one truth, and the hint reads the wrong one.",
+    "proposed_fix": "Render the hint's policy sentence from writePolicyExpressions(ctx, table).join(' OR '), falling back to policyExpressions only when the write-specific list is empty — one line, using the function the role test already built.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/plan.ts",
+    "line": 2112,
+    "symbol": "repairHint",
+    "claim": "The ON CONFLICT hint parses the table name out of the Postgres error MESSAGE, which for 'there is no unique or exclusion constraint matching the ON CONFLICT specification' never contains the statement text (the db layer does not append SQL to error messages), so uniqueKeys — the built capability that names the table's real unique constraints — is unreachable and the hint always omits the one fact that repairs the statement.",
+    "evidence": "const table = /insert into ([a-z_]+)/i.exec(message)?.[1]",
+    "why_it_conflicts": "A capability that exists in the runtime (uniqueKeys reads pg_constraint and would name the keys to target) is dead behind a match that cannot fire — the refusal states the rule ('names columns that carry no unique constraint') without the route to the answer, which is exactly the CLOSED_TO_EVERY_SESSION standard this repo sets for refusals.",
+    "proposed_fix": "Thread the failing statement into the hint instead of re-deriving it from error prose: runSteps knows step.write at the throw — attach it to the error (e.g. a `statement` property set in the existing catch) or pass expanded into repairHint the way refusalHint already receives it, and take the table from tableOf(step.write).",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/plan.ts",
+    "line": 2372,
+    "symbol": "flushOutbox",
+    "claim": "An unknown catalog_id on a model-authored message step is silently nulled at flush — the model is never told, and the message goes out template-less, where out-of-window routing falls back on the recipient's role (the exact misrendering the AD-NEEDS-YOU comment in this same file documents) — while the sibling `schedule.kind` field gets a mint-time registry refine for precisely this class (F-AW).",
+    "evidence": "const catalogId = m.catalog_id && m.catalog_id in CATALOG ? (m.catalog_id as CatalogId) : null",
+    "why_it_conflicts": "A silent discard, untraced: the model believed the message carried a catalog moment, the runtime overrode it without saying so, and the flush happens post-commit where no repair round exists. The house pattern — 'everything a tap or a flush will run is validated when it is minted, because that is the only moment with a model in the room' — is applied to job kinds and operation names but not to this field.",
+    "proposed_fix": "Add a refine on catalog_id in MessageStepSchema checking `id in CATALOG` with a sentence naming that unknown ids are dropped and where the valid ids live — mirroring the isJobKind refine two branches down; keep the flush-side null as the backstop for operation-authored steps but record the drop into that message's outcome reason so it is traced.",
+    "severity": "low"
+   },
+   {
+    "file": "lib/agent/steps.ts",
+    "line": 618,
+    "symbol": "describe",
+    "claim": "Validation errors are clipped to three lines with no marker that more exist, so a plan with six bad steps is told about three, fixes them, resubmits, and pays a full extra round to learn about the rest.",
+    "evidence": "if (lines.length === 3) break",
+    "why_it_conflicts": "Silent truncation — 'a budget must state what it cut'. The repo's own pattern for exactly this is thirty lines away in plan.ts's assertIdsExist, which clips to eight and appends '(and N more)'.",
+    "proposed_fix": "Count the lines not rendered and append `(and N more problems like these)` to the returned sentence when flat.length exceeds the clip — the assertIdsExist idiom applied here.",
+    "severity": "low"
+   }
+  ]
+ },
+ {
+  "slice": "context",
+  "findings": [
+   {
+    "file": "lib/agent/context.ts",
+    "line": 1616,
+    "symbol": "standing",
+    "claim": "A failed read of business_rule renders as a silently absent block: `if (!rules.error)` has no else, so neither the stated rules nor the F-CC empty-state guard nor any failure marker reaches the model.",
+    "evidence": "if (!rules.error) {\n      const statedRules = rules.rows as Record<string, unknown>[]",
+    "why_it_conflicts": "This is the exact NULL-IS-A-FAILED-READ trap the same function fixed twice fifty lines up: `pending.error` and `mutes.error` both get an `unread()` else branch with the reason and a route, and the file's own comments call the no-else shape 'the block built after a woman asked to be left alone'. The third of the three parallel reads was missed. On a refused read the admin loses both the rules that DO exist (which it is told to honour in conversation) and the 'No business rules are on file — a policy this business has not stated does not exist' line, which is the fact the F-CC invention was contradicted by — so one transient DB error silently reopens the invented-policy class the statedRules mechanism (Closes F-BW) exists to close, and nothing tells the model it fired.",
+    "proposed_fix": "Add the same else branch the two sibling reads have: `out.push(unread('the rules this business has stated', 'This is NOT \"no rules on file\" — it is unknown. Read business_rule yourself before you assert or invent any policy.', firstLine(rules.error)).replace(/^- /, ''))`.",
+    "severity": "high"
+   },
+   {
+    "file": "lib/agent/context.ts",
+    "line": 1572,
+    "symbol": "standing",
+    "claim": "A failed `liveAgentTasks` read is swallowed by a bare catch, so the model's own standing watches vanish from the tail with no stated gap — the one state the block exists to stop it reconstructing from memory.",
+    "evidence": "} catch {\n      /* Never a precondition. A turn without this line is worse, not broken. */\n    }",
+    "why_it_conflicts": "The `job` table is closed to the model in both directions (the comment above says so), so the tail is the ONLY route to its own promises — a silent failure here is not 'less information', it is an absent block that reads as 'nothing is being watched'. The documented failure class (a duplicate watch minted under a different name; a promise denied) fires exactly when this line is missing, and unlike pending/mutes/rules there is no `unread()` marker and no route ('the model cannot query job' means it cannot even go look). 'Never a precondition' is right; 'therefore say nothing' does not follow — every other block in this function degrades by STATING the gap.",
+    "proposed_fix": "Replace the empty catch body with an `out.push(unread('the watches this business has already promised', 'This is NOT \"nothing is being watched\" — the list is unknown, and you cannot query job yourself. Do not mint a watch you may already hold, and do not tell anyone a promised watch is not set up.', firstLine(errorMessage(e))))`.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/context.ts",
+    "line": 1550,
+    "symbol": "standing",
+    "claim": "The standing lists are clipped without their true counts — watches at `slice(0, 8)` over an unlimited `liveAgentTasks` result, pending questions at `limit 5`, rules at `limit 12` — so anything past the cap is invisible with nothing marking the cut.",
+    "evidence": "for (const w of mine.slice(0, 8)) {",
+    "why_it_conflicts": "'Rows shown must carry the true count beside the clip.' The census fixed exactly this class in the same file — the coach branch reads `unmarked_total` alongside its capped list because '\"3 registers still unmarked\" is what a reader states when there are nine.' The standing lists have no equivalent: a ninth watch gets re-minted or denied ('do not say it is not set up' protects only the eight shown), a sixth unanswered question is asserted about a block that claims completeness, and a thirteenth business rule contradicts the model's cached lesson that an unstated policy does not exist. All three caps are hard-coded fences whose fix is handing the model one more fact.",
+    "proposed_fix": "Carry the totals: `liveAgentTasks` already returns the full set, so render `(${mine.length - 8} more not shown)` when clipped; add `count(*) over ()` (or a second count column) to the pending and rules statements and append 'N of M shown — the rest are in pending_request / business_rule' when the cap bites, the same shape as `unmarked_total`.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/context.ts",
+    "line": 1664,
+    "symbol": "visitorTail",
+    "claim": "`named` is computed from only the arrival's first message and the current message, but the tail then asserts 'Their words name no business on this number' — a claim about ALL their words — so a business named in any middle message of the desk thread produces a manufactured false negative.",
+    "evidence": "...matchAcademiesByName(arrival?.firstText ?? undefined, businesses),\n    ...matchAcademiesByName(v.text, businesses),",
+    "why_it_conflicts": "Instrument-manufactured wrong fact, in the exact mechanism (`frontDeskTail`) built to stop the desk reconstructing this from the conversation. The model is never handed the tenant list (deliberately), so it CANNOT recover the match from the thread itself: on turn 3 of 'which academy?' → 'sunrise tennis' → 'so what's the fee?', the tail states flatly that their words named nothing, and the academy id the hand-over needs is gone (ids never survive into replayed history). The renderer at lib/frontdesk/context.ts:138 turns a partial check into a universal claim.",
+    "proposed_fix": "Match over every inbound message of the desk conversation — the runtime already holds the thread when it builds the turn — or persist matched candidates onto the arrival row the way `first_text` already is (a `named_academy_ids` column updated per inbound); at minimum make the sentence state what was checked: 'Neither their first message nor this one names a business on this number.'",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/memory.ts",
+    "line": 523,
+    "symbol": "CURATE_SYSTEM",
+    "claim": "CURATE_SYSTEM's stated budget ('under 140 characters. At most 12 lines' = up to ~1,716 chars with prefixes) exceeds the 1,400-char budget `bound()` actually enforces, so a curation model that obeys its instructions exactly has its trailing lines silently discarded, untraced.",
+    "evidence": "- Each line short and plain, under 140 characters. At most 12 lines.",
+    "why_it_conflicts": "Two authors of one truth: the prompt states one budget, `bound()` enforces a different one (`HOT_SET_MAX_CHARS = 1400`; `if (chars + clean.length + 3 > HOT_SET_MAX_CHARS) break`), and they already disagree — 12 lines × 140 chars overruns by ~300 characters. The overflow is the runtime silently discarding model-authored output outside any documented exception, and the discard is untraced: the dropped facts were ranked LAST by the model ('one-off details last'), but nothing records that they were cut, so the hot set is quietly less than what curation decided to keep.",
+    "proposed_fix": "One author: build the budget sentence from the constants — make CURATE_SYSTEM a template interpolating `HOT_SET_MAX_LINES` and `HOT_SET_MAX_CHARS` ('at most N lines and M characters in total, including a \"- \" prefix per line') so the stated and enforced budgets cannot drift; and have `bound()` return what it dropped so `curate` can trace the cut (a log line or a re-ask with the tighter budget).",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/memory.ts",
+    "line": 448,
+    "symbol": "hotSet",
+    "claim": "The uncompacted hot set's overflow note says '(N of what is on file…)' without the true total — the query fetches only `HOT_SET_MAX_LINES + 1` rows, so the runtime itself cannot say whether one fact or fifty are behind the clip.",
+    "evidence": "? `\\n(${shown} of what is on file; the rest is in memory_fact — subject_kind = '${subjectKind}'`",
+    "why_it_conflicts": "'Rows shown must carry the true count beside the clip.' The measured lesson three comments up is that a bare pointer is followed once in thirty-four turns; a pointer with no magnitude ('the rest' could be 1 or 100) gives the model nothing to weigh the round against. The information exists one `count(*)` away in the same statement and is withheld by the fetch limit, not by a decision.",
+    "proposed_fix": "Add `count(*) over () as total` (or a scalar count subquery on the same live-set predicate) to the uncompacted query and render '(${shown} of ${total} on file; the rest is in memory_fact …)'.",
+    "severity": "low"
+   },
+   {
+    "file": "lib/agent/memory.ts",
+    "line": 211,
+    "symbol": "rowShapedFact",
+    "claim": "The `@`-pattern refusal asserts 'it carries a payment handle' for any email-shaped string, so a fact carrying a plain email address ('prefers email, priya.k@gmail.com') is refused with a false cause.",
+    "evidence": "return 'it carries a payment handle — that is a row on the business. The tables hold where money goes.'",
+    "why_it_conflicts": "RACE WORDS FOR PERMISSION: a refusal carrying the wrong cause makes the model misdiagnose perfectly — told the string was a payment handle, it will re-store 'the family pays by UPI'-shaped conclusions or argue about money when the datum was contact info. The gate itself is measured and argued in the mechanism tag (UPI handles are email-shaped, so the match is defensible); the refusal TEXT is not — it names one of the two things the pattern matches and presents it as certain.",
+    "proposed_fix": "Make the refusal carry the true, two-sided cause and both routes: 'it carries an @-handle — a UPI handle or an email address. Either lives in a row (the business's payment rail, or the person's contact details), and a memory copy goes stale when the row changes. Keep the preference; put the handle in its table.'",
+    "severity": "low"
+   },
+   {
+    "file": "lib/agent/context.ts",
+    "line": 565,
+    "symbol": "formatQueryResults",
+    "claim": "Query results handed to the tail are clipped at 60,000 characters with a bare '… truncated' marker that does not say how much was cut or how to get the rest.",
+    "evidence": "return s.length > 60_000 ? `${s.slice(0, 60_000)}\\n… truncated` : s",
+    "why_it_conflicts": "'A budget must state what it cut.' The marker admits a cut happened but withholds the one fact the runtime holds — the true size — so the model cannot tell a 1% trim from a 90% amputation of the rows it is told 'every number you state must trace back to' something in. A near-total cut with no magnitude invites stating conclusions off the visible fraction.",
+    "proposed_fix": "State the cut and the route in the marker: `… truncated — ${s.length - 60_000} of ${s.length} characters cut; re-run a narrower query for what is missing`.",
+    "severity": "low"
+   }
+  ]
+ },
+ {
+  "slice": "speaking",
+  "findings": [
+   {
+    "file": "lib/messaging/send.ts",
+    "line": 373,
+    "symbol": "asTemplateMessage",
+    "claim": "Out of window, the model's buttons are relabeled to the template's fixed quickReply title, dropped entirely (committing first button, every button after the first, list, link), and a runtime-authored sentence is appended — and none of this is reported on `altered`, so the author's picture of the affordances it sent is false.",
+    "evidence": "buttons: first && !firstCommits ? [{ actionId: first.actionId, title: def.quickReply }] : undefined,",
+    "why_it_conflicts": "send()'s own contract (line ~567) is 'Every place this pipeline rewrites the message rather than refusing it, said once, in order, on the outcome', and the saidHowMuchWasCut mechanism argues the substitution line 'does not imply it and the model cannot see the difference'. The one altered line pushed (line 1069) covers only the body: 'the body was replaced by the \"X\" template rendering — what they read is the template's words, not yours.' It does not say that '[Confirm ₹2,400]' now reads as the template's fixed label, that '[Not yet]' and the cta_url link were removed, or that 'Just reply here — a word is enough.' (line 343) was appended. Next turn the model believes the person is holding buttons they never received — exactly THE SECOND AUTHOR's false-belief class, on the reconcile/money ask the file's own comment names as the normal out-of-window case.",
+    "proposed_fix": "Have asTemplateMessage return (or send compute by diffing msg vs wire) a list of alteration sentences alongside the rewritten message, and push each onto `altered`: one when a kept button's title was replaced (naming old and new title), one when buttons/list/link were dropped (naming which), one when the reply-instead sentence was appended. The channel already exists and rides the outcome; only the rewrites that happen inside asTemplateMessage are currently silent on it.",
+    "severity": "high"
+   },
+   {
+    "file": "lib/messaging/send.ts",
+    "line": 1065,
+    "symbol": "roleTemplate",
+    "claim": "A failed role lookup (catch → null at line 468) and a template that was found but failed to render (line 1064) are both recorded as suppressed_reason 'out_of_window_no_template' — a wrong cause on the record and on the outcome, stating 'no template applies' when the truth is 'the read/render failed'.",
+    "evidence": "console.error(`[send] template ${wanted} could not render: ${(e as Error).message}`)\n        return suppress(tx, row, msg, 'out_of_window_no_template', inWindow)",
+    "why_it_conflicts": "RACE WORDS FOR PERMISSION / NULL IS A FAILED READ: a refusal carrying the wrong cause makes the caller and any later diagnosis misread the class entirely. 'out_of_window_no_template' is a policy statement (the eight categories don't cover this person); a render exception or a DB error in roleTemplate is an instrument/capability failure. The comment at line 469 calls suppression 'the honest outcome', but the honesty is only in the refusing, not in the reason recorded — the row and the SendOutcome cannot distinguish 'this person has no role we may template to' from 'the query threw'. Both a keys-kept decision and a bug get filed under the same enum, so a broken renderer looks like deliberate policy in the event log.",
+    "proposed_fix": "Give suppress() an optional detail string written into the suppression row's payload (e.g. suppress_detail), and pass the render error message / a 'role lookup failed: <error>' marker at these two sites; alternatively add a distinct reason value ('template_render_failed') for the catch path. The record then answers 'why didn't they get it?' by looking, as the file's header promises.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/lint.ts",
+    "line": 337,
+    "symbol": "WIRE_SHAPE",
+    "claim": "The wire-shape test fires on ordinary English label words ('steps:', 'action:', 'kind:', 'menu:') preceded by mere whitespace whenever a '{' appears anywhere in the body, and its `structural: true` escalation means the false positive replaces a perfectly readable message with the apology ladder after the repair round.",
+    "evidence": "/(?:^|[{,[\\s])[\"']?(?:kind|buttons|action|steps|menu|args|form_prefill|catalog_id|to_contact_id|to_person_id)[\"']?\\s*:/",
+    "why_it_conflicts": "THE PATTERN THAT JUDGES PROSE: the leading class includes \\s, so 'Next steps: pay by Friday' or 'plan of action: call Priya' matches the key test, and the only other condition is text.includes('{') anywhere in the same body (line 522) — a brace in a quoted name, a fee breakdown, or a typo. Because this is the one rule that sets `structural`, a false positive is not a costless refusal: after one failed repair round the model's answer is barred from sending and the runtime authors the reply instead. The docstring's own premise — 'a key that only ever appears in this product's own wire shape' — is false for 'steps', 'action', 'menu' and 'kind' as English.",
+    "proposed_fix": "Anchor the key to actual object notation instead of any whitespace: require the key to occur inside a brace span (match against a captured {...} region) or tighten the leading class to [{,[\\\"'] so only a key that syntactically sits in an object/array fires. The measured incident (turn 172's `{\"body\": …}` envelope) still matches; 'Next steps:' in prose cannot.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/messaging/send.ts",
+    "line": 1555,
+    "symbol": "redeliverStored",
+    "claim": "The redelivery rebuild omits catalogId, media, templateName and templateParams from the stored message, so the re-attempt bypasses the person's scoped mute (an unclassified message answers only to a full-stop mute), loses its catalog-chosen template to the role fallback, and silently drops the media attachment.",
+    "evidence": "return send(ctx, {\n    toContactId: row.contact_id,\n    body: row.body,",
+    "why_it_conflicts": "The redeliver mechanism's whole argument (MECHANISMS.md: 'replayed by redeliverStored through the full gate stack so the gates keep deciding') requires the replay to be the same message; this one is a lossy copy. Gate 1c's MUTE_SCOPE reads msg.catalogId — a money-catalog message a parent muted money-scope, suppressed at 2am for quiet hours, comes back at 8am with no catalogId and sails past the mute they asked for (the F-AV class re-opened on one path). Media stored in the payload ('media: msg.media ?? null' in messagePayload) is never passed, so the words redeliver and the attachment vanishes with no trace — a silent discard. TWO AUTHORS OF ONE TRUTH in miniature: the row is the truth and the rebuild re-authors a thinner version of it.",
+    "proposed_fix": "Select catalog_id, template_name and media_url alongside body/payload in redeliverStored's query, and pass catalogId, media (from payload.media), templateName and template_params through to send() so every gate decides on the message that was actually suppressed.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/messaging/send.ts",
+    "line": 552,
+    "symbol": "suppress",
+    "claim": "When the redeliver enqueue fails, the catch swallows it with no console line and no mark on the row — whose payload was already written with `retryable: true` — so the record claims a re-attempt is coming that will never come, silently reopening F-CK's class (the moment deleted, not delayed).",
+    "evidence": "} catch {\n      // The suppression row stands either way; a failed enqueue must not turn a\n      // deliberate non-send into a thrown turn.",
+    "why_it_conflicts": "THE RELABELED STATE plus a swallowed error: 'record everything' is the house rule and the suppression row now carries a false residue — retryable:true with no redeliver job behind it. Not throwing is right; recording nothing is not. The exact failure this mechanism was built for (go-live invites suppressed at 2am, never sent, families' first contact a dunning notice) recurs whenever enqueue fails, and nothing distinguishes that run from a healthy one until a person notices the silence.",
+    "proposed_fix": "In the catch, update the just-inserted message row's payload in the same transaction (e.g. redelivery_scheduled: false, redelivery_error: <message>) — or at minimum console.error with the messageId — so the record tells the truth about whether the moment will come back and the watch/report instruments can count it.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/lint.ts",
+    "line": 608,
+    "symbol": "vocabularyPreferences",
+    "claim": "The vocabulary-harvest regex extracts meaning from free memory prose and manufactures false 'their words' facts from sentences that are not about vocabulary at all — e.g. 'Prefers WhatsApp over calls' becomes {prefer:'WhatsApp', avoid:'calls'}, handing the model a wrong fact it cannot falsify.",
+    "evidence": "/\\b(?:uses?|says?|prefers?)\\s+[\"“']?([A-Za-z][\\w '-]{1,24}?)[\"”']?\\s+(?:instead of|rather than|over|not)\\s+[\"“']?([A-Za-z][\\w '-]{1,24}?)[\"”']?(?=[.;,)\\n]|$)/gi",
+    "why_it_conflicts": "THE PATTERN THAT JUDGES PROSE, read-side: the mechanism tag defends this as 'a pattern over data', but the data is natural-language prose the model wrote, and deciding that a 'prefers X over Y' sentence is a vocabulary preference is a meaning judgment. A channel preference, a scheduling preference ('prefers mornings over evenings') or a payment preference all match, and the tail then tells the model a business 'says mornings, not evenings' — an information failure the harness itself manufactures, in the commonest defect class the repo names. The model can override it, which caps the damage, but a fact the harness invented is still a wrong fact delivered where composing happens.",
+    "proposed_fix": "Make vocabulary a structured fact with one author at write time: let the remember/memory path store an explicit {prefer, avoid} pair (a typed memory kind or a fenced marker the model writes deliberately), and have vocabularyPreferences read only that structure — deleting the regexes over prose. Until then, at minimum require a vocabulary-signal context word (call/calls/word/term/says the word) so preference sentences about non-words stop matching.",
+    "severity": "low"
+   }
+  ]
+ },
+ {
+  "slice": "edges",
+  "findings": [
+   {
+    "file": "lib/actions.ts",
+    "line": 628,
+    "symbol": "consumeAction",
+    "claim": "A button retired by a committed sibling is reported to the composing model as plain clock 'expired' — the row's own expired_reason ('superseded_by_action:<id>') is never read out, so the next turn is handed a wrong cause with instruction force.",
+    "evidence": "return { ok: false, reason: 'expired', ...(intent ? { intent } : {}) }  // and the diagnostic SELECT above it: \"select minted_for_contact_id, consumed_at, (expires_at is not null and expires_at <= app.now()) as expired, payload\" — expired_reason is not selected",
+    "why_it_conflicts": "RACE WORDS FOR PERMISSION: the refusal carries a technically-true label but the wrong cause. loop.ts's refusedTapBlock then tells the model \"it had expired — it was minted earlier in this conversation and its window has closed\" and \"Nothing ran and nothing changed\", and instructs it to \"re-stage the same thing\". For a [Cancel] tapped after [Do it] committed, the window did not close by clock, and something very much DID run and change — the sibling's plan. The person is then told nothing was done, over a committed plan: a false residue authored from a fact the row already holds. The in-file comment argues only 'expired' vs 'already_used' and that the path 'stays quiet' for the emulator; it never argues why the composing turn should be denied the true cause, which the mentality says every refusal must carry along with the route (here: the sibling that committed, and undo).",
+    "proposed_fix": "Add expired_reason to the diagnostic SELECT (one column on a read already happening — the exact argument intentOf makes). When it matches 'superseded_by_action:%', return a distinct ConsumeResult reason (e.g. 'superseded', carrying the sibling action id and, via the same intentOf, what the sibling committed), and give refusedTapBlock a branch that states the true fact: another button on that card was tapped and its work committed; nothing about THIS button ran; offer undo/next-step instead of \"re-stage the same thing\". Keep 'expired' for genuine clock expiry.",
+    "severity": "high"
+   },
+   {
+    "file": "lib/agent/sql.ts",
+    "line": 81,
+    "symbol": "uid",
+    "claim": "A legal-shaped id subquery refused by isIdSubquery's word-boundary verb scan (which runs over string literals, so a class or venue literally named with 'do', 'call', 'copy' or 'create' trips it) is reported to the model as `sql: \"(select …)\" is not an id` — a wrong cause that teaches the model subqueries are illegal.",
+    "evidence": "return !/\\b(insert|update|delete|drop|alter|truncate|grant|revoke|create|copy|do|call)\\b/i.test(s)  …  if (!UUID_RE.test(s)) throw new Error(`sql: \"${v}\" is not an id`)",
+    "why_it_conflicts": "Two mentality violations in one path. (1) The verb scan does not blank string literals first, even though db.ts's assertOneStatement/structureOnly one file over exists precisely because \"a parent's note containing a semicolon is data rather than a second statement\" — so `(select id from class where name = 'Do Re Mi Music')` is refused on its data. Same for the `;` check. (2) When any subquery fails the guard, uid falls through to the UUID test and throws \"is not an id\": the refusal names a false cause and no route. The file's own doc-comment records what that misdiagnosis costs — a model pushed off create_class onto raw INSERT, producing a business with classes, slots and zero sessions — and this error message re-opens exactly that class whenever a name contains a banned word.",
+    "proposed_fix": "In isIdSubquery, blank string literals and comments (reuse/extract structureOnly from lib/db.ts — one author of that truth) before the semicolon and verb checks. In uid, distinguish the cases: a string matching ID_SUBQUERY that fails the guard should throw an error naming the true cause and the rule (\"a subquery is allowed here, but this one was refused: it contains `do` / a second statement — one parenthesised SELECT, nothing that writes\"), never \"is not an id\".",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/frontdesk/tools.ts",
+    "line": 146,
+    "symbol": "runFrontDeskTool",
+    "claim": "All three desk verbs discard the zod parse error and answer with one canned cause; for join_business the canned cause is wrong whenever the failing field is `as`, not the id — a valid uuid plus as:'student' is answered with \"needs the id find_business returned, not a name\".",
+    "evidence": "if (!parsed.success) {\n        return { content: 'join_business needs the id find_business returned, not a name.' }",
+    "why_it_conflicts": "The mechanism tag on this very function claims \"every one of them answers in words the model can act on… a refusal here says what to do next\" — but the actual cause (`parsed.error`, e.g. `as: invalid enum value, expected parent|coach|owner|unsure`) is thrown away and replaced by a guess at the commonest failure. When the guess is wrong the model misdiagnoses perfectly: it re-checks the id that was fine and never learns the enum. Same pattern at find_business (line 112) and start_business (line 155-160): a refusal that states a rule without the fact that fired it.",
+    "proposed_fix": "Carry the validator's own finding into the content: append a one-line rendering of parsed.error.issues (field path + message) to each refusal, keeping the existing route sentence. No pattern, no prose judgement — the schema already produced the true cause; deliver it where composing happens.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/agent/deepseek.ts",
+    "line": 515,
+    "symbol": "generateJson",
+    "claim": "The one retry re-sends the identical request: the parse/shape error from attempt 1 is captured for the CALLER but never delivered to the MODEL, so the retry is a blind re-roll rather than a correction.",
+    "evidence": "for (let attempt = 1; attempt <= 2; attempt++) {\n    const res = await generate({ ...o, json: true })",
+    "why_it_conflicts": "An information failure manufactured by the harness: the fact the model needs to fix its output (\"did not parse as JSON: …\" / \"parsed but did not match the shape asked for\") exists in `error` and is withheld from the only party that can act on it. The mechanism doc argues one-retry-not-three and null-on-failure — it does not argue for the retry being uninformed. A validation that refuses without telling the model it fired, then re-asks the same question, is exactly the gate-without-feedback shape the mentality bans; contrast assertOneStatement, whose refusals are \"a sentence the model can act on\".",
+    "proposed_fix": "On attempt 2, append to o.messages the failed assistant text and one user message stating the concrete failure (\"your previous answer was rejected: <error>; reply with only valid JSON matching the shape asked for\"). The addition sits in the variable tail, so the §4.4 byte-stable prefix and its cache hits are untouched.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/frontdesk/route.ts",
+    "line": 130,
+    "symbol": "carryDeskTranscript",
+    "claim": "A FAILED read of the desk thread is rendered as an EMPTY one (`catch { thread = [] }`), and a failed carry write is swallowed with no log and no signal — the tenant model then composes over a thread it has every reason to believe is the whole exchange, with no stated gap.",
+    "evidence": "} catch {\n    thread = []\n  }  …and later…  } catch {\n    // Deliberately swallowed — see above. An uncarried transcript is a gap the model\n    // works without, exactly as every hand-over did before this mechanism existed.\n  }",
+    "why_it_conflicts": "NULL IS A FAILED READ; [] IS AN EMPTY ONE — the two produce opposite downstream sentences, and here a read failure silently downgrades to the one-message floor. The mechanisms doc argues the floor as fallback behaviour, but not the silence: 'a discard must be traced', and this discard leaves no console line (contrast attachActionsToMessage's loud posture in the same codebase) and no mark in the handover `note`, so the exact defect this mechanism was built to close (Rahul re-asked for a timetable he already gave) recurs invisibly whenever the carry fails — a failed prefetch must render as a stated gap with its reason.",
+    "proposed_fix": "Return a status from carryDeskTranscript ({carried: n} | {failed: reason} | {floor: true}) instead of void; log the failure loudly like attachActionsToMessage does; and on the failed/floor paths append one sentence to the Handover.note the model reads (\"the desk exchange could not be carried across — anything they told the desk before this message is not in this thread; ask rather than assume\"). The runtime states a gap in a tool result; it authors nothing the person reads.",
+    "severity": "medium"
+   },
+   {
+    "file": "lib/frontdesk/route.ts",
+    "line": 456,
+    "symbol": "stopMessagingVisitor",
+    "claim": "The opt-out UPDATE's row count is never checked, yet the tool result asserts 'recorded — nothing else will reach this number from here' unconditionally — a write allowed to match nothing in silence, answered with a claimed residue.",
+    "evidence": "return {\n    ok: true,\n    note:\n      'recorded — nothing else will reach this number from here. Acknowledge it in one line and stop.',",
+    "why_it_conflicts": "THE RELABELED STATE, and this repo's own stated lesson twice over (resolveQuestion: \"a write allowed to match nothing in silence is how this survived\"; attachActionsToMessage checks stamped !== ids.length). If the UPDATE matches zero rows the visitor keeps receiving messages after being told, via the model's one-line acknowledgement, that they will not — on a pooled sender that unhonoured opt-out is the §16.1 complaint every tenant pays for. The stakes here are the irreversible kind the codebase elsewhere refuses to leave uncounted.",
+    "proposed_fix": "Read the row count from the UPDATE (returning id); when zero, log loudly and return a note stating the truth (\"the opt-out could not be recorded — tell them it will be handled and hand this to a person\") instead of 'recorded', and do not set stopped: true in runFrontDeskTool on that path.",
+    "severity": "low"
+   }
+  ]
+ }
+]
