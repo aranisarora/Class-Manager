@@ -191,11 +191,17 @@ export function policyShapedFact(fact: string): string | null {
  *   future wrong answer waiting for the row to change. The generator is a model and the gate
  *   cannot be, so it tests the one thing the string decides — shape — and the refusal says
  *   what to keep instead. Deliberately partial: a time or a single day is how preferences
- *   are said.
+ *   are said. A bare amount-per-period ("8000/month", "400 per session") is a rate and is
+ *   refused like a marked one: on the 23 Aug ace month, "coach pay: Arjun 8000/month"
+ *   passed while its ₹-marked twin was refused — the gate was reading the currency MARK,
+ *   and a rate does not stop being a row for want of one.
  */
 export function rowShapedFact(fact: string): string | null {
   const f = String(fact ?? '')
-  if (/₹\s*\d|\brs\.?\s*\d|\binr\s*\d/i.test(f)) {
+  if (
+    /₹\s*\d|\brs\.?\s*\d|\binr\s*\d/i.test(f) ||
+    /\b\d{3,}\s*(?:\/|per\s+)(?:month|session|hour|week|day|class)\b/i.test(f)
+  ) {
     return 'it carries a rupee figure — rates, balances and charges are rows, and a memory copy goes stale the day the row changes. Keep the preference or the event; drop the amount.'
   }
   if (/\+?\d{10,}/.test(f.replace(/[\s-]/g, ''))) {

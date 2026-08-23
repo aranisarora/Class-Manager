@@ -2756,6 +2756,28 @@ export async function runTool(
        */
       const aboutTheAsker = !routedElsewhere && subjectIds.includes(String(ctx.identity.person.id))
       const awaitsATap = commits && !aboutTheAsker
+      /**
+       * @mechanism askSubject — a committing ask that is ABOUT nobody and rides no catalog
+       *   moment gets a nonce in its subject, because the degenerate `from:<contact>` alone
+       *   made EVERY such ask to one person "the same question": 0032's one-open-ask-per-
+       *   subject invariant then let staging decision B expire decision A's card through the
+       *   supersede. Measured on the eager month (13 days): 11 actions died `superseded_ask`;
+       *   the owner's dictated-UPI card died in 17 hours to an unrelated ask, he repeated the
+       *   same instruction on four consecutive days while being told "one tap makes it live",
+       *   and his departure note named exactly this class. Two subjectless asks cannot be
+       *   KNOWN to be one question, so they are never treated as one: a re-ask of the same
+       *   decision now leaves the older card to its bounded TTL beside the newer, each listed
+       *   separately in the tail — the recoverable direction of the trade, where the old one
+       *   was not. The worst part of the collapse was downstream: the ASKED AND UNANSWERED
+       *   line is what carries the commit-by-words route (`card`, lib/agent/context.ts), so
+       *   killing the row also deleted the model's one stated alternative to pointing at the
+       *   button — the owner said "save the upi, both, now" and the model, shown no card id,
+       *   could only re-stage the ceremony that was starving it. Closes F-ET.
+       */
+      const askSubject = [
+        `from:${ctx.identity.contact.id}`,
+        ...(subjectIds.length ? subjectIds : catalogId ? [catalogId] : [newId().slice(0, 8)]),
+      ].join('+')
       const confirmation = awaitsATap
         ? {
             // Rendered verbatim into the variable tail ("ASKED AND UNANSWERED (kind ·
@@ -2765,10 +2787,7 @@ export async function runTool(
             // confirm and a request routed to him about the same subject are two
             // questions and supersede nothing of each other's.
             kind: routedElsewhere ? 'routed_request' : 'own_request',
-            subject: [
-              `from:${ctx.identity.contact.id}`,
-              ...(subjectIds.length ? subjectIds : catalogId ? [catalogId] : []),
-            ].join('+'),
+            subject: askSubject,
             question: body,
           }
         : undefined

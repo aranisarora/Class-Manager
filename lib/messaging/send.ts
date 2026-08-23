@@ -934,17 +934,25 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     // stops mid-sentence once someone has had a busy day. The per-tenant cap still applies —
     // that one protects the shared number's capacity, which a reply spends like anything else.
     if (!msg.fixed) {
+      // A row the hand-over CARRIED from the front desk is history, not a send this
+      // tenant made: counting it spent a joining parent's whole recipient cap on desk
+      // replies from before the business had them, and their welcome was suppressed as
+      // recipient_frequency_cap for a day (review find, same day carryDeskTranscript
+      // shipped). The backoff count below needs no clause: the carry's inbound rows
+      // stamp last_inbound_at at carry time, which post-dates every carried outbound.
       const counts = await tx<{ recipient_24h: number; tenant_24h: number; unanswered: number }[]>`
         select
           (select count(*)::int from message m
             where m.contact_id = ${row.contact_id}
               and m.direction = 'outbound'
               and m.suppressed_reason is null
+              and coalesce(m.payload->>'carried', '') <> 'true'
               and m.queued_at > app.now() - interval '24 hours')  as recipient_24h,
           (select count(*)::int from message m
             where m.academy_id = ${row.academy_id}
               and m.direction = 'outbound'
               and m.suppressed_reason is null
+              and coalesce(m.payload->>'carried', '') <> 'true'
               and m.queued_at > app.now() - interval '24 hours')  as tenant_24h,
           (select count(*)::int from message m
             where m.contact_id = ${row.contact_id}

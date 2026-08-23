@@ -1,6 +1,6 @@
 # What is open
 
-23 findings. This file is the source of truth for what is broken — hand-written, and short on
+24 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -37,7 +37,8 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-EB** | A person taps when ONE thing is waiting and types when several are, and several things reach one person from DIFFERENT paths between two looks at a phone | [detail](#f-eb--a-person-taps-when-one-thing-is-waiting-and-types-when-several-are-and-several-things-reach-one-person-from-different-paths-between-two-looks-at-a-phone) |
 | **F-EM** | A person minted by name alone can never be messaged, and the real human arriving mints a second one — the coach's pay and classes end the run on a person with no phone | [detail](#f-em--a-person-minted-by-name-alone-can-never-be-messaged-and-the-real-human-arriving-mints-a-second-one) |
 | **F-EN** | A slot written in the evening has no sessions until the overnight beat, and the same evening's turns fall into the gap | [detail](#f-en--a-slot-written-in-the-evening-has-no-sessions-until-the-overnight-beat-and-the-same-evenings-turns-fall-into-the-gap) |
-| **F-EO** | The hand-over carries the opening message and nothing after it, so what was said at the desk is retyped inside the business | [detail](#f-eo--the-hand-over-carries-the-opening-message-and-nothing-after-it-so-what-was-said-at-the-desk-is-retyped-inside-the-business) |
+| **F-ER** | An absence declared in advance has no row, so the product asks the owner about the thing it relayed itself, twice | [detail](#f-er--an-absence-declared-in-advance-has-no-row-so-the-product-asks-the-owner-about-the-thing-it-relayed-itself-twice) |
+| **F-ES** | A fact learned from one person never reaches the turn where another person's decision needs it | [detail](#f-es--a-fact-learned-from-one-person-never-reaches-the-turn-where-another-persons-decision-needs-it) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-EE** | §16.3's per-tenant quality proxies — delivery failures, read rate, **response rate**, opt-outs — have no reader, so nothing notices a tenant shouting into silence on a shared number. **The send-path half is built** (`silenceBackoff`); the scheduled roll-up is what remains | [detail](#f-ee--1633s-per-tenant-quality-proxies-have-no-reader) |
 
@@ -175,6 +176,49 @@ And four from the eager week's judging, each **suspected** until verified agains
   pre-materialization reads under that label beside a fresh census saying 18 sessions, and the
   model paid rounds reconciling. The stamp exists (F-BS closed the unstamped conversation); the
   label's WORDING asserts a recency the stamp contradicts.
+
+And four from the ace-tennis month (`2026-08-23-10-40-sim-qz37`), 23 Aug 2026:
+
+- **`handoff`'s admin copy bypasses the uuid/phone lint.** #83 — the first recorded `handoff`
+  in the product's history — put a raw contact uuid and a phone number in front of the admin.
+  The escalation itself was right; the body should pass the same validation every other
+  outbound passes. Where: the handoff compose path.
+- **A prospect's first message died on a `reply` parse failure and stayed dead.** #8 — Farah's
+  day-1 price ask: the reply JSON failed to parse, then "body: Required" twice, zero sends on a
+  stranger's opening message. `parseError` recorded it faithfully; nothing recovered it. Her
+  fuse was lit by tool-emission failure, not by any judgment. The desk's recovery story on
+  emission failure deserves its own look.
+- **The model escapes SQL apostrophes MySQL-style** (`'Rahul\'s Ground'`) — one syntax error,
+  recovered in-round. The repair hint could name doubling (`''`) when a syntax error sits
+  beside an odd quote count; noted, not built — one instance, self-corrected.
+- **Six daily fee-asks landed on a departed coach's phone (d18–d25, incl. a d21
+  `admin_alert` template)** — partly F-EP (the undropppable watch, closed), and partly a
+  question for `silenceBackoff`: six straight unanswered unprompted sends is the exact shape it
+  exists for. Verify why it never tripped (admin exemption? N unmet?) before the next drive.
+
+And five from the eager month (`2026-08-23-10-40-sim-ky7u`), 23 Aug 2026:
+
+- **Three unrelated instructions bundled behind ONE confirmation tap** (#127: mark registers +
+  message Meenakshi + pay Kiran ₹800, "Tap and it's done", never pressed) — bundling multiplied
+  the blast radius of an unpressed tap to everything in the bundle. The mechanical starvation
+  behind the unpressed taps is closed (F-ET); whether a plan carrying several unrelated asks
+  should say so in its preview is the open half. Judgement-adjacent; measure post-F-ET first.
+- **`drop_watch`'s miss-refusal should point at the ALREADY WATCHING lines.** #84 typed a
+  shortened slug and was told "rows not there" with the true slug sitting in its own context.
+  One sentence in the refusal (`because`): the live slugs are printed at the top of the
+  conversation, copy one exactly.
+- **A `reply` that omitted `to_contact_id` silently retargeted to the current person** and died
+  on `repliedTo` (#26) — and the model then told a customer "I've flagged it to Sunil". The
+  refusal could name the likely cause: "if this was meant for somebody else, you left out
+  to_contact_id".
+- **`register_expiry` says "the register is what writes the charges" about a MONTHLY class**
+  (#132) — true only of per-session rates; a monthly family's bill exists regardless. The
+  handler knows the rate unit and should speak per-unit.
+- **The unconfirmed-but-present coach generates daily false alarms.** Kiran coached Tue and Thu
+  without tapping the invite; every session read "no confirmed coach", 15-minute escalations to
+  the owner four days running, template pairs at Kiran per session — all technically true, all
+  noise about a fine reality. The state machine has no way for observed attendance (he marked
+  registers? he was seen) to stand in for the tap. Design question, not a quick fix.
 
 And two from the 23 Aug line review, both pre-existing:
 
@@ -391,6 +435,12 @@ re-measured for what was never recorded. It means the re-run this entry already
 calls for has to count all three, and that the zero for the three FAMILIES needs
 confirming rather than citing. The standing prohibition on reading prose for talk
 of tapping is untouched — this counts structure the message actually carried.
+
+**23 Aug 2026, ace month — the class at the run's crux, four times.** The rate ask that the
+whole month died waiting on went to the admin at least four times (#56, #64, #75, #190) and
+never once carried a button — a `[Set the evening rate]` tap was mintable from what every one
+of those turns held. The affordance experiment's re-run is still owed, and this is what it is
+owed against.
 
 ### F-BL · `session_coach` cannot record a removal
 
@@ -841,6 +891,13 @@ where "the two messages crossed" was both true and checkable in `message` rows i
 Blank, day 7: the go-live pitch said *"just Dinesh (he hasn't confirmed yet)"* against the same
 turn's census line reading 1 active coach — he had confirmed the day before.
 
+**23 Aug 2026, ace month (#64) — the class with an F-AR-shaped cause.** Farah's deadline-day
+escalation to the owner was refused by the "academy" lint (her own quoted words named a
+competitor), the reflection's re-send was correctly dropped as powerless — and the reply to her
+still claimed *"I've put it in front of the owner with your deadline."* Nothing had reached
+anybody; the claim was composed while the send it described died one stage later. (The
+lint-staleness half is closed — F-EQ — and the false claim is this finding's, standing.)
+
 ### F-DV · The seat COULD always press a button and was never told so, so every mechanism behind a tap was measured at a fifteenth of its rate
 
 **The first draft of this finding was wrong and the correction is the interesting part.** It said
@@ -956,6 +1013,13 @@ assumed in rows; flagged in reasoning, absent from the read-back) is F-CC's clas
 from plausibility rather than from anybody — arriving in `person.full_name` rather than in a
 parenthetical.
 
+**Replayed exactly on the eager MONTH (`ky7u` #59, 23 Aug 2026):** the timetable turn minted
+person "Kiran" with no contact for the coach row while Kiran Joshi — who had joined as a
+coach-claimant that same morning — sat unlinked in the same business; the split never merged,
+he coached two sessions without ever being confirmable, and the 15-minutes-to-session alarms
+fired at the owner four days running about a coach who was present every time. The
+cross-person half (why the deciding turn could not see he existed) is F-ES.
+
 ### F-EN · A slot written in the evening has no sessions until the overnight beat, and the same evening's turns fall into the gap
 
 **Saw:** both 23 Aug week sims, and the gap has two halves — the judge pass sharpened the first.
@@ -976,26 +1040,50 @@ immediate pass is safe and the overnight beat stays as the horizon-extender. Unt
 evening timetable or staffing edit manufactures a gap that either misleads a turn (blank) or
 taxes one (eager).
 
-### F-EO · The hand-over carries the opening message and nothing after it, so what was said at the desk is retyped inside the business
+*(F-EO — the hand-over carrying only the opening message — closed 23 Aug 2026 by
+`carryDeskTranscript`; see CLOSED.md. The architectural question it raised — whether the desk
+should be a separate brain at all — is being settled the way ARCHITECTURE.md demands, by an A/B
+drive one variable apart; the owner's argument and the standing counter are recorded in that
+work's commits.)*
 
-**Saw:** `2026-08-23-07-44-sim-xn2e`, days 1–2. Rahul gave the desk his full batch schedule on
-day-1 evening — still a visitor, in a message that was not his opening one — and founded the
-business on day 2. `carryOpeningMessage` carries exactly one row across the hand-over: the words
-that brought him here (*"how much and wat does it actually do"*). The timetable survived nowhere;
-he was asked for it again and answered *"already told you the timings yesterday"*, and the
-founding turn — which could have staged the whole timetable in its first breath — started from
-zero. The eager week shows the adjacent shape: Meenakshi declared *"6400 cash, two boys two
-months"* to a desk with no business to keep it, and the figure re-entered only when Sunil retyped
-it on day 5.
+### F-ER · An absence declared in advance has no row, so the product asks the owner about the thing it relayed itself, twice
 
-**Root:** an information failure at the hand-over (stage 7). The desk's transcript exists; the
-tenant turn starts from the opening message alone; and §10.1's routing means the useful sentence
-is usually NOT the opening one — a person warms up before they commit. Both runs' front-desk
-phases are where personas first got visibly annoyed, and retyping is what annoyed them.
+**Saw:** eager month, `2026-08-23-10-40-sim-ky7u`. Dev's Friday absence was told to the product
+on day 4 and again on day 7. The future-register mark was rightly refused (#85: *"that is a
+cancellation, not a register"*) — and no cancellation row could be written either, because the
+session an advance absence names may not be materialised yet and nothing else holds the state.
+At register time (#133) the product asked the owner *"did anyone tell you in advance?"* about
+the absence it had relayed twice.
 
-**Where it lives:** `carryOpeningMessage` (lib/frontdesk/route.ts) is the shipped precedent and
-the natural home — carry the visitor's desk messages since arrival (bounded, and only their own
-side needs to be data; the desk's replies are context) instead of the first one. `arrivedAs`
-(F-EC, closed) is the same lesson learned one field at a time; this is the transcript-sized
-version of it.
+**Root:** Layer 0 — ARCHITECTURE's own sentence: a state the schema will not store is a state
+the product will eventually mis-report. "This child will not be at that session" is a state
+someone might ask about, and it lives nowhere.
+
+**Where it lives.** Two candidates, and the first may dissolve most of it: F-EN's fix (sessions
+materialise the moment the slot or assignment is written) makes the future session exist, so
+`client_cancel` works the day the absence is declared. What remains after that is only the
+genuinely pre-timetable declaration, which may be rare enough to route to the admin as it does
+today. Verify against a post-F-EN run before building a `planned_absence` table.
+
+### F-ES · A fact learned from one person never reaches the turn where another person's decision needs it
+
+**Saw:** eager month, twice decisive. (1) Kiran Joshi joined as a coach-claimant in the
+morning; his person-scoped fact (*"Kiran is a coach… no coach row exists"*) never crossed into
+the OWNER's afternoon turn, which minted a contactless person "Kiran" for the coach row — F-EM
+replayed exactly. (2) Nakul, 11, the actual student, lived in Prakash's person-scoped facts;
+the owner-side turn that committed the trial booked PRAKASH HIMSELF into Seniors, minutes after
+his goodbye.
+
+**Root:** the hot set renders academy facts plus THIS person's facts — correct scoping for
+privacy and size — so a fact filed under person A is invisible on person B's turn even when
+B's decision is about A. The commonest cross-person decision in the product is the admin acting
+on somebody else's information.
+
+**Where it lives:** `hotSet` / the tail's memory read (lib/agent/memory.ts, lib/agent/context.ts).
+The shape that fits the existing design: when a turn's SUBJECT includes another person (a plan
+step naming them, subject_person_ids, an invite), render that person's facts too — facts about
+the person you are acting on, on the turn that acts. Not built here: the subject-detection
+question (what names a person "the subject of this turn") deserves design rather than a guess,
+and RLS/visibility has a say. Recorded with both instances so the next reader starts from
+evidence.
 

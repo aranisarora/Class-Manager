@@ -3395,12 +3395,19 @@ const dropWatch: OperationDef = {
       {
         // In-transaction rather than lib/jobs' own `dropAgentTask`, so that
         // dropping a watch inside a bigger plan commits or rolls back with it.
+        // Matches the stored payload slug — the string the ALREADY WATCHING line
+        // prints — never a recomputed dedupe key, because `schedule` salts the key
+        // and the recomputation matched nothing (see `dropAgentTask`, F-EP).
         write: `update job set status = 'cancelled'
                  where kind = 'agent_task' and status = 'pending'
-                   and dedupe_key = ${lit(dedupe.agentTask(ctx.academyId, args.slug))}
-                   and payload->>'academy_id' = ${lit(ctx.academyId)}`,
+                   and payload->>'academy_id' = ${lit(ctx.academyId)}
+                   and (payload->>'slug' = ${lit(args.slug)}
+                        or dedupe_key = ${lit(dedupe.agentTask(ctx.academyId, args.slug))})`,
         service: true,
         requireRows: 1,
+        because:
+          'no live watch wears that slug. The exact strings are printed beside each watch in the ' +
+          'ALREADY WATCHING lines at the top of this conversation — copy one verbatim, not a shortening of it.',
       },
       {
         message: {

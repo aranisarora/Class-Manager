@@ -120,10 +120,27 @@ export type FrontDeskRun = {
  * than a judgement, because a name is masked only when it matches a row. Nothing is
  * rewritten: the mask exists for the length of the check and what ships is byte-for-
  * byte what the model wrote.
+ *
+ * @mechanism violationsAtDesk — the mask list is read at VALIDATION time, never reused
+ *   from the turn's start, because the name a draft most needs masked is the business
+ *   founded seconds ago — by the other person in a founding race, or by this turn's own
+ *   `start_business` collision. On the 23 Aug ace-tennis month the desk composed exactly
+ *   the right repair — "There's already a business called Rahul's Academy — is that
+ *   yours?" — 2.4 seconds after that business was founded from the coach's phone; the
+ *   turn-start list predated it, the "academy" ban fired on the business's own name
+ *   twice, the turn shipped nothing, and the owner seat stayed with the coach for the
+ *   whole run. A read that cannot complete masks nothing rather than blocking the send.
+ *   Closes F-EQ.
  */
-function violationsAtDesk(body: string, identity: Identity, businessNames: string[]): string[] {
+async function violationsAtDesk(body: string, identity: Identity): Promise<string[]> {
+  let names: string[] = []
+  try {
+    names = (await businessesOnThisNumber(identity)).map((b) => String(b.name ?? ''))
+  } catch {
+    names = []
+  }
   let masked = body
-  for (const name of businessNames) {
+  for (const name of names) {
     if (!name) continue
     masked = masked.split(name).join(' ')
   }
@@ -167,7 +184,6 @@ export async function runFrontDeskTurn(o: {
   const at = await now(o.identity.academyId)
   const arrival = await arrivalForContact(o.identity.academyId, o.identity.contact.id)
   const businesses = await businessesOnThisNumber(o.identity)
-  const businessNames = businesses.map((b) => b.name)
 
   // The evidence that used to be spent as a routing decision. `arrival.firstText` is
   // what they OPENED with, which is the message that says whether the question needs
@@ -303,7 +319,7 @@ export async function runFrontDeskTurn(o: {
         if (!spoke) run.error = 'front desk produced neither a tool call nor anything to say'
         break
       }
-      const bad = proseChecked ? [] : violationsAtDesk(body, o.identity, businessNames)
+      const bad = proseChecked ? [] : await violationsAtDesk(body, o.identity)
       if (bad.length) {
         // One round of grace, while the author can still fix it — never a rewrite.
         proseChecked = true
@@ -402,7 +418,7 @@ export async function runFrontDeskTurn(o: {
           run.trace.push({ round, name: 'reply', ms: 0, args: parsed.data, result: 'refused: already spoke this turn' })
           continue
         }
-        const bad = proseChecked ? [] : violationsAtDesk(parsed.data.body, o.identity, businessNames)
+        const bad = proseChecked ? [] : await violationsAtDesk(parsed.data.body, o.identity)
         if (bad.length) {
           proseChecked = true
           messages.push({

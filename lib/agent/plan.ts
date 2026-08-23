@@ -1083,6 +1083,14 @@ async function runSteps(
       // fixing the two call sites, is what stops the third one being written wrong.
       const payload: Record<string, unknown> = { ...(s.payload ?? {}) }
       if (payload.academy_id === undefined) payload.academy_id = ctx.academyId
+      // The slug is what the ALREADY WATCHING line prints and the only name `drop_watch`
+      // matches (F-EP). `enqueue()`'s minters all store one; this second door into the
+      // same table did not, so a plan-staged watch was undroppable by the name on the
+      // screen. Stored as exactly the string the screen would fall back to
+      // (split_part(dedupe_key, ':', 3)), so the print and the predicate cannot drift.
+      if (s.kind === 'agent_task' && payload.slug === undefined) {
+        payload.slug = String(s.dedupe_key).split(':')[2] ?? String(s.dedupe_key)
+      }
       const sql =
         `insert into job (kind, run_at, dedupe_key, payload) values (` +
         `${lit(s.kind)}, timestamptz ${lit(when.toISOString())}, ${lit(s.dedupe_key)}, ${jsonLit(payload)}) ` +

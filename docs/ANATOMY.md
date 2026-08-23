@@ -119,7 +119,7 @@ re-bills the whole conversation (stage 3, and `verify:static`'s fifth absolute).
 | 4 | Up to three rounds over them. The desk speaks by calling `reply`, which is the only thing that can carry a button, and the prefix says so; a round that calls no tool still sends its prose as written rather than becoming silence. One message per person (`spoke`), on both paths | `runFrontDeskTurn` · `lib/frontdesk/turn.ts` |
 | 5 | The name matcher is evidence now, not a routing decision — it decides nothing on its own | `matchAcademiesByName` · `lib/identity.ts` |
 | 6 | A destination: a prospect contact in an existing business, or a business that did not exist a second ago | `joinBusiness` · `foundBusiness` · `lib/frontdesk/route.ts` |
-| 7 | The words that brought them here are written into that business as the first row of its thread | `carryOpeningMessage` · `lib/frontdesk/route.ts` |
+| 7 | Their whole desk exchange is written into that business as the opening rows of its thread, on the rows' own clocks | `carryDeskTranscript` · `lib/frontdesk/route.ts` |
 
 **A hand-over ends the desk's turn immediately** — before it can add a parting sentence,
 because the business is about to answer the same message from inside itself, and two

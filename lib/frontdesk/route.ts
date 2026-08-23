@@ -68,25 +68,76 @@ export type RouteResult = Handover | RouteRefusal
 export const isRefusal = (r: RouteResult): r is RouteRefusal => 'refused' in r
 
 /**
- * @mechanism carryOpeningMessage — the words that brought this person here, written into
- *   the business they were handed to, as the first row of its thread. Without it the
- *   tenant's transcript opens on the bot answering a question nobody in that academy can
- *   see it being asked, and `recentHistory` renders a one-sided conversation for as long
- *   as the thread lasts — the shape that makes a model re-introduce itself to somebody it
- *   is mid-sentence with. The front desk keeps its own copy: that one is the arrival
- *   record and answers a different question. `idempotencyKey` is derived from the
- *   destination contact and the text, so a hand-over retried after a crash carries the
- *   opening line once rather than twice.
+ * @mechanism carryDeskTranscript — the visitor's WHOLE desk exchange, written into the
+ *   business they were handed to as the opening rows of its thread — both directions, on
+ *   the rows' own original clocks. Its predecessor carried exactly one message, the one
+ *   that triggered the hand-over, and §10.1's routing means the useful sentence is
+ *   usually not that one: a person warms up before they commit. Measured on the 23 Aug
+ *   week sims: Rahul gave the desk his full timetable the evening before founding and was
+ *   asked for it again the next day ("already told you the timings yesterday"), and
+ *   Meenakshi's ₹6,400 advance, declared to the desk on day 1, re-entered only when the
+ *   owner retyped it on day 5. The founding turn now opens holding everything already
+ *   said, which is what lets it stage the timetable — and the go-live that needs it — in
+ *   its first breath. Idempotency is per SOURCE row, so a retried hand-over carries each
+ *   line once; suppressed rows stay behind; payloads are stripped to provenance so no
+ *   stale button rides across; and the original timestamps come with the rows, because
+ *   every one of them predates the founding and F-BX is the record of what an unstamped
+ *   carry does to a thread's order. When the desk thread cannot be read, the triggering
+ *   text is carried alone — the old behaviour, kept as the floor rather than the whole.
+ *   Closes F-EO.
  */
-async function carryOpeningMessage(
+async function carryDeskTranscript(
   academyId: string,
   contactId: string,
+  desk: Identity,
   text: string | undefined,
   at: Date,
 ): Promise<void> {
-  const body = String(text ?? '').trim()
-  if (!body) return
+  type Row = {
+    id: string
+    direction: string
+    body: string
+    created_at: Date | string | null
+    queued_at: Date | string | null
+    sent_at: Date | string | null
+    delivered_at: Date | string | null
+  }
+  // The last 40 said things within a fortnight, in order — read under the DESK's own
+  // scope, because the desk thread belongs to the desk academy and the new business's
+  // session cannot see it. Only rows that LANDED cross: a desk send that failed on the
+  // wire is a message the person never received, and carrying it as 'delivered' would
+  // hand the tenant model something never said (review find). The fortnight bound keeps
+  // a returner's previous visit — including an old hand-over to another business — out
+  // of a new founding's opening thread.
+  let thread: Row[] = []
+  try {
+    thread = await withSession({ role: 'service', academyId: desk.academyId }, async (tx) =>
+      unsafeQuery<Row>(
+        tx,
+        `select id, direction, body, created_at, queued_at, sent_at, delivered_at
+           from (select id, direction, body, created_at, queued_at, sent_at, delivered_at
+                   from message
+                  where academy_id = $1::uuid and contact_id = $2::uuid
+                    and coalesce(suppressed_reason, '') = ''
+                    and coalesce(trim(body), '') <> ''
+                    and (direction = 'inbound' or status in ('sent', 'delivered', 'read'))
+                    and created_at > app.now() - interval '14 days'
+                  order by queued_at desc limit 40) last40
+          order by queued_at asc`,
+        [desk.academyId, desk.contact.id],
+      ),
+    )
+  } catch {
+    thread = []
+  }
+  const fallback = String(text ?? '').trim()
+  if (!thread.length && !fallback) return
 
+  // The founding or join has already COMMITTED by the time this runs (`app.found_business`
+  // is its own transaction), so a carry that cannot write must never bubble up and turn a
+  // real business into a tool refusal. Failing here costs the transcript — the old
+  // world's behaviour — and nothing else.
+  try {
   await withSession({ role: 'service', academyId }, async (tx) => {
     const senderRows = await unsafeQuery<{ id: string }>(
       tx,
@@ -96,23 +147,53 @@ async function carryOpeningMessage(
     const senderId = senderRows[0]?.id
     if (!senderId) return
 
-    await unsafeQuery(
-      tx,
-      // `app.now()`, never a TypeScript clock: an inbound row has to land on the same
-      // tenant clock as the outbound rows it sits between, or a moved sim clock sorts
-      // every reply above the message that prompted it (F-BX).
-      `insert into message (id, academy_id, contact_id, sender_id, direction, body, payload,
-                            status, queued_at, sent_at, delivered_at, in_window, idempotency_key)
-       values ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'inbound', $5, $6::text::jsonb,
-               'delivered', app.now(), app.now(), app.now(), true, $7)
-       on conflict (idempotency_key) do nothing`,
-      [
-        newId(), academyId, contactId, senderId, body,
-        JSON.stringify({ source: 'front_desk', carried: true }),
-        idem('carried', contactId, body.slice(0, 64)),
-      ],
-    )
+    if (!thread.length) {
+      // The floor: the triggering text alone, stamped `app.now()` — an inbound row has
+      // to land on the tenant clock it sits inside, or a moved sim clock sorts every
+      // reply above the message that prompted it (F-BX).
+      await unsafeQuery(
+        tx,
+        `insert into message (id, academy_id, contact_id, sender_id, direction, body, payload,
+                              status, queued_at, sent_at, delivered_at, in_window, idempotency_key)
+         values ($1::uuid, $2::uuid, $3::uuid, $4::uuid, 'inbound', $5, $6::text::jsonb,
+                 'delivered', app.now(), app.now(), app.now(), true, $7)
+         on conflict (idempotency_key) do nothing`,
+        [
+          newId(), academyId, contactId, senderId, fallback,
+          JSON.stringify({ source: 'front_desk', carried: true }),
+          idem('carried', contactId, fallback.slice(0, 64)),
+        ],
+      )
+      return
+    }
+
+    for (const m of thread) {
+      const queued = m.queued_at ?? at
+      // `created_at` is written EXPLICITLY with the original row's value — its default
+      // is app.now(), which is the carry moment, and every phone reader pages on
+      // created_at: left to the default, a founding replayed the whole desk exchange
+      // onto the person's screen as a burst of just-sent messages (review find).
+      await unsafeQuery(
+        tx,
+        `insert into message (id, academy_id, contact_id, sender_id, direction, body, payload,
+                              status, created_at, queued_at, sent_at, delivered_at, in_window, idempotency_key)
+         values ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7::text::jsonb,
+                 'delivered', $8, $9, $10, $11, true, $12)
+         on conflict (idempotency_key) do nothing`,
+        [
+          newId(), academyId, contactId, senderId,
+          m.direction === 'outbound' ? 'outbound' : 'inbound', m.body,
+          JSON.stringify({ source: 'front_desk', carried: true }),
+          m.created_at ?? queued, queued, m.sent_at ?? queued, m.delivered_at ?? queued,
+          idem('carried', contactId, String(m.id)),
+        ],
+      )
+    }
   })
+  } catch {
+    // Deliberately swallowed — see above. An uncarried transcript is a gap the model
+    // works without, exactly as every hand-over did before this mechanism existed.
+  }
 }
 
 /**
@@ -179,7 +260,7 @@ export async function joinBusiness(
     return { refused: `could not open a contact at ${target.name} — nothing was written` }
   }
 
-  await carryOpeningMessage(target.academyId, landed.contactId, openingText, at)
+  await carryDeskTranscript(target.academyId, landed.contactId, identity, openingText, at)
 
   /**
    * What the desk worked out, written where the business can read it.
@@ -324,7 +405,7 @@ export async function foundBusiness(
     return { refused: `${name} was not created — nothing was written, and nothing is half-made` }
   }
 
-  await carryOpeningMessage(String(made.academy_id), String(made.contact_id), o.openingText, at)
+  await carryDeskTranscript(String(made.academy_id), String(made.contact_id), identity, o.openingText, at)
 
   return {
     academyId: String(made.academy_id),

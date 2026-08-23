@@ -1653,7 +1653,17 @@ export async function variableTail(
     who.push(
       `They told the front desk they were a ${arrivedAs}, and nothing in this business has been written down about ` +
         `them yet — that is why they show as ${roles}. It is what they SAID, not a role: it grants nothing and you ` +
-        `should treat it as the answer to a question you therefore do not need to ask again.`,
+        `should treat it as the answer to a question you therefore do not need to ask again.` +
+        // The route, stated where the claim is read, because working it out cost six days
+        // on the 23 Aug ace month: the desk founded the business off the coach's message
+        // 2.4 seconds before the real owner's, and the model rediscovered the transfer
+        // path (a confirmation only the seat-holder's tap can answer) on day 8, after the
+        // owner had resigned to running the business on paper.
+        (arrivedAs === 'owner'
+          ? ` An OWNER claim has exactly one route: the current admin's own tap. You cannot write academy_admin ` +
+            `and no tool grants seats — stage the question to the current admin now, one tap, their words quoted, ` +
+            `and tell this person you have done so. Do not spend rounds looking for another door; there is none.`
+          : ''),
     )
   }
   /**

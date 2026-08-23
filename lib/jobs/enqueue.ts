@@ -315,12 +315,29 @@ export async function liveAgentTasks(academyId: string): Promise<
   `)
 }
 
-/** Drop one watch (§13.1's "[drop]" button). */
+/**
+ * Drop a watch (§13.1's "[drop]" button).
+ *
+ * @mechanism dropAgentTask — a watch is dropped by the SLUG the screen shows, never by a
+ *   reconstruction of its dedupe key. `schedule` salts the key with eight random chars
+ *   (lib/agent/tools.ts) so a re-mint cannot collide with a done row of the same slug —
+ *   and both droppers then recomputed the UNSALTED key and could never match a live row.
+ *   On the 23 Aug ace-tennis month the model promised a departing coach quiet, called
+ *   drop_watch with the exact slug the ALREADY WATCHING line printed, was told the rows
+ *   were not there — which made its "it's already stopped on my end" false — and the fee
+ *   watch fired onto the departed phone daily for six more days. One identity for
+ *   matching now: the stored payload slug, exactly as the screen prints it, with the
+ *   bare-key equality kept only for rows minted before payloads carried one. Every row
+ *   wearing the slug cancels together, because that is what a person means by "stop
+ *   watching that". Closes F-EP.
+ */
 export async function dropAgentTask(academyId: string, slug: string): Promise<number> {
   const rows = await withInfra((tx) => tx<{ id: string }[]>`
     update job set status = 'cancelled'
      where kind = 'agent_task' and status = 'pending'
-       and dedupe_key = ${dedupe.agentTask(academyId, slug)}
+       and payload->>'academy_id' = ${academyId}
+       and (payload->>'slug' = ${slug}
+            or dedupe_key = ${dedupe.agentTask(academyId, slug)})
     returning id
   `)
   return rows.length

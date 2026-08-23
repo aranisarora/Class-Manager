@@ -370,7 +370,11 @@ function evaluate(turns) {
       `${dropped.length} composed message(s) were discarded by the runtime (${dropped.reduce((a, d) => a + d.chars, 0)} characters), ` +
         `${droppedSilent.length} of them on turns that then sent NOTHING — ` +
         `${[...new Set(droppedSilent.flatMap((d) => (d.t.jobs ?? []).filter((j) => /:done/.test(j) && !/lane/.test(j))))].join(', ') || 'no named job'} ` +
-        `recorded done regardless. Every count in this run treats those turns as quiet ones.`,
+        `recorded done regardless. Read the discarded prose before treating this as loss: an ` +
+        `agent_task's trailing prose is deliberation by design (F-CX's boundary), and on the ace ` +
+        `month all six flagged turns were correct quiets — this wire says only that model calls ` +
+        `were paid for and no phone saw the words, which a reader must split into "rightly ` +
+        `silent" and "the deliverable died".`,
     )
 
   /**
