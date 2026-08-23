@@ -511,8 +511,9 @@ export async function generateJson<T>(
   let ms = 0
   let error: string | undefined
 
+  let messages = o.messages
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const res = await generate({ ...o, json: true })
+    const res = await generate({ ...o, messages, json: true })
     usage = {
       promptTokens: usage.promptTokens + res.usage.promptTokens,
       outputTokens: usage.outputTokens + res.usage.outputTokens,
@@ -524,17 +525,35 @@ export async function generateJson<T>(
     const text = res.text.trim()
     if (!text) {
       error = `empty content (finish: ${res.finishReason ?? 'unknown'})`
-      continue
+    } else {
+      try {
+        // A fenced block is not JSON, but it is JSON with a wrapper the model added
+        // — and refusing to unwrap it would spend a whole retry on punctuation.
+        const stripped = text.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+        const value = o.validate(JSON.parse(stripped))
+        if (value !== null) return { value, usage, model, ms, attempts: attempt }
+        error = 'the JSON parsed but did not match the shape asked for'
+      } catch (e) {
+        error = `did not parse as JSON: ${(e as Error).message}`
+      }
     }
-    try {
-      // A fenced block is not JSON, but it is JSON with a wrapper the model added
-      // — and refusing to unwrap it would spend a whole retry on punctuation.
-      const stripped = text.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
-      const value = o.validate(JSON.parse(stripped))
-      if (value !== null) return { value, usage, model, ms, attempts: attempt }
-      error = 'the JSON parsed but did not match the shape asked for'
-    } catch (e) {
-      error = `did not parse as JSON: ${(e as Error).message}`
+    // The retry used to re-send the identical request — the error above was
+    // captured for the CALLER and never delivered to the MODEL, so attempt 2 was
+    // a blind re-roll rather than a correction. The model repairs what it is
+    // told about: it gets its own failed output back (when there was one) and
+    // the reason it failed, which is the same deal the tool loop's parseError
+    // path already makes.
+    if (attempt === 1) {
+      messages = [
+        ...o.messages,
+        ...(text ? [{ role: 'assistant', content: text.slice(0, 4000) } as Msg] : []),
+        {
+          role: 'user',
+          content:
+            `That reply did not work: ${error}. Answer again with ONLY a JSON object matching the shape ` +
+            'asked for — no code fence, nothing before or after it.',
+        } as Msg,
+      ]
     }
   }
 

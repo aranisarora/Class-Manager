@@ -2405,6 +2405,16 @@ async function modelTurn(
               role: 'user',
               content:
                 `That last message cannot go out as written: ${violationMessage(violations)}\n\n` +
+                // The draft itself, because the final speaking round breaks out of
+                // the loop before its assistant message is pushed — so the
+                // flattened history above does NOT contain the text this round is
+                // being asked to fix, and "that last message" pointed at nothing.
+                // The model repairs what it is shown and reconstructs what it is
+                // not: without the draft, "just those parts fixed" silently
+                // dropped whichever facts and figures it failed to re-derive.
+                // (Replaying its own words back is not authoring — the bytes are
+                // the model's.)
+                `Here it is, exactly as you wrote it:\n<<<\n${outgoing}\n>>>\n\n` +
                 'Write it again with just those parts fixed. Everything else about it was fine, ' +
                 'and nothing about the situation has changed — do not add anything, and do not ' +
                 'say you are about to do something. This is the last thing sent.',
