@@ -1,6 +1,6 @@
 # What is open
 
-24 findings. This file is the source of truth for what is broken — hand-written, and short on
+25 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -38,6 +38,7 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-EM** | A person minted by name alone can never be messaged, and the real human arriving mints a second one — the coach's pay and classes end the run on a person with no phone | [detail](#f-em--a-person-minted-by-name-alone-can-never-be-messaged-and-the-real-human-arriving-mints-a-second-one) |
 | **F-EN** | A slot written in the evening has no sessions until the overnight beat, and the same evening's turns fall into the gap | [detail](#f-en--a-slot-written-in-the-evening-has-no-sessions-until-the-overnight-beat-and-the-same-evenings-turns-fall-into-the-gap) |
 | **F-ER** | An absence declared in advance has no row, so the product asks the owner about the thing it relayed itself, twice | [detail](#f-er--an-absence-declared-in-advance-has-no-row-so-the-product-asks-the-owner-about-the-thing-it-relayed-itself-twice) |
+| **F-EU** | Commit-by-words can spend the wrong card — a consenter existed, consent to THIS did not | [detail](#f-eu--commit-by-words-can-spend-the-wrong-card--a-consenter-existed-consent-to-this-did-not) |
 | **F-ES** | A fact learned from one person never reaches the turn where another person's decision needs it | [detail](#f-es--a-fact-learned-from-one-person-never-reaches-the-turn-where-another-persons-decision-needs-it) |
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-EE** | §16.3's per-tenant quality proxies — delivery failures, read rate, **response rate**, opt-outs — have no reader, so nothing notices a tenant shouting into silence on a shared number. **The send-path half is built** (`silenceBackoff`); the scheduled roll-up is what remains | [detail](#f-ee--1633s-per-tenant-quality-proxies-have-no-reader) |
@@ -219,6 +220,21 @@ And five from the eager month (`2026-08-23-10-40-sim-ky7u`), 23 Aug 2026:
   the owner four days running, template pairs at Kiran per session — all technically true, all
   noise about a fine reality. The state machine has no way for observed attendance (he marked
   registers? he was seen) to stand in for the tap. Design question, not a quick fix.
+
+And three from the desk A/B (23 Aug 2026):
+
+- **F-AY's class re-staged (closed 17 Aug).** Two-brain arm #29: the owner said *"its just me,
+  skip that"* and no coach row was written, so the solo machinery never armed and a coach-alarm
+  storm burned ₹2.76 over two days. Closed-class-fires is an exit-bar item — verify whether the
+  merged shape reproduces it before the next month.
+- **The F-DK grant now fires on one-brain desk prose turns** — three HELD rounds in the A arm's
+  desk phase at ~₹0.03–0.05 each. New, small, mode-specific cost surface; recorded beside the
+  grant's original sizing (6/41 tenant turns) so the next reading prices both.
+- **A category-shaped founding name is never revisited.** The one-brain desk, founding under the
+  granted round's act-now pressure, took "tennis coaching" as the business name and five days of
+  family invites introduced "the class manager for tennis coaching"; the two-brain arm's slower
+  founding collected "rahul menon tennis coaching". A name-shaped nudge at `set_up_business`
+  (which is "safe to call repeatedly") is the obvious small mechanism; not built here.
 
 And two from the 23 Aug line review, both pre-existing:
 
@@ -614,6 +630,14 @@ how a coaching business works. Whatever holds that tail has to be able to tell a
 row from a rule the model finds plausible — and to say which it is. Volunteering commercial terms
 is not a thing to instruct against; it is a thing to source.
 
+**23 Aug 2026, the desk A/B's one-brain arm (#35) — the class re-fired WITH billing attached.**
+A parent asked about her enrolled, paying child and was told *"the trial's already how this
+works — free… ₹1,500/month if he stays"* — invented, about money already billed. What followed
+is worth recording as hard as the invention: the model self-diagnosed (*"Correct my overstep"*),
+escalated with the parent's words quoted, the owner approved the fix by tap, and the ₹1,500 was
+reversed with both sides told — the whole correction inside the run. The invention is this
+finding; the recovery is the mechanism stack working as designed.
+
 ---
 
 ### F-CI · The product reports what it TRIED as what HAPPENED, and `turnState` is already telling it otherwise
@@ -898,6 +922,9 @@ still claimed *"I've put it in front of the owner with your deadline."* Nothing 
 anybody; the claim was composed while the send it described died one stage later. (The
 lint-staleness half is closed — F-EQ — and the false claim is this finding's, standing.)
 
+**23 Aug 2026, desk A/B one-brain arm (#45):** a receipt said both families *"have already
+responded"* to invites their messages had merely PRECEDED — a small tense of the same class.
+
 ### F-DV · The seat COULD always press a button and was never told so, so every mechanism behind a tap was measured at a fifteenth of its rate
 
 **The first draft of this finding was wrong and the correction is the interesting part.** It said
@@ -1064,6 +1091,31 @@ materialise the moment the slot or assignment is written) makes the future sessi
 `client_cancel` works the day the absence is declared. What remains after that is only the
 genuinely pre-timetable declaration, which may be rare enough to route to the admin as it does
 today. Verify against a post-F-EN run before building a `planned_absence` table.
+
+### F-EU · Commit-by-words can spend the wrong card — a consenter existed, consent to THIS did not
+
+**Saw:** the desk A/B's two-brain arm (`2026-08-23-12-46-sim-pm1f` #36), in a mechanism both
+arms share. Rahul asked *"whats the all 7 about"* — a clarifying question about a row count —
+and the model answered it AND called `commit({action_id})` on the live go-live card. The guard
+held (he had typed this turn), the card was live, the commit ran, and the business went live on
+a question. The model's own reasoning in the same turn: *"that commit was the wrong action"* —
+and it never told him. Two days later: *"wen did i go live i never tapped that."* The one-brain
+arm's same-seed week shows the healthy shape for contrast: its day-4 go-live was the owner's
+explicit tap.
+
+**Root:** `commitByActionId`'s guard (`typedThisTurn`) proves a CONSENTER exists, not that
+their words answer that card's question. The card block already states the rule where composing
+happens — *"anything short of a clear yes is not a yes"* — and this run is the measured case of
+the statement alone not closing the class when the temptation is one call away, which is F-CI's
+own recorded lesson about `turnState`.
+
+**Where it lives, and the trap.** A prose-yes classifier is the banned fix. The honest
+structural option: `commit` RECORDS the words it read as consent — the person's quoted sentence
+riding the audit row and the receipt, so what was taken as a yes is visible to the person it was
+taken from and to every later reader (F-CD's receipt discipline extended to consent). That
+converts a silent wrong-card spend into a sentence the person can contradict in the next
+message. One instance, on the retired arm but a live mechanism; verify on the merged month
+before building.
 
 ### F-ES · A fact learned from one person never reaches the turn where another person's decision needs it
 
