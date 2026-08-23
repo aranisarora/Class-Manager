@@ -173,3 +173,27 @@ See `review-appendix.json` beside this file for the machine-readable set (file, 
 symbol, claim, evidence, proposed fix, severity, per slice). The verified subset above is
 R1–R14; everything else in that file awaits the same hand-check before anything is built
 from it.
+
+## Shipped (same day)
+
+| Items | Commit |
+| --- | --- |
+| R1 · CHANGED_NOTHING becomes a real rollback | `ee4d3e5` |
+| R3 · R6 · + the send-census — failed reads become stated gaps | `3d7066e` |
+| R4 · R9 · + standing clips — every cut states itself | `8600c86` (endings repaired in `e9e9a2c`) |
+| R2 · R8 — the model is shown its own failed words | `734b84e` |
+| R7 · R10 — refusals carry their true cause | `72a1807` |
+| R5 — handoff reports landings, drops the platform claim | `89b7690` |
+| R11 — a stalled turn answers the calls it abandons | `f7bbb99` |
+| R12 — altered reports the affordance downgrades | `69f3cac` |
+| R13 — the attachment becomes a stated fact, in-turn and in history | `743e653` |
+| R14 — ledgered as F-EV, awaiting its own drive | `4ef8d32` |
+
+Housekeeping notes for the next session: `@mechanism` tags were deliberately not added
+for the new behaviour in this pass — `docs/MECHANISMS.md` regeneration is entangled with
+another session's in-flight `build-mechanisms.ts` renderer change, so tags (mediaBlock,
+the recentActions marker, the supersession carry) should be added and `npm run
+mechanisms` re-run once that lands. The regenerated index sits uncommitted in the
+worktree so `npm run check` is green here; commit it together with the renderer change.
+None of the shipped changes moves WHEN a stage runs except R1, which moves the code to
+where ANATOMY already said it was.
