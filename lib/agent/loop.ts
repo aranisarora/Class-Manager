@@ -14,7 +14,7 @@ import { now, inZone } from '@/lib/clock'
 import { newId } from '@/lib/ids'
 import { env } from '@/lib/env'
 import { resolveIdentity } from '@/lib/identity'
-import { runFrontDeskTurn, type FrontDeskRun, type Handover } from '@/lib/frontdesk'
+import { arrivalForContact, type Handover } from '@/lib/frontdesk'
 import { consumeAction, type ActionPayload } from '@/lib/actions'
 import { composeAndSend } from '@/lib/messaging/compose'
 import { bodyWithSharedContacts, type SharedContact } from '@/lib/messaging/contact-card'
@@ -31,6 +31,7 @@ import { audienceFor, executePlan, type PlanStep } from './plan'
 import { jsonLit, lit, uid, type OperationName } from './operations'
 import {
   committedResult,
+  deskLintScope,
   pendingConfirmation,
   runTool,
   seedFromCommitted,
@@ -367,36 +368,18 @@ async function runTurnBody(input: TurnInput, turnId: string): Promise<TurnOutput
     }
 
     /**
-     * A visitor: somebody at the front desk of this number, who has not said whether
-     * they are looking for classes or run them (0039). `resolveInbound` no longer
-     * guesses that, so this is the branch where the product asks.
-     *
-     * It is a *different turn*, not a flag on this one. The tenant path's whole context
-     * — `SCHEMA_DOC`, the operation registry, the catalog, the census of a business's
-     * classes and money — is about a business this person does not have, and offering it
-     * would spend tens of thousands of characters describing an empty tenant to a
-     * stranger. `runFrontDeskTurn` runs a second, much smaller stable prefix over five
-     * verbs and hands back the same numbers `modelTurn` does, so `writeTurn` below
-     * records a front-desk turn exactly as it records a parent's — same table, same
-     * report, same drive.
-     *
-     * A front-desk button replays as typed text rather than carrying an op, so a visitor
-     * who taps one arrives here with `text` and never through `tap` below.
+     * A visitor — somebody at the front desk of this number (0039) — takes the SAME
+     * loop as everybody else since the one-brain merge: the stable prefix carries a
+     * desk section, the tail swaps the census for the desk's own (`visitorTail`), and
+     * the tool surface is gated at the dispatcher (`visitorSurface`) — which is
+     * PREFIX-RULES' own rule, "constrain a round at its dispatcher, never by narrowing
+     * what it is shown". What used to be a second brain here (`runFrontDeskTurn`: its
+     * own prefix, five verbs, its own recorder that F-CV had to teach to record) is a
+     * MODE, and the one recorder covers it natively. A desk verb surfaces `handover`,
+     * performed below exactly as before. Shipped under an A/B against the two-brain
+     * arm — the only argument ARCHITECTURE accepts for a shape.
      */
-    if (goToModel && text && identity.roles.includes('visitor')) {
-      const fd = await runFrontDeskTurn({ session, identity, turnId, text })
-      outcomes.push(...fd.outcomes)
-      toolCalls = fd.toolCalls
-      modelName = fd.model
-      promptTokens = fd.promptTokens
-      outputTokens = fd.outputTokens
-      cachedTokens = fd.cachedTokens
-      replyText = [replyText, fd.replyText].filter((s) => s.trim()).join('\n\n')
-      trace = [...trace, ...frontDeskTrace(fd)]
-      rounds = fd.rounds
-      if (fd.error) error = fd.error
-      handover = fd.handover
-    } else if (goToModel && (text || input.task || tap)) {
+    if (goToModel && (text || input.task || tap)) {
       /**
        * `outcomes` goes IN rather than coming back out, and on the tap path that is
        * load-bearing rather than tidy.
@@ -435,6 +418,7 @@ async function runTurnBody(input: TurnInput, turnId: string): Promise<TurnOutput
       trace = [...trace, ...m.trace]
       rounds = m.rounds
       if (m.error) error = m.error
+      handover = m.handover
     }
   } catch (e) {
     error = e instanceof Error ? e.message : String(e)
@@ -1303,7 +1287,15 @@ async function modelTurn(
   trace: ToolTrace[]
   rounds: number
   error?: string
+  /** Set when a desk verb ended the visitor's part — the caller performs it. */
+  handover?: Handover
 }> {
+  // The one-brain desk: a visitor runs THIS loop, in a mode. The desk verbs need the
+  // arrival row (asked-state, opening words); loaded once here, shared by the tail.
+  const isVisitor = identity.roles.includes('visitor')
+  const visitorArrival = isVisitor
+    ? await arrivalForContact(identity.academyId, identity.contact.id).catch(() => null)
+    : null
   const toolCtx: ToolCtx = {
     session,
     identity,
@@ -1312,6 +1304,7 @@ async function modelTurn(
     // that carries this person's own typed words. A job turn has nobody speaking,
     // and its service-shaped claim path would skip the contact check entirely.
     typedThisTurn: input.source !== 'job' && Boolean((input.text ?? '').trim()),
+    ...(isVisitor ? { visitor: { arrival: visitorArrival, text: input.text ?? '' } } : {}),
     pendingPlans: new Map<string, PlanStep[]>(),
     pendingMeta: new Map<string, { intent: string; summary: string; totalRows: number; needsConfirm: boolean }>(),
     outcomes,
@@ -1378,6 +1371,7 @@ async function modelTurn(
     queryResults: input.task?.queryResults,
     recentLookups: lookups,
     recentActions: actions,
+    ...(toolCtx.visitor ? { visitor: { text: toolCtx.visitor.text, arrival: toolCtx.visitor.arrival } } : {}),
   })
 
   const situation: string[] = [tail]
@@ -1953,6 +1947,12 @@ async function modelTurn(
     }
     messages.push(...responses)
 
+    // A hand-over ends the desk's part immediately — before the model can add a parting
+    // sentence, because the business is about to answer this same message from inside
+    // itself, and two answers to one question is what that shape produces if nothing
+    // stops it. (The rule the second desk brain enforced by returning; the mode keeps.)
+    if (toolCtx.visitor?.handover) break
+
     // Out of the loop, not out of the turn: the recovery round below still gets to
     // put what was learned into words, which beats an apology that explains nothing.
     if (stalled) break
@@ -2085,7 +2085,10 @@ async function modelTurn(
   // straight to "something broke on my side" without ever asking again. One more
   // round is cheaper than an apology, and it is the difference between a product
   // that stumbles and one that ignores you.
-  if (silent() && told === 0 && input.source !== 'job') {
+  // A visitor turn that ended on a hand-over is silent CORRECTLY: the business answers
+  // this same message from inside itself in the next breath, and speaking here would
+  // compose the second answer the hand-over exists to prevent.
+  if (silent() && told === 0 && input.source !== 'job' && !toolCtx.visitor?.handover && !toolCtx.visitor?.stopped) {
     try {
       const forced = await generate({
         system,
@@ -2166,7 +2169,10 @@ async function modelTurn(
    * been told something true this turn, and a second message would read as the
    * first being withdrawn.
    */
-  if (silent() && told === 0 && input.source !== 'job') {
+  // A visitor turn that ended on a hand-over is silent CORRECTLY: the business answers
+  // this same message from inside itself in the next breath, and speaking here would
+  // compose the second answer the hand-over exists to prevent.
+  if (silent() && told === 0 && input.source !== 'job' && !toolCtx.visitor?.handover && !toolCtx.visitor?.stopped) {
     /**
      * A FOURTH CASE, and it outranks the other three: their tap already ran.
      *
@@ -2274,6 +2280,18 @@ async function modelTurn(
    * Same shape as the job-turn discard above: dropped, traced, visible to a
    * drive.
    */
+  // Trailing text after a hand-over is the desk adding a parting sentence to a
+  // conversation the business is already answering — discarded, traced, never sent.
+  if (text.trim() && !spoke() && toolCtx.visitor?.handover) {
+    trace.push({
+      round: rounds,
+      name: '(handed over: trailing prose discarded — the business answers next)',
+      ms: 0,
+      args: evidence(text, 2000),
+    })
+    text = ''
+  }
+
   if (text.trim() && !spoke() && toolCtx.confirmationAskedTo?.has(identity.contact.id)) {
     trace.push({
       round: rounds,
@@ -2343,7 +2361,10 @@ async function modelTurn(
     // failed to produce anything twice — a third call to fix this file's wording is
     // a call spent on the wrong author. A violation here is a bug in the constant,
     // and the trace entry below is where it gets found.
-    const violations = runtimeAuthored ? [] : proseViolations(outgoing, identity)
+    // The same lint scope the `reply` case uses — for a visitor it carries the NUMBER's
+    // business names, read at validation time (`deskLintScope`, F-EQ), so both of the
+    // desk's speaking paths mask through one author.
+    const violations = runtimeAuthored ? [] : proseViolations(outgoing, await deskLintScope(toolCtx))
     if (violations.length) {
       trace.push({
         round: rounds,
@@ -2385,7 +2406,7 @@ async function modelTurn(
         // Only if it is actually better. A rewrite that still carries machinery
         // is not worth preferring over the original, and the original at least
         // came from a round that had the whole turn in front of it.
-        if (rewritten && !proseViolations(rewritten, identity).length) outgoing = rewritten
+        if (rewritten && !proseViolations(rewritten, await deskLintScope(toolCtx)).length) outgoing = rewritten
       } catch {
         /* the draft still goes; a failed repair must not become silence */
       }
@@ -2398,7 +2419,7 @@ async function modelTurn(
        * twenty lines above. `runtimeAuthored` is set so the R10 note and the reflection
        * preamble both know the words that went out were not the model's.
        */
-      const stillStructural = structuralViolation(proseViolations(outgoing, identity))
+      const stillStructural = structuralViolation(proseViolations(outgoing, await deskLintScope(toolCtx)))
       if (stillStructural) {
         trace.push({
           round: rounds,
@@ -2590,7 +2611,12 @@ async function modelTurn(
    *
    * Nobody is waiting: the reply is already on their phone.
    * ----------------------------------------------------------------------- */
-  if (!forcedError && (text.trim() || spoke())) {
+  // Never on a visitor turn: the desk academy is sterile by design — no memory rows,
+  // no watches — so both of reflection's questions ("a fact worth carrying? something
+  // to come back to?") have structurally empty answers there, and the desk verbs'
+  // dispatcher would refuse the tools anyway. A hand-over's tenant re-entry reflects
+  // as itself, inside the business, where the answers are real.
+  if (!forcedError && !toolCtx.visitor && (text.trim() || spoke())) {
     try {
       // Belt and braces, and now the outer belt: `reply` is declared in this
       // round like every other tool, so what refuses a second message is the
@@ -2785,6 +2811,7 @@ async function modelTurn(
     trace,
     rounds,
     ...(forcedError ? { error: forcedError } : {}),
+    ...(toolCtx.visitor?.handover ? { handover: toolCtx.visitor.handover } : {}),
   }
 }
 
@@ -2807,74 +2834,13 @@ async function modelTurn(
  * Flattening keeps every fact and loses only the encoding. "Everything the turn learned
  * is already sitting in `contents`" is the comment above; this is what makes it true.
  */
-/**
- * @mechanism frontDeskTrace — the front desk's turn is rendered into trace rows by the
- *   SAME author that renders a tenant turn's, so `(context)` and `(model)` exist on both
- *   and one set of caps governs both. `lib/frontdesk/turn.ts` hands back plain data
- *   (`FrontDeskRecord`) rather than rows, because it cannot import `evidence` or the
- *   markers from this file without closing an import cycle — so the shape lives here,
- *   once, instead of being copied there and drifting.
- *
- *   What it retires: the desk ran the model and recorded none of it. Its `run.trace`
- *   was only ever pushed to from inside `for (const call of gen.functionCalls)`, so a
- *   round that answered a person in PROSE — which is every round that answers a
- *   stranger — wrote nothing at all. Measured on `2026-08-22-08-13-sim-7bo8`: 16 desk
- *   turns, 0 with a `(model)` row, 0 with a `(context)` row, and `turn_record` rows
- *   averaging 121 bytes against 45,280 for the 45 tenant turns. An empty row that
- *   exists is worse than an absent one — it reads as coverage, and the judge scored 45
- *   of 218 turns without ever being able to see the eight in which this product lost
- *   both of the customers it started with.
- *
- *   The desk also clipped its own tool rows with a literal `.slice(0, 2000)`, which
- *   `captureFullTrace` could not lift because the value arrived already short. Those
- *   values come through whole now and are wrapped here, so the cap is the one every
- *   other tool row gets and `PROBE_FULL_TRACE` reaches the desk for the first time.
+/*
+ * `frontDeskTrace` lived here until the one-brain merge: the second desk brain returned
+ * plain data and this file rendered it into trace rows so one reader covered both paths
+ * (F-CV). A visitor turn now IS the ordinary loop, so the one recorder records it
+ * natively and there is nothing left to translate — which was F-CV's goal stated the
+ * long way round.
  */
-function frontDeskTrace(fd: FrontDeskRun): ToolTrace[] {
-  const out: ToolTrace[] = [
-    {
-      round: 0,
-      name: CONTEXT_MARKER,
-      ms: 0,
-      args: {
-        prefix: { chars: fd.record.prefixChars, head: '(front desk — byte-identical for every stranger)' },
-        tail: fd.record.tail,
-        said: fd.record.said || null,
-        history: fd.record.historyCount,
-      },
-    },
-  ]
-  // The model's round, then the calls it made in that round — the order a tenant turn
-  // reads in, so one reader renders both without knowing which path produced it.
-  const toolRows = fd.trace
-  for (const r of fd.record.rounds) {
-    out.push({
-      round: r.round,
-      name: TRACE_MARKER,
-      ms: r.ms,
-      args: r.prose ? evidence(r.prose, 4000) : { returnedNothing: true },
-      ...(r.reasoning ? { reasoning: evidence(r.reasoning, REASONING_TRACE_CAP) } : {}),
-      result: {
-        in: r.promptTokens,
-        cached: r.cachedTokens,
-        out: r.outputTokens,
-        calls: r.calls,
-        finish: r.finish ?? 'unknown',
-      },
-    })
-    for (const t of toolRows.filter((t) => t.round === r.round)) {
-      out.push({ ...t, args: evidence(t.args, 4000), result: evidence(t.result, 4000) })
-    }
-  }
-  // A tool row whose round never made it into `record.rounds` — a `generate` that threw
-  // after its calls were traced, say. Recorded rather than dropped: the turns worth
-  // reading are the ones that went wrong.
-  const seen = new Set(fd.record.rounds.map((r) => r.round))
-  for (const t of toolRows.filter((t) => !seen.has(t.round))) {
-    out.push({ ...t, args: evidence(t.args, 4000), result: evidence(t.result, 4000) })
-  }
-  return out
-}
 
 function flattenToolTurns(messages: Msg[]): Msg[] {
   const names = new Map<string, string>()

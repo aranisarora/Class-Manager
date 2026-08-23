@@ -11,13 +11,17 @@
  *   arrival.ts   the funnel row. Opened by `resolveInbound` the moment somebody
  *                arrives, settled when they go somewhere — so a stranger who wrote
  *                once and never answered is a row rather than an absence.
- *   context.ts   the second stable prefix, and the tail about this one arrival.
- *   tools.ts     five verbs: reply, find_business, join_business, start_business,
- *                stop_messaging. There is no "list the businesses" verb at any
- *                privilege, so the desk cannot recite a customer list to a stranger.
+ *   context.ts   the visitor tail about this one arrival — rendered by the ONE brain's
+ *                `variableTail` since the one-brain merge; the second stable prefix
+ *                died with the second brain.
+ *   tools.ts     the four desk verbs' implementations: find_business, join_business,
+ *                start_business, stop_messaging. Declared inside the one tool block
+ *                (lib/agent/tools.ts), gated to visitor turns at the dispatcher. There
+ *                is no "list the businesses" verb at any privilege, so the desk cannot
+ *                recite a customer list to a stranger.
  *   route.ts     the two destinations and the one refusal — the writes themselves.
- *   turn.ts      the rounds. Returns to `runTurn`, which records the turn and performs
- *                the hand-over.
+ *   (turn.ts     was the second brain's rounds; deleted in the one-brain merge — a
+ *                visitor turn runs lib/agent/loop.ts like every other.)
  *
  * WHAT IS DELIBERATELY NOT HERE: a sender, a turn recorder, a message table, an action
  * table, a second RLS story. The front desk is an `academy` row (0039), so a visitor
@@ -27,9 +31,7 @@
 
 export { openArrival, arrivalForContact, markArrivalAsked, settleArrival, foundedByRecently } from './arrival'
 export type { Arrival, ArrivalOutcome } from './arrival'
-export { FRONT_DESK_PREFIX, FRONT_DESK_BOUNDARY, frontDeskTail, frontDeskHistory } from './context'
+export { frontDeskTail } from './context'
 export { businessesOnThisNumber, joinBusiness, foundBusiness, stopMessagingVisitor, MAX_BUSINESSES_PER_NUMBER_24H } from './route'
 export type { Handover, RouteResult } from './route'
-export { frontDeskToolDecls, runFrontDeskTool } from './tools'
-export { runFrontDeskTurn } from './turn'
-export type { FrontDeskRun } from './turn'
+export { runFrontDeskTool } from './tools'

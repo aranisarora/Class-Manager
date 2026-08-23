@@ -36,6 +36,14 @@ import {
 } from './steps'
 import { lit, uid, OPERATIONS, operationSignature, type OperationName } from './operations'
 import { parametersFor } from './schema-json'
+// One direction, no cycle: frontdesk/tools.ts imports only leaves (schema-json, route,
+// identity), never this file — verified before this import was added, because this repo
+// has already paid for one load-time cycle ("act's enum was built at module load, one
+// new edge made the list empty").
+import { FindBusiness, JoinBusiness, StartBusiness, StopMessaging, runFrontDeskTool } from '@/lib/frontdesk/tools'
+import { businessesOnThisNumber, type Handover as FrontDeskHandover } from '@/lib/frontdesk/route'
+import { markArrivalAsked } from '@/lib/frontdesk/arrival'
+import { now as domainNow } from '@/lib/clock'
 
 export type ToolCtx = {
   session: SessionCtx
@@ -47,6 +55,17 @@ export type ToolCtx = {
    * job turn — which runs with nobody speaking — must not be able to spend a card.
    */
   typedThisTurn?: boolean
+  /**
+   * Set on a front-desk turn — the mode `visitorSurface` gates the tool surface by.
+   * Carries what the desk verbs need and produce: the arrival row, the person's text
+   * (which a hand-over re-enters), and the handover a verb decided, for the loop.
+   */
+  visitor?: {
+    arrival: unknown
+    text: string
+    handover?: FrontDeskHandover
+    stopped?: boolean
+  }
   pendingPlans: Map<string, PlanStep[]>
   /**
    * What each pending plan is and how big it is, so the loop can mint the
@@ -1336,6 +1355,47 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
       required: ['reason', 'summary'],
     },
   },
+  /**
+   * The four front-desk verbs, declared to EVERY turn because the tool block is inside
+   * the cached prefix and a per-mode block is a second prefix whatever it is called
+   * (PREFIX-RULES). They run only on a visitor turn — a conversation no business holds
+   * yet — and refuse everywhere else, at the dispatcher (`visitorSurface`, ToolCtx).
+   * Schemas are the desk's own, imported so the two surfaces cannot drift.
+   */
+  {
+    name: 'find_business',
+    description:
+      'FRONT DESK ONLY (a conversation no business holds yet; refused inside one). Look up a business on ' +
+      'this number by the name the person used. Returns the id join_business needs, or that nothing ' +
+      'matched. There is no way to list the businesses on this number and you should not imply you can ' +
+      'browse them.',
+    parametersJsonSchema: parametersFor(FindBusiness),
+  },
+  {
+    name: 'join_business',
+    description:
+      'FRONT DESK ONLY. This person belongs at an existing business on this number — as a customer, a ' +
+      'coach who works there, or someone claiming to own it. Hands the conversation over: they get a ' +
+      'contact there, their whole desk exchange crosses with them, and the business answers them next, in ' +
+      'this same thread. ENDS THE DESK\'S PART — say nothing after it.',
+    parametersJsonSchema: parametersFor(JoinBusiness),
+  },
+  {
+    name: 'start_business',
+    description:
+      'FRONT DESK ONLY. This person runs classes and wants this to manage them. Creates their business ' +
+      'with them as its admin and hands the conversation over so it can start setting itself up with them. ' +
+      'Nothing is sent to anybody else, and every value can be changed later by saying so. ' +
+      'ENDS THE DESK\'S PART — say nothing after it.',
+    parametersJsonSchema: parametersFor(StartBusiness),
+  },
+  {
+    name: 'stop_messaging',
+    description:
+      'FRONT DESK ONLY. They asked to be left alone. Nothing further will reach this number from here. ' +
+      'Use it when they say so, not when they simply go quiet.',
+    parametersJsonSchema: parametersFor(StopMessaging),
+  },
   ]
 }
 
@@ -1859,11 +1919,117 @@ function relationsNamed(query: string): string[] {
   return [...new Set(found)]
 }
 
+/**
+ * @mechanism visitorSurface — the front desk is a MODE of the one brain, not a second
+ *   one. A turn whose conversation belongs to no business yet (0039's visitor) runs the
+ *   same loop, the same stable prefix and the same declarations as every tenant turn,
+ *   and the SURFACE is gated here at the dispatcher: the four desk verbs run only in
+ *   this mode, everything tenant-shaped refuses with the truth, and a tenant turn
+ *   reaching for a desk verb is refused the same way — because PREFIX-RULES' own
+ *   measured rule is "constrain a round at its dispatcher, never by narrowing what it
+ *   is shown", and a visitor-narrowed tool block would be a second cached prefix
+ *   whatever it was called. Replaces the second desk brain (`runFrontDeskTurn`) whose
+ *   seam cost F-EO, F-EQ, F-CV and the ace month's owner-seat jam; measured against
+ *   that arm by A/B.
+ */
+async function visitorSurface(
+  name: string,
+  args: any,
+  ctx: ToolCtx,
+): Promise<{ result: unknown } | null> {
+  const DESK_VERBS = new Set(['find_business', 'join_business', 'start_business', 'stop_messaging'])
+  if (ctx.visitor) {
+    // The hand-over LATCHES: once a verb has decided one, every further call this turn
+    // — a parting reply, a second start_business — is refused, because the business is
+    // about to answer this same message from inside itself, and the second brain used
+    // to guarantee this by returning mid-round (review find: without the latch, a
+    // round of [join_business, reply] sent the desk's goodbye AND the business's
+    // answer, and [start_business A, start_business B] founded two businesses and
+    // orphaned the first with the carried transcript).
+    if (ctx.visitor.handover) {
+      return {
+        result: {
+          ok: false,
+          error:
+            'The hand-over has already happened this turn — the business answers them next, from inside ' +
+            'itself. Nothing more should be said or done here; this call did nothing.',
+        },
+      }
+    }
+    if (DESK_VERBS.has(name)) {
+      const r = await runFrontDeskTool(
+        ctx.identity,
+        (ctx.visitor.arrival ?? null) as any,
+        name,
+        args ?? {},
+        ctx.visitor.text,
+      )
+      if (r.handover) ctx.visitor.handover = r.handover
+      if (r.stopped) ctx.visitor.stopped = true
+      return { result: r.content }
+    }
+    if (name !== 'reply' && name !== 'read') {
+      return {
+        result: {
+          ok: false,
+          error:
+            'No business holds this conversation yet — this person is at the number\'s front desk, and ' +
+            'this tool acts inside a business. What exists here: reply (speak, with buttons), read (the ' +
+            'desk owns no rows, so expect empty), and the desk verbs — find_business, join_business, ' +
+            'start_business, stop_messaging. Founding or joining is what makes everything else real.',
+        },
+      }
+    }
+    return null
+  }
+  if (DESK_VERBS.has(name)) {
+    return {
+      result: {
+        ok: false,
+        error:
+          'This conversation already belongs to a business, so the front-desk verbs have no work here — ' +
+          'they exist only before that. Whatever you were routing is already routed; act inside this ' +
+          'business instead.',
+      },
+    }
+  }
+  return null
+}
+
+/**
+ * @mechanism deskLintScope — a visitor turn's lint scope carries the NUMBER's business
+ *   names, read at VALIDATION time, never reused from the turn's start: the name a draft
+ *   most needs masked is the business founded seconds ago — by the other person in a
+ *   founding race, or by this turn's own `start_business` collision. On the 23 Aug ace
+ *   month the desk composed exactly the right repair ("There's already a business called
+ *   Rahul's Academy — is that yours?") 2.4 seconds after that business was founded from
+ *   the coach's phone; the stale mask let the "academy" ban fire on the business's own
+ *   name, the question shipped nowhere, and the owner seat stayed with the coach for the
+ *   whole run. One author for BOTH speaking paths — the `reply` case here and the
+ *   trailing-prose lint in the loop — through `LintScope.businessNames`, the field the
+ *   lint has carried for exactly this caller. A read that cannot complete masks nothing
+ *   rather than blocking the send. Closes F-EQ.
+ */
+export async function deskLintScope(ctx: ToolCtx): Promise<Identity | { academyId: string | null; academy: Identity['academy']; businessNames: string[] }> {
+  if (!ctx.visitor) return ctx.identity
+  try {
+    const names = (await businessesOnThisNumber(ctx.identity)).map((b) => String(b.name ?? '')).filter(Boolean)
+    return { academyId: ctx.identity.academyId, academy: ctx.identity.academy, businessNames: names }
+  } catch {
+    return ctx.identity
+  }
+}
+
 export async function runTool(
   name: string,
   args: any,
   ctx: ToolCtx,
 ): Promise<{ result: unknown; note?: string }> {
+  // The visitor-mode surface gate, before the operation rewrite so an operation
+  // refuses under its own name, with the truth.
+  const gated = await visitorSurface(name, args, ctx)
+  if (gated) return gated
+
   // An operation called by its own name is exactly the work `act` already does:
   // one step, previewed or executed by the same `needsPreview` judgement, with
   // the same diff and the same follow-up buttons. Only the declaration changed —
@@ -2493,7 +2659,7 @@ export async function runTool(
        * worse than a machine word in an otherwise good sentence.
        */
       if (!ctx.proseChecked) {
-        const violations = proseViolations(body, ctx.identity)
+        const violations = proseViolations(body, await deskLintScope(ctx))
         if (violations.length) {
           ctx.proseChecked = true
           return {
@@ -2579,6 +2745,28 @@ export async function runTool(
           sections.push({ title: String(s?.title ?? ''), rows })
         }
         list = { buttonText: String(list.buttonText || 'Choose'), sections }
+      }
+
+      // The desk's affordance discipline, kept from the second brain's own ReplyArgs: a
+      // desk button carries the words its tap replays and NOTHING else — before a
+      // business exists there is no plan to stage and no operation to run, and a payload
+      // pretending otherwise is a broken promise on a stranger's screen (review find:
+      // the merge had silently widened "four declarations, and nothing else reachable").
+      if (ctx.visitor) {
+        const nonReply = [
+          ...((Array.isArray(args?.buttons) ? args.buttons : []) as any[]).map((b) => b?.action),
+          ...(((list?.sections ?? []) as any[]).flatMap((s: any) => (s?.rows ?? []).map((r: any) => r?.action))),
+        ].filter((a) => a && String(a?.kind ?? '') !== 'reply')
+        if (nonReply.length) {
+          return {
+            result: {
+              error:
+                "a front-desk button can only carry words — {kind:'reply', text:'…'} — because no business " +
+                'exists yet for any other payload to act on. Re-send with reply-kind buttons, or none.',
+              sent: false,
+            },
+          }
+        }
       }
 
       /**
@@ -2812,6 +3000,19 @@ export async function runTool(
         // here and the wire rewrites a word, and the one transform that remains
         // changes representation only.
         if (to === ctx.identity.contact.id && body.trim()) ctx.saidToUser?.push(body.trim())
+        // The second brain stamped `arrival.asked_at` after every desk send; without
+        // this the `answeredSinceAsked` block never renders again and the ask-twice
+        // class it closed re-opens (review find — a dead-shipped feed, the hunted
+        // shape). Fire-and-forget: a stamp that cannot be written must not undo a
+        // send that landed.
+        if (ctx.visitor) {
+          const arrivalId = (ctx.visitor.arrival as { id?: string } | null)?.id
+          if (arrivalId) {
+            void domainNow(ctx.identity.academyId)
+              .then((at) => markArrivalAsked(ctx.identity.academyId, String(arrivalId), at))
+              .catch(() => {})
+          }
+        }
       }
       if (outcome.status === 'suppressed') {
         // A bare `{status:'suppressed'}` reads as "that didn't work, try again", and

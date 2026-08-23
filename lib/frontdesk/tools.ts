@@ -29,9 +29,6 @@
 
 import { z } from 'zod'
 
-import { parametersFor } from '@/lib/agent/schema-json'
-import type { ToolDecl } from '@/lib/agent/deepseek'
-import { LIMITS } from '@/lib/messaging/types'
 import { matchAcademiesByName } from '@/lib/identity'
 import type { Identity } from '@/lib/types'
 import type { Arrival } from './arrival'
@@ -41,11 +38,11 @@ import type { Handover } from './route'
 /** At most this many names come back from one lookup. A directory is not an answer. */
 const MAX_MATCHES = 3
 
-const FindBusiness = z.object({
+export const FindBusiness = z.object({
   name: z.string().min(2).describe('the business name as the person said it, in their words'),
 })
 
-const JoinBusiness = z.object({
+export const JoinBusiness = z.object({
   academy_id: z.string().uuid().describe('the id find_business returned for the business they mean'),
   /**
    * Not a role and it grants nothing — what they SAID, kept so the business does not have
@@ -61,7 +58,7 @@ const JoinBusiness = z.object({
     ),
 })
 
-const StartBusiness = z.object({
+export const StartBusiness = z.object({
   name: z.string().min(2).describe('what THEY said their business is called — never one you chose for them'),
   category: z
     .string()
@@ -73,78 +70,14 @@ const StartBusiness = z.object({
     .describe('their name, if they gave one. Omit and their WhatsApp display name is used.'),
 })
 
-const StopMessaging = z.object({})
+export const StopMessaging = z.object({})
 
-/**
- * `reply` is declared here and dispatched in `turn.ts`, because it is the only verb
- * that needs a session to send on and threading one into the router would make the
- * router a sender. Its shape is the tenant `reply`'s, minus everything a front desk
- * has no business owning: no third-party recipient (there is nobody else here), no
- * list, no link, no form, no template. A button carries the words its tap replays,
- * which is the existing button contract — `executeAction` re-enters a `reply` payload
- * "as if it had been typed" — so the one question this desk asks gets the one
- * affordance a person on a phone with one hand can actually use.
+/*
+ * `ReplyArgs` and `frontDeskToolDecls` lived here until the one-brain merge: the desk's
+ * verbs are declared inside the ONE tool block now (lib/agent/tools.ts, importing the
+ * schemas above so the two surfaces cannot drift), and a visitor speaks through the
+ * tenant `reply` like everybody else.
  */
-export const ReplyArgs = z.object({
-  body: z.string().min(1).max(LIMITS.bodyChars),
-  buttons: z
-    .array(
-      z.object({
-        title: z.string().min(1).max(LIMITS.buttonTitleChars),
-        answer: z.string().min(1).describe('what tapping it says, in their voice — it replays as if typed'),
-      }),
-    )
-    .max(LIMITS.buttons)
-    .nullish(),
-})
-
-export function frontDeskToolDecls(): ToolDecl[] {
-  return [
-    {
-      name: 'reply',
-      description:
-        `Say something to the person at the desk, with up to ${LIMITS.buttons} buttons of at most ` +
-        `${LIMITS.buttonTitleChars} characters each. Use this rather than plain prose whenever a tap ` +
-        'would save them typing — which is almost always for the one question you are here to ask. ' +
-        'A message with no buttons makes a person on a phone type their answer, and many will not.',
-      parametersJsonSchema: parametersFor(ReplyArgs),
-    },
-    {
-      name: 'find_business',
-      description:
-        'Look up a business on this number by the name the person used. Returns the id you need to hand ' +
-        'them over, or tells you nothing matched. There is no way to list the businesses on this number ' +
-        'and you should not imply to the person that you can browse them.',
-      parametersJsonSchema: parametersFor(FindBusiness),
-    },
-    {
-      name: 'join_business',
-      description:
-        'This person is looking for classes at this business. Hands the conversation over: they get a ' +
-        'contact there (or the one they already had, if they turn out to be known), and the business ' +
-        'itself answers them next, in this same thread, knowing its schedule and its fees. ' +
-        'ENDS YOUR PART — say nothing after it.',
-      parametersJsonSchema: parametersFor(JoinBusiness),
-    },
-    {
-      name: 'start_business',
-      description:
-        'This person runs classes and wants this to manage them. Creates their business with them as its ' +
-        'admin, and hands the conversation over so it can start setting itself up with them — it will ask ' +
-        'for the timetable, the venues and the rest. Nothing is sent to anybody else, and nothing they ' +
-        'tell it now is final; every value can be changed by saying so. ' +
-        'ENDS YOUR PART — say nothing after it.',
-      parametersJsonSchema: parametersFor(StartBusiness),
-    },
-    {
-      name: 'stop_messaging',
-      description:
-        'They asked to be left alone. Nothing further will reach this number from here. Use it when they ' +
-        'say so, not when they simply go quiet.',
-      parametersJsonSchema: parametersFor(StopMessaging),
-    },
-  ]
-}
 
 export type FrontDeskToolResult = {
   /** What goes back to the model as the `tool` message. */

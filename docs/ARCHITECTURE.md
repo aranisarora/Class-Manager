@@ -530,17 +530,22 @@ Each has an incident behind it. They are the shapes to check any new design agai
   two-tool filter at 64% of a run's cache misses for a constraint its own dispatcher was
   already applying. Cheapness here is a property of *sameness*, not of size.
 
-  **The one legitimate second prefix, and the test it had to pass.** The front desk
-  (`lib/frontdesk/`, §10.0) runs on a prefix of its own, and the trap above is the first
-  objection to it. It survives because the trap is about *bespokeness*, not smallness: a
-  block is cheap when it is the same bytes as last time, and this one is byte-identical for
-  every stranger on every number forever — one more cached entry for the whole deployment,
-  never one per tenant. The arithmetic then goes the other way. Reusing the tenant prefix
-  would cost a cached hit on ~50k tokens for a conversation that needs none of it; its own
-  block is ~2% of that, so it is cheaper cached *and* cheaper cold. The test for any future
-  second prefix is those two questions in that order: **is it the same bytes every time, and
-  is the rest of the request small enough that a miss would still be cheaper?** `MODEL_SYNTH`
-  failed the first and the reflection filter failed the second.
+  **The one legitimate second prefix existed, and was retired by its seam (23 Aug 2026).**
+  The front desk (`lib/frontdesk/`, §10.0) ran on a prefix of its own for as long as the
+  cost test held: byte-identical for every stranger forever, ~2% the size of the tenant
+  block, cheaper cached and cheaper cold. What the test could not price was the SEAM —
+  two brains meant information died crossing between them, and the bill arrived as
+  findings: the transcript that did not survive the hand-over (F-EO), the lint that could
+  not name a just-founded business (F-EQ), the desk that recorded nothing (F-CV), the
+  routing misread that founded a business off a coach's message and locked the real owner
+  out for a month (the ace drive). The desk is now a MODE of the one brain: one prefix
+  with a desk section, the visitor tail, the four verbs gated at the dispatcher — which
+  is this file's own rule about narrowing applied to the mode. The two-brain arm remains
+  reachable at commit `791a3f2`, and the merge stands or falls on the A/B against it,
+  measured on days-to-live and ₹/turn. The test for any future second prefix stands as
+  written — **same bytes every time, and a miss still cheaper** — with the third question
+  the desk taught: **what will the seam between the two contexts lose, and who pays for
+  it?**
 
 ---
 

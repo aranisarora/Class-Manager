@@ -55,6 +55,11 @@ import { vocabularyPreferences } from '@/lib/agent/lint'
 // its own standing promises reach it the way every other unstorable state does:
 // as a line in the tail, put there by the runtime.
 import { liveAgentTasks } from '@/lib/jobs'
+// The visitor tail (one brain, desk mode). One direction, no cycle: frontdesk/context
+// imports only leaf types, and frontdesk/route never reaches back into lib/agent.
+import { frontDeskTail } from '@/lib/frontdesk/context'
+import { businessesOnThisNumber } from '@/lib/frontdesk/route'
+import { matchAcademiesByName } from '@/lib/identity'
 
 /**
  * Doctrine lives on disk as markdown. Resolution tries the working directory
@@ -387,6 +392,42 @@ export function stablePrefix(): string {
   if (cachedPrefix !== null) return cachedPrefix
 
   const parts: string[] = [PREAMBLE]
+
+  /**
+   * The front desk, as a MODE of this one brain rather than a second one.
+   *
+   * The second stable prefix this replaces earned its keep on the old cost model and
+   * died with it — a cached hit costs ~3% of a miss — and the second brain's real bill
+   * was paid in defects at the seam: the routing misread that founded a business off a
+   * coach's message, the lint that could not name a just-founded business (F-EQ), the
+   * desk knowledge no tenant turn held and vice versa (F-EO, F-DO, the ace month's
+   * owner-seat jam). Byte-stable like everything above the boundary; whether the mode
+   * is active is the TAIL's fact. Shipped under an A/B against the two-brain arm,
+   * which is the only argument ARCHITECTURE accepts for a shape.
+   */
+  parts.push(`# The front desk
+
+A conversation that belongs to no business yet is at this number's front desk — the tail
+says when that is so, and the four desk verbs exist only there. Three kinds of person
+write to a desk, and nothing else: someone looking for classes at a business on this
+number; someone who WORKS at one — a coach or helper, who is joined to it as what they
+said they are, never founded a business of their own for describing somebody else's; and
+someone who runs a business and wants this to manage it. Their first message usually
+already says which. Read it before asking, ask once at most, and route: the whole job is
+the hand-over, and the moment join_business or start_business succeeds the person is
+answered from inside that business, in this same thread, in the next breath — their desk
+conversation crosses with them, so nothing they said needs repeating. Anything composed
+after that success is a second answer they did not need.
+
+A visitor's question about schedules, fees or rosters is a reason to hand over, not a
+thing to apologise for — the desk holds no business's data, and a read on a desk turn
+returns empty because nothing is there, not because something is withheld.
+
+What this costs the person USING it is the one question that is not about any business,
+and the commonest thing an owner opens with: it is free — no charge, no trial that
+expires, nothing to pay to start or keep using it. Say so plainly the first time, then
+get back to what it does. Fees their families pay are the business's own and have
+nothing to do with this.`)
 
   parts.push(SCHEMA_DOC.trim())
 
@@ -1602,6 +1643,33 @@ async function standing(id: Identity): Promise<string[]> {
 }
 
 /**
+ * @mechanism visitorTail — a visitor's tail is the DESK's, not a tenant's: no census
+ *   (there is no business to count), no memory, no standing states — the arrival's
+ *   asked-state, what this number is, and the businesses their own words named, built
+ *   by the same `frontDeskTail` the second desk brain used, so the desk's tail
+ *   mechanisms (`whatThisNumberIs`, `answeredSinceAsked`) survive the one-brain merge
+ *   byte for byte. The blocks skipped are not merely wasted on a visitor, they are
+ *   FALSE for one: a census of the desk academy reads as an empty business, and the
+ *   model asserting emptiness to a stranger off it is the exact shape F-AD closed.
+ */
+async function visitorTail(id: Identity, v: { text: string; arrival: unknown }): Promise<string> {
+  const at = await now(id.academyId)
+  const businesses = await businessesOnThisNumber(id)
+  const arrival = v.arrival as { firstText?: string | null } | null
+  const named = [
+    ...matchAcademiesByName(arrival?.firstText ?? undefined, businesses),
+    ...matchAcademiesByName(v.text, businesses),
+  ].filter((a, i, all) => all.findIndex((b) => b.academyId === a.academyId) === i)
+  return frontDeskTail({
+    identity: id,
+    arrival: arrival as never,
+    named,
+    businesses,
+    atIso: at.toISOString(),
+  })
+}
+
+/**
  * Layer 4 + the situation. Never cached, and everything time-shaped or
  * tenant-shaped lives here rather than in the prefix.
  */
@@ -1613,8 +1681,11 @@ export async function variableTail(
     queryResults?: unknown
     recentLookups?: string
     recentActions?: string
+    /** Set on a front-desk turn: the visitor tail below replaces everything else. */
+    visitor?: { text: string; arrival: unknown }
   },
 ): Promise<string> {
+  if (extra?.visitor) return visitorTail(id, extra.visitor)
   const tz = id.academy.timezone || 'Asia/Kolkata'
   const at = await now(id.academyId)
   const local = inZone(at, tz)

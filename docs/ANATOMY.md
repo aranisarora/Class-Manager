@@ -49,8 +49,8 @@ inbound (Meta webhook · emulator · job)
  └ resolveInbound → resolveIdentity            no identity → not our turn
     │                └ no business owns this number? → the front desk (0039)
     └ runTurn
-       0 the desk    a `visitor` runs runFrontDeskTurn instead of the tenant loop:
-                     its own stable prefix, five verbs, and it ends by handing over
+       0 the desk    a `visitor` runs the SAME loop in desk MODE: the one prefix's desk
+                     section, the visitor tail, four verbs gated at the dispatcher
        1 arrival     consumeAction → executeAction (the WRITE runs before any model)
                      …and then falls through to 2, so the model composes the receipt
                      mediaRefusal (the runtime speaks, not the prompt)
@@ -98,35 +98,37 @@ one message announcing a write and denying it in the same breath. `noop`, `menu`
 `handoff` do not go on to stage 2, and the test for that is on `executeAction`: the runtime
 may **replay what the model wrote**; it may not **author what the person reads**.
 
-## 1a · The front desk — and why it forks here rather than later
+## 1a · The front desk — a MODE of the one brain, not a second one
 
-A `visitor` never reaches stage 2. `runTurn` branches immediately after arrival into
-`runFrontDeskTurn`, and everything below — the census, `SCHEMA_DOC`, the operations, the
-catalog, the five tool rounds, reflection — is about a business this person does not have.
-
-**The stage is the point.** A fork one stage later would already have paid for the tenant
-context before discovering there is no tenant, which is the commonest wrong answer this
-document exists to prevent: a mechanism that is right in the abstract, landed where it is
-already too late. It also could not have been a filter *inside* the tenant loop, because
-the tool block serialises above the messages — a narrowed list edits the cached prefix and
-re-bills the whole conversation (stage 3, and `verify:static`'s fifth absolute).
+Since the one-brain merge a `visitor` runs the ordinary loop. The mode is decided at
+arrival (`roles` carry `visitor`), and everything mode-shaped happens at three seams the
+loop already owns: the tail (the census, memory and standing blocks are FALSE for a
+person with no business, so `visitorTail` swaps in the desk's own), the dispatcher (the
+four desk verbs run only here and everything tenant-shaped refuses with the truth —
+PREFIX-RULES' own rule, *constrain a round at its dispatcher, never by narrowing what it
+is shown*, because a visitor-narrowed tool block would be a second cached prefix), and
+the lint (the mask over the number's business names is read at validation time). The
+desk's standing facts are a byte-stable section of the ONE prefix. What the old fork
+bought — a smaller request — died with the cache economics; what it cost is recorded in
+F-EO, F-EQ, F-CV and the ace month's owner-seat jam, and the merge is measured against
+the two-brain arm by A/B.
 
 | Order | What | Where |
 | --- | --- | --- |
-| 1 | A second stable prefix — byte-identical for every stranger on every number, ~2% the size of the tenant one | `FRONT_DESK_PREFIX` · `lib/frontdesk/context.ts` |
-| 2 | The tail: whether the question has already been on their screen, and whether their own words name a business | `frontDeskTail` · `lib/frontdesk/context.ts` |
-| 3 | Five verbs, and no sixth at any privilege: `reply`, `find_business`, `join_business`, `start_business`, `stop_messaging` | `frontDeskToolDecls` · `lib/frontdesk/tools.ts` |
-| 4 | Up to three rounds over them. The desk speaks by calling `reply`, which is the only thing that can carry a button, and the prefix says so; a round that calls no tool still sends its prose as written rather than becoming silence. One message per person (`spoke`), on both paths | `runFrontDeskTurn` · `lib/frontdesk/turn.ts` |
+| 1 | One stable prefix for both modes — the desk's standing facts are a section of it, byte-identical everywhere | `stablePrefix` · `lib/agent/context.ts` |
+| 2 | The visitor tail: the arrival's asked-state, what this number is, and the businesses their own words name | `visitorTail` · `lib/agent/context.ts` |
+| 3 | Four verbs gated to visitor turns at the dispatcher, beside `reply`, `read` and `view`; no sixth at any privilege, and no "list the businesses" anywhere | `visitorSurface` · `lib/agent/tools.ts` |
+| 4 | The ordinary rounds — one loop, one recorder, real buttons; a hand-over breaks the loop before a parting sentence, and the exits stay silent on it because the business answers next | `modelTurn` · `lib/agent/loop.ts` |
 | 5 | The name matcher is evidence now, not a routing decision — it decides nothing on its own | `matchAcademiesByName` · `lib/identity.ts` |
 | 6 | A destination: a prospect contact in an existing business, or a business that did not exist a second ago | `joinBusiness` · `foundBusiness` · `lib/frontdesk/route.ts` |
 | 7 | Their whole desk exchange is written into that business as the opening rows of its thread, on the rows' own clocks | `carryDeskTranscript` · `lib/frontdesk/route.ts` |
 
-**A hand-over ends the desk's turn immediately** — before it can add a parting sentence,
-because the business is about to answer the same message from inside itself, and two
-answers to one question is what that shape produces if nothing stops it.
+**A hand-over ends the desk's part immediately** — before a parting sentence, because the
+business is about to answer the same message from inside itself, and two answers to one
+question is what that shape produces if nothing stops it.
 
 The turn row is written by `writeTurn` at stage 6 like every other, and only then does the
-hand-over run (stage 7). The desk owns no recorder of its own.
+hand-over run (stage 7). The desk owns no recorder, no prefix and no loop of its own.
 
 ## 2 · Context
 

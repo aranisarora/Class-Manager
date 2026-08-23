@@ -1,7 +1,7 @@
 /**
  * lib/frontdesk/context.ts — what the front desk is told (0039).
  *
- * A SECOND stable prefix, and that needs justifying, because §4.4's cost model is the
+ * The visitor TAIL — the one brain renders it in desk mode (the second prefix is gone), because §4.4's cost model is the
  * reason there is only ever one: the prefix is byte-stable so the provider's automatic
  * cache matches it, and a hit costs 3.2% of a miss. The rule that follows is *never a
  * per-tenant fork*, and this is not one. It is one extra cached block for the whole
@@ -23,8 +23,6 @@
  * question they asked — is derivable and is not here.
  */
 
-import { unsafeQuery, withSession } from '@/lib/db'
-import type { Msg } from '@/lib/agent/deepseek'
 import type { AcademyCandidate } from '@/lib/identity'
 import type { Identity } from '@/lib/types'
 import type { Arrival } from './arrival'
@@ -34,58 +32,13 @@ import type { Arrival } from './arrival'
  * particular person or a particular business appears above the boundary — the same
  * discipline `stablePrefix()` keeps, for the same reason.
  */
-export const FRONT_DESK_PREFIX = `You are the front desk of one WhatsApp number.
-
-Several coaching businesses are run from this number and you are not any of them. The
-person writing to you does not belong to one yet: if they did, this conversation would
-be happening inside their business and you would not be here.
-
-Exactly two kinds of person reach you, and there is no third:
-
-  Someone looking for classes at one of the businesses on this number.
-  Someone who runs classes and wants this to manage them.
-
-Your whole job is to find out which, and hand the conversation over.
-
-You hold no schedule, no fees, no roster and no data about any business. After the
-hand-over the business itself answers them, with all of it. So a question you cannot
-answer is a reason to hand over, not a reason to apologise for not knowing.
-
-The one question that is NOT about a business, and the commonest thing an owner opens
-with: what this costs THEM to use. It is free. Say so plainly the first time they ask —
-there is no charge, no trial that expires, nothing to pay to start or to keep using it —
-and then get back to what it does: the timetable, the register, coach pay, fees and the
-reminders that go out on their behalf, because that is what they are actually deciding
-about. Fees their FAMILIES pay are the business's own and have nothing to do with this.
-
-Their first message usually already says which they are. Read it before you ask
-anything: someone asking whether the beginners batch suits a nine-year-old is a parent,
-and someone who says they coach badminton in Indiranagar and heard about this is an
-owner. Ask only when the message genuinely does not say, and ask once.
-
-CALLING A TOOL ENDS YOUR PART. The moment join_business or start_business succeeds, the
-person is answered from inside that business, in this same thread, in the next breath —
-by something that knows the schedule, the fees and the roster. Anything you were going
-to say after it is a second message they did not need and probably a contradiction of
-the one they are about to receive. Call the tool and stop.
-
-You speak by calling reply, and that is the only way you speak. Text you write anywhere
-else — beside a tool call, or in a round that calls nothing — is a note to yourself and
-reaches nobody.
-
-You are on WhatsApp. Plain text, no markdown headings, no links. reply carries up to
-three short buttons and they cost nothing. The one question you are here to ask has two
-answers, so it has two buttons: a person on a phone with one hand taps rather than types,
-and a question somebody has to type the answer to is one many of them never answer at all.
-
-The people on the other side of this are running a business between classes, or trying
-to find somewhere for their child on a Tuesday evening. They did not read anything and
-nobody trained them.`
-
-export const FRONT_DESK_BOUNDARY = `---
-END OF STABLE PREFIX. Everything above is identical on every turn, at every front desk.
-Everything below is this conversation only.
----`
+/*
+ * FRONT_DESK_PREFIX and FRONT_DESK_BOUNDARY lived here until the one-brain merge: the
+ * desk was a second stable prefix over a second loop. A visitor turn now runs the one
+ * brain in a mode — the desk's standing facts are a section of the ONE stable prefix
+ * (lib/agent/context.ts), and this file's job is the tail about one arrival, rendered
+ * by `variableTail`'s visitor branch through `frontDeskTail` below.
+ */
 
 /**
  * The tail — this arrival, and nothing else.
@@ -212,53 +165,4 @@ export function frontDeskTail(o: {
   }
 
   return lines.join('\n')
-}
-
-/**
- * The thread so far.
- *
- * Read plainly rather than through the tenant loop's `recentHistory`, and the reason is
- * not convenience: that function annotates gaps against the tenant's own clock, because
- * in a WhatsApp thread "earlier in this conversation" can be three weeks ago. A front
- * desk conversation is a handful of messages that ends by handing over, and it has no
- * tenant whose clock those gaps would be measured on. Importing it would also put a
- * cycle between the loop and the desk.
- */
-export async function frontDeskHistory(
-  identity: Identity,
-  limit = 12,
-): Promise<{ messages: Msg[]; failed: boolean }> {
-  try {
-    const rows = await withSession({ role: 'service', academyId: identity.academyId }, (tx) =>
-      unsafeQuery<{ direction: string; body: string }>(
-        tx,
-        `select direction, body from message
-          where academy_id = $1::uuid and contact_id = $2::uuid
-            and body is not null and coalesce(suppressed_reason, '') = ''
-          order by queued_at desc
-          limit $3`,
-        [identity.academyId, identity.contact.id, limit],
-      ),
-    )
-    return {
-      messages: rows
-        .reverse()
-        .map((r): Msg =>
-          r.direction === 'inbound'
-            ? { role: 'user', content: String(r.body) }
-            : { role: 'assistant', content: String(r.body) },
-        ),
-      failed: false,
-    }
-  } catch {
-    /**
-     * A history that could not be read is not an empty history, and the difference is
-     * the whole reason this returns a flag. Presented as silence, the model opens with
-     * a greeting to somebody it has already greeted, and asks a stranger for the second
-     * time the question they already answered. Layer 3's rule is that a prefetch which
-     * FAILS renders as a stated gap carrying its reason, never as an absent block — a
-     * paragraph that was never there is invisible to everything downstream.
-     */
-    return { messages: [], failed: true }
-  }
 }

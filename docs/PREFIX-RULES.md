@@ -97,6 +97,7 @@ whatever sequence it is in — so the sequence is chosen entirely for the reader
 | Block | Answers | Lives in |
 | --- | --- | --- |
 | `PREAMBLE` | What am I, who am I serving, what am I allowed to do? | `context.ts` |
+| `# The front desk` | What is a conversation no business holds yet, and what is the job there? (One-brain merge, 23 Aug 2026 — the desk's own prefix died with the second brain; whether the mode is active is the tail's fact) | `context.ts` |
 | `SCHEMA_DOC` | What is in the world, and how do I query it? | `schema-doc.ts` |
 | `# Operations` | When should I reach for a known-good plan? | `context.ts` |
 | `catalogDigest()` | What moments will code put in front of me? | `messaging/catalog.ts` |

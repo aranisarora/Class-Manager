@@ -611,15 +611,14 @@ const TOOLS_ARG = /\btools:\s*([^\n]*)/g
  * block that serialises byte-identically on every round, so the cache match walks past
  * it instead of diverging there.
  *
- * `frontDeskToolDecls()` (0039) is the second entry, and it is not an exemption. The
- * front desk runs its own complete, unfiltered block over its own stable prefix — five
- * verbs, the same five every round, for every stranger on every number forever. What
- * the rule forbids is a *narrowed* list, and a second surface with its own whole block
- * is not one. Scoping this check to `lib/agent/` alone was what would have made it stop
- * being a rule: a filtered call written in `lib/frontdesk/` tomorrow would have been
- * invisible to it.
+ * `frontDeskToolDecls()` was the second entry until the one-brain merge retired the
+ * desk's own model call: a visitor turn now runs the ordinary loop, and the four desk
+ * verbs live inside `toolDecls()` itself, gated at the dispatcher. The scan still
+ * covers `lib/frontdesk/` — a model call written there tomorrow must declare the one
+ * whole block like everything else, and scoping the check narrower is what would have
+ * made it stop being a rule.
  */
-const WHOLE_BLOCK = /^(?:toolDecls|frontDeskToolDecls)\(\)\s*,?$/
+const WHOLE_BLOCK = /^toolDecls\(\)\s*,?$/
 const MODEL_CALL_DIRS = ['lib/agent/', 'lib/frontdesk/']
 
 {
@@ -632,7 +631,7 @@ const MODEL_CALL_DIRS = ['lib/agent/', 'lib/frontdesk/']
     }
   }
   rule(
-    'every model call in lib/agent and lib/frontdesk declares a whole tool block — toolDecls() or frontDeskToolDecls(), unfiltered',
+    'every model call in lib/agent and lib/frontdesk declares the whole tool block — toolDecls(), unfiltered',
     violations,
   )
 }
