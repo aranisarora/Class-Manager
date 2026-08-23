@@ -3431,13 +3431,30 @@ export async function runTool(
                    ${lit(`Asked for a person: ${reason}`)}, ${lit(`turn:${ctx.turnId}`)})`,
         )
       })
+      const landed = sent.filter((s) => s === 'sent' || s === 'queued').length
       return {
         result: {
           ok: true,
-          told_admin: sent.length > 0,
+          // Landings, not attempts. `sent` collects composeAndSend statuses, and
+          // `suppressed` or `failed` pushed the same as `sent` — so an escalation
+          // every admin's gate refused still reported told_admin:true and handed
+          // the model "someone will come back to you" to relay about a message
+          // nobody received. The per-send statuses ride along so the model can
+          // say what actually happened instead of inferring from a boolean.
+          told_admin: landed > 0,
+          ...(sent.length ? { admin_sends: sent } : {}),
+          recorded: 'a note on this person, readable by later turns',
           say: isAdmin
-            ? "I've flagged this for the people who run the platform, and I've kept the thread."
-            : `I've passed this to ${ctx.identity.academy?.name ?? 'the academy'} with what we've said so far. Someone will come back to you.`,
+            ? // No platform escalation route exists from here: the whole residue is
+              // the note above, which nothing pages anybody about. The old copy —
+              // "I've flagged this for the people who run the platform" — claimed a
+              // consumer this product does not have, and the model relayed it as a
+              // promise on an owner's phone. Say what is true; the model decides
+              // what to do with it.
+              'This is noted on the thread, but no separate person is paged from here — if it needs a human, say who should act and I can message them.'
+            : landed > 0
+              ? `I've passed this to ${ctx.identity.academy?.name ?? 'the academy'} with what we've said so far. Someone will come back to you.`
+              : `I tried to reach ${ctx.identity.academy?.name ?? 'the academy'} but nothing has gone through yet — the ask is noted, and it is not yet in front of a person.`,
         },
       }
     }
