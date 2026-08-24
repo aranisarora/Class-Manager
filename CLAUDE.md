@@ -16,27 +16,20 @@ belongs.
 | decide where a fix belongs | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the layers, and the trap list |
 | change what the product does | [`docs/product-spec.md`](./docs/product-spec.md) |
 | test, drive, or judge a run | [`docs/DRIVING.md`](./docs/DRIVING.md) — the instruments over one spine, what a run costs before you start it, and how to read one back — then [`docs/JUDGING.md`](./docs/JUDGING.md) |
-| touch anything in `scripts/` | [`scripts/README.md`](./scripts/README.md) — 63 files, four jobs |
-| record something that broke | [`findings/`](./findings/README.md) — [`OPEN.md`](./findings/OPEN.md) is the status board (generated), [`DECIDED.md`](./findings/DECIDED.md) is what was deliberately not fixed |
+| touch anything in `scripts/` | [`scripts/README.md`](./scripts/README.md) — the instruments and the checks, indexed |
+| record something that broke | [`findings/`](./findings/README.md) — [`OPEN.md`](./findings/OPEN.md) is the status board, [`DECIDED.md`](./findings/DECIDED.md) is what was deliberately not fixed |
 | deploy | [`docs/DEPLOY.md`](./docs/DEPLOY.md) |
 
 ## The house rules
 
 These are the conventions that are load-bearing and not guessable from the code.
 
-**Enable the model; do not fence it.** This is a harness around a capable model, and the
-working theory is *a capable model, told the truth*. A defect is one of three things, checked
-in this order: the **instrument** (the harness manufactured or hid it — check first, always),
-an **information failure** (the model lacked a fact, was handed a wrong one, or one it could
-not falsify — the commonest class, fixed by delivering the fact where composing happens), or a
-**capability gap** (no route existed, a tool was broken, the runtime discarded what the model
-produced). What does not fix anything is a paragraph of doctrine, or a gate built where
-information was the failure — the deleted `proseRefused` gate is the precedent: the
-information fix did all of it, the gate did none. Gates are for classes where one miss is
-irreversible, and must prove a hit rate on a recorded run before they refuse anything.
-`findings/README.md` carries the full version. Beware fixing the instance in front of you:
-eleven one-commit-per-drive fixes in one day each closed an instance and left its class
-standing — name the class, fix the class.
+**Enable the model; do not fence it.** The working theory is *a capable model, told the
+truth*. A defect is the **instrument**, an **information failure**, or a **capability gap** —
+checked in that order, and fixed at the class, never the instance in front of you. A paragraph
+of doctrine fixes nothing; a gate is a last resort that must prove a hit rate on a recorded
+run before it refuses anything. [`findings/README.md`](./findings/README.md) carries the full
+version.
 
 **Nothing in an instrument scores anything.** The instruments record; a person or a judge model
 writes the verdict into `judgement.json` beside the record. Deterministic pass/fail was removed
@@ -54,13 +47,10 @@ reader — `scripts/report.mjs` — opens it. Per-suite extras (`ladder.md`, `we
 *inside* that directory. Do not give an instrument its own corner and its own renderer; that
 is how six report generators grew, and they are gone.
 
-**Check `MECHANISMS.md` before proposing anything.** On 20 Aug 2026 `npm run findings`
-reported 38 of 43 findings open; **29 of those had shipped mechanisms** and the ledger said so
-in a table nothing parsed. Analysis kept re-proposing `context_query` validation (F-AP),
-message `stateKey` (F-AN) and event-text filling (F-AZ) — all built. The brain does not fit
-in a context window — `lib/agent` alone is ~209k tokens — so "read the brain and understand it
-is sophisticated" is not an instruction anyone can follow. The index is what works: the scan
-tier of [`docs/MECHANISMS.md`](./docs/MECHANISMS.md) is ~4k tokens and answers *"does something
+**Check `MECHANISMS.md` before proposing anything.** The brain does not fit in a context
+window — `lib/agent` alone is ~209k tokens — and the day that was ignored, analysis kept
+re-proposing mechanisms that had already shipped (20 Aug 2026; `findings/README.md` has the
+story). The scan tier of [`docs/MECHANISMS.md`](./docs/MECHANISMS.md) answers *"does something
 already handle this?"* before a file is opened.
 
 **And `ANATOMY.md` for when it runs.** The index is a list of parts and has no time in it, so it
@@ -78,31 +68,20 @@ files (`loop.ts`, `tools.ts`, `context.ts`, `plan.ts`, `send.ts`) say so at the 
 
 **A finding is retired by a mechanism, not by a paragraph.** The four steps, in order:
 
-1. **Build the mechanism.** Not a line of doctrine — see the rule above this one.
-2. **Tag it beside the code**, in a block comment on the thing itself:
-   ```
-    * @mechanism <realSymbol> — <what it does, and the class of defect it retires>.
-    *   <continuation indented, same comment block, no blank comment line inside>
-    *   Closes F-XX.
-   ```
-   The name must be a symbol that really appears in that file. `Closes F-XX` is optional and is
-   checked against the ledger.
+1. **Build the mechanism** — not a line of doctrine; see the rule above this one.
+2. **Tag it beside the code** with an `@mechanism` block comment — the exact grammar is in
+   [`findings/README.md`](./findings/README.md).
 3. **Move its row** from `findings/OPEN.md` to `findings/CLOSED.md`, one line, with the date.
 4. **Regenerate the index:** `npm run mechanisms`.
 
-Skip a step and a gate fails. `check:mechanisms` refuses an index that does not match the tags, a
-tag naming a symbol that is not there, or a `Closes` clause for a finding the ledger still calls
-open. `check:findings` refuses a code that is in both `OPEN.md` and `CLOSED.md`, used twice in
-either, or named in `DECIDED.md` without being open. That is what stops them drifting apart, and
-drifting apart is what cost the twenty-nine.
+Skip a step and a gate fails: `check:mechanisms` holds the index against the tags and every
+`Closes` clause against the ledger; `check:findings` holds the ledger against itself.
 
 **Money is in rupees.** This is an INR-billing product. `lib/pricing.ts` is the one place that
 converts.
 
-**The leading underscore in `scripts/` means "not a command."** `_arrivals.ts`, `_capture.ts`,
-`_danger.ts`, `_derive.ts`, `_drive-config.ts`, `_env.ts`, `_events.ts`, `_persona-agent.ts`,
-`_personas.ts`, `_record-from-probe.ts`, `_seat.ts`, `_seat-worker.ts`, `_world-file.ts` are
-shared modules. `_findings.ts` is the one exception and it runs.
+**The leading underscore in `scripts/` means "not a command."** Underscored files are shared
+modules — `scripts/README.md` indexes them — and `_findings.ts` is the one exception that runs.
 
 ## The production-readiness loop
 
@@ -159,7 +138,6 @@ npm run runs                # every recorded run, newest first
 npm run report              # render the newest run as one standalone page
 npm run report -- --text --from 40 --to 80   # the same run as plain text, whole, for a reader
 npm run findings            # which open findings no instrument stages
-npm run findings -- --write # regenerate findings/OPEN.md, the status board
 npm run mechanisms          # regenerate docs/MECHANISMS.md from the @mechanism tags
 
 npm run check               # every static gate below in one command — run it before you finish

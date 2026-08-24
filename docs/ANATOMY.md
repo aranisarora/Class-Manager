@@ -14,10 +14,9 @@ Three documents, three questions. This is the third.
 | Does something already handle this? | [`MECHANISMS.md`](./MECHANISMS.md) — the index |
 | **When does it run, and what has already happened by then?** | **this file** |
 
-**To read what is actually sent to the model:** `npm run surface` — the stable prefix and the
-tool declarations, assembled, in one greppable file. `npx tsx scripts/probe-prefix.ts --text` is
-the prefix alone. Both call the same `stablePrefix()` the runtime calls at stage 2 below, so what
-prints is what is sent — not a reconstruction of it.
+**To read what is actually sent to the model:** `npm run surface` — assembled by the same
+`stablePrefix()` the runtime calls at stage 2 below. [`PREFIX-RULES.md`](./PREFIX-RULES.md)
+is the method.
 
 ## The short version
 
@@ -67,27 +66,13 @@ fix has to be argued at.
 
 ## Why this exists
 
-`MECHANISMS.md` is an inventory. It tells you `proseViolations` exists; it cannot tell you it
-runs *after* the model has written a message and *before* that message is sent — and that is
-the fact which decides whether your fix belongs there. An inventory has no time in it.
-
-Two things follow, and the repo has recorded both.
-
-**Order is its own defect class.** The recovery ladder once had two correct mechanisms in the
-wrong sequence: the apology filled the trailing text before the toolless recovery round could
-run, so the round with five rounds of results to salvage was skipped on exactly the turns with
-the most to save. Nothing was missing; the order was wrong. Reflection was the same shape — tool
-declarations serialise *above* the messages, so a round that filtered its tool list broke the
-prefix cache behind it and re-billed the whole conversation at full price. Neither bug is
-visible in a list of parts.
-
-**A mechanism you found in the index still lands in the wrong stage.** Knowing a thing exists is
-not knowing when it is too late for it. The commonest wrong answer in this repo is a line of
-prompt doctrine aimed at a defect whose stage runs long after the prompt is finished — which is
-what the house rule *behaviour is not fixed by prompting* is actually about.
-
-The brain does not fit in a context window; `lib/agent` alone is ~209k tokens. This is the
-sequence, so it does not have to be re-derived from the source every time.
+`MECHANISMS.md` is an inventory, and an inventory has no time in it: it says `proseViolations`
+exists, not that it runs *after* the model has written a message and *before* it is sent —
+which is the fact that decides where a fix belongs. Order is its own defect class (the
+recovery ladder once held two correct mechanisms in the wrong sequence — fact 7 below), and a
+mechanism found in the index still lands in the wrong stage. The brain does not fit in a
+context window — `lib/agent` alone is ~209k tokens — so this is the sequence, written down
+once instead of re-derived from the source every time.
 
 ---
 
@@ -157,15 +142,12 @@ A turn carrying text, a task, **or a tap the model still owes an account of** re
 and a photo does not — and it is also why order matters here: fold the card in *after* the test
 and a bare contact share falls through to "that came through as something I can't read".
 
-**Where the tap's two halves split, and why it is here rather than anywhere else.** §2.2 —
-*no model inference at tap time* — is about the DECISION, and the decision is made above this
-line: the payload was authored at compose time, validated then, and executes verbatim now. A
-misread still cannot commit anyone to being anywhere. What used to happen below it was a
-second thing wearing the same name: the runtime also *composed the message*, from row counts
-and a business snapshot taken before the transaction, and sent it. That is what F-CD cost —
-one message announcing a write and denying it in the same breath. `noop`, `menu` and
-`handoff` do not go on to stage 2, and the test for that is on `executeAction`: the runtime
-may **replay what the model wrote**; it may not **author what the person reads**.
+**The tap's two halves split here.** The DECISION is above this line — the payload was
+authored and validated at compose time and executes verbatim now — and the sentence about it
+is an ordinary turn below it ([`ARCHITECTURE.md`](./ARCHITECTURE.md) layer 2 carries the full
+F-CD story). `noop`, `menu` and `handoff` do not go on to stage 2, and the test for that is on
+`executeAction`: the runtime may **replay what the model wrote**; it may not **author what the
+person reads**.
 
 **If anything above stage 6 throws**, the catch guarantees the *asker* still hears one true
 sentence — tap-aware, because after a committed tap "nothing was changed" is a lie — and the
@@ -174,17 +156,11 @@ turn row still records the error. `runTurnBody` · `lib/agent/loop.ts`
 ## 1a · The front desk — a MODE of the one brain, not a second one
 
 Since the one-brain merge a desk arrival runs the ordinary loop. The mode is decided at
-arrival (the identity's academy carries `is_front_desk` — 0051), and everything mode-shaped happens at three seams the
-loop already owns: the tail (the census, memory and standing blocks are FALSE for a
-person with no business, so `deskTail` swaps in the desk's own), the dispatcher (the
-four desk verbs run only here and everything tenant-shaped refuses with the truth —
-PREFIX-RULES' own rule, *constrain a round at its dispatcher, never by narrowing what it
-is shown*, because a desk-narrowed tool block would be a second cached prefix), and
-the lint (the mask over the number's business names is read at validation time). The
-desk's standing facts are a byte-stable section of the ONE prefix. What the old fork
-bought — a smaller request — died with the cache economics; what it cost is recorded in
-F-EO, F-EQ, F-CV and the ace month's owner-seat jam, and the merge is measured against
-the two-brain arm by A/B.
+arrival (the identity's academy carries `is_front_desk` — 0051), and everything mode-shaped
+happens at three seams the loop already owns — the tail, the dispatcher, the lint. The desk's
+standing facts are a byte-stable section of the ONE prefix. What the two-brain fork cost, and
+how the merge is measured, is [`ARCHITECTURE.md`](./ARCHITECTURE.md)'s *one legitimate second
+prefix* trap.
 
 | Order | What | Where |
 | --- | --- | --- |
@@ -196,10 +172,6 @@ the two-brain arm by A/B.
 | 6 | A destination: a prospect contact in an existing business (find-or-create on the last ten digits — the one door, so an existing parent keeps their roster), or a business that did not exist a second ago | `joinBusiness` · `foundBusiness` · `prospectContactIn` · `lib/frontdesk/route.ts` · `lib/identity.ts` |
 | 7 | Their whole desk exchange is written into that business as the opening rows of its thread, on the rows' own clocks — and what they told the desk they were (`arrived_as`) crosses with them, stated in the tenant tail until real rows say it | `carryDeskTranscript` · `lib/frontdesk/route.ts` |
 | 8 | The desk's speaking paths mask the NUMBER's business names at validation time, not from a snapshot — a business founded seconds ago is the name a draft most needs masked | `deskLintScope` · `lib/agent/tools.ts` |
-
-**A hand-over ends the desk's part immediately** — before a parting sentence, because the
-business is about to answer the same message from inside itself, and two answers to one
-question is what that shape produces if nothing stops it.
 
 The turn row is written by `writeTurn` at stage 6 like every other, and only then does the
 hand-over run (stage 7). The desk owns no recorder, no prefix and no loop of its own.
@@ -416,7 +388,7 @@ Twelve facts that are only true because of *when* something runs.
 8. **Validation refuses; it never rewrites.** A refusal buys one round of grace, which is the same deal the reply tool gives.
 9. **Reflection is the last round, not a second call.** A separate call has no schema, no tools and no trace — it invents table names and cannot be corrected.
 10. **The turn is recorded whatever happened.** The record is written outside the error path, because the turns worth reading are the ones that went wrong.
-11. **A tap writes before the model and speaks after it.** Those are two different acts and they were fused for the product's whole life — so the one route where a write is *certain* was also the one route where the sentence about it was assembled from row counts, by something that could not read the rows back. Reversed or fused, you get F-CD either way: fuse them and the receipt is composed before the transaction it describes; reverse them and a model gets to edit a payload a person already approved.
+11. **A tap writes before the model and speaks after it.** Two different acts: fuse them and the receipt is composed before the transaction it describes; reverse them and a model edits a payload a person already approved. Either way is F-CD ([`ARCHITECTURE.md`](./ARCHITECTURE.md) layer 2).
 12. **The trailing send runs after every guard that could vouch for it**, so it is the one send with nothing underneath — which is why the turn checks once more, after it, whether the person actually holds anything.
 
 ## Where a fix goes

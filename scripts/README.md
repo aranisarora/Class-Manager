@@ -1,6 +1,6 @@
 # scripts/
 
-Sixty-six files, four jobs. This index exists because the folder had grown thirteen files
+One folder, one job per section below. This index exists because the folder had grown files
 that nothing referenced and six report generators that rendered the same evidence six ways.
 
 `npm run check:layout` asserts that every file here is named below and that every file named

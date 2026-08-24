@@ -45,7 +45,7 @@ however carefully the note beside it says otherwise.
 One run, one directory:
 
 ```
-.probe/runs/<UTC-minute>-<suite>/
+.probe/runs/<UTC-minute>-<suite>-<tok>/
   record.json       every turn, everything — written by the driver, never edited
   judgement.json    your verdict — written by you, or by scripts/judge.mjs
 ```

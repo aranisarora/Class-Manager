@@ -12,9 +12,9 @@ Four files. A finding's status is **which file its code is in** — there is no 
 
 | File | Holds | Written |
 | --- | --- | --- |
-| [`OPEN.md`](./OPEN.md) | The 11 findings that are broken, with their detail. The source of truth. | By hand |
+| [`OPEN.md`](./OPEN.md) | What is broken, with the detail. The source of truth. | By hand |
 | [`CLOSED.md`](./CLOSED.md) | One line per retired finding. A receipt and a regression manifest, nothing more. | By hand, one line |
-| [`DECIDED.md`](./DECIDED.md) | The 4 investigated and deliberately **not** closed, with the reasoning that cost the hours. | By hand |
+| [`DECIDED.md`](./DECIDED.md) | Investigated and deliberately **not** closed, with the reasoning that cost the hours. | By hand |
 | [`RULES.md`](./RULES.md) | The durable rules for an ideal conversation, as testable propositions. Not findings; they do not go stale. | Rarely |
 
 ## How a finding is retired

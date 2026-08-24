@@ -203,12 +203,8 @@ a view is not a shortcut for a query the model could write, it is the part of th
 it would not have thought to ask for.
 
 ~~Note that `lib/doctrine.md` is also sent **alone** by `synthesisDoctrine()` to the brief and
-the digest.~~ **That path is gone (17 Aug 2026).** The brief and the digest are ordinary turns
-opened by a job, so they get the same prefix, the same tools and the same flight recorder as
-every other turn — and the constraint goes with the path: nothing in doctrine has to be true
-on a toolless path when there is no toolless path. The capability statement stays in
-`PREAMBLE` regardless, because moving it is a prompt change and prompt changes here are made
-on the evidence of a drive rather than on a tidy-up.
+the digest.~~ **That path is gone (17 Aug 2026)** — the brief and the digest are ordinary turns
+opened by a job (ARCHITECTURE.md layer 4), and the toolless-path constraint died with it.
 
 ## The traps
 

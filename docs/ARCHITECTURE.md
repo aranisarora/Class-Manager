@@ -289,18 +289,20 @@ died, so a woman asking to opt out was sent prose naming a button not on her scr
   acknowledgement is what second authors do.
 - **And no backstop *author*, which is the stronger form of the same rule.** Not
   decorating the model's message is half of it; the other half is that there must be no
-  path where the runtime writes one instead. The tap was that path for the product's whole
-  life — `buildSummary` assembling a sentence out of row counts, `plural()`'s vocabulary
-  and a business snapshot read before the transaction, then sending it with no model in
-  the room. F-CD is one such message announcing a write and denying it in the same breath,
-  from two owners in two languages on the same field. A tap now hands its committed result
-  to an ordinary turn (`TapNarration` → `tapBlock` → the model), which is also what lets
-  the *defects* in that result be repaired rather than narrated: `emptyWrites` reaching a
-  phone as "3 steps matched no rows" is what a runtime author does with a diagnostic it
-  cannot act on. **The runtime may replay what the model wrote — a minted `noop` ack, a
-  staged message step — and may not author what the person reads.** What survives is a
-  last-resort backstop when the model produces nothing at all, twice, because going quiet
-  is still the one failure a person cannot tell apart from being ignored.
+  path where the runtime writes one instead. A tap has two halves and only the first is
+  model-free: *what runs* is the stored payload, replayed verbatim — §2.2, and the reason
+  mint-time validation must be exhaustive — while *what is said about it afterwards* is an
+  ordinary composition problem. The two were fused for the product's whole life:
+  `buildSummary` assembled a sentence out of row counts, `plural()`'s vocabulary and a
+  business snapshot read before the transaction, and sent it with no model in the room.
+  F-CD is one such message announcing a write and denying it in the same breath, from two
+  owners in two languages on the same field. A tap now hands its committed result to an
+  ordinary turn (`TapNarration` → `tapBlock` → the model), which is also what lets the
+  *defects* in that result be repaired rather than narrated. **The runtime may replay what
+  the model wrote — a minted `noop` ack, a staged message step — and may not author what
+  the person reads.** What survives is a last-resort backstop when the model produces
+  nothing at all, twice, because going quiet is still the one failure a person cannot tell
+  apart from being ignored.
 
 **Declarations carry every hard constraint.** A declared schema constrains generation; a
 paragraph upstream of the decode point constrains nothing — measured twice (the untyped
@@ -312,15 +314,6 @@ shown signature (F-AG).
 time — it executes as stored. So the payload is checked at compose time, while the model
 can still fix it, and refused with a reason. A button that fails politely at the tap is a
 promise already broken (F-AW: an admin was told his prices would rise; they did not).
-
-**A tap has two halves and only the first is model-free.** *What runs* is the stored
-payload, replayed verbatim, decided by nobody in the moment — that is §2.2 and the reason
-mint-time validation has to be exhaustive. *What is said about it afterwards* is an
-ordinary composition problem, and it was treated as part of the same rule for years
-because both live behind one button press. They are not the same: a model editing a
-payload a person already approved is the danger §2.2 names, and a model reading a diff
-that has already committed is the thing this system does best. The write happens first,
-with nothing inferred; the account of it goes to the turn.
 
 ---
 
@@ -393,31 +386,18 @@ child, the day) is in the body, within what Meta approves, or the notification d
 earn a send (F-AZ).
 
 **The brief and the digest are ordinary turns, opened by a job.** There is no separate
-synthesis path — no bespoke model call, no dearer model, no toolless prompt fed
-pre-queried rows. The old shape ran two `MODEL_SYNTH` calls a day on the pro model,
-regardless of whether anything had happened, at a thinking level nobody chose, with no
-flight recorder — and it cost 3.5× the entire human conversation while caching at half
-the rate, because the bespoke path could not share the stable prefix. Every reason it
-existed inverts under the architecture:
-
-- The cached prefix is the *cheap* part — a hit costs 3.2% of a miss — so an ordinary
-  turn on the conversation model costs less than the bespoke call did. The stress month
-  is the evidence the conversation model is enough: the hardest judgements of the run
-  were made by it, and summarizing a day is easier than the clash refusal was.
-- As a turn it has tools, which fixes a real defect class: the old synth was spoon-fed
-  query results it could not verify or widen — which is why a digest once told the solo
-  coach "I think coaches aren't marking after sessions" *about himself*. A turn reads
-  what the sentence needs, like every other turn.
-- As a turn it is recorded, guarded and result-honest for free. The two most expensive
-  calls of the day stop being the two with no record of why they said anything.
-- The special doctrine constraint dies with the path: nothing needs to be "true on the
-  toolless path too" when there is no toolless path.
+synthesis path. The old bespoke `MODEL_SYNTH` call could not share the stable prefix, so
+it cost 3.5× the entire human conversation; as an ordinary turn the brief is cheaper (the
+cached prefix is the discounted part), has tools (the old synth was spoon-fed rows it
+could not verify — a digest once told the solo coach "coaches aren't marking" *about
+himself*), and is recorded, guarded and result-honest for free. The special doctrine
+constraint died with the path: nothing needs to be "true on the toolless path too" when
+there is no toolless path.
 
 **And it fires on news, not on the clock.** The job that opens the turn runs a cheap
-deterministic census first — anything new, pending, or broken since the last brief? An
-empty census opens no turn and sends nothing: the quiet *is* the all-clear, which is
-doctrine's own promise. Cost then scales with events, not with days — the old shape
-composed 56 briefs for a business that received 36 messages in a month.
+deterministic census first; an empty census opens no turn and sends nothing — the quiet
+*is* the all-clear, which is doctrine's own promise. Cost then scales with events, not
+with days.
 
 ---
 
@@ -514,10 +494,8 @@ Each has an incident behind it. They are the shapes to check any new design agai
   a human, or checked against the world; it is never matched.
 - **The model-free path.** A tap's payload executes with no judgement present; whatever
   runs there is prevalidated and guarded by the transaction, because nothing else will
-  ever notice. The trap grew a second head, and it took longer to see: the runtime also
-  *spoke* on that path, so the one route with no reader was also the one route that
-  narrated a diff it could not read back (F-CD). The write stays model-free by design;
-  everything downstream of the commit is an ordinary turn.
+  ever notice. Its second head — the runtime *speaking* on that path — is F-CD, and
+  layer 2's no-backstop-author rule is what retired it.
 - **The answered vacuum.** A question with no row behind it gets a plausible answer, and
   a plausible answer restated by memory becomes policy.
 - **Circular evidence.** A check, a fact, or a claim validated against something the same
@@ -526,9 +504,9 @@ Each has an incident behind it. They are the shapes to check any new design agai
   cached prefix is the discounted part, so anything that leaves it behind — a bespoke call
   with its own small system prompt, a round with a filtered tool list, a trimmed history —
   pays full price for its whole request. Both times it was measured the smaller request was
-  the dearer one: `MODEL_SYNTH` at 3.5× the human conversation, and the reflection round's
-  two-tool filter at 64% of a run's cache misses for a constraint its own dispatcher was
-  already applying. Cheapness here is a property of *sameness*, not of size.
+  the dearer one: `MODEL_SYNTH`, and the reflection round's two-tool filter — a constraint
+  its own dispatcher was already applying (PREFIX-RULES.md has the meter). Cheapness here
+  is a property of *sameness*, not of size.
 
   **The one legitimate second prefix existed, and was retired by its seam (23 Aug 2026).**
   The front desk (`lib/frontdesk/`, §10.0) ran on a prefix of its own for as long as the

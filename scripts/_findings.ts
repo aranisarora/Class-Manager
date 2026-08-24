@@ -170,24 +170,6 @@ if (process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('scripts/_fi
   const onlyOpen = argv.includes('--open')
   const onlyBare = argv.includes('--bare')
 
-  /* ------------------------------------------------------------------------ *
-   * --write · findings/OPEN.md, the short list that is actually read
-   * ------------------------------------------------------------------------ *
-   *
-   * The ledger is 1,800 lines ordered by drive date, and on 20 Aug 2026 it held
-   * 46 findings of which 35 were closed. Nobody could answer "what is open?" from
-   * it, so nobody asked it — they asked an agent, which read the stale half and
-   * proposed fixes that had shipped.
-   *
-   * This writes the answer down. It is GENERATED and not maintained, because a
-   * second hand-kept list of one fact is the precise failure being repaired here:
-   * the ledger already kept status in a table AND in its headings, they diverged,
-   * and twenty shipped mechanisms read as open defects for three days.
-   *
-   * Each row links back rather than copying. The detail — what broke, what it
-   * cost, where the fix belongs — stays in the ledger where it was written; this
-   * is an index, and an index that restates its source is a third thing to drift.
-   */
   let findings = readFindings()
   if (onlyOpen) findings = findings.filter((f) => !f.closed)
   if (onlyBare) findings = findings.filter((f) => f.stagedBy.length === 0)
