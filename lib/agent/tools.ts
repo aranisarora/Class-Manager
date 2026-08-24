@@ -6,6 +6,11 @@
  * behavioural — RLS enforces, the diff is computed before commit, and every
  * message goes out the one send path. The floor being solid is what lets the
  * model be free above it.
+ *
+ * The declared surface and the dispatcher's order are documented in
+ * docs/ANATOMY.md (stage 3). If you add, remove or re-gate a tool, update that
+ * document in the same change — `npm run check:anatomy` verifies its symbols,
+ * not its prose.
  */
 
 import {

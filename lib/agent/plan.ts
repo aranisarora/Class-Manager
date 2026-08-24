@@ -23,6 +23,10 @@
  *   - RLS applies to every step, so a plan cannot reach past what its author
  *     could have done by hand.
  *   - The whole plan is one audit entry, carrying the intent that produced it.
+ *
+ * The write pipeline's ORDER is documented in docs/ANATOMY.md (sub-pipeline A).
+ * If you move a guard relative to the transaction or the flush, update that
+ * document in the same change.
  */
 
 import {

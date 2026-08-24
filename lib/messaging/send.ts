@@ -5,6 +5,9 @@
  * send path, everything through it, no helper that skips the queue. This is what makes it
  * safe to give the model a message primitive."
  *
+ * The ladder's ORDER is documented in docs/ANATOMY.md (sub-pipeline B) and checked by
+ * `npm run check:anatomy` — move or add a gate and that document must move with it.
+ *
  * @mechanism send — the one path to the wire. Every message the product emits — catalog
  *   row, composed message, model-authored reply, job output — passes ten ordered gates:
  *   opt-out, the scoped mute, quiet hours, §18's two subject rules, pre-launch silence,

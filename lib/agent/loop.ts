@@ -4,8 +4,14 @@
  * Shape: resolve identity → if this is a button tap, consume the action and
  * execute the stored payload with NO model call (§2.2 — a misread at tap time
  * commits someone to being somewhere) → otherwise build prefix + tail, run up
- * to 8 tool rounds, lint, send. A `turn` row is written every time, including
- * on error, because a turn that vanished is an invisible failure.
+ * to `MAX_TOOL_ROUNDS` tool rounds, lint, send. A `turn` row is written every
+ * time, including on error, because a turn that vanished is an invisible
+ * failure.
+ *
+ * The ORDER in this file is documented in docs/ANATOMY.md and is load-bearing.
+ * If you move a stage, an exit, or a guard, update that document in the same
+ * change — `npm run check:anatomy` verifies its symbols and the send ladder,
+ * not its prose.
  */
 
 import { modelQuery, withSession, type SessionCtx } from '@/lib/db'

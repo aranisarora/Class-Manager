@@ -69,7 +69,12 @@ failure mode: a fix that is right in the abstract, landed where it is already to
 [`docs/ANATOMY.md`](./docs/ANATOMY.md) is the sequence — arrival, context, rounds, a write, a
 send, the exits, reflection, the record — with the stage each class of defect belongs to. Order
 here is load-bearing, not presentation: the recovery ladder's worst bug was two correct
-mechanisms in the wrong sequence. `npm run check:anatomy` is what keeps it from drifting.
+mechanisms in the wrong sequence. `npm run check:anatomy` is what keeps it from drifting —
+and it checks symbols, paths and the ladder, **not prose**: if your change moves WHEN
+something runs (a gate reordered, a stage added, an exit re-sequenced, a tool added or
+re-gated), updating `docs/ANATOMY.md` is part of that change, in the same commit. The spine
+files (`loop.ts`, `tools.ts`, `context.ts`, `plan.ts`, `send.ts`) say so at the top. Its
+"short version" section is the plain-words tier; read at least that before touching the brain.
 
 **A finding is retired by a mechanism, not by a paragraph.** The four steps, in order:
 
@@ -157,6 +162,7 @@ npm run findings            # which open findings no instrument stages
 npm run findings -- --write # regenerate findings/OPEN.md, the status board
 npm run mechanisms          # regenerate docs/MECHANISMS.md from the @mechanism tags
 
+npm run check               # every static gate below in one command — run it before you finish
 npm run verify:static       # five absolutes, as a build failure
 npm run check:layout        # this repo's own structure indexes still describe it
 npm run check:findings      # the ledger agrees with itself about what is open

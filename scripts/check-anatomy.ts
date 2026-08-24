@@ -84,6 +84,17 @@ const bodyOf = (p: string): string => {
   return contents.get(p)!
 }
 
+/**
+ * Whole-word, not substring. `.includes()` let the word "review" in a comment vouch
+ * for a `view` tool that had been deleted — the exact rot this program exists to
+ * catch, passing green because a longer identifier happened to contain the dead
+ * one. A dotted name (`ModelCall.parseError`, `app.now_for`) is matched verbatim,
+ * with the same boundary rule at both ends.
+ */
+const escapeSym = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const hasSymbol = (body: string, sym: string): boolean =>
+  new RegExp(`(?<![A-Za-z0-9_])${escapeSym(sym)}(?![A-Za-z0-9_])`).test(body)
+
 for (const line of doc.split('\n')) {
   if (!line.trimStart().startsWith('|')) continue
   const spans = [...line.matchAll(/`([^`]+)`/g)].map((m) => m[1] as string)
@@ -92,7 +103,7 @@ for (const line of doc.split('\n')) {
   for (const s of spans) {
     if (isPath(s) || !IDENT_RE.test(s)) continue
     checked++
-    if (!paths.some((p) => bodyOf(p).includes(s))) {
+    if (!paths.some((p) => hasSymbol(bodyOf(p), s))) {
       problems.push(`${DOC} names \`${s}\` beside ${paths.join(', ')}, and it is in none of them`)
     }
   }
@@ -125,9 +136,13 @@ if (from < 0 || to < 0 || to < from) {
     if (inCode[inCode.length - 1] !== reason) inCode.push(reason)
   }
 
-  // The document's ladder: the numbered table under the send sub-pipeline.
+  // The document's ladder: the numbered table under the send sub-pipeline — and
+  // ONLY that section. Sliced to the next heading, so a numbered table elsewhere
+  // in the document cannot leak spurious rungs into this comparison.
   const inDoc: string[] = []
-  const table = doc.slice(doc.indexOf('## Sub-pipeline B'))
+  const fromB = doc.slice(doc.indexOf('## Sub-pipeline B'))
+  const nextHeading = fromB.indexOf('\n## ', 1)
+  const table = nextHeading > 0 ? fromB.slice(0, nextHeading) : fromB
   for (const line of table.split('\n')) {
     const m = line.match(/^\|\s*(\d+)\s*\|(.+?)\|/)
     if (!m) continue
@@ -151,6 +166,7 @@ if (from < 0 || to < 0 || to < from) {
  * -------------------------------------------------------------------------- */
 
 const STAGES = [
+  '## The short version',
   '## 1 · Arrival',
   '## 2 · Context',
   '## 3 · The rounds',

@@ -32,6 +32,10 @@
  * above the boundary, or the provider's automatic prefix cache stops matching and
  * every turn pays full price (§4.4). A cache hit costs 3.2% of a miss, and the
  * byte-stable prefix is the entire mechanism — there is no handle to hold.
+ *
+ * The prefix's section order and the tail's block order are documented in
+ * docs/ANATOMY.md (stage 2) — reorder or add a block and that document must
+ * move with it.
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'

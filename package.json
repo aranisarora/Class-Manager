@@ -34,6 +34,7 @@
     "findings": "tsx scripts/_findings.ts",
     "record:backfill": "tsx scripts/record-from-probe.ts --all",
     "verify:static": "node scripts/verify-static.mjs",
+    "check": "npm run verify:static && npm run check:layout && npm run check:findings && npm run check:anatomy && npm run check:mechanisms",
     "watch": "node scripts/watch.mjs"
   },
   "dependencies": {

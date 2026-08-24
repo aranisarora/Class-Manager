@@ -264,13 +264,24 @@ md.push('')
  * answer "does something already handle this?" for most of what gets asked.
  * Drop to the detail only for the two or three that look relevant.
  *
- * The gist is the body's first clause, not a second thing someone writes. A
+ * The gist is the body's first SENTENCE, not a second thing someone writes. A
  * summary maintained by hand is the drift this file exists to end.
+ *
+ * Two render rules, both learned from the first version. It splits on periods
+ * only — the clause splitter also broke on ":" and ";", so any tag whose first
+ * line ended in a colon rendered as a dangling fragment ("…set by what its
+ * payload CARRIES rather than by one wall-clock constant:"). And an over-budget
+ * sentence is cut at a WORD boundary — the old hard slice cut mid-word
+ * ("…carries all three c…"), which reads as corruption and buries the one word
+ * that mattered.
  */
+const GIST_MAX = 160
 const gist = (m: Mechanism) => {
-  const first = (m.body.split(/(?<=[.;:])\s/)[0] ?? m.body).trim()
-  const short = first.length > 110 ? `${first.slice(0, 107).replace(/[\s,]+$/, '')}…` : first
-  return short.replace(/\s+/g, ' ')
+  const first = (m.body.split(/(?<=\.)\s/)[0] ?? m.body).replace(/\s+/g, ' ').trim()
+  if (first.length <= GIST_MAX) return first
+  const cut = first.slice(0, GIST_MAX - 1)
+  const atWord = cut.slice(0, cut.lastIndexOf(' '))
+  return `${atWord.replace(/[\s,;:—-]+$/, '')}…`
 }
 
 md.push('## The scan')
