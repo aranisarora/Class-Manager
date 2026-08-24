@@ -1,11 +1,13 @@
 # The rules for the ideal conversation
 
-Durable, unlike findings. These are what [`../docs/ideal-conversations.md`](../docs/ideal-conversations.md)
-demonstrates, stated as testable propositions — so a driven transcript can be scored against them
-without re-reading a timeline. [`../docs/JUDGING.md`](../docs/JUDGING.md) is how a verdict gets
-written; nothing here scores anything by itself.
+Durable, unlike findings. These are the ideal conversation stated as testable propositions —
+so a driven transcript can be scored against them without re-reading a timeline. They were
+distilled from a long worked corpus that now lives only in git
+(`git show 4b154aa:docs/ideal-conversations.md`); "the ideal" below refers to it.
+[`../docs/JUDGING.md`](../docs/JUDGING.md) is how a verdict gets written; nothing here scores
+anything by itself.
 
-Distilled from `ideal-conversations.md`. Doctrine (§4.1) says how to *sound*; these say how
+Doctrine (§4.1) says how to *sound*; these say how
 the conversation has to *behave*. Each is written so a transcript either passes it or doesn't.
 
 **1 · One confirmation per consequential action, ever.**
@@ -38,7 +40,7 @@ from a different clock than the one the schedule lives on.
 
 **7 · One event, one person, one message.**
 Two unmarked registers is one message, not two — and never seven. Two children with news on
-the same day is one message (`ideal-conversations.md`: "You'll get one message, not two").
+the same day is one message ("You'll get one message, not two").
 Dedupe is by *fact*, not by byte-identical body.
 
 **8 · The proactive surface is bounded by usefulness, not by capability.**
