@@ -297,7 +297,7 @@ memory_fact (                               -- §5. append-only. this is the rec
 )
 ```
 
-**Roles are hats and they compose.** `admin`, `coach`, `account_holder`, `player`, `prospect` — a senior player who coaches juniors is one person with a player row and a coach row, served in one thread. `visitor` (0039, §10.0) is the sixth and the only one that composes with nothing: it means there is no business here yet, and it is returned for any contact whose academy is a front desk.
+**Roles are hats and they compose.** `admin`, `coach`, `account_holder`, `player`, `prospect` — a senior player who coaches juniors is one person with a player row and a coach row, served in one thread. `prospect` (0051) is the hat worn by absence: no admin, coach, account or player standing in this academy, derived from row-absence so it survives past the first message and stops the moment a real row exists. At a front desk (§10.0) — an academy that owns no role rows — it is every arrival's only hat; desk mode itself keys on `academy.is_front_desk`, the structural fact, not on a role. (The `visitor` role that used to mirror that fact was folded into this in 0051.)
 
 **Facts are never updated or deleted.** A correction writes a new row pointing at the one it supersedes; `academy.memory` and `person.memory` are rebuilt from the live set on a schedule. This makes "why does it think that?" answerable, which a mutable blob does not.
 
@@ -684,8 +684,8 @@ A fourth persona-phase cell, and the cheapest acquisition path in the product: t
 
 So an unknown number goes to **the front desk of the number it messaged**, not to a business:
 
-- One front desk per `sender`, created on the first cold inbound. It is an `academy` row carrying `is_front_desk` and it is **not a business** — no class, no roster, no money, excluded from every tenant enumeration. The trade is argued in full in migration 0039: as an `academy` row a visitor gets a person, a contact, a transcript, buttons, a turn record and the one send path with no parallel machinery at all.
-- The person is a **`visitor`** — a sixth role, returned for any contact whose academy is a front desk. Roles compose, so a front-desk arrival is `["prospect","visitor"]`: a prospect of the platform, not of a business.
+- One front desk per `sender`, created on the first cold inbound. It is an `academy` row carrying `is_front_desk` and it is **not a business** — no class, no roster, no money, excluded from every tenant enumeration. The trade is argued in full in migration 0039: as an `academy` row a desk arrival gets a person, a contact, a transcript, buttons, a turn record and the one send path with no parallel machinery at all.
+- The person is a **`prospect`** — the role worn by absence (§6.2, 0051), and at a desk it is their only hat: a prospect of the platform, not of a business. Desk mode — the narrowed four-verb surface — keys on `is_front_desk` directly; no role encodes it.
 - Every arrival is a row (`arrival`), opened the moment somebody writes, settled when they go somewhere. **A stranger who wrote once, was asked, and never answered is the row this product could not previously produce**, and "how many referrals became businesses" is the first question the vendor will ask.
 
 **The desk asks exactly one question and holds no conversation of its own.** *Are you looking for classes, or do you run them?* — and only when their own words have not already answered it, which they usually have. Someone asking whether the beginners batch suits a nine-year-old is a parent; someone who says they coach badminton in Indiranagar is an owner. The prefilled text is still read; it is **evidence given to that turn** rather than a routing decision made before anyone speaks.
@@ -697,7 +697,7 @@ So an unknown number goes to **the front desk of the number it messaged**, not t
 | Looking for classes | A prospect contact in that business (or the person they already were, if known) | §10.1 step 3 — the bot talks |
 | Running classes | A new tenant, with them as its admin, `onboarding_state = 'setup'` | §7.1 — the setup ladder |
 
-**Guards, and they are structural rather than instructions.** There is no "list the businesses" verb at any privilege, so the desk cannot recite this number's customer list to a stranger — it never holds one. Founding is not behind a tap, because consequence rather than row count decides a preview and founding moves no money, affects nobody else and destroys nothing; what protects the pooled number is a **rate limit per number per day**, since §16.1 shares quality rating, tier and blocks across every tenant on the sender. And the front desk **cannot initiate**: its `onboarding_state` is never `live`, so the send path suppresses anything that is not a solicited reply inside the visitor's own turn.
+**Guards, and they are structural rather than instructions.** There is no "list the businesses" verb at any privilege, so the desk cannot recite this number's customer list to a stranger — it never holds one. Founding is not behind a tap, because consequence rather than row count decides a preview and founding moves no money, affects nobody else and destroys nothing; what protects the pooled number is a **rate limit per number per day**, since §16.1 shares quality rating, tier and blocks across every tenant on the sender. And the front desk **cannot initiate**: its `onboarding_state` is never `live`, so the send path suppresses anything that is not a solicited reply inside the arrival's own turn.
 
 **Still unresolved, deliberately:** a known number belonging to *several* businesses. That is a different question — *which of your businesses is this about?* — and it needs an answer that sticks, or a parent enrolled at two academies is interrogated on every message. It is left exactly where it was (§21).
 
@@ -715,7 +715,7 @@ A QR code at the court, a "Message us" link on a website or Instagram bio. **Ass
 
 **A conversation, not a wizard.** The most common real first message is *"my daughter is 14 and has played for three years, is your beginners class right for her?"* — and a scripted name → age → pick-a-class sequence has nowhere to put that. This is the highest-stakes conversation in the product, with a stranger, and it ends in one operation rather than being one:
 
-1. Cold inbound → front desk (§10.0) → they are looking for classes → academy resolved → `contact.state = 'prospect'`, `person` created — or the person they already were, because §10.1's one prohibition is creating a second `person` for somebody already in the roster
+1. Cold inbound → front desk (§10.0) → they are looking for classes → academy resolved → a `contact` and `person` created (state `registered` until their message stores, `engaged` after — §11.2), wearing the `prospect` role because no role row exists yet — or the person they already were, because §10.1's one prohibition is creating a second `person` for somebody already in the roster
 2. [`PR-WELCOME`] *"Hi Rajesh! I'm the class manager for Ace TT Academy."* → what's on offer → `[Book a free trial]` `[See the schedule]` `[Talk to Sharwin]`
 3. **The bot talks.** It holds the catalog, the schedule and which classes have room, so it answers what a parent actually asks — is this the right level, what does it cost, where is it, is there anything on Saturday, my son is left-handed does that matter. Whatever it learns along the way is what it needed to know
 4. When the conversation has produced a player and a class, it calls `book_trial(...)` — one transactional operation (§14.2.1) creating `account`, `player`, a trial `enrollment` and the booking, then telling the parent [`PR-TRIAL-CONFIRMED`]. **Auto-confirmed, no admin gate**
@@ -771,15 +771,12 @@ Everything else is derived from `session_coach`:
 ### 11.2 Contact
 
 ```
-prospect ──(trial booked)──> registered ──(first inbound)──> engaged ──(opts out)──> opted_out
-registered ──(first inbound)──> engaged
+registered ──(first inbound)──> engaged ──(opts out)──> opted_out
 ```
 
-`prospect` = arrived cold, no account yet. `registered` = created in onboarding, never messaged. `engaged` = `last_inbound_at` set; the window is open when `now() - last_inbound_at < 24h`.
+`registered` = created, never heard from — whether the admin added them in onboarding or they arrived cold at a desk. `engaged` = `last_inbound_at` set; the window is open when `now() - last_inbound_at < 24h`.
 
-**A front-desk contact (§10.0) starts `prospect` too, and that is the right word rather than a compromise** — arrived cold, no account. What the state cannot say is *which* thing they are a prospect of, because a state describes the contact and the answer describes the academy the contact is in.
-
-**And note what this state machine does to `prospect`: the first inbound consumes it.** The trigger that stamps `last_inbound_at` moves `registered|prospect → engaged` on the same event, so `prospect` survives only between a contact being created and their opening message being stored — it is gone before the turn that answers them runs. Anything selected on `state = 'prospect'` is therefore selected for nobody from the second message onward. That is why `visitor` is a **role** keyed on the academy rather than a sixth state: roles compose, every consumer already reads them, and `is_front_desk` stays true for exactly as long as the conversation is at the desk. Where the arrival went is neither a state nor a role — it crosses tenants, so it lives on the global `arrival` row.
+**There is no `prospect` state, and there used to be (0051 removed it).** It meant "arrived cold, no account yet" — and the trigger that stamps `last_inbound_at` consumed it on the very message that created the contact, so no row at rest ever held it: anything selected on `state = 'prospect'` was selected for nobody from the second message onward, and its two consumers (a `book_trial` promotion, the §9.1 invite predicate) were dead or unaffected on arrival. Being a prospect is not a lifecycle stage of the contact; it is the **role** worn by row-absence (§6.2), which survives exactly as long as the absence does. Where a desk arrival went is neither a state nor a role — it crosses tenants, so it lives on the global `arrival` row.
 
 ### 11.3 Coach
 

@@ -59,7 +59,7 @@ import { vocabularyPreferences } from '@/lib/agent/lint'
 // its own standing promises reach it the way every other unstorable state does:
 // as a line in the tail, put there by the runtime.
 import { liveAgentTasks } from '@/lib/jobs'
-// The visitor tail (one brain, desk mode). One direction, no cycle: frontdesk/context
+// The desk tail (one brain, desk mode). One direction, no cycle: frontdesk/context
 // imports only leaf types, and frontdesk/route never reaches back into lib/agent.
 import { frontDeskTail } from '@/lib/frontdesk/context'
 import { businessesOnThisNumber } from '@/lib/frontdesk/route'
@@ -423,7 +423,7 @@ answered from inside that business, in this same thread, in the next breath — 
 conversation crosses with them, so nothing they said needs repeating. Anything composed
 after that success is a second answer they did not need.
 
-A visitor's question about schedules, fees or rosters is a reason to hand over, not a
+A question at the desk about schedules, fees or rosters is a reason to hand over, not a
 thing to apologise for — the desk holds no business's data, and a read on a desk turn
 returns empty because nothing is there, not because something is withheld.
 
@@ -1701,16 +1701,16 @@ async function standing(id: Identity): Promise<string[]> {
 }
 
 /**
- * @mechanism visitorTail — a visitor's tail is the DESK's, not a tenant's: no census
+ * @mechanism deskTail — a desk arrival's tail is the DESK's, not a tenant's: no census
  *   (there is no business to count), no memory, no standing states — the arrival's
  *   asked-state, what this number is, and the businesses their own words named, built
  *   by the same `frontDeskTail` the second desk brain used, so the desk's tail
  *   mechanisms (`whatThisNumberIs`, `answeredSinceAsked`) survive the one-brain merge
- *   byte for byte. The blocks skipped are not merely wasted on a visitor, they are
+ *   byte for byte. The blocks skipped are not merely wasted at the desk, they are
  *   FALSE for one: a census of the desk academy reads as an empty business, and the
  *   model asserting emptiness to a stranger off it is the exact shape F-AD closed.
  */
-async function visitorTail(id: Identity, v: { text: string; arrival: unknown }): Promise<string> {
+async function deskTail(id: Identity, v: { text: string; arrival: unknown }): Promise<string> {
   const at = await now(id.academyId)
   const businesses = await businessesOnThisNumber(id)
   const arrival = v.arrival as { firstText?: string | null } | null
@@ -1739,11 +1739,11 @@ export async function variableTail(
     queryResults?: unknown
     recentLookups?: string
     recentActions?: string
-    /** Set on a front-desk turn: the visitor tail below replaces everything else. */
-    visitor?: { text: string; arrival: unknown }
+    /** Set on a front-desk turn: the desk tail below replaces everything else. */
+    desk?: { text: string; arrival: unknown }
   },
 ): Promise<string> {
-  if (extra?.visitor) return visitorTail(id, extra.visitor)
+  if (extra?.desk) return deskTail(id, extra.desk)
   const tz = id.academy.timezone || 'Asia/Kolkata'
   const at = await now(id.academyId)
   const local = inZone(at, tz)

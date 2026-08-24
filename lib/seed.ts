@@ -545,13 +545,20 @@ export type WorldState = {
   jobs: { pending: number; running: number; done: number; failed: number; skipped: number; nextRunAt: string | null }
 }
 
+/**
+ * The emulator's copy of `app.identity()`'s role derivation (0051) — the two must
+ * agree or the tray badge lies about which hat the runtime served. `prospect` is
+ * row-absence: no standing of any kind here, which at a front desk is every
+ * arrival. An ended coach carries no current standing, same as the SQL.
+ */
 function rolesOf(r: Record<string, unknown>): Role[] {
   const roles: Role[] = []
+  const isCoach = Boolean(r.coach_id) && r.coach_status !== 'ended'
   if (r.is_admin) roles.push('admin')
-  if (r.coach_id) roles.push('coach')
+  if (isCoach) roles.push('coach')
   if (r.is_holder) roles.push('account_holder')
   if (r.is_player) roles.push('player')
-  if (r.state === 'prospect') roles.push('prospect')
+  if (roles.length === 0) roles.push('prospect')
   return roles
 }
 
@@ -1352,10 +1359,11 @@ export async function createTestContact(input: NewTestContact): Promise<TestCont
       insert into person (id, academy_id, full_name, notes)
       values (${personId}::uuid, ${input.academyId}::uuid, ${name}, 'test contact')`
 
-    // §11.2 — a prospect has not registered; everyone else was put here by the admin, which
-    // is what `registered` means. Neither is `engaged`: that is earned by messaging in, and
-    // the inbound trigger promotes them the moment they do.
-    const state = input.role === 'prospect' ? 'prospect' : 'registered'
+    // §11.2 (0051) — created-not-yet-heard-from is `registered` for every hat, the
+    // prospect included; `engaged` is earned by messaging in, and the inbound trigger
+    // promotes them the moment they do. What makes a prospect a prospect is the
+    // absence of any role row, not a state.
+    const state = 'registered'
 
     await tx`
       insert into contact (id, academy_id, person_id, phone_e164, wa_id, state, role_hint)
@@ -2466,10 +2474,10 @@ export async function ingestInbound(input: {
   const { identity, isNew } = resolved
   const academyId = identity.academyId
   const contactId = identity.contact.id
-  // 0039 — the `visitor` role is the one carrier of "this is not a business". Read from
-  // the composed roles rather than from the academy row, so there is one place that
-  // decides it and every reader agrees with `runTurn` about which surface ran.
-  const atFrontDesk = identity.roles.includes('visitor')
+  // 0051 — desk-ness is the academy's structural fact, read where `runTurn` reads it
+  // (`is_front_desk` on the identity's academy row), so every reader agrees about
+  // which surface ran. The `visitor` role that used to mirror this is gone.
+  const atFrontDesk = identity.academy.is_front_desk
   const idempotencyKey = input.waMessageId ? `inbound:${input.waMessageId}` : null
 
   const written = await withSession(svc(academyId), async (tx) => {

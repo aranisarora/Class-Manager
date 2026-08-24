@@ -1,7 +1,7 @@
 /**
  * lib/frontdesk/context.ts — what the front desk is told (0039).
  *
- * The visitor TAIL — the one brain renders it in desk mode (the second prefix is gone), because §4.4's cost model is the
+ * The desk TAIL — the one brain renders it in desk mode (the second prefix is gone), because §4.4's cost model is the
  * reason there is only ever one: the prefix is byte-stable so the provider's automatic
  * cache matches it, and a hit costs 3.2% of a miss. The rule that follows is *never a
  * per-tenant fork*, and this is not one. It is one extra cached block for the whole
@@ -34,10 +34,10 @@ import type { Arrival } from './arrival'
  */
 /*
  * FRONT_DESK_PREFIX and FRONT_DESK_BOUNDARY lived here until the one-brain merge: the
- * desk was a second stable prefix over a second loop. A visitor turn now runs the one
+ * desk was a second stable prefix over a second loop. A desk turn now runs the one
  * brain in a mode — the desk's standing facts are a section of the ONE stable prefix
  * (lib/agent/context.ts), and this file's job is the tail about one arrival, rendered
- * by `variableTail`'s visitor branch through `frontDeskTail` below.
+ * by `variableTail`'s desk branch through `frontDeskTail` below.
  */
 
 /**
@@ -46,7 +46,7 @@ import type { Arrival } from './arrival'
  * @mechanism frontDeskTail — states the two facts the model would otherwise reconstruct
  *   from the conversation, which is where the false-confirmation class comes from: whether
  *   the question has ALREADY been put on this person's screen (`arrival.asked_at`, so a
- *   silent visitor is not interrogated a second time), and whether their own words name a
+ *   silent arrival is not interrogated a second time), and whether their own words name a
  *   business on this number. The second is what `matchAcademiesByName` used to spend as a
  *   routing decision before anyone had spoken; here it is evidence, carrying the id the
  *   tool needs, and it names only businesses THEIR OWN TEXT named — the model is never
@@ -83,7 +83,7 @@ export function frontDeskTail(o: {
    *   hand-over can be built from: `join_business` takes an academy id, `matchAcademiesByName`
    *   only produces one from words the VISITOR used, and a customer of a business does not
    *   generally know the string its owner typed into `start_business`. So a number with a
-   *   business on it and a visitor who could not name it had no reachable destination at
+   *   business on it and an arrival who could not name it had no reachable destination at
    *   all, and the desk's only truthful move was to say it had nothing.
    *
    *   That is what it did. On `2026-08-22-08-13-sim-7bo8`, Divya Rao — whose daughter had

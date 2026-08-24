@@ -32,7 +32,7 @@ import { z } from 'zod'
 import { matchAcademiesByName } from '@/lib/identity'
 import type { Identity } from '@/lib/types'
 import type { Arrival } from './arrival'
-import { businessesOnThisNumber, foundBusiness, isRefusal, joinBusiness, stopMessagingVisitor } from './route'
+import { businessesOnThisNumber, foundBusiness, isRefusal, joinBusiness, stopMessagingAtDesk } from './route'
 import type { Handover } from './route'
 
 /** At most this many names come back from one lookup. A directory is not an answer. */
@@ -75,7 +75,7 @@ export const StopMessaging = z.object({})
 /*
  * `ReplyArgs` and `frontDeskToolDecls` lived here until the one-brain merge: the desk's
  * verbs are declared inside the ONE tool block now (lib/agent/tools.ts, importing the
- * schemas above so the two surfaces cannot drift), and a visitor speaks through the
+ * schemas above so the two surfaces cannot drift), and a desk arrival speaks through the
  * tenant `reply` like everybody else.
  */
 
@@ -84,7 +84,7 @@ export type FrontDeskToolResult = {
   content: string
   /** Set when this call ended the desk's part of the conversation. */
   handover?: Handover
-  /** Set when the visitor asked to be left alone and it was recorded. */
+  /** Set when the person at the desk asked to be left alone and it was recorded. */
   stopped?: boolean
 }
 
@@ -170,7 +170,7 @@ export async function runFrontDeskTool(
     }
 
     case 'stop_messaging': {
-      const done = await stopMessagingVisitor(identity, arrival)
+      const done = await stopMessagingAtDesk(identity, arrival)
       return { content: done.note, stopped: true }
     }
 

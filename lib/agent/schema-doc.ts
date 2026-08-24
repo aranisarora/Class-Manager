@@ -216,7 +216,7 @@ venue(name! text, address text, notes text)
 
 person(full_name! text, notes text, memory text, settings jsonb)
 contact(person_id! uuid, phone_e164! text, wa_id text, profile_name text,
-  is_primary bool, state text 'prospect|registered|engaged|opted_out',
+  is_primary bool, state text 'registered|engaged|opted_out',
   opted_out_at tstz, last_inbound_at tstz, role_hint text, tier_state jsonb,
   arrived_as text 'parent|coach|owner|unsure'
   /* what they told the FRONT DESK they were, before this business knew anything about

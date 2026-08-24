@@ -375,10 +375,10 @@ async function runTurnBody(input: TurnInput, turnId: string): Promise<TurnOutput
     }
 
     /**
-     * A visitor — somebody at the front desk of this number (0039) — takes the SAME
+     * A person at the front desk of this number (0039) takes the SAME
      * loop as everybody else since the one-brain merge: the stable prefix carries a
-     * desk section, the tail swaps the census for the desk's own (`visitorTail`), and
-     * the tool surface is gated at the dispatcher (`visitorSurface`) — which is
+     * desk section, the tail swaps the census for the desk's own (`deskTail`), and
+     * the tool surface is gated at the dispatcher (`deskSurface`) — which is
      * PREFIX-RULES' own rule, "constrain a round at its dispatcher, never by narrowing
      * what it is shown". What used to be a second brain here (`runFrontDeskTurn`: its
      * own prefix, five verbs, its own recorder that F-CV had to teach to record) is a
@@ -532,7 +532,7 @@ async function runTurnBody(input: TurnInput, turnId: string): Promise<TurnOutput
    *
    *   It cannot recurse. Both destinations are real tenants by construction —
    *   `businessesOnThisNumber` filters `not is_front_desk`, and `app.found_business`
-   *   inserts `is_front_desk = false` — so the re-entered turn never carries the `visitor`
+   *   inserts `is_front_desk = false` — so the re-entered turn never runs in desk
    *   role and never reaches the branch above.
    */
   if (handover) {
@@ -1330,13 +1330,13 @@ async function modelTurn(
   trace: ToolTrace[]
   rounds: number
   error?: string
-  /** Set when a desk verb ended the visitor's part — the caller performs it. */
+  /** Set when a desk verb ended the desk part of the conversation — the caller performs it. */
   handover?: Handover
 }> {
-  // The one-brain desk: a visitor runs THIS loop, in a mode. The desk verbs need the
+  // The one-brain desk: a desk arrival runs THIS loop, in a mode. The desk verbs need the
   // arrival row (asked-state, opening words); loaded once here, shared by the tail.
-  const isVisitor = identity.roles.includes('visitor')
-  const visitorArrival = isVisitor
+  const atDesk = identity.academy.is_front_desk
+  const deskArrival = atDesk
     ? await arrivalForContact(identity.academyId, identity.contact.id).catch(() => null)
     : null
   const toolCtx: ToolCtx = {
@@ -1347,7 +1347,7 @@ async function modelTurn(
     // that carries this person's own typed words. A job turn has nobody speaking,
     // and its service-shaped claim path would skip the contact check entirely.
     typedThisTurn: input.source !== 'job' && Boolean((input.text ?? '').trim()),
-    ...(isVisitor ? { visitor: { arrival: visitorArrival, text: input.text ?? '' } } : {}),
+    ...(atDesk ? { desk: { arrival: deskArrival, text: input.text ?? '' } } : {}),
     pendingPlans: new Map<string, PlanStep[]>(),
     pendingMeta: new Map<string, { intent: string; summary: string; totalRows: number; needsConfirm: boolean }>(),
     outcomes,
@@ -1414,7 +1414,7 @@ async function modelTurn(
     queryResults: input.task?.queryResults,
     recentLookups: lookups,
     recentActions: actions,
-    ...(toolCtx.visitor ? { visitor: { text: toolCtx.visitor.text, arrival: toolCtx.visitor.arrival } } : {}),
+    ...(toolCtx.desk ? { desk: { text: toolCtx.desk.text, arrival: toolCtx.desk.arrival } } : {}),
   })
 
   const situation: string[] = [tail]
@@ -2024,7 +2024,7 @@ async function modelTurn(
     // sentence, because the business is about to answer this same message from inside
     // itself, and two answers to one question is what that shape produces if nothing
     // stops it. (The rule the second desk brain enforced by returning; the mode keeps.)
-    if (toolCtx.visitor?.handover) break
+    if (toolCtx.desk?.handover) break
 
     // Out of the loop, not out of the turn: the recovery round below still gets to
     // put what was learned into words, which beats an apology that explains nothing.
@@ -2176,10 +2176,10 @@ async function modelTurn(
   // straight to "something broke on my side" without ever asking again. One more
   // round is cheaper than an apology, and it is the difference between a product
   // that stumbles and one that ignores you.
-  // A visitor turn that ended on a hand-over is silent CORRECTLY: the business answers
+  // A desk turn that ended on a hand-over is silent CORRECTLY: the business answers
   // this same message from inside itself in the next breath, and speaking here would
   // compose the second answer the hand-over exists to prevent.
-  if (silent() && told === 0 && input.source !== 'job' && !toolCtx.visitor?.handover && !toolCtx.visitor?.stopped) {
+  if (silent() && told === 0 && input.source !== 'job' && !toolCtx.desk?.handover && !toolCtx.desk?.stopped) {
     try {
       const forced = await generate({
         system,
@@ -2266,10 +2266,10 @@ async function modelTurn(
    * been told something true this turn, and a second message would read as the
    * first being withdrawn.
    */
-  // A visitor turn that ended on a hand-over is silent CORRECTLY: the business answers
+  // A desk turn that ended on a hand-over is silent CORRECTLY: the business answers
   // this same message from inside itself in the next breath, and speaking here would
   // compose the second answer the hand-over exists to prevent.
-  if (silent() && told === 0 && input.source !== 'job' && !toolCtx.visitor?.handover && !toolCtx.visitor?.stopped) {
+  if (silent() && told === 0 && input.source !== 'job' && !toolCtx.desk?.handover && !toolCtx.desk?.stopped) {
     /**
      * A FOURTH CASE, and it outranks the other three: their tap already ran.
      *
@@ -2379,7 +2379,7 @@ async function modelTurn(
    */
   // Trailing text after a hand-over is the desk adding a parting sentence to a
   // conversation the business is already answering — discarded, traced, never sent.
-  if (text.trim() && !spoke() && toolCtx.visitor?.handover) {
+  if (text.trim() && !spoke() && toolCtx.desk?.handover) {
     trace.push({
       round: rounds,
       name: '(handed over: trailing prose discarded — the business answers next)',
@@ -2458,7 +2458,7 @@ async function modelTurn(
     // failed to produce anything twice — a third call to fix this file's wording is
     // a call spent on the wrong author. A violation here is a bug in the constant,
     // and the trace entry below is where it gets found.
-    // The same lint scope the `reply` case uses — for a visitor it carries the NUMBER's
+    // The same lint scope the `reply` case uses — on a desk turn it carries the NUMBER's
     // business names, read at validation time (`deskLintScope`, F-EQ), so both of the
     // desk's speaking paths mask through one author.
     const violations = runtimeAuthored ? [] : proseViolations(outgoing, await deskLintScope(toolCtx))
@@ -2728,12 +2728,12 @@ async function modelTurn(
    *
    * Nobody is waiting: the reply is already on their phone.
    * ----------------------------------------------------------------------- */
-  // Never on a visitor turn: the desk academy is sterile by design — no memory rows,
+  // Never on a desk turn: the desk academy is sterile by design — no memory rows,
   // no watches — so both of reflection's questions ("a fact worth carrying? something
   // to come back to?") have structurally empty answers there, and the desk verbs'
   // dispatcher would refuse the tools anyway. A hand-over's tenant re-entry reflects
   // as itself, inside the business, where the answers are real.
-  if (!forcedError && !toolCtx.visitor && (text.trim() || spoke())) {
+  if (!forcedError && !toolCtx.desk && (text.trim() || spoke())) {
     try {
       // Belt and braces, and now the outer belt: `reply` is declared in this
       // round like every other tool, so what refuses a second message is the
@@ -2928,7 +2928,7 @@ async function modelTurn(
     trace,
     rounds,
     ...(forcedError ? { error: forcedError } : {}),
-    ...(toolCtx.visitor?.handover ? { handover: toolCtx.visitor.handover } : {}),
+    ...(toolCtx.desk?.handover ? { handover: toolCtx.desk.handover } : {}),
   }
 }
 
@@ -2954,7 +2954,7 @@ async function modelTurn(
 /*
  * `frontDeskTrace` lived here until the one-brain merge: the second desk brain returned
  * plain data and this file rendered it into trace rows so one reader covered both paths
- * (F-CV). A visitor turn now IS the ordinary loop, so the one recorder records it
+ * (F-CV). A desk turn now IS the ordinary loop, so the one recorder records it
  * natively and there is nothing left to translate — which was F-CV's goal stated the
  * long way round.
  */

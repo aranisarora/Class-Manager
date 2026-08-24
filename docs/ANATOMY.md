@@ -100,8 +100,8 @@ inbound (Meta webhook · emulator · job)
     │                    ├ no business owns this number → the front desk (a MODE, 0)
     │                    └ number known to SEVERAL businesses → unresolved, silence
     └ runTurn
-       0 the desk    a `visitor` runs the SAME loop in desk MODE: the one prefix's desk
-                     section, the visitor tail, four verbs gated at the dispatcher
+       0 the desk    a desk arrival runs the SAME loop in desk MODE: the one prefix's desk
+                     section, the desk tail, four verbs gated at the dispatcher
        1 arrival     consumeAction → executeAction (the WRITE runs before any model)
                      …and then falls through to 2, so the model composes the receipt;
                      a tap the gate REFUSED also opens a turn, as a stated fact
@@ -131,7 +131,7 @@ backstop for a process that died mid-way. Either route ends in the same call:
 | The one door for every inbound: parse any shared contact card into the body, route, write the `message` row (all stamps `app.now()`, idempotent on the wa message id so Meta's retries collapse), then run the turn | `ingestInbound` · `bodyWithSharedContacts` · `lib/seed.ts` |
 | The webhook queues the event, answers Meta, and drains it after responding; the cron beat drains whatever a dead process left behind | `queueWebhookEvent` · `drainWebhookEvents` · `lib/seed.ts` · `app/api/webhook/route.ts` |
 | A shared number routes to a person by answering only what rows can answer — *does this number already belong to a business?* | `resolveInbound` · `lib/identity.ts` |
-| It belongs to none: the person is a `visitor` at the front desk of the number they messaged, with a person, a contact and a transcript | `frontDeskContact` · `lib/identity.ts` · `app.front_desk_contact` · `0039` |
+| It belongs to none: the person is a `prospect` at the front desk of the number they messaged, with a person, a contact and a transcript | `frontDeskContact` · `lib/identity.ts` · `app.front_desk_contact` · `0039` |
 | It belongs to **several**: unresolved, and deliberately silent — "which of your businesses is this about?" needs an answer that sticks, and that design does not exist yet. No message row, no turn | `resolveInbound` · `lib/identity.ts` |
 | The arrival is recorded **before** anything is asked, so a stranger who writes once and never answers is a row rather than an absence | `openArrival` · `lib/frontdesk/arrival.ts` |
 | One contact resolves to a person and to **all** of their roles at once | `resolveIdentity` · `lib/identity.ts` |
@@ -173,13 +173,13 @@ turn row still records the error. `runTurnBody` · `lib/agent/loop.ts`
 
 ## 1a · The front desk — a MODE of the one brain, not a second one
 
-Since the one-brain merge a `visitor` runs the ordinary loop. The mode is decided at
-arrival (`roles` carry `visitor`), and everything mode-shaped happens at three seams the
+Since the one-brain merge a desk arrival runs the ordinary loop. The mode is decided at
+arrival (the identity's academy carries `is_front_desk` — 0051), and everything mode-shaped happens at three seams the
 loop already owns: the tail (the census, memory and standing blocks are FALSE for a
-person with no business, so `visitorTail` swaps in the desk's own), the dispatcher (the
+person with no business, so `deskTail` swaps in the desk's own), the dispatcher (the
 four desk verbs run only here and everything tenant-shaped refuses with the truth —
 PREFIX-RULES' own rule, *constrain a round at its dispatcher, never by narrowing what it
-is shown*, because a visitor-narrowed tool block would be a second cached prefix), and
+is shown*, because a desk-narrowed tool block would be a second cached prefix), and
 the lint (the mask over the number's business names is read at validation time). The
 desk's standing facts are a byte-stable section of the ONE prefix. What the old fork
 bought — a smaller request — died with the cache economics; what it cost is recorded in
@@ -189,9 +189,9 @@ the two-brain arm by A/B.
 | Order | What | Where |
 | --- | --- | --- |
 | 1 | One stable prefix for both modes — the desk's standing facts are a section of it, byte-identical everywhere | `stablePrefix` · `lib/agent/context.ts` |
-| 2 | The visitor tail replaces the whole tenant tail: the arrival's asked-state, what this number is, and the businesses their own words name | `visitorTail` · `lib/agent/context.ts` · `frontDeskTail` · `lib/frontdesk/context.ts` |
-| 3 | On a visitor turn the dispatcher allows `reply`, `read` (the desk owns no rows, so empty is expected) and the four desk verbs — `find_business`, `join_business`, `start_business`, `stop_messaging`; everything tenant-shaped refuses with the truth, and a tenant turn reaching for a desk verb is refused the same way | `visitorSurface` · `lib/agent/tools.ts` |
-| 4 | The ordinary rounds — one loop, one recorder, real buttons. A hand-over **latches**: it breaks the loop before a parting sentence, and every further call this turn is refused, because the business answers this same message next | `modelTurn` · `lib/agent/loop.ts` · `visitorSurface` · `lib/agent/tools.ts` |
+| 2 | The desk tail replaces the whole tenant tail: the arrival's asked-state, what this number is, and the businesses their own words name | `deskTail` · `lib/agent/context.ts` · `frontDeskTail` · `lib/frontdesk/context.ts` |
+| 3 | On a desk turn the dispatcher allows `reply`, `read` (the desk owns no rows, so empty is expected) and the four desk verbs — `find_business`, `join_business`, `start_business`, `stop_messaging`; everything tenant-shaped refuses with the truth, and a tenant turn reaching for a desk verb is refused the same way | `deskSurface` · `lib/agent/tools.ts` |
+| 4 | The ordinary rounds — one loop, one recorder, real buttons. A hand-over **latches**: it breaks the loop before a parting sentence, and every further call this turn is refused, because the business answers this same message next | `modelTurn` · `lib/agent/loop.ts` · `deskSurface` · `lib/agent/tools.ts` |
 | 5 | The name matcher is evidence now, not a routing decision — it decides nothing on its own | `matchAcademiesByName` · `lib/identity.ts` |
 | 6 | A destination: a prospect contact in an existing business (find-or-create on the last ten digits — the one door, so an existing parent keeps their roster), or a business that did not exist a second ago | `joinBusiness` · `foundBusiness` · `prospectContactIn` · `lib/frontdesk/route.ts` · `lib/identity.ts` |
 | 7 | Their whole desk exchange is written into that business as the opening rows of its thread, on the rows' own clocks — and what they told the desk they were (`arrived_as`) crosses with them, stated in the tenant tail until real rows say it | `carryDeskTranscript` · `lib/frontdesk/route.ts` |
@@ -351,7 +351,7 @@ model's. `spokeAsTrailingProse` · `lib/agent/tools.ts`
 
 The turn's **last round**, not a second call — so it sees the schema, its own trace and its own
 reasoning, and shares the cache with everything before it (a filtered tool list broke exactly
-that, measurably). It runs only when the person was actually answered, and never on a visitor
+that, measurably). It runs only when the person was actually answered, and never on a desk
 turn — the desk is sterile by design. Its opening sentence is **derived** from what reached the
 asker, so it cannot hand the model a false premise about its own turn. Two questions: is there
 a fact worth carrying, and is there something to come back to. "Neither" is the common answer.

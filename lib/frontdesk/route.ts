@@ -68,7 +68,7 @@ export type RouteResult = Handover | RouteRefusal
 export const isRefusal = (r: RouteResult): r is RouteRefusal => 'refused' in r
 
 /**
- * @mechanism carryDeskTranscript — the visitor's WHOLE desk exchange, written into the
+ * @mechanism carryDeskTranscript — the arrival's WHOLE desk exchange, written into the
  *   business they were handed to as the opening rows of its thread — both directions, on
  *   the rows' own original clocks. Its predecessor carried exactly one message, the one
  *   that triggered the hand-over, and §10.1's routing means the useful sentence is
@@ -197,7 +197,7 @@ async function carryDeskTranscript(
 }
 
 /**
- * Every real business on the number this visitor messaged. Never handed to the model as
+ * Every real business on the number this arrival messaged. Never handed to the model as
  * a list — `find_business` matches against it server-side and answers with at most a few
  * names, so the desk cannot recite a customer directory to a stranger.
  *
@@ -222,7 +222,7 @@ export async function businessesOnThisNumber(identity: Identity): Promise<Academ
 }
 
 /**
- * @mechanism joinBusiness — the visitor is a parent, and this is the one door into a
+ * @mechanism joinBusiness — the arrival is a parent, and this is the one door into a
  *   tenant the front desk can open. It goes through `prospectContactIn`, so §10.1's
  *   "the one thing the bot must not do is create a second `person` for someone already in
  *   the roster" holds on this route the same way it holds on the router's: an existing
@@ -418,7 +418,7 @@ export async function foundBusiness(
 }
 
 /**
- * @mechanism stopMessagingVisitor — "leave me alone" is answerable at the front desk, where
+ * @mechanism stopMessagingAtDesk — "leave me alone" is answerable at the front desk, where
  *   there is no tenant to record it against and therefore nowhere for the ordinary opt-out
  *   to go. It writes `opted_out_at` on the front-desk contact, which is gate 1 of the send
  *   path — the gate that outranks every other — so the refusal is enforced by the same
@@ -427,7 +427,7 @@ export async function foundBusiness(
  *   sender (§16.1), so a stranger who asked to be left alone and was not is a bill the
  *   businesses pay.
  */
-export async function stopMessagingVisitor(
+export async function stopMessagingAtDesk(
   identity: Identity,
   arrival: Arrival | null,
 ): Promise<{ ok: true; note: string }> {
