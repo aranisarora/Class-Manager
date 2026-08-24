@@ -5,15 +5,17 @@ book, pay and get reminded; coaches get their day and mark attendance with taps;
 business in natural language.
 
 Built from [`product-spec.md`](./docs/product-spec.md), which remains the authority on behavior.
-[`DRIVING.md`](./docs/DRIVING.md) is how you drive it and find real defects — the ten roots
-every failure so far has been an instance of, what to measure, and the traps that make a
-bad run look like a good one. [`PREFIX-RULES.md`](./docs/PREFIX-RULES.md) governs what the model is told:
+[`DRIVING.md`](./docs/DRIVING.md) is how you drive it and find real defects — one spine, six
+instruments, what a run costs before you start it, how to read one back, and the traps that
+make a bad run look like a good one. [`PREFIX-RULES.md`](./docs/PREFIX-RULES.md) governs what the model is told:
 read it before adding a line to the prompt, and read its graveyard before adding one that
 has already been removed twice.
 
-**The emulator is the product surface in this build.** Meta Cloud API setup is deliberately not
-wired; the transport abstraction is real and `lib/messaging/transport-cloud.ts` is written
-against the live API, but nothing in this repo calls Meta.
+**The emulator is the drive surface; the live path is wired.** `TRANSPORT` selects the
+transport: `emulator` posts into the in-repo phone, `cloud` sends through the Meta Cloud API
+(`lib/messaging/transport-cloud.ts`), deployed and configured per
+[`DEPLOY.md`](./docs/DEPLOY.md) §4 — `npm run wa` is the setup surface. Drive against the
+emulator unless you specifically mean to exercise the live sender.
 
 ---
 
@@ -47,23 +49,28 @@ from and **message nobody**; nothing goes out until the academy is set live.
 
 ## The world you get
 
-One WhatsApp number (`+91 80 4718 2200`) serving **two tenants**, which is how tenant isolation
-becomes something you can watch rather than something you're told (§16).
+Nothing, until you ask for one. A fresh database holds no businesses — there is no whole-world
+fixture any more. `+ business` in the tray (or `npm run drive -- academy "X" --admin "Y"`)
+starts one from empty, and everything after that is talked into existence. For a business at a
+later point in its life, seed a stage:
 
-| | Ace TT Academy | Nadam Vocal |
-|---|---|---|
-| Admin | Sharwin Rao | **Lakshmi Subramanian — also the coach** |
-| Coaches | Arjun (active), Priya (active), Ravi (invited, never onboarded) | — (§18: she is the business) |
-| Classes | 6:30 Beginners Batch `per_month`, Saturday Advanced `per_session`, Sunday Camp `per_package` | Tuesday Beginners, Saturday Kriti — both `per_month` |
-| Families | 8 accounts / 10 players | 6 students |
+```bash
+npx tsx scripts/drive.ts seed --stage ready
+```
 
-Three of those are load-bearing test fixtures, not decoration:
+One business per stage — `empty`, `setup`, `roster`, `ready`, `live`, `mature` — each under its
+own name (Sunrise Swim, Kadam Athletics, Bluewave Badminton, Crescent Karate, Orchid Dance,
+Sixteen Strings Music), so two stages can coexist and a re-run rebuilds only its own fixture.
+The stages share one cast: Nandini Rao (admin), coaches Imran Qureshi (active) and Tara Sethi,
+the Menon and Khan families, and Ritu Malhotra; two classes, Evening Beginners (`per_month`)
+and Saturday Squad (`per_session`), so money cannot be answered by summing one column.
 
-- **Deepa Nair** is a self-paying adult — `account.holder_person_id = player.person_id`, the n=1
-  case §6.2 says must not be a second code path.
-- **Kiran Kumar**, 16, has **his own number** separate from his father's. Money-shaped rows must
-  never route to him (§6.7).
-- **Ravi** was invited and never onboarded, so `AD-COACH-NOT-ONBOARDED` has something real to fire on.
+Two of the cast are load-bearing test fixtures, not decoration:
+
+- **Ritu Malhotra** is a self-paying adult — `account.holder_person_id = player.person_id`, the
+  n=1 case §6.2 says must not be a second code path.
+- **Tara Sethi** was invited and never onboarded, so `AD-COACH-NOT-ONBOARDED` has something real
+  to fire on.
 
 ## What to try
 
@@ -106,8 +113,7 @@ Open a pane per contact from the tray, then:
     built by talking to it.
 13. **Drive it from the command line** — `npm run drive` is the harness, and it posts
     to this same API. `drive say` prints the reply, the buttons and every query that turn
-    ran; `drive link` reaches the web screens without waiting for the bot to offer one.
-    [`DRIVING.md`](./docs/DRIVING.md) is the method.
+    ran. [`DRIVING.md`](./docs/DRIVING.md) is the method.
 
 ## Checks
 
@@ -117,7 +123,7 @@ node scripts/rls-check.mjs    # the security boundary
 node scripts/verify-static.mjs # five absolutes, as a build failure rather than a note
 npm run drive -- evidence     # what the seven axes are judged on, straight off the tables
 npx tsx scripts/probe-model.ts   # the real loop through a scripted arc, plus SQL invariants
-node scripts/q.mjs --academy "Ace" "select …"   # ask the database what actually happened
+node scripts/q.mjs --academy "Orchid" "select …"   # ask the database what actually happened
 ```
 
 `rls-check` is the spec's phase-0 acceptance criterion: cross-tenant and cross-role reads return
@@ -178,11 +184,11 @@ event log can show you what didn't go and why.
 
 **The solo case falls out of two rules, not eight branches (§18).** Never ask someone to confirm
 something to themselves; never escalate about a person to that person. Both are checked on the
-send path, so Nadam Vocal works without a single `if (solo)`.
+send path, so a solo owner-coach works without a single `if (solo)`.
 
-**Layered context (§4).** A byte-identical stable prefix — doctrine, schema, eleven behavior
-modules (§4.2's nine, plus `onboarding` and `watching`), operation framing, the message catalog,
-and one typed declaration per operation — then a
+**Layered context (§4).** A byte-identical stable prefix — preamble, the front-desk section,
+schema, operations framing, the message catalog, platform facts, domain facts, doctrine, and
+the tool declarations — then a
 variable tail carrying memory, roles, the clock and a census of what exists, read under the
 asking person's own RLS. Behavior lives at the lowest layer that can hold it: the database
 refuses what it can, operations carry their own consequences, and only what's left is prompt.
@@ -217,11 +223,11 @@ some time, and a count of tables that was five short.
 
 ## Known gaps
 
-- **Meta Cloud API is not connected**, by design. `transport-cloud.ts` and `app/api/webhook`
-  are written and correct but never exercised. There is no longer a Flows API call among them:
-  publishing artifacts, `validateFlowJson` and the whole create/upload/publish dance went with
-  the forms (§14.6), which is one fewer account operation standing between this and a real
-  number.
+- **The live WhatsApp path is wired but lightly exercised.** `transport-cloud.ts` and
+  `app/api/webhook` are deployed and configured ([`DEPLOY.md`](./docs/DEPLOY.md) §4), and the
+  emulator remains where behaviour is driven and measured. There is no Flows API call among
+  them: publishing artifacts, `validateFlowJson` and the whole create/upload/publish dance
+  went with the forms (§14.6).
 - **Inbound media is never fetched, and no longer needs to be.** A Meta media id becomes a
   placeholder string; nothing downstream resolves it, because the model is text-only (§14.5).
   What matters now is that an attachment is *answered* rather than dropped, and that path is
@@ -242,11 +248,6 @@ some time, and a count of tables that was five short.
   3.2% of a miss, and there is nothing to create, hold or expire. The event log's `cached` chip is
   still the check — amber at 0%, and now it is measuring something the provider promises rather
   than something we were buying.
-- **There is no agent-simulation harness**, and the README used to claim one. Personas, a judge
-  agent and diffable runs (§17, phase 12) were built and removed as over-engineered; `npm run
-  drive` is the harness now, and a person driving it is the eval. `drive evidence`,
-  `npm run report` and [`JUDGING.md`](./docs/JUDGING.md) are what turn that from an impression
-  into a written verdict.
 - **Recipes (§14.3) were deleted, not deferred** — the table, `lib/agent/recipes.ts`, the capture
   site and the prompt fragment are gone as of `0017_drop_recipe.sql`. Capture, generalisation and
   matching were each written and each correct, and never joined: `applyRecipe` — the only thing

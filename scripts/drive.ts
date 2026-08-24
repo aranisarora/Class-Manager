@@ -879,7 +879,7 @@ async function cursorNow(): Promise<string> {
 /**
  * Every subcommand, in the shape you type it.
  *
- * `link`, `register` and `evidence` all shipped and then appeared in no help text, so the
+ * `register` and `evidence` both shipped and then appeared in no help text, so the
  * only way to find out they existed was to read this file — which, for anyone driving
  * the product rather than editing it, is the same as their not existing. The `case`
  * labels in `main` are the truth; this list is checked against them by
@@ -889,7 +889,6 @@ async function cursorNow(): Promise<string> {
 const HELP: [string, string][] = [
   ['world', 'who exists, with contact ids'],
   ['reset', 'wipe everything (no seed)'],
-  ['seed [--scenario ace|solo|both]', 'the deterministic two-academy fixture'],
   ['seed --stage empty|setup|roster|ready|live|mature', 'one business at a lifecycle stage'],
   ['academy "<name>" --admin "<person>"', 'create a business + its admin'],
   ['drop <academyId|"name">', 'delete a business and everything in it'],
