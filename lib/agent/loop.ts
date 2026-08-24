@@ -530,10 +530,10 @@ async function runTurnBody(input: TurnInput, turnId: string): Promise<TurnOutput
    *   written, in two academies, and that is the honest record — the front desk answered a
    *   stranger, and a business answered its first customer, and neither is the other.
    *
-   *   It cannot recurse. Both destinations are real tenants by construction —
-   *   `businessesOnThisNumber` filters `not is_front_desk`, and `app.found_business`
-   *   inserts `is_front_desk = false` — so the re-entered turn never runs in desk
-   *   role and never reaches the branch above.
+   *   It cannot recurse. Both destinations are businesses by construction —
+   *   `businessesOnThisNumber` enumerates `academy` rows, which desks are not in,
+   *   and `app.found_business` creates a `kind = 'business'` tenant (0052) — so the
+   *   re-entered turn never runs in desk role and never reaches the branch above.
    */
   if (handover) {
     const onward = await runTurn({
@@ -1335,7 +1335,7 @@ async function modelTurn(
 }> {
   // The one-brain desk: a desk arrival runs THIS loop, in a mode. The desk verbs need the
   // arrival row (asked-state, opening words); loaded once here, shared by the tail.
-  const atDesk = identity.academy.is_front_desk
+  const atDesk = identity.tenant.kind === 'front_desk'
   const deskArrival = atDesk
     ? await arrivalForContact(identity.academyId, identity.contact.id).catch(() => null)
     : null
@@ -1402,14 +1402,16 @@ async function modelTurn(
   // every replayed lookup is stamped against it: an unstamped past is read as the
   // present, and the model will argue itself out of a correct doubt with it.
   const at = await now(identity.academyId)
-  const clock = inZone(at, identity.academy.timezone)
+  // A desk has no academy row (0052); its clock note states the platform default.
+  const tz = identity.academy?.timezone ?? 'Asia/Kolkata'
+  const clock = inZone(at, tz)
   // One read, two filters. `Promise.all` around two functions that each fetched
   // the same rows is what made the identical statement go out twice a turn.
   const turns = await recentToolTurns(identity)
   const lookups = turns.value ? recentLookups(turns.value, at) : undefined
   const actions = turns.value ? await recentActions(turns.value, identity) : undefined
   const tail = await variableTail(identity, {
-    clockNote: `It is ${clock.label} (${clock.date} ${clock.time}) in ${identity.academy.timezone}.`,
+    clockNote: `It is ${clock.label} (${clock.date} ${clock.time}) in ${tz}.`,
     taskInstruction: input.task?.instruction,
     queryResults: input.task?.queryResults,
     recentLookups: lookups,

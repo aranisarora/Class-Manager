@@ -79,7 +79,9 @@ async function realTenants(): Promise<RealTenant[]> {
 
   for (const id of ids) {
     const rows = await withSession({ role: 'service', academyId: id }, async (tx) =>
-      (await tx`select name, is_sandbox from academy where id = ${id}::uuid`) as unknown as {
+      (await tx`select coalesce(a.name, 'Front desk') as name, t.is_sandbox
+                  from tenant t left join academy a on a.id = t.id
+                 where t.id = ${id}::uuid`) as unknown as {
         name: string
         is_sandbox: boolean | null
       }[],

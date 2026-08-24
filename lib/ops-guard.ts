@@ -218,14 +218,14 @@ async function lookupSandboxAcademy(academyId: string | null | undefined): Promi
     try {
       const { withSession } = await import('@/lib/db')
       const rows = await withSession({ role: 'service', academyId: id }, async (tx) => {
-        return await tx<{ is_sandbox: boolean }[]>`select is_sandbox from academy where id = ${id}::uuid`
+        return await tx<{ is_sandbox: boolean }[]>`select is_sandbox from tenant where id = ${id}::uuid`
       })
 
       const row = rows[0]
-      if (!row) return { sandbox: false, why: `no academy ${id} is visible to this deployment` }
+      if (!row) return { sandbox: false, why: `no tenant ${id} is visible to this deployment` }
       // `=== true` and not a truthiness test: a null column, or a driver that ever handed
       // back the string 'f', has to land on the refusing side of this line.
-      if (row.is_sandbox !== true) return { sandbox: false, why: `academy ${id} is a real tenant` }
+      if (row.is_sandbox !== true) return { sandbox: false, why: `tenant ${id} is a real one` }
       return { sandbox: true }
     } catch (e) {
       return { sandbox: false, why: `the sandbox flag on ${id} could not be read (${errorMessage(e)})` }
@@ -293,7 +293,7 @@ export async function requireSandboxAcademy(academyId: string | null | undefined
     {
       ok: false,
       error: 'sandbox_academy_only',
-      detail: `This control fabricates or destroys data — it invents inbound messages, moves a clock, forges delivery receipts, deletes a business or a person, or attests a payment nobody made. Outside a sandbox deployment it will only act on an academy explicitly marked as scratch (academy.is_sandbox, migration 0030), and ${verdict.why}. Mark a test academy as a sandbox and aim this at that one, or set OPS_SANDBOX=1 on a deployment where losing every record costs nothing.`,
+      detail: `This control fabricates or destroys data — it invents inbound messages, moves a clock, forges delivery receipts, deletes a business or a person, or attests a payment nobody made. Outside a sandbox deployment it will only act on an academy explicitly marked as scratch (tenant.is_sandbox, migrations 0030/0052), and ${verdict.why}. Mark a test academy as a sandbox and aim this at that one, or set OPS_SANDBOX=1 on a deployment where losing every record costs nothing.`,
     },
     { status: 403 },
   )

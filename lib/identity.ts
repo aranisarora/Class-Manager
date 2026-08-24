@@ -27,7 +27,7 @@ import { formatPhone } from '@/lib/format'
 // deciding. `lib/frontdesk/arrival.ts` imports nothing from here, so there is no cycle.
 import { openArrival } from '@/lib/frontdesk/arrival'
 import { isUuid } from '@/lib/ids'
-import type { Academy, Contact, Identity, Person, Role } from '@/lib/types'
+import type { Academy, Contact, Identity, Person, Role, Tenant } from '@/lib/types'
 
 /** app.identity() and app.inbound_candidates() are academy-agnostic bootstraps. */
 const BOOTSTRAP_CTX: SessionCtx = { role: 'service', academyId: '' }
@@ -49,7 +49,9 @@ function hydrate<T>(row: Record<string, unknown> | null | undefined): T {
 
 type IdentityJson = {
   academy_id: string
-  academy: Record<string, unknown>
+  tenant: Record<string, unknown>
+  /** SQL null at a front desk — a desk has no academy row (0052). */
+  academy: Record<string, unknown> | null
   contact: Record<string, unknown>
   person: Record<string, unknown>
   roles: Role[]
@@ -63,7 +65,10 @@ type IdentityJson = {
 function toIdentity(json: IdentityJson): Identity {
   return {
     academyId: json.academy_id,
-    academy: hydrate<Academy>(json.academy),
+    tenant: hydrate<Tenant>(json.tenant),
+    // Explicitly null-mapped: hydrate(null) would manufacture {} — an academy
+    // that "exists" with no fields — where the truth at a desk is that none does.
+    academy: json.academy ? hydrate<Academy>(json.academy) : null,
     contact: hydrate<Contact>(json.contact),
     person: hydrate<Person>(json.person),
     roles: Array.isArray(json.roles) ? json.roles : [],
@@ -73,6 +78,18 @@ function toIdentity(json: IdentityJson): Identity {
     isSolo: json.is_solo === true,
     seesMoney: json.sees_money === true,
   }
+}
+
+/**
+ * The business this identity stands in — for paths a front desk cannot reach.
+ * A desk turn calling this is a bug, and the throw says so at the call site
+ * rather than as an undefined-property crash three frames later.
+ */
+export function businessOf(identity: Identity): Academy {
+  if (!identity.academy) {
+    throw new Error('identity: a front-desk tenant has no academy row (0052)')
+  }
+  return identity.academy
 }
 
 /**

@@ -84,6 +84,7 @@ try {
     const one = async (sql: string): Promise<Record<string, any>> =>
       ((await tx.unsafe(sql)) as unknown as Record<string, any>[])[0]
 
+    await tx.unsafe(`select app.create_tenant(${A}, '${SENDER}'::uuid, 'business')`)
     await tx.unsafe(
       `insert into academy (id, name, sender_id, onboarding_state, timezone)
        values (${A}, 'Partial Period Scratch', '${SENDER}'::uuid, 'live', 'Asia/Kolkata')`,
@@ -199,7 +200,7 @@ try {
   )
 } finally {
   await withSession({ role: 'service', academyId }, async (tx) => {
-    await tx.unsafe(`delete from academy where id = ${A}`)
+    await tx.unsafe(`delete from tenant where id = ${A}`)
   }).catch(() => {})
 }
 

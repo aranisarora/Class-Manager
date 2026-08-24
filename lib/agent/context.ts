@@ -63,7 +63,7 @@ import { liveAgentTasks } from '@/lib/jobs'
 // imports only leaf types, and frontdesk/route never reaches back into lib/agent.
 import { frontDeskTail } from '@/lib/frontdesk/context'
 import { businessesOnThisNumber } from '@/lib/frontdesk/route'
-import { matchAcademiesByName } from '@/lib/identity'
+import { businessOf, matchAcademiesByName } from '@/lib/identity'
 
 /**
  * Doctrine lives on disk as markdown. Resolution tries the working directory
@@ -749,6 +749,8 @@ function fromRead<T>(
  * that thing does not exist are opposite sentences to the person on the phone.
  */
 async function census(id: Identity): Promise<string> {
+  // Business tail only — a desk has no academy row, and a census of one is a bug (0052).
+  const academy = businessOf(id)
   const ctx: SessionCtx = {
     role: 'user',
     academyId: id.academyId,
@@ -848,7 +850,7 @@ async function census(id: Identity): Promise<string> {
    * rest of the product writes times with, so the tail already contains the exact
    * sentence the reply should use.
    */
-  const tz = id.academy.timezone || 'Asia/Kolkata'
+  const tz = academy.timezone || 'Asia/Kolkata'
   const sessionLine = (r: Record<string, unknown>): string => {
     const raw = r.starts_at
     const at = raw instanceof Date ? raw : new Date(String(raw))
@@ -951,12 +953,12 @@ async function census(id: Identity): Promise<string> {
            * scheduled ahead" reads as a working business, and until this flips, not one of
            * those reminders will go out.
            */
-          const live = id.academy.onboarding_state === 'live'
+          const live = academy.onboarding_state === 'live'
           const readyToGoLive = !live && n(row, 'classes_active') > 0
           const bits = [
             live
               ? null
-              : `NOT LIVE (${id.academy.onboarding_state}) — no reminder, digest or announcement reaches anybody yet, ` +
+              : `NOT LIVE (${academy.onboarding_state}) — no reminder, digest or announcement reaches anybody yet, ` +
                 `and every count below is a roster nobody has been told about. ` +
                 (readyToGoLive
                   ? 'There is a timetable in, so going live is now a real next step to offer.'
@@ -995,7 +997,7 @@ async function census(id: Identity): Promise<string> {
                 : sent < outbound
                   ? `, of which ${sent} actually went out — the other ${outbound - sent} are still queued or failed, so nobody received those`
                   : ''),
-            id.academy.upi_handle
+            academy.upi_handle
               ? `UPI handle set`
               : `no UPI handle on file, so a payment request goes out with nothing to pay to`,
             /**
@@ -1389,6 +1391,7 @@ async function census(id: Identity): Promise<string> {
  * predicate changes, both change.
  */
 async function standing(id: Identity): Promise<string[]> {
+  const academy = businessOf(id) // business tail only (0052)
   const ctx: SessionCtx = {
     role: 'user',
     academyId: id.academyId,
@@ -1446,7 +1449,7 @@ async function standing(id: Identity): Promise<string[]> {
         `select scope, stated, to_char(until, 'YYYY-MM-DD') as until
            from comm_preference
           where contact_id = '${id.contact.id}'::uuid and released_at is null
-            and (until is null or until >= (app.now() at time zone '${(id.academy.timezone || 'Asia/Kolkata').replace(/'/g, '')}')::date)
+            and (until is null or until >= (app.now() at time zone '${(academy.timezone || 'Asia/Kolkata').replace(/'/g, '')}')::date)
           order by scope`,
         'prefetch: standing — mutes and opt-outs',
       ),
@@ -1567,7 +1570,7 @@ async function standing(id: Identity): Promise<string[]> {
       }
       for (const w of mine.slice(0, 8)) {
         const subject = String(w.subject ?? w.slug ?? '').replace(/\s+/g, ' ').slice(0, 80)
-        const when = inZone(w.run_at, id.academy.timezone || 'Asia/Kolkata').label
+        const when = inZone(w.run_at, academy.timezone || 'Asia/Kolkata').label
         /**
          * The SLUG, beside the subject, because it is the only thing `drop_watch` accepts.
          *
@@ -1744,7 +1747,8 @@ export async function variableTail(
   },
 ): Promise<string> {
   if (extra?.desk) return deskTail(id, extra.desk)
-  const tz = id.academy.timezone || 'Asia/Kolkata'
+  const academy = businessOf(id) // past the desk return, the business record exists (0052)
+  const tz = academy.timezone || 'Asia/Kolkata'
   const at = await now(id.academyId)
   const local = inZone(at, tz)
   const [academyMemory, personMemory, whatExists, standingStates] = await Promise.all([
@@ -1931,7 +1935,7 @@ export async function variableTail(
   out.push(ids.join('\n'))
 
   // --- the academy -----------------------------------------------------------
-  const a = id.academy
+  const a = academy
   const ac: string[] = [
     `# The business`,
     ``,
@@ -2008,7 +2012,7 @@ export async function variableTail(
   mem.push(memoryLine('About this business', academyMemory))
   mem.push(memoryLine(`About ${id.person.full_name}`, personMemory))
 
-  const vocab = vocabularyPreferences(id.academy.memory)
+  const vocab = vocabularyPreferences(academy.memory)
   if (vocab.length) {
     mem.push(
       `## Their words\n${vocab

@@ -606,7 +606,7 @@ export async function openEvents(o: {
       player_id: string | null
       player_name: string | null
     }>(
-      `with tz as (select timezone from academy where id = '${o.academyId}'::uuid)
+      `with tz as (select coalesce((select timezone from academy where id = '${o.academyId}'::uuid), 'Asia/Kolkata') as timezone)
        select r.session_id, r.class_name,
               to_char(r.starts_at at time zone (select timezone from tz), 'HH24:MI') as at_label,
               to_char(s.ends_at   at time zone (select timezone from tz), 'HH24:MI') as ends_hhmm,

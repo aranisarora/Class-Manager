@@ -78,6 +78,7 @@ const world = await withSession(ctx, async (tx) => {
     ((await tx.unsafe(sql)) as unknown as Record<string, any>[])[0]
   const A = `'${academyId}'::uuid`
 
+  await tx.unsafe(`select app.create_tenant(${A}, '${SENDER}'::uuid, 'business')`)
   await tx.unsafe(
     `insert into academy (id, name, sender_id, onboarding_state, timezone)
      values (${A}, 'Clash Scratch', '${SENDER}'::uuid, 'live', 'Asia/Kolkata')`,
@@ -263,7 +264,7 @@ try {
   assert('the overlap reads the same for everyone', bothVoices[0]?.startsWith('Ravi Menon is in two places'), bothVoices[0])
 } finally {
   await withSession(ctx, async (tx) => {
-    await tx.unsafe(`delete from academy where id = '${academyId}'`)
+    await tx.unsafe(`delete from tenant where id = '${academyId}'`)
   })
   console.log('\nscratch tenant removed.')
 }

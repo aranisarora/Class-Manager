@@ -199,22 +199,26 @@ Postgres. Every table: `id uuid pk default gen_random_uuid()`, `created_at times
 ### 6.1 Tenancy and place
 
 ```sql
-academy (
-  name                       text not null,
+tenant (                                    -- 0052. the isolation unit every academy_id points at
+  sender_id  uuid not null references sender(id),
+  kind       text not null,                 -- business | front_desk. desk mode keys on this
+  is_sandbox boolean not null default false -- 0030/0052. inherited from sender.is_sim by app.create_tenant
+)                                           -- unique (sender_id) where kind = 'front_desk'
+
+academy (                                   -- the business record. 1:1 with a business tenant, same id.
+  name                       text not null, --   a front_desk tenant has NO row here (0052)
   category                   text,          -- 'badminton', 'carnatic vocal' — display only
   timezone                   text not null default 'Asia/Kolkata',
   cancellation_window_hours  int  not null default 24,
   client_reminder_lead_hours int  not null default 14,
-  morning_brief_at           time not null default '07:00',
-  evening_digest_at          time not null default '21:00',
+  morning_brief_at           time default '07:00',            -- null = the owner turned it off (0052)
+  evening_digest_at          time default '21:00',
   rail                       text not null default 'rail1',   -- rail1 | rail2
   upi_handle                 text,
   sender_id                  uuid not null references sender(id),
   memory                     text,          -- §5. bounded hot set, not the record.
-  prompt_cache_handle        text,
   settings                   jsonb not null default '{}',
-  is_sandbox                 boolean not null default false,  -- 0030. scratch tenant; the emulator may fabricate against it
-  is_front_desk              boolean not null default false   -- 0039. §10.0. NOT a business
+  kind                       text not null default 'business' -- 0052. constant; with (id, kind, sender_id) → tenant it pins the subtype
 )
 
 venue ( name text not null, address text, notes text )
@@ -222,21 +226,21 @@ venue ( name text not null, address text, notes text )
 arrival (                                   -- 0039. GLOBAL, no academy_id — §10.0
   sender_id              uuid not null references sender(id),
   phone_e164             text not null,
-  front_desk_id          uuid not null references academy(id),
+  front_desk_id          uuid not null references tenant(id),   -- the desk (0052)
   contact_id             uuid not null references contact(id),
   profile_name           text,
   first_text             text,              -- what they opened with, verbatim
   asked_at               timestamptz,       -- null = their own words already said which side
   decided_at             timestamptz,
   outcome                text not null default 'undecided',  -- undecided | joined | founded | declined
-  destination_academy_id uuid references academy(id),        -- crosses tenants: why this table is global
+  destination_academy_id uuid references academy(id),        -- a BUSINESS — the FK says so (0052); crosses tenants: why this table is global
   unique (sender_id, phone_e164)
 )
 ```
 
-`academy` is the tenant. **The word "academy" appears nowhere a user can see** — §18.4.
+`tenant` is the tenant; `academy` is the business half of one. **The word "academy" appears nowhere a user can see** — §18.4.
 
-**One `academy` row per sender is not a tenant.** `is_front_desk` marks the arrivals hall of a WhatsApp number (§10.0): the row a person gets a person, a contact and a transcript in *before* they have said whether they want classes or run them. It carries no class, player, enrollment or money; it is excluded from every tenant enumeration; and it cannot initiate a message. Migration 0039 argues the trade — the alternative was four parallel tables and a second path to the wire, for the one conversation in the product that talks to a complete stranger.
+**The tenant is not the business (0052).** `tenant` is the isolation unit every `academy_id` column points at — sender, `kind` (`business` | `front_desk`), sandbox-ness — and `academy` is the business record, 1:1 with a business tenant on the same id. The arrivals hall of a WhatsApp number (§10.0) is a `front_desk` tenant with no academy row: the row a person gets a person, a contact and a transcript in *before* they have said whether they want classes or run them. It carries no class, player, enrollment or money; it is absent from every business enumeration by construction; and it cannot initiate a message. Migration 0039 argues the original trade — the alternative was four parallel tables and a second path to the wire — and 0052's header argues why the business half moved out of it.
 
 `arrival` is the funnel record, and it is the third deliberately global table after `sender` and `job`. It is global because `destination_academy_id` points out of whichever tenant the person ended up in, and a tenant-scoped row must never carry a foreign key across the boundary — RLS would make it unreadable from both ends.
 
@@ -297,7 +301,7 @@ memory_fact (                               -- §5. append-only. this is the rec
 )
 ```
 
-**Roles are hats and they compose.** `admin`, `coach`, `account_holder`, `player`, `prospect` — a senior player who coaches juniors is one person with a player row and a coach row, served in one thread. `prospect` (0051) is the hat worn by absence: no admin, coach, account or player standing in this academy, derived from row-absence so it survives past the first message and stops the moment a real row exists. At a front desk (§10.0) — an academy that owns no role rows — it is every arrival's only hat; desk mode itself keys on `academy.is_front_desk`, the structural fact, not on a role. (The `visitor` role that used to mirror that fact was folded into this in 0051.)
+**Roles are hats and they compose.** `admin`, `coach`, `account_holder`, `player`, `prospect` — a senior player who coaches juniors is one person with a player row and a coach row, served in one thread. `prospect` (0051) is the hat worn by absence: no admin, coach, account or player standing in this academy, derived from row-absence so it survives past the first message and stops the moment a real row exists. At a front desk (§10.0) — a tenant that owns no role rows — it is every arrival's only hat; desk mode itself keys on `tenant.kind` (0052), the structural fact, not on a role. (The `visitor` role that used to mirror that fact was folded into this in 0051.)
 
 **Facts are never updated or deleted.** A correction writes a new row pointing at the one it supersedes; `academy.memory` and `person.memory` are rebuilt from the live set on a schedule. This makes "why does it think that?" answerable, which a mutable blob does not.
 
@@ -684,8 +688,8 @@ A fourth persona-phase cell, and the cheapest acquisition path in the product: t
 
 So an unknown number goes to **the front desk of the number it messaged**, not to a business:
 
-- One front desk per `sender`, created on the first cold inbound. It is an `academy` row carrying `is_front_desk` and it is **not a business** — no class, no roster, no money, excluded from every tenant enumeration. The trade is argued in full in migration 0039: as an `academy` row a desk arrival gets a person, a contact, a transcript, buttons, a turn record and the one send path with no parallel machinery at all.
-- The person is a **`prospect`** — the role worn by absence (§6.2, 0051), and at a desk it is their only hat: a prospect of the platform, not of a business. Desk mode — the narrowed four-verb surface — keys on `is_front_desk` directly; no role encodes it.
+- One front desk per `sender`, created on the first cold inbound. It is a `tenant` row of `kind = 'front_desk'` with **no `academy` row beside it** (0052) — not a business: no class, no roster, no money, and absent from every business enumeration by construction rather than by remembered exclusion. The original trade is argued in migration 0039 — as a tenant a desk arrival gets a person, a contact, a transcript, buttons, a turn record and the one send path with no parallel machinery at all — and 0052's header argues why the business half moved out.
+- The person is a **`prospect`** — the role worn by absence (§6.2, 0051), and at a desk it is their only hat: a prospect of the platform, not of a business. Desk mode — the narrowed four-verb surface — keys on `tenant.kind` directly (0052); no role encodes it.
 - Every arrival is a row (`arrival`), opened the moment somebody writes, settled when they go somewhere. **A stranger who wrote once, was asked, and never answered is the row this product could not previously produce**, and "how many referrals became businesses" is the first question the vendor will ask.
 
 **The desk asks exactly one question and holds no conversation of its own.** *Are you looking for classes, or do you run them?* — and only when their own words have not already answered it, which they usually have. Someone asking whether the beginners batch suits a nine-year-old is a parent; someone who says they coach badminton in Indiranagar is an owner. The prefilled text is still read; it is **evidence given to that turn** rather than a routing decision made before anyone speaks.

@@ -218,7 +218,9 @@ export async function resetWorld(): Promise<void> {
     // session is pinned to the row it is about to delete. RI cascades run as
     // the table owner, which clears every tenant table in one go.
     await withSession(svc(id), async (tx) => {
-      await tx`delete from academy where id = ${id}::uuid`
+      // 0052: children cascade from TENANT; deleting only the business half
+      // would strand the people, the transcript and the tenant row itself.
+      await tx`delete from tenant where id = ${id}::uuid`
     })
   }
   // Global tables: cm_service policies are `using (true)`, so the academy this
@@ -282,7 +284,9 @@ export async function findAcademy(idOrName: string): Promise<{ id: string; name:
   if (!wanted) return null
   for (const id of await worldAcademyIds({ refresh: true })) {
     const rows = await withSession(svc(id), async (tx) => {
-      return await tx`select id, name from academy where id = ${id}::uuid`
+      return await tx`select t.id, coalesce(a.name, 'Front desk') as name
+                        from tenant t left join academy a on a.id = t.id
+                       where t.id = ${id}::uuid`
     })
     const row = rows[0]
     if (!row) continue
@@ -303,7 +307,7 @@ export async function dropAcademy(idOrName: string): Promise<{ id: string; name:
   const found = await findAcademy(idOrName)
   if (!found) return null
   await withSession(svc(found.id), async (tx) => {
-    await tx`delete from academy where id = ${found.id}::uuid`
+    await tx`delete from tenant where id = ${found.id}::uuid`
   })
   academyIdCache = null
   return found
@@ -595,31 +599,37 @@ export async function worldState(): Promise<WorldState> {
     academyIds.map(async (academyId): Promise<WorldAcademy | null> => {
       const a = await withSession(svc(academyId), async (tx) => {
       const head = await tx`
-        select a.id, a.name, a.category, a.timezone, a.onboarding_state, a.is_sandbox, a.is_front_desk, a.upi_handle, a.rail,
-               a.cancellation_window_hours, a.client_reminder_lead_hours,
+        select t.id, coalesce(a.name, 'Front desk') as name, a.category,
+               coalesce(a.timezone, 'Asia/Kolkata') as timezone,
+               coalesce(a.onboarding_state, 'setup') as onboarding_state,
+               t.is_sandbox, (t.kind = 'front_desk') as is_front_desk,
+               a.upi_handle, coalesce(a.rail, 'rail1') as rail,
+               coalesce(a.cancellation_window_hours, 24) as cancellation_window_hours,
+               coalesce(a.client_reminder_lead_hours, 14) as client_reminder_lead_hours,
                a.morning_brief_at::text as morning_brief_at,
                a.evening_digest_at::text as evening_digest_at,
-               a.created_on::text as created_on, a.memory,
+               coalesce(a.created_on, t.created_at::date)::text as created_on, a.memory,
                s.phone_e164 as sender_phone, s.label as sender_label,
-               (select count(*) from class c where c.academy_id = a.id and c.active) as class_count,
-               (select count(*) from player pl where pl.academy_id = a.id and pl.active) as player_count,
-               (select count(*) from coach co where co.academy_id = a.id and co.status = 'active') as coach_count,
-               (select count(*) from session se where se.academy_id = a.id) as session_count,
+               (select count(*) from class c where c.academy_id = t.id and c.active) as class_count,
+               (select count(*) from player pl where pl.academy_id = t.id and pl.active) as player_count,
+               (select count(*) from coach co where co.academy_id = t.id and co.status = 'active') as coach_count,
+               (select count(*) from session se where se.academy_id = t.id) as session_count,
                (select count(*) from session se
-                 where se.academy_id = a.id and se.status = 'scheduled'
+                 where se.academy_id = t.id and se.status = 'scheduled'
                    and se.starts_at >= app.now()) as upcoming_count,
                (
                  (select count(*) from coach co
-                   where co.academy_id = a.id and co.status = 'active') = 1
+                   where co.academy_id = t.id and co.status = 'active') = 1
                  and exists (
                    select 1 from coach co
                    join academy_admin aa
                      on aa.academy_id = co.academy_id and aa.person_id = co.person_id
-                   where co.academy_id = a.id and co.status = 'active')
+                   where co.academy_id = t.id and co.status = 'active')
                ) as is_solo
-        from academy a
-        join sender s on s.id = a.sender_id
-        where a.id = ${academyId}::uuid`
+        from tenant t
+        left join academy a on a.id = t.id
+        join sender s on s.id = t.sender_id
+        where t.id = ${academyId}::uuid`
       if (head.length === 0) return null
 
       const contacts = await tx`
@@ -837,15 +847,16 @@ export async function threadFor(contactId: string): Promise<Thread | null> {
         select c.id, c.academy_id, c.person_id, p.full_name, c.phone_e164, c.wa_id,
                c.profile_name, c.state, c.opted_out_at, c.last_inbound_at,
                c.is_primary, c.role_hint, p.notes,
-               a.name as academy_name, a.timezone,
+               coalesce(a.name, 'Front desk') as academy_name,
+               coalesce(a.timezone, 'Asia/Kolkata') as timezone,
                (
                  (select count(*) from coach co2
-                   where co2.academy_id = a.id and co2.status = 'active') = 1
+                   where co2.academy_id = c.academy_id and co2.status = 'active') = 1
                  and exists (
                    select 1 from coach co3
                    join academy_admin aa2
                      on aa2.academy_id = co3.academy_id and aa2.person_id = co3.person_id
-                   where co3.academy_id = a.id and co3.status = 'active')
+                   where co3.academy_id = c.academy_id and co3.status = 'active')
                ) as is_solo,
                exists (select 1 from academy_admin aa
                         where aa.academy_id = c.academy_id and aa.person_id = c.person_id) as is_admin,
@@ -859,7 +870,8 @@ export async function threadFor(contactId: string): Promise<Thread | null> {
                         where pl.academy_id = c.academy_id and pl.person_id = c.person_id) as is_player
         from contact c
         join person p on p.id = c.person_id
-        join academy a on a.id = c.academy_id
+        join tenant t on t.id = c.academy_id
+        left join academy a on a.id = t.id
         where c.id = ${contactId}::uuid`
       if (head.length === 0) return null
       const messages = await tx`
@@ -1265,19 +1277,19 @@ export async function createAcademy(input: {
       if (!phone) throw new Error('the test number range is full')
     }
 
-    // `is_sandbox` is READ OFF THE SENDER rather than passed in, which is the same
-    // rule `app.found_business` follows for a business the product talks into
-    // existence (0040 §6). One rule in two creation paths, so neither can drift:
-    // the toy-ness of a business is a fact about the number it lives on, and a
-    // caller never gets an opinion about it. A sender that does not exist or does
-    // not say answers false — 0030's polarity, where the forgotten case is a real
-    // business and every guard refuses it.
+    // The tenant comes through the ONE creation door (0052): `app.create_tenant`
+    // owns `is_sandbox` — read off the sender, never passed in (0040/0041's rule) —
+    // and the clock a new business inherits from its number. This path used to
+    // restate that rule inline; now it copies a function call, not a rule.
+    await tx.unsafe(`select app.create_tenant($1::uuid, $2::uuid, 'business')`, [
+      academyId,
+      SENDER_ID,
+    ] as never[])
     await tx.unsafe(
-      `insert into academy (id, name, category, timezone, cancellation_window_hours,
+      `insert into academy (id, kind, sender_id, name, category, timezone, cancellation_window_hours,
          client_reminder_lead_hours, morning_brief_at, evening_digest_at, rail, upi_handle,
-         sender_id, memory, settings, created_on, onboarding_state, is_sandbox)
-       values ($1::uuid,$2,$3,$4,24,14,'07:00','21:00','rail1',null,$5::uuid,null,'{}'::jsonb,$6::date,'setup',
-               coalesce((select s.is_sim from sender s where s.id = $5::uuid), false))`,
+         memory, settings, created_on, onboarding_state)
+       values ($1::uuid,'business',$5::uuid,$2,$3,$4,24,14,'07:00','21:00','rail1',null,null,'{}'::jsonb,$6::date,'setup')`,
       [academyId, input.name.trim(), input.category ?? 'sport', tz, SENDER_ID, nowD.toISOString().slice(0, 10)] as never[],
     )
 
@@ -1328,7 +1340,9 @@ export async function createTestContact(input: NewTestContact): Promise<TestCont
   const nowD = await now()
 
   return withSession(svc(input.academyId), async (tx) => {
-    const academy = await tx`select id, timezone from academy where id = ${input.academyId}::uuid`
+    const academy = await tx`select t.id, coalesce(a.timezone, 'Asia/Kolkata') as timezone
+                               from tenant t left join academy a on a.id = t.id
+                              where t.id = ${input.academyId}::uuid`
     if (academy.length === 0) throw new Error('no such academy in this world')
 
     let phone = input.phone?.trim() ?? ''
@@ -1523,7 +1537,7 @@ export async function seedStage(
 
   // Rebuild rather than accumulate: a fixture you cannot return to is not a fixture.
   await withSession(svc(A), async (tx) => {
-    await tx`delete from academy where id = ${A}::uuid`
+    await tx`delete from tenant where id = ${A}::uuid`
   })
 
   // One shared sender across every tenant, exactly as production has one number.
@@ -1705,6 +1719,9 @@ export async function seedStage(
 
   // ---- write ---------------------------------------------------------------
   await withSession(svc(A), async (tx) => {
+    // The tenant through the one door (0052): SENDER_ID is is_sim, so the stage
+    // tenant is born sandbox — the honest label the long comment below argues for.
+    await tx.unsafe(`select app.create_tenant(${A}, '${SENDER_ID}'::uuid, 'business')`)
     await tx.unsafe(
       /**
        * `is_sandbox` is true because a stage academy IS a fixture — Nandini Rao does
@@ -1723,10 +1740,10 @@ export async function seedStage(
        * `scripts/_danger.ts` is what refuses that. This is the honest label on the row,
        * and the thing that makes the fixture removable once it exists.
        */
-      `insert into academy (id, name, category, timezone, cancellation_window_hours,
+      `insert into academy (id, kind, sender_id, name, category, timezone, cancellation_window_hours,
          client_reminder_lead_hours, morning_brief_at, evening_digest_at, rail, upi_handle,
-         sender_id, memory, settings, created_on, onboarding_state, is_sandbox)
-       values ($1::uuid,$2,$3,$4,24,14,'07:00','21:00','rail1',$5,$6::uuid,$7,'{}'::jsonb,$8::date,$9,true)`,
+         memory, settings, created_on, onboarding_state)
+       values ($1::uuid,'business',$6::uuid,$2,$3,$4,24,14,'07:00','21:00','rail1',$5,$7,'{}'::jsonb,$8::date,$9)`,
       [
         A, name, 'sport', tz,
         hasRoster ? 'nandini@upi' : null,
@@ -2124,10 +2141,12 @@ export async function memoryFor(contactId: string): Promise<ContactMemory | null
     const found = await withSession(svc(academyId), async (tx) => {
       const head = await tx`
         select c.id as contact_id, c.person_id, p.full_name, p.memory as person_memory,
-               a.id as academy_id, a.name as academy_name, a.memory as academy_memory
+               t.id as academy_id, coalesce(a.name, 'Front desk') as academy_name,
+               a.memory as academy_memory
         from contact c
         join person p on p.id = c.person_id
-        join academy a on a.id = c.academy_id
+        join tenant t on t.id = c.academy_id
+        left join academy a on a.id = t.id
         where c.id = ${contactId}::uuid`
       if (head.length === 0) return null
 
@@ -2474,17 +2493,17 @@ export async function ingestInbound(input: {
   const { identity, isNew } = resolved
   const academyId = identity.academyId
   const contactId = identity.contact.id
-  // 0051 — desk-ness is the academy's structural fact, read where `runTurn` reads it
-  // (`is_front_desk` on the identity's academy row), so every reader agrees about
-  // which surface ran. The `visitor` role that used to mirror this is gone.
-  const atFrontDesk = identity.academy.is_front_desk
+  // 0051/0052 — desk-ness is the tenant's structural fact, read where `runTurn` reads
+  // it (`kind` on the identity's tenant row), so every reader agrees about which
+  // surface ran. The `visitor` role that used to mirror this is gone.
+  const atFrontDesk = identity.tenant.kind === 'front_desk'
   const idempotencyKey = input.waMessageId ? `inbound:${input.waMessageId}` : null
 
   const written = await withSession(svc(academyId), async (tx) => {
     const senderRows = await tx`
       select s.id from sender s
-      join academy a on a.sender_id = s.id
-      where a.id = ${academyId}::uuid`
+      join tenant t on t.sender_id = s.id
+      where t.id = ${academyId}::uuid`
     const senderId = senderRows[0]?.id
       ?? (await tx`select id from sender where phone_e164 = ${input.senderPhoneE164} limit 1`)[0]?.id
 
@@ -2569,8 +2588,8 @@ export async function inboundFromContact(input: {
         select c.phone_e164, c.profile_name, p.full_name, s.phone_e164 as sender_phone
         from contact c
         join person p on p.id = c.person_id
-        join academy a on a.id = c.academy_id
-        join sender s on s.id = a.sender_id
+        join tenant t on t.id = c.academy_id
+        join sender s on s.id = t.sender_id
         where c.id = ${input.contactId}::uuid`
       return rows[0] ?? null
     })

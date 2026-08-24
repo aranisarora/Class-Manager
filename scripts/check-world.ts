@@ -80,6 +80,7 @@ try {
     const all = async (sql: string): Promise<Record<string, any>[]> =>
       (await tx.unsafe(sql)) as unknown as Record<string, any>[]
 
+    await tx.unsafe(`select app.create_tenant(${A}, '${SENDER}'::uuid, 'business')`)
     await tx.unsafe(
       `insert into academy (id, name, sender_id, onboarding_state, timezone)
        values (${A}, 'World Scratch', '${SENDER}'::uuid, 'setup', 'Asia/Kolkata')`,
@@ -331,7 +332,7 @@ try {
 } finally {
   await withSession(ctx, async (tx) => {
     await tx.unsafe(`delete from job where payload->>'academy_id' = '${academyId}'`)
-    await tx.unsafe(`delete from academy where id = ${A}`)
+    await tx.unsafe(`delete from tenant where id = ${A}`)
   })
   console.log('\nscratch tenant removed.')
 }

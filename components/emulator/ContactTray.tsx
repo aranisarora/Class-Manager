@@ -309,7 +309,7 @@ function NewAcademyForm({ onDone }: { onDone: () => void }) {
         </Btn>
         <span
           className="ml-auto font-mono text-[9px] text-zinc-600"
-          title="A test tenant. On a live deployment the route marks the new academy academy.is_sandbox, which is what lets the scoped destructive controls — the clock, the composer, the tick marks, the drop controls — act on it and on nothing else. It starts at `setup` and messages nobody; the business is built from here by talking to it."
+          title="A test tenant. On a live deployment the route marks the new tenant is_sandbox (0052), which is what lets the scoped destructive controls — the clock, the composer, the tick marks, the drop controls — act on it and on nothing else. It starts at `setup` and messages nobody; the business is built from here by talking to it."
         >
           test tenant · messages nobody
         </span>
@@ -454,7 +454,7 @@ export function ContactTray() {
                 {academy.isSandbox ? (
                   <Chip
                     tone="window"
-                    title="Scratch tenant (academy.is_sandbox). Clock moves, invented messages and forged receipts are allowed here and refused everywhere else."
+                    title="Scratch tenant (tenant.is_sandbox). Clock moves, invented messages and forged receipts are allowed here and refused everywhere else."
                   >
                     sandbox
                   </Chip>

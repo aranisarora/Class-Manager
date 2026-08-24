@@ -1,5 +1,5 @@
 /**
- * lib/frontdesk/ — the arrivals hall of one WhatsApp number (0039).
+ * lib/frontdesk/ — the arrivals hall of one WhatsApp number (0039, reshaped 0052).
  *
  * A person who has not said whether they want classes or run them does not belong to
  * a business. They belong to the number, and this is where that conversation happens:
@@ -24,9 +24,11 @@
  *                desk turn runs lib/agent/loop.ts like every other.)
  *
  * WHAT IS DELIBERATELY NOT HERE: a sender, a turn recorder, a message table, an action
- * table, a second RLS story. The front desk is an `academy` row (0039), so a desk arrival
- * gets a person, a contact, a transcript, buttons, a turn row and the one send path
- * with no parallel machinery at all. The migration's header argues that trade in full.
+ * table, a second RLS story. The front desk is a `tenant` row — `kind = 'front_desk'`,
+ * with NO `academy` row beside it (0052) — so a desk arrival gets a person, a contact,
+ * a transcript, buttons, a turn row and the one send path with no parallel machinery at
+ * all, and a business fact physically cannot land on it. 0039 argued the original trade
+ * in full; 0052's header argues why the business half moved out.
  */
 
 export { openArrival, arrivalForContact, markArrivalAsked, settleArrival, foundedByRecently } from './arrival'

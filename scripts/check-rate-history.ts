@@ -118,6 +118,7 @@ try {
   }
 
   /* -- the world ----------------------------------------------------------- */
+  await exec(`select app.create_tenant(${A}, '${SENDER}'::uuid, 'business')`)
   await exec(`insert into academy (id, name, sender_id, onboarding_state, timezone)
               values (${A}, 'Rate History Scratch', '${SENDER}'::uuid, 'live', 'Asia/Kolkata')`)
   const ravi = await one(`insert into person (academy_id, full_name) values (${A}, 'Ravi Menon') returning id`)
@@ -415,7 +416,7 @@ try {
   }
 } finally {
   await withSession(ctx, async (tx) => {
-    await tx.unsafe(`delete from academy where id = ${A}`)
+    await tx.unsafe(`delete from tenant where id = ${A}`)
   }).catch(() => {})
 }
 

@@ -1806,9 +1806,12 @@ async function collectGarbage(rest: string[]): Promise<void> {
   let dropped = 0
   for (const id of await worldAcademyIds({ refresh: true })) {
     const [row] = await withSession({ role: 'service', academyId: id }, async (tx) =>
-      (await tx`select a.name, a.created_at, coalesce(s.label, '') as sender_label
-                  from academy a join sender s on s.id = a.sender_id
-                 where a.id = ${id}::uuid` ) as unknown as {
+      (await tx`select coalesce(a.name, 'Front desk') as name, t.created_at,
+                       coalesce(s.label, '') as sender_label
+                  from tenant t
+                  left join academy a on a.id = t.id
+                  join sender s on s.id = t.sender_id
+                 where t.id = ${id}::uuid` ) as unknown as {
         name: string
         created_at: string | Date
         sender_label: string

@@ -75,10 +75,15 @@ type Row = {
   opted_out_at: Date | null
   last_inbound_at: Date | null
   academy_id: string
+  /** tenant.kind (0052) — 'front_desk' has no academy row and can never initiate. */
+  tenant_kind: 'business' | 'front_desk'
+  /** Coalesced 'Front desk' at a desk — the academy row is absent there (0052). */
   academy_name: string
+  /** Coalesced 'Asia/Kolkata' at a desk (0052). */
   academy_timezone: string
   academy_memory: string | null
-  onboarding_state: string
+  /** Null at a desk: there is no business record to be live or not (0052). */
+  onboarding_state: string | null
   settings: Record<string, unknown> | null
   sender_id: string
   sender_phone: string
@@ -580,12 +585,13 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
              c.state           as contact_state,
              c.opted_out_at    as opted_out_at,
              c.last_inbound_at as last_inbound_at,
-             a.id              as academy_id,
-             a.name            as academy_name,
-             a.timezone        as academy_timezone,
+             t.id              as academy_id,
+             t.kind            as tenant_kind,
+             coalesce(a.name, 'Front desk')        as academy_name,
+             coalesce(a.timezone, 'Asia/Kolkata')  as academy_timezone,
              a.memory          as academy_memory,
              a.onboarding_state as onboarding_state,
-             a.settings        as settings,
+             coalesce(a.settings, '{}'::jsonb)     as settings,
              s.id              as sender_id,
              s.phone_e164      as sender_phone,
              s.credentials     as sender_credentials,
@@ -608,8 +614,9 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
              app.now()         as now_at
         from contact c
         join person  p on p.id = c.person_id
-        join academy a on a.id = c.academy_id
-        join sender  s on s.id = a.sender_id
+        join tenant  t on t.id = c.academy_id
+        left join academy a on a.id = t.id
+        join sender  s on s.id = t.sender_id
        where c.id = ${msg.toContactId}
          and c.academy_id = ${ctx.academyId}`
 
@@ -799,7 +806,8 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
      *   A family still hears nothing until go-live, which is the rule §2.6 actually states.
      *   Closes F-DH.
      */
-    if (row.onboarding_state !== 'live' && !msg.preLaunchOk && !row.is_staff && !msg.solicited) {
+    if ((row.tenant_kind === 'front_desk' || row.onboarding_state !== 'live')
+        && !msg.preLaunchOk && !row.is_staff && !msg.solicited) {
       return suppress(tx, row, msg, 'pre_launch', inWindow)
     }
 

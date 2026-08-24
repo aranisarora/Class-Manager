@@ -181,10 +181,11 @@ export async function POST(req: Request): Promise<Response> {
           // from inside the transaction also rolls the sender insert back, so the failure
           // leaves nothing half-applied for the compensating drop to trip over.
           const stamped = await tx<{ id: string }[]>`
-            update academy
+            update tenant
                set is_sandbox = true, sender_id = ${SANDBOX_SENDER_ID}::uuid
              where id = ${created.academyId}::uuid
             returning id`
+          // academy.sender_id follows by the composite FK's ON UPDATE CASCADE (0052).
           if (stamped.length !== 1) {
             throw new Error(
               `the sandbox stamp matched ${stamped.length} rows, not 1 — academy ${created.academyId} is not visible to a service session pinned to itself`,

@@ -47,7 +47,7 @@ import { composeAndSend } from '@/lib/messaging/compose'
 import { LIMITS, type Button, type OutboundMessage, type SendOutcome } from '@/lib/messaging/types'
 import { CATALOG, type CatalogId } from '@/lib/messaging/catalog'
 import { isJobKind, JOB_KINDS, type JobKind } from '@/lib/jobs'
-import type { Academy, Contact, Identity, Person, Role } from '@/lib/types'
+import type { Academy, Contact, Identity, Person, Role, Tenant } from '@/lib/types'
 import { beginAudit, readDiffIn } from '@/lib/audit'
 import { OPERATIONS, jsonLit, lit, moneyLit, uid, type OperationName } from './operations'
 import { coachClashes } from './clash'
@@ -327,6 +327,9 @@ export async function identityFor(ctx: SessionCtx): Promise<Identity> {
   // operations have a person to attribute to; roles are ['admin'] because
   // cm_service is academy-wide by policy.
   const built = await withSession(ctx, async (tx) => {
+    const [tenant] = (await tx.unsafe(
+      `select * from tenant where id = ${uid(ctx.academyId)}`,
+    )) as unknown as Tenant[]
     const [academy] = (await tx.unsafe(
       `select * from academy where id = ${uid(ctx.academyId)}`,
     )) as unknown as Academy[]
@@ -350,7 +353,10 @@ export async function identityFor(ctx: SessionCtx): Promise<Identity> {
     )) as unknown as { active_coaches: string; admin_coaches: string }[]
     const identity: Identity = {
       academyId: ctx.academyId,
-      academy,
+      tenant,
+      // Jobs and service work run for businesses; a desk enqueues nothing. If a
+      // desk-pinned service session ever lands here, academy is honestly null.
+      academy: academy ?? null,
       contact: contact as Contact,
       person: person as Person,
       roles: ['admin'] as Role[],

@@ -87,7 +87,7 @@ export const SCHEMA_DOC = `# Schema
 Postgres. You author SQL against these tables directly.
 
 - Every table has: id uuid pk, created_at timestamptz.
-- Every table except academy, sender, job, arrival, sim_* also has academy_id uuid not null.
+- Every table except academy, tenant, sender, job, arrival, sim_* also has academy_id uuid not null.
 - **A column marked \`!\` is required and has no default: an INSERT that leaves it
   out is refused, and refused for the whole plan.** Everything unmarked is either
   nullable or defaulted, so leave it out and let the default stand.
@@ -163,7 +163,7 @@ nothing to try and nothing to learn by trying.
 | pending_request | admin · their own | - | - | - |
 | action | their own | - | their own | - |
 | row_snapshot | all | - | - | - |
-| job · audit_entry · turn · turn_record · sender · arrival | - | - | - | - |
+| job · audit_entry · turn · turn_record · sender · arrival · tenant | - | - | - | - |
 
 What the grid cannot say:
 
@@ -207,8 +207,8 @@ or app.local_clock(ts) for the time alone.
 
 academy(name! text, category text, timezone text, cancellation_window_hours int,
   client_reminder_lead_hours int, morning_brief_at time, evening_digest_at time,
-  rail text 'rail1|rail2', upi_handle text, sender_id uuid, memory text,
-  prompt_cache_handle text, settings jsonb, created_on date,
+  rail text 'rail1|rail2', upi_handle text, memory text,
+  settings jsonb, created_on date,
   onboarding_state text 'setup|roster|ready|live')
 venue(name! text, address text, notes text)
 

@@ -141,7 +141,7 @@ async function carryDeskTranscript(
   await withSession({ role: 'service', academyId }, async (tx) => {
     const senderRows = await unsafeQuery<{ id: string }>(
       tx,
-      `select s.id from sender s join academy a on a.sender_id = s.id where a.id = $1::uuid`,
+      `select s.id from sender s join tenant t on t.sender_id = s.id where t.id = $1::uuid`,
       [academyId],
     )
     const senderId = senderRows[0]?.id
@@ -215,7 +215,7 @@ export async function businessesOnThisNumber(identity: Identity): Promise<Academ
       unsafeQuery<{ id: string; name: string }>(
         tx,
         `select id, name from app.businesses_on_sender($1::uuid)`,
-        [identity.academy.sender_id],
+        [identity.tenant.sender_id],
       ),
   )
   return rows.map((r) => ({ academyId: String(r.id), name: String(r.name) }))
@@ -388,7 +388,7 @@ export async function foundBusiness(
         `select app.found_business($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8::uuid, $9::timestamptz) as data`,
         [
           academyId,
-          identity.academy.sender_id,
+          identity.tenant.sender_id,
           name,
           o.category ?? '',
           founderName,

@@ -42,7 +42,7 @@
  *
  * ONE SENDER PER RUN, WHICH IS WHAT MAKES TWO RUNS SAFE
  * -----------------------------------------------------------------------------
- * `app.front_desk_for` is `on conflict (sender_id) where is_front_desk` — ONE
+ * `app.front_desk_for` is one row per `(sender_id) where kind = 'front_desk'` — ONE
  * front desk per number. `lib/seed.ts` has always used a single shared `SENDER_ID`
  * ("exactly as production has one number"), so two drives sharing it would share
  * a front desk, and each would see the other's visitors, the other's businesses in

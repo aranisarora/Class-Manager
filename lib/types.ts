@@ -21,9 +21,9 @@
 /**
  * §6.2 — hats, and they compose. `prospect` is the hat worn by absence: no admin,
  * coach, account or player standing in this academy (0051 derives it that way, from
- * row-absence, so it survives past the first message). At a front desk — an academy
+ * row-absence, so it survives past the first message). At a front desk — a tenant
  * that owns no role rows — it is every arrival's only hat; desk MODE itself keys on
- * `academy.is_front_desk`, the structural fact the deleted `visitor` role mirrored.
+ * `tenant.kind`, the structural fact the deleted `visitor` role mirrored (0052).
  */
 export type Role = 'admin' | 'coach' | 'account_holder' | 'player' | 'prospect'
 export type RateUnit = 'per_session' | 'per_month' | 'per_term' | 'per_package'
@@ -59,6 +59,33 @@ export type Json = Record<string, unknown>
 // §6.1 Tenancy and place
 // -----------------------------------------------------------------------------
 
+export type TenantKind = 'business' | 'front_desk'
+
+/**
+ * 0052 — the isolation unit every `academy_id` column points at. Business facts
+ * live one table over, in `academy`, which a front_desk tenant deliberately
+ * does not have.
+ */
+export type Tenant = {
+  id: string
+  created_at: Date
+  sender_id: string
+  /** Desk MODE keys on this, read off the identity — never on a role. */
+  kind: TenantKind
+  /**
+   * 0030/0052 — a scratch tenant the emulator may fabricate against in
+   * production. Inherited from `sender.is_sim` by `app.create_tenant`, the one
+   * path that writes it. Grants nothing inside the product; read by
+   * `lib/ops-guard.ts` and the console.
+   */
+  is_sandbox: boolean
+}
+
+/**
+ * The business record, 1:1 with a business tenant, sharing its id (0052).
+ * A front_desk tenant has no row here — that absence is the design: a business
+ * fact physically cannot land on a desk.
+ */
 export type Academy = {
   id: string
   created_at: Date
@@ -67,27 +94,19 @@ export type Academy = {
   timezone: string
   cancellation_window_hours: number
   client_reminder_lead_hours: number
-  morning_brief_at: TimeString
-  evening_digest_at: TimeString
+  /** Null means the owner turned it off (0052 made the column say so too). */
+  morning_brief_at: TimeString | null
+  evening_digest_at: TimeString | null
   rail: Rail
   upi_handle: string | null
+  /** Constrained identical to tenant.sender_id by the composite FK (0052). */
   sender_id: string
   memory: string | null
-  prompt_cache_handle: string | null
   settings: Json
   created_on: DateString
   onboarding_state: OnboardingState
-  /**
-   * 0030 — a scratch tenant the emulator may fabricate against in production.
-   * Grants nothing inside the product; read by `lib/ops-guard.ts` and the console.
-   */
-  is_sandbox: boolean
-  /**
-   * 0039 — this row is the arrivals hall of one WhatsApp number, not a business.
-   * Excluded from every tenant enumeration; carries no roster, no class and no
-   * money; cannot initiate a message. See `lib/frontdesk/`.
-   */
-  is_front_desk: boolean
+  /** Constant 'business' — the subtype pin the composite FK rides on (0052). */
+  kind: 'business'
 }
 
 export type Venue = {
@@ -459,7 +478,14 @@ export type SimFault = {
 
 export type Identity = {
   academyId: string
-  academy: Academy
+  /** 0052 — the isolation unit; always present, desk or business. */
+  tenant: Tenant
+  /**
+   * The business record — null exactly when `tenant.kind === 'front_desk'`,
+   * because a desk has no academy row (0052). `businessOf()` in lib/identity.ts
+   * is the assert for paths a desk cannot reach.
+   */
+  academy: Academy | null
   contact: Contact
   person: Person
   /** §6.2 roles compose — an array, never a scalar. */

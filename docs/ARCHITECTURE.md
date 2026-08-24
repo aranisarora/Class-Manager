@@ -122,23 +122,25 @@ query and a person's own hand see exactly the same world.
   the product acts unsupervised. The instrument can never know what the product does not
   record.
 
-**One `academy` row per number is not a tenant, and the discipline is the price.**
-`is_front_desk` (0039) marks the arrivals hall of a WhatsApp number — where a person who
-has not said whether they want classes or run them gets a person, a contact, a transcript,
-buttons, a turn row and the one send path, with no parallel machinery at all. The honest
-alternative was a tenant-less `visitor` table, and following it through gives
-`visitor_message`, `visitor_action`, `visitor_turn` and a second path to the wire, which is
-this file's own rule about a thing getting *its own corner and its own renderer* applied to
-the load-bearing half of the system.
+**The tenant is not the business, and the schema says so (0052).** `tenant` is the
+isolation unit every `academy_id` column points at — which sender it lives on, which
+kind of thing it is (`business` or `front_desk`), whether it is scratch — and `academy`
+is the business record, 1:1 with a business tenant, sharing its id. The arrivals hall of
+a WhatsApp number is a `front_desk` tenant with **no** academy row: a person who has not
+said whether they want classes or run them still gets a person, a contact, a transcript,
+buttons, a turn row and the one send path with no parallel machinery at all (0039's
+trade, kept), but a business fact physically cannot land on the desk any more.
 
-What the shortcut costs is an exclusion that has to hold in every enumeration, so every one
-of them says `is_front_desk` out loud rather than relying on a reader to remember:
-`app.inbound_candidates` (matching), `listAcademyIds` (the job beat), `businessesOnThisNumber`
-(what the desk may route to). Two properties keep the fiction safe rather than merely
-convenient: RLS still confines a visitor, to a tenant that owns nothing; and the row's
-`onboarding_state` is never `live`, so Layer 4's pre-launch gate makes it structurally
-incapable of initiating a message. **A front desk that could message strangers is a spam
-engine on a pooled number**, and that gate is the sentence saying it cannot.
+This retired a discipline that had been paid for three times (0041 `is_sandbox`, 0042
+the clock, 0049 `created_on`): every enumeration used to carry `not is_front_desk` by
+hand, a negation whose omission is silent. Now "every business" is `select id from
+academy`, full stop, and everything a tenant inherits from its number — the sandbox flag
+read off `sender.is_sim`, the desk's clock offset onto a new business — has exactly one
+author, `app.create_tenant`, which every creation path calls. Two properties keep a
+visitor safe: RLS still confines them, to a tenant that owns nothing; and Layer 4's
+pre-launch gate suppresses on `tenant.kind = 'front_desk'` directly — there is no row to
+flip live. **A front desk that could message strangers is a spam engine on a pooled
+number**, and that gate is the sentence saying it cannot.
 
 **Invariants live in the schema where the schema can say them.** Unique keys, dedupe keys
 (`tally_line.dedupe_key` is the exemplar — billing identity normalised so a retry cannot

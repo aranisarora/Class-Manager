@@ -3503,7 +3503,9 @@ async function runChild(model: string, arm: string): Promise<void> {
   for (const id of await worldAcademyIds()) {
     if (id === made.academyId) continue
     const [row] = await withSession({ role: 'service', academyId: id }, async (tx) =>
-      (await tx`select name from academy where id = ${id}::uuid`) as unknown as { name: string }[],
+      (await tx`select coalesce(a.name, 'Front desk') as name
+                  from tenant t left join academy a on a.id = t.id
+                 where t.id = ${id}::uuid`) as unknown as { name: string }[],
     )
     // Any business this harness has ever created, under either naming scheme —
     // keying on the `Probe ` prefix alone would have let a leftover tennis world

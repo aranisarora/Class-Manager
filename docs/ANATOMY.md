@@ -156,7 +156,7 @@ turn row still records the error. `runTurnBody` · `lib/agent/loop.ts`
 ## 1a · The front desk — a MODE of the one brain, not a second one
 
 Since the one-brain merge a desk arrival runs the ordinary loop. The mode is decided at
-arrival (the identity's academy carries `is_front_desk` — 0051), and everything mode-shaped
+arrival (the identity's tenant carries `kind` — 0052; a desk has no academy row at all), and everything mode-shaped
 happens at three seams the loop already owns — the tail, the dispatcher, the lint. The desk's
 standing facts are a byte-stable section of the ONE prefix. What the two-brain fork cost, and
 how the merge is measured, is [`ARCHITECTURE.md`](./ARCHITECTURE.md)'s *one legitimate second

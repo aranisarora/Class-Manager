@@ -872,7 +872,7 @@ export class WorldGone extends Error {
  * blip as a deleted business and stops a good run with a sentence that is false.
  */
 async function academyAlive(academyId: string): Promise<boolean> {
-  return q(academyId, `select 1 from academy where id = '${academyId}'::uuid`)
+  return q(academyId, `select 1 from tenant where id = '${academyId}'::uuid`)
     .then((rows) => rows.length > 0)
     .catch(() => true)
 }
