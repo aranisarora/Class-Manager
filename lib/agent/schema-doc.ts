@@ -189,8 +189,7 @@ What the grid cannot say:
   and an account nobody may see is a row that is not there rather than a balance
   of zero. coach_directory and class_coach_public are the two exceptions: they
   are every coach in the business, and the whole class-to-coach map, to anybody
-  who asks. Both carry the name for that reason — reaching for one through
-  person puts the reader's own limits back on and quietly empties them.
+  who asks — their own blocks below say how to read them.
 - **academy is update only.** You may change the business's own settings. There
   is no route to a second academy and no reason to look for one.
 
@@ -420,17 +419,14 @@ turn(contact_id, person_id, role_acted, input jsonb, output jsonb, model,
 
 ## FK graph
 
-contact.person_id, account.holder_person_id, player.person_id, coach.person_id,
-academy_admin.person_id, tally_line.approved_by, payment.confirmed_by,
-turn.person_id -> person
-player.account_id, tally_line.account_id, payment.account_id -> account
-enrollment.player_id, attendance.player_id, tally_line.player_id -> player
-class_coach.coach_id, session_coach.coach_id, attendance.marked_by_coach_id -> coach
-class_slot.class_id, class_coach.class_id, enrollment.class_id, session.class_id -> class
-session_coach.session_id, attendance.session_id, tally_line.session_id -> session
-class.venue_id, session.venue_id -> venue
-message.contact_id, action.minted_for_contact_id, turn.contact_id -> contact
-message.sender_id -> sender, message.reply_to_action_id -> action
+Every *_id column references the table it names — class_id -> class, player_id
+-> player, session_id -> session — wherever it appears. The edges that do NOT
+follow the name:
+
+account.holder_person_id, tally_line.approved_by, payment.confirmed_by -> person
+attendance.marked_by_coach_id -> coach
+action.minted_for_contact_id -> contact
+message.reply_to_action_id -> action
 memory_fact.supersedes -> memory_fact, audit_entry.undo_of -> audit_entry
 
 ## Derived values — never stored, always computed
@@ -459,8 +455,8 @@ uses the day it happened**: a session that ran at 900 bills 900 however many
 raises have landed since. A change that starts later is a row waiting —
 class_roster and class_offering carry next_rate_amount and next_rate_from, so "is
 it going up" is a column and not a calculation, and rate_history is the whole
-story with standing = past | current | scheduled. To make one, use set_rate; a
-plain update takes effect immediately and there is nowhere in it to put a date.
+story with standing = past | current | scheduled. To make one, use set_rate — a
+plain update has nowhere to put the date.
 
 **Billing rules, complete — all four rate units:**
 - Every one of these prices at the rate in force ON THE DAY THE THING WAS EARNED
@@ -510,6 +506,21 @@ and it is the one that is most expensive to compose from scratch.
 **Their names are exactly as written here.** app.session_roster is the only one
 under the app schema; prefixing any of the others with app. is an error rather
 than a near-miss.
+
+**The question is the address.** Before composing a join, find the question here:
+
+  what does it cost, when does it run     -> class_offering
+  who is in the class, what do they pay   -> class_roster
+  who is due at this session              -> app.session_roster
+  is this session covered, was it marked  -> session_detail
+  who has stopped coming, who never came  -> player_attendance
+  is anything sitting unbilled            -> unmarked_billable_session
+  what does this family owe               -> account_standing.balance
+  how did that balance come about         -> account_ledger
+  who is this person, can I message them  -> person_directory
+  what is a coach owed for the open month -> coach_pay
+  when did a price move, and to what      -> rate_history
+  who coaches here, who is on this class  -> coach_directory, class_coach_public
 
 **The offer — what the business sells.**
 
@@ -574,25 +585,46 @@ than a near-miss.
   -- player, null when there is none — so "is it going up" is a column and not a
   -- calculation. A class rise does not reach an enrolment that states its own
   -- rate, and these stay null when it does not.
-  -- rate_source is 'enrolment' or 'class' — which side the fallback took, and
-  -- so whether a price was written down for this player or merely inherited.
-  -- That is how you check that "everyone already in it stays on the old rate"
-  -- actually happened.
+  -- rate_source is 'enrolment', 'class' or 'none' — which side the fallback
+  -- took, and so whether a price was written down for this player, merely
+  -- inherited, or never stated at all. That is how you check that "everyone
+  -- already in it stays on the old rate" actually happened, and 'none' is a
+  -- price waiting for the owner to state it, not a zero.
 
   unmarked_billable_session(academy_id, session_id, class_id, class_name,
-  starts_at, unmarked_players, unbilled_amount)
-  -- Finished, uncancelled sessions on a PER-SESSION rate whose register is still
-  -- unmarked, so no tally_line exists for them yet and none will until somebody
-  -- marks it. This is the answer to "is anything sitting unbilled" — ask it here
-  -- rather than deriving it, because the derivation is where it goes wrong: a
-  -- per_month, per_term or per_package class bills on the 1st (or on the pack)
-  -- whatever the register says, so an unmarked register on one of those owes
-  -- NOTHING and saying otherwise sends an owner hunting for money that was never
-  -- missing. Those rows are excluded here by construction. An empty result
-  -- answers about MONEY only: no bill is waiting on a register. It is not "every
-  -- register is marked" — an unmarked per_month, per_term or per_package register
-  -- never appears here at all. Whether a register was actually taken is
-  -- session_detail, marked_players against due_players on a finished session.
+  starts_at, unmarked_players, unpriced_players, unbilled_amount, pricing)
+  -- Finished, uncancelled sessions whose register could still owe money: on a
+  -- PER-SESSION rate and unmarked, so no tally_line exists yet and none will
+  -- until somebody marks it — or unmarked with NO RATE ON FILE at all. This is
+  -- the answer to "is anything sitting unbilled" — ask it here rather than
+  -- deriving it, because the derivation is where it goes wrong: a per_month,
+  -- per_term or per_package class bills on the 1st (or on the pack) whatever
+  -- the register says, so an unmarked register on one of those owes NOTHING and
+  -- saying otherwise sends an owner hunting for money that was never missing.
+  -- Those rows are excluded here by construction. pricing is priced | no rate
+  -- on file | partly priced, and unbilled_amount is NULL — not 0 — for the
+  -- unpriced_players nobody can price: that is a number the owner has not
+  -- stated, not money nobody is owed. An empty result answers about MONEY only:
+  -- no bill is waiting on a register. It is not "every register is marked" — an
+  -- unmarked per_month, per_term or per_package register never appears here at
+  -- all. Whether a register was actually taken is session_detail,
+  -- marked_players against due_players on a finished session.
+
+  player_attendance(academy_id, player_id, player_name, account_id,
+  player_active, classes, sessions_due, sessions_marked, sessions_attended,
+  sessions_absent, attendance_rate, first_due_at, last_due_at, last_attended_at,
+  standing)
+  -- One row per player, the register already counted: every finished,
+  -- uncancelled session they were due at, lifetime, across every class.
+  -- standing is never due | never marked | never attended | attending — so
+  -- "who has never turned up" is a filter on a word, not an anti-join. The
+  -- inner join that feels natural there answers the OPPOSITE question and
+  -- returns rows that look right, which is the hardest wrong answer to notice.
+  -- attendance_rate is attended over MARKED, never over due: an unmarked
+  -- register is not an absence, and the gap between sessions_due and
+  -- sessions_marked is a coach who stopped taking the register, not a family
+  -- that stopped coming. "Has she stopped coming" is last_attended_at. For one
+  -- window or one class, read app.session_roster with your own dates.
 
 **The books.**
 
@@ -643,9 +675,8 @@ than a near-miss.
   -- which is not true of a join that starts at account.
 
   coach_directory(academy_id, coach_id, person_id, full_name, status, ended_on)
-  -- Every coach in the business, BY NAME, with no pay column to leak. coach
-  -- itself is own-row-only for anybody but the admin, so "who else is on this
-  -- session" reads zero rows there and that zero is not an answer.
+  -- Every coach in the business, BY NAME, with no pay column to leak — the way
+  -- through coach being own-row-only for anybody but the admin.
   -- READ IT ON ITS OWN. Joining person for a name undoes it — person is scoped
   -- to your own row, your family, your rosters and the co-coaches on YOUR
   -- sessions, so the join deletes the very coaches this exists to show and the
@@ -720,8 +751,6 @@ than a near-miss.
   -- One row per time a price actually MOVED, for an enrolment, a class or a coach.
   -- standing is past|current|scheduled — filter on that word, never on date
   -- arithmetic, and never rebuild effective_to with a window function of your own.
-  -- A rate stated on a CLASS applies to every enrolment that has not stated its
-  -- own, which is the same fallback class_roster.rate_source names.
 
 ## What follows what — the consequences a row carries
 
@@ -781,16 +810,19 @@ app.local_label(at timestamptz) -> text   -- "Mon 18 Aug, 6:30 pm", this academy
 app.local_clock(at timestamptz) -> text   -- "6:30 pm"
 app.session_is_covered(session_id uuid) -> boolean
 app.effective_rate(enrollment_id uuid) -> table(amount numeric, unit text, cnt int)
-  -- the rate in force NOW. unchanged, and still the right call for "what does
-  -- this cost".
-app.rate_on(enrollment_id uuid, on date) -> table(amount numeric, unit text, cnt int)
-  -- the same answer for any day. Pricing something that ALREADY HAPPENED uses the
-  -- day it happened — the session's own date, the period being billed — never today.
+  -- the rate in force NOW.
+app.rate_on(enrollment_id uuid, on date)
+    -> table(amount numeric, unit text, cnt int, amount_source text, unit_source text)
+  -- the same answer for any day — which day is the rate rule above ("the date is
+  -- the point"). amount_source and unit_source: enrolment | class | none, and
+  -- 'none' is a price nobody has stated, not zero.
 app.pay_on(coach_id uuid, on date) -> table(amount numeric, unit text)
 app.today(academy_id uuid) -> date        -- today in this academy's own zone
 app.account_balance(account_id uuid, null) -> numeric
-  -- the running balance, same number as account_standing.balance. NULL means no
-  -- such account is visible to you, never zero. A non-null period is refused
-  -- outright, for the reason above: payment carries no period.
+  -- the same number as account_standing.balance, as a scalar for use INSIDE
+  -- another expression. For the question itself, account_standing is the read —
+  -- it carries the balance beside what explains it. NULL means no such account
+  -- is visible to you, never zero. A non-null period is refused outright, for
+  -- the reason above: payment carries no period.
 app.is_solo(academy_id uuid) -> boolean   -- shaping only, never gating
 `

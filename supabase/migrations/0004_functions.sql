@@ -176,7 +176,11 @@ $$;
 
 -- uncovered_session reads session_coverage, so it is dropped first.
 drop view if exists public.uncovered_session;
-drop view if exists public.session_coverage;
+-- CASCADE: session_detail (0036) reads this view and exists on any database the
+-- chain has already built once, so a re-run must take it down too — 0036 drops
+-- and recreates it whole two files later. Without cascade every re-push died
+-- here (2BP01), which is the "db:push is not re-runnable" trap.
+drop view if exists public.session_coverage cascade;
 
 -- §6.3 / §11.1 — coverage as a table. Read by admin_escalate_uncovered,
 -- client_session_trouble, the cover-offer path (§8.2) and the emulator.

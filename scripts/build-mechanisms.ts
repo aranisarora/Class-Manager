@@ -66,7 +66,11 @@ const OUT = join('docs', 'MECHANISMS.md')
  * measurement taken through it — and they now carry the same three checks: the symbol is
  * real, the index matches the tags, and a finding it claims to close is actually open.
  */
-const ROOTS = ['lib', 'scripts']
+// `supabase/migrations` is here for the same reason `scripts` is (see above): a
+// mechanism whose code IS the DDL — a view, a trigger, an index — is tagged
+// beside that DDL, and an unscanned root is a tag whose Closes clause nobody
+// reads against the ledger.
+const ROOTS = ['lib', 'scripts', 'supabase/migrations']
 
 type Mechanism = {
   name: string
@@ -86,7 +90,7 @@ function walk(dir: string, out: string[] = []): string[] {
     if (e === 'node_modules' || e.startsWith('.')) continue
     const p = join(dir, e)
     if (statSync(p).isDirectory()) walk(p, out)
-    else if (/\.tsx?$/.test(p)) out.push(p)
+    else if (/\.(tsx?|sql)$/.test(p)) out.push(p)
   }
   return out
 }
@@ -104,7 +108,11 @@ function mechanismsIn(file: string): Mechanism[] {
   const out: Mechanism[] = []
 
   for (let i = 0; i < lines.length; i++) {
-    const strip = (s: string) => s.replace(/^\s*(\/\*\*?|\*\/|\*|\/\/)\s?/, '').replace(/\s*\*\/\s*$/, '')
+    // `--` is a comment marker in .sql only — in a .ts file it is a SQL
+    // fragment inside a template literal, i.e. code.
+    const sql = /\.sql$/.test(file)
+    const strip = (s: string) =>
+      s.replace(sql ? /^\s*(--)\s?/ : /^\s*(\/\*\*?|\*\/|\*|\/\/)\s?/, '').replace(/\s*\*\/\s*$/, '')
     const tag = strip(lines[i] as string).match(/^@mechanism\s+(.+)$/)
     if (!tag) continue
 
@@ -113,7 +121,7 @@ function mechanismsIn(file: string): Mechanism[] {
 
     for (let j = i + 1; j < lines.length; j++) {
       const raw = lines[j] as string
-      if (!/^\s*(\*|\/\/)/.test(raw)) break // left the comment
+      if (!(sql ? /^\s*(--)/ : /^\s*(\*|\/\/)/).test(raw)) break // left the comment
       const text = strip(raw)
       if (!text.trim()) break // blank comment line ends the block
       if (/^@\w+/.test(text.trim())) break // next tag
@@ -170,7 +178,10 @@ const ledger = new Map(readFindings().map((f) => [f.code, f]))
 const codeOnly = (file: string) =>
   readFileSync(file, 'utf8')
     .split(/\r?\n/)
-    .filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l))
+    // `--` strips comments in .sql only: in a .ts file a `--`-leading line is
+    // usually a SQL fragment inside a template literal — that is code, and one
+    // such line is where bothSidesOfTheMoney's symbol actually lives.
+    .filter((l) => !(/\.sql$/.test(file) ? /^\s*(--)/.test(l) : /^\s*(\*|\/\/|\/\*)/.test(l)))
     .join('\n')
 
 for (const m of mechanisms) {

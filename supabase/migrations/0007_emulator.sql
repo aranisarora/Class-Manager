@@ -10,6 +10,10 @@
 -- model can see is still one tenant. The dev surface gets its cross-tenant view through a
 -- named door with the lights on, which is the point.
 
+-- 0052 redefines this with a different row type (tenant split), so this file's
+-- re-run must drop first: CREATE OR REPLACE cannot change a return type.
+drop function if exists app.list_academies();
+
 create or replace function app.list_academies()
 returns table (
   id uuid, name text, category text, timezone text,

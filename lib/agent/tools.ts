@@ -1916,7 +1916,7 @@ export function seedFromCommitted(
  *   route matters as much as the refusal — `standing()` already puts every live watch in the
  *   tail, so the answer the model wanted is above it in the same prompt.
  */
-const CLOSED_TO_EVERY_SESSION = new Set(['job', 'audit_entry', 'turn', 'turn_record', 'sender', 'arrival'])
+const CLOSED_TO_EVERY_SESSION = new Set(['job', 'audit_entry', 'turn', 'turn_record', 'sender', 'arrival', 'tenant'])
 
 /** Every relation a statement names, lowercased. Enough to spot a read that cannot work. */
 function relationsNamed(query: string): string[] {

@@ -335,6 +335,12 @@ create or replace function app.class_rate_on(p_class_id uuid, p_on date)
      limit 1
   $$;
 
+-- 0053 widens this return type (adds amount_source/unit_source), so the re-run
+-- of THIS file must drop first: CREATE OR REPLACE cannot change a return type.
+-- Nothing live references it at this point in the chain — 0035's view and
+-- 0037's class_roster both predate it.
+drop function if exists app.rate_on(uuid, date);
+
 create or replace function app.rate_on(p_enrollment_id uuid, p_on date)
   returns table (amount numeric, unit text, cnt int)
   language sql stable set search_path = public, pg_temp

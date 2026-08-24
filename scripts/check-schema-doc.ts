@@ -211,7 +211,7 @@ function parseViewMentions(doc: string): { schema: string; name: string }[] {
   // list is the check, and a name missing from it passes vacuously rather than
   // failing loudly. Add the name here in the same change that adds the view.
   for (const m of doc.matchAll(
-    /\b(app\.)?(session_roster|session_coverage|unmarked_billable_session|coach_public|coach_directory|class_coach_public|class_offering|class_roster|account_standing|account_ledger|coach_pay|person_directory|session_detail|rate_history)\b/g,
+    /\b(app\.)?(session_roster|session_coverage|unmarked_billable_session|coach_public|coach_directory|class_coach_public|class_offering|class_roster|account_standing|account_ledger|coach_pay|person_directory|session_detail|rate_history|player_attendance)\b/g,
   )) {
     out.push({ schema: m[1] ? 'app' : 'public', name: m[2] as string })
   }

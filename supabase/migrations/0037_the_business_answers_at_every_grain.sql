@@ -225,6 +225,8 @@ grant select on public.class_coach_public to cm_service, cm_user, cm_readonly;
 -- are three plain columns the model has never once got wrong in prose, and a
 -- line stating what a competent reader derives is what this repo keeps deleting.
 -- -----------------------------------------------------------------------------
+-- 0043 appends next_rate_* to this view, so drop first on a re-run.
+drop view if exists public.class_offering;
 create or replace view public.class_offering with (security_invoker = true) as
   select cl.academy_id,
          cl.id       as class_id,
@@ -433,6 +435,8 @@ grant select on public.account_ledger to cm_service, cm_user, cm_readonly;
 -- business with a null pay against their name, which answers nobody's question
 -- and reads like a leak that failed.
 -- -----------------------------------------------------------------------------
+-- 0043 appends pay_amount_then/amount_then, so drop first on a re-run.
+drop view if exists public.coach_pay;
 create or replace view public.coach_pay with (security_invoker = true) as
   select s.academy_id,
          sc.coach_id,
@@ -512,6 +516,9 @@ grant select on public.coach_pay to cm_service, cm_user, cm_readonly;
 --
 -- Columns are APPENDED, so `create or replace` holds and nothing is dropped.
 -- -----------------------------------------------------------------------------
+-- 0043 appends columns to this view, so this file must drop first on a re-run:
+-- CREATE OR REPLACE cannot drop columns from a view.
+drop view if exists public.class_roster;
 create or replace view public.class_roster with (security_invoker = true) as
   select cl.academy_id,
          cl.id                                    as class_id,

@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-238 mechanisms · 46 findings closed by one · 26 findings still open
+239 mechanisms · 47 findings closed by one · 26 findings still open
 
 ## The scan
 
@@ -290,6 +290,9 @@ One line each. Find a candidate here, then read its entry below.
 `parseSignatures` — reads a signature wherever it sits on the line, and counts what it read, retiring the class of defect where a gate passes because its own reader matched…  
 `everyTenantOnTheNumber` — every business on this sender is moved to the same moment, not only the desk and the one the run adopted.  
 
+**`supabase/migrations/`**  
+`player_attendance` — the per-player register aggregate: due, marked, attended and absent already counted over app.session_roster, the rate's denominator carried beside its…  
+
 ---
 
 ## The detail
@@ -373,29 +376,29 @@ One line each. Find a candidate here, then read its entry below.
 
 - **`coachClashes`** — `lib/agent/clash.ts:4`  
   asks the database, inside the plan's own transaction and after the steps have run, which coach this plan just put in two places at once — both arms, the weekly slot and the dated session, scoped to the rows this plan is responsible for so somebody else's old overlap never surfaces inside this receipt. It notes and never refuses: the sentence becomes a plan note, so `needsPreview` gates on what a plan COLLIDES with rather than on how much it writes, and the person's tap stays the override. Five routes put a coach somewhere, so the same check written into `create_class` would have covered one of them.
-- **`stablePrefix`** — `lib/agent/context.ts:378`  
+- **`stablePrefix`** — `lib/agent/context.ts:371`  
   the whole cached half of the prompt, assembled once and memoised: preamble, schema, operations framing, catalog digest, platform limits, business facts, doctrine, then `CACHE_BOUNDARY`. It is byte-identical for every turn, every person and every business served, and that identity is the entire cost mechanism — a hit costs 3.2% of a miss and there is no handle to hold, so one date, one id or one per-academy fact above the boundary makes every turn in the product pay full price. Ordering inside it is free, which is why doctrine sits last, against the boundary, rather than 35k characters upstream of the decision.
-- **`Read`** — `lib/agent/context.ts:578`  
+- **`Read`** — `lib/agent/context.ts:570`  
   the type that keeps a prefetch that FAILED (`value` null, `why` set) apart from one that ran and found nothing (`value` `[]`, `why` null), and carries `modelQuery`'s own error text along with the gap. The two were one value here, and they are opposite sentences downstream: a refused or timed-out lookup rendered as a confident negative is what told a parent nothing was scheduled and told a coach his own pay was not visible to the product, while the same figure was read out to the owner in another thread.
-- **`fromRead`** — `lib/agent/context.ts:650`  
+- **`fromRead`** — `lib/agent/context.ts:642`  
   renders a `Read`'s value, or, where the read failed, an `unread` line that states the gap and hands over `because(why)`. The failure text is a REQUIRED argument, so a call site cannot exist without one and `render` is never handed a failure to think about. That is what retires the silent hole: five of the nine ways a prefetch could fail used to drop their block entirely, and string concatenation is silent by construction — you append one line fewer and the result is a perfectly well-formed paragraph asserting the opposite of what was read.
-- **`census`** — `lib/agent/context.ts:697`  
+- **`census`** — `lib/agent/context.ts:689`  
   what exists, read before the turn's first round and always under this person's own RLS, so a coach's census is their classes and a parent's is their children without anything having to remember to filter it. Counts and rows, never instructions: it retires the round spent discovering whether anything is set up at all, and the bot that narrated its own state machine because that was the only fact about the business it held. Every label in it is prompt and is held to one rule — read the label and its value with no access to the SQL above it, and the sentence they license must be true.
-- **`censusProvenance`** — `lib/agent/context.ts:805`  
+- **`censusProvenance`** — `lib/agent/context.ts:797`  
   a census row that names a person says, on the same line, which account it hangs off and whether that account is one this person holds. It retires the class of defect where the runtime's own heading is the only thing vouching for a row: a heading says "theirs", the model reads it as certified, and a row that is somebody else's is repeated back as fact — including, once, a fee.
-- **`bothSidesOfTheMoney`** — `lib/agent/context.ts:1004`  
+- **`bothSidesOfTheMoney`** — `lib/agent/context.ts:996`  
   what this business owes its coaches, stated on the same line as what it has charged and what it has actually collected, because each of those alone is a true sentence about one side of a business that only makes sense as two.
-- **`familyScope`** — `lib/agent/context.ts:1204`  
+- **`familyScope`** — `lib/agent/context.ts:1196`  
   narrows every statement in the family census to the accounts and players this person actually holds, the way the coach branch above narrows every one of its statements to `sc.coach_id`. It retires the class of defect where a census label says "their children" over rows nothing filtered — a heading that is true for a coach and false for a parent because one branch was written with the ids in hand and never used them.
-- **`standing`** — `lib/agent/context.ts:1357`  
+- **`standing`** — `lib/agent/context.ts:1349`  
   puts the states layer 0 already stores in front of the model instead of leaving them to be reconstructed: questions asked and not answered, mutes and opt-outs, and the watches this business has already promised — the `job` table is closed to the model in both directions, so its own standing promises can reach it no other way. Reconstruction is where the false unsubscribe confirmation came from, and each line says what it LICENSES, because an unanswered stop request described as a completed one is the worst sentence this product has ever sent. **Closes F-AF.**
-- **`card`** — `lib/agent/context.ts:1509`  
+- **`card`** — `lib/agent/context.ts:1501`  
   a live committing card is named to the model BY ID, beside the question it asks, so consent given in WORDS has a route to the exact stored payload a tap would replay: `commit({action_id})`. Without it the only spelling of yes was the tap — an owner who wrote "also tap build timetable go ahead" was re-staged instead, the run ended with `class` empty, and every staged plan for every role could only ever be committed by a finger on a screen. The id is read from rows, the payload replays verbatim through `consumeAction`, and the model decides only WHETHER their words said yes — never what runs. The other half of the route is `commitByActionId` (lib/agent/tools.ts), which is what the id here is FOR.
-- **`statedRules`** — `lib/agent/context.ts:1641`  
+- **`statedRules`** — `lib/agent/context.ts:1633`  
   `business_rule` gets its reader: every live rule is in the tail in the owner's own words, with its provenance and whether any automation reads it (`enforced_by`, whose NULL is said out loud, as its column comment has always asked). The empty state is stated too, to the admin only, because the worst instance of the class was composed INTO an emptiness: "(first class is free)" volunteered as the business's own rule in a confirmation tail, about a business that had stated nothing (F-CC). A model shown "no rules on file — a policy this business has not stated does not exist" has the fact the invention contradicted; a model shown nothing had nothing to check against. **Closes F-BW.**
-- **`deskTail`** — `lib/agent/context.ts:1707`  
+- **`deskTail`** — `lib/agent/context.ts:1699`  
   a desk arrival's tail is the DESK's, not a tenant's: no census (there is no business to count), no memory, no standing states — the arrival's asked-state, what this number is, and the businesses their own words named, built by the same `frontDeskTail` the second desk brain used, so the desk's tail mechanisms (`whatThisNumberIs`, `answeredSinceAsked`) survive the one-brain merge byte for byte. The blocks skipped are not merely wasted at the desk, they are FALSE for one: a census of the desk academy reads as an empty business, and the model asserting emptiness to a stranger off it is the exact shape F-AD closed.
-- **`windowRightHere`** — `lib/agent/context.ts:1806`  
+- **`windowRightHere`** — `lib/agent/context.ts:1798`  
   the 24-hour window is a property of the person this turn is addressing, the runtime holds it on the contact row it already loaded, and the prefix's answer was *"whether a given person's window is open is something you can look up — person_directory.window_open … it is worth knowing before you build"*. That paragraph is otherwise complete and correct, and it is a pointer: measured across `b8xo` and `ceeg`, 220 context tails, the window was stated on 18 of them and the model had to spend a round to find out on the rest.
 - **`ModelCall.parseError`** — `lib/agent/deepseek.ts:59`  
   a tool call whose `arguments` did not parse is carried rather than dropped: the id, the name, the raw string and the parse error all survive, so the loop can answer that exact call id with what went wrong. This is the whole of what used to arrive as `MALFORMED_FUNCTION_CALL` with nothing attached — a call no history could answer, because a tool result matches by id and there was no id to match.
@@ -790,6 +793,11 @@ One line each. Find a candidate here, then read its entry below.
   reads a signature wherever it sits on the line, and counts what it read, retiring the class of defect where a gate passes because its own reader matched nothing. The anchor used to be `\n([a-z_]+)\(` — column zero or nothing — so the twelve indented signatures under `## The views`, and the one real TABLE filed among them, were never compared to the database at all. Two spaces of indentation, chosen for layout, silently switched the check off for a table the model writes to. Leading whitespace is now allowed, and the openings it walked are counted and asserted against `MIN_SIGNATURE_OPENINGS`, so the next reader that stops matching fails instead of congratulating itself.
 - **`everyTenantOnTheNumber`** — `scripts/sim.ts:1192`  
   every business on this sender is moved to the same moment, not only the desk and the one the run adopted.
+
+## `supabase/migrations/`
+
+- **`player_attendance`** — `supabase/migrations/0053_the_register_answers_who_stopped_coming.sql:265`  
+  the per-player register aggregate: due, marked, attended and absent already counted over app.session_roster, the rate's denominator carried beside its numerator, and the four standings between 'never due' and 'attending' as a word — so "who has never turned up" is a filter rather than a NOT EXISTS the model writes as an inner join and gets backwards. **Closes F-EW.**
 
 ## Still open
 
