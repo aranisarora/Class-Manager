@@ -49,8 +49,8 @@ inbound (Meta webhook · emulator · job)
  └ resolveInbound → resolveIdentity            no identity → not our turn
     │                └ no business owns this number? → the front desk (0039)
     └ runTurn
-       0 the desk    a `visitor` runs the SAME loop in desk MODE: the one prefix's desk
-                     section, the visitor tail, four verbs gated at the dispatcher
+       0 the desk    a desk arrival runs the SAME loop in desk MODE: the one prefix's desk
+                     section, the desk tail, four verbs gated at the dispatcher
        1 arrival     consumeAction → executeAction (the WRITE runs before any model)
                      …and then falls through to 2, so the model composes the receipt
                      mediaRefusal (the runtime speaks, not the prompt)
@@ -73,7 +73,7 @@ inbound (Meta webhook · emulator · job)
 | What happens | Where |
 | --- | --- |
 | A shared number routes to a person by answering only what rows can answer — *does this number already belong to a business?* | `resolveInbound` · `lib/identity.ts` |
-| It belongs to none: the person is a `visitor` at the front desk of the number they messaged, with a person, a contact and a transcript | `frontDeskContact` · `lib/identity.ts` · `app.front_desk_contact` · `0039` |
+| It belongs to none: the person is a `prospect` at the front desk of the number they messaged, with a person, a contact and a transcript | `frontDeskContact` · `lib/identity.ts` · `app.front_desk_contact` · `0039` |
 | The arrival is recorded **before** anything is asked, so a stranger who writes once and never answers is a row rather than an absence | `openArrival` · `lib/frontdesk/arrival.ts` |
 | One contact resolves to a person and to **all** of their roles at once | `resolveIdentity` · `lib/identity.ts` |
 | A tap claims its button in one conditional UPDATE, then runs the stored payload — **no model call before the write**, and `origin` records that | `consumeAction` · `lib/actions.ts` · `executeAction` · `lib/agent/loop.ts` |
@@ -100,13 +100,13 @@ may **replay what the model wrote**; it may not **author what the person reads**
 
 ## 1a · The front desk — a MODE of the one brain, not a second one
 
-Since the one-brain merge a `visitor` runs the ordinary loop. The mode is decided at
-arrival (`roles` carry `visitor`), and everything mode-shaped happens at three seams the
+Since the one-brain merge a desk arrival runs the ordinary loop. The mode is decided at
+arrival (the identity's academy carries `is_front_desk` — 0051), and everything mode-shaped happens at three seams the
 loop already owns: the tail (the census, memory and standing blocks are FALSE for a
-person with no business, so `visitorTail` swaps in the desk's own), the dispatcher (the
+person with no business, so `deskTail` swaps in the desk's own), the dispatcher (the
 four desk verbs run only here and everything tenant-shaped refuses with the truth —
 PREFIX-RULES' own rule, *constrain a round at its dispatcher, never by narrowing what it
-is shown*, because a visitor-narrowed tool block would be a second cached prefix), and
+is shown*, because a desk-narrowed tool block would be a second cached prefix), and
 the lint (the mask over the number's business names is read at validation time). The
 desk's standing facts are a byte-stable section of the ONE prefix. What the old fork
 bought — a smaller request — died with the cache economics; what it cost is recorded in
@@ -116,8 +116,8 @@ the two-brain arm by A/B.
 | Order | What | Where |
 | --- | --- | --- |
 | 1 | One stable prefix for both modes — the desk's standing facts are a section of it, byte-identical everywhere | `stablePrefix` · `lib/agent/context.ts` |
-| 2 | The visitor tail: the arrival's asked-state, what this number is, and the businesses their own words name | `visitorTail` · `lib/agent/context.ts` |
-| 3 | Four verbs gated to visitor turns at the dispatcher, beside `reply`, `read` and `view`; no sixth at any privilege, and no "list the businesses" anywhere | `visitorSurface` · `lib/agent/tools.ts` |
+| 2 | The desk tail: the arrival's asked-state, what this number is, and the businesses their own words name | `deskTail` · `lib/agent/context.ts` |
+| 3 | Four verbs gated to desk turns at the dispatcher, beside `reply`, `read` and `view`; no sixth at any privilege, and no "list the businesses" anywhere | `deskSurface` · `lib/agent/tools.ts` |
 | 4 | The ordinary rounds — one loop, one recorder, real buttons; a hand-over breaks the loop before a parting sentence, and the exits stay silent on it because the business answers next | `modelTurn` · `lib/agent/loop.ts` |
 | 5 | The name matcher is evidence now, not a routing decision — it decides nothing on its own | `matchAcademiesByName` · `lib/identity.ts` |
 | 6 | A destination: a prospect contact in an existing business, or a business that did not exist a second ago | `joinBusiness` · `foundBusiness` · `lib/frontdesk/route.ts` |

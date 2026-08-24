@@ -1342,12 +1342,6 @@ const bookTrial: OperationDef = {
         service: true,
         requireRows: 1,
       },
-      {
-        // §11.2 — prospect becomes registered the moment there is something to
-        // register: a player and a booking.
-        write: `update contact set state = 'registered' where id = ${uid(contactId)} and state = 'prospect'`,
-        service: true,
-      },
     ]
 
     const whenText = firstSession ? whenLabel(firstSession.starts_at, a.timezone, today) : 'the next session'

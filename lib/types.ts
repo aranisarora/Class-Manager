@@ -19,16 +19,17 @@
 // -----------------------------------------------------------------------------
 
 /**
- * §6.2 — hats, and they compose. `visitor` is the one that cannot compose with a
- * business, because it means there is not one yet: 0039 returns it for any contact
- * sitting in a front desk, and it is what narrows the whole surface to the single
- * question the front desk exists to ask.
+ * §6.2 — hats, and they compose. `prospect` is the hat worn by absence: no admin,
+ * coach, account or player standing in this academy (0051 derives it that way, from
+ * row-absence, so it survives past the first message). At a front desk — an academy
+ * that owns no role rows — it is every arrival's only hat; desk MODE itself keys on
+ * `academy.is_front_desk`, the structural fact the deleted `visitor` role mirrored.
  */
-export type Role = 'admin' | 'coach' | 'account_holder' | 'player' | 'prospect' | 'visitor'
+export type Role = 'admin' | 'coach' | 'account_holder' | 'player' | 'prospect'
 export type RateUnit = 'per_session' | 'per_month' | 'per_term' | 'per_package'
 export type SessionStatus = 'scheduled' | 'cancelled' | 'completed'
 export type AttendanceStatus = 'present' | 'late' | 'absent' | 'cancelled_timely'
-export type ContactState = 'prospect' | 'registered' | 'engaged' | 'opted_out'
+export type ContactState = 'registered' | 'engaged' | 'opted_out'
 export type CoachStatus = 'added' | 'invited' | 'active' | 'ended'
 export type OnboardingState = 'setup' | 'roster' | 'ready' | 'live'
 

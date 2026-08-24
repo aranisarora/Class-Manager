@@ -12,7 +12,7 @@
  *   resolveInbound   §10.1 routing on a shared number, and it answers only what rows
  *                    can answer: does this number already belong to a business? One
  *                    academy resolves on sight. None sends the person to the front
- *                    desk (0039) as a `visitor`, where the product ASKS whether they
+ *                    desk (0039), where the product ASKS whether they
  *                    want classes or run them — rather than the router deciding they
  *                    are a parent because the prefilled text named a tenant.
  *                    Several is still ambiguity, and still asks.
@@ -337,7 +337,10 @@ export async function prospectContactIn(
          returning id
        )
        insert into contact (academy_id, person_id, phone_e164, profile_name, state, last_inbound_at)
-       select $1::uuid, new_person.id, $3, nullif($4, ''), 'prospect', $5::timestamptz
+       -- 0051: 'registered' like every created-not-yet-heard-from contact; the inbound
+       -- trigger flips it to 'engaged' when their message stores. What makes them a
+       -- prospect is holding no role row here, and app.identity derives that itself.
+       select $1::uuid, new_person.id, $3, nullif($4, ''), 'registered', $5::timestamptz
        from new_person
        on conflict (academy_id, phone_e164) do nothing
        returning id`,
@@ -398,7 +401,7 @@ async function frontDeskContact(
  * @mechanism resolveInbound — §10.1 routing on a shared number, and it now answers only
  *   the question rows can answer: does this number already belong to a business? A number
  *   known to exactly one resolves on sight. A number known to none goes to the front desk
- *   (0039) as a `visitor`, with a person, a contact, a transcript and a turn — where the
+ *   (0039), with a person, a contact, a transcript and a turn — where the
  *   product ASKS whether they want classes or run them, instead of the router deciding they
  *   are a parent because the prefilled text happened to name a tenant. That text is still
  *   read, and is handed to the turn as evidence rather than spent as a routing decision.
@@ -427,7 +430,7 @@ export async function resolveInbound(
   const academies: AcademyCandidate[] = (data?.academies ?? []).map((a) => ({ academyId: a.academy_id, name: a.name }))
 
   // Known number, exactly one academy: resolve on sight. Front desks are excluded from
-  // `matches` by 0039, so a visitor who has since joined a business resolves THERE and
+  // `matches` by 0039, so a desk arrival who has since joined a business resolves THERE and
   // never comes back to the desk they arrived at.
   if (matches.length === 1) {
     const hit = matches[0]

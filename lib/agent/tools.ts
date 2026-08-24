@@ -56,11 +56,11 @@ export type ToolCtx = {
    */
   typedThisTurn?: boolean
   /**
-   * Set on a front-desk turn — the mode `visitorSurface` gates the tool surface by.
+   * Set on a front-desk turn — the mode `deskSurface` gates the tool surface by.
    * Carries what the desk verbs need and produce: the arrival row, the person's text
    * (which a hand-over re-enters), and the handover a verb decided, for the loop.
    */
-  visitor?: {
+  desk?: {
     arrival: unknown
     text: string
     handover?: FrontDeskHandover
@@ -1358,8 +1358,8 @@ function declarePrimitives(ops: string[]): ToolDecl[] {
   /**
    * The four front-desk verbs, declared to EVERY turn because the tool block is inside
    * the cached prefix and a per-mode block is a second prefix whatever it is called
-   * (PREFIX-RULES). They run only on a visitor turn — a conversation no business holds
-   * yet — and refuse everywhere else, at the dispatcher (`visitorSurface`, ToolCtx).
+   * (PREFIX-RULES). They run only on a desk turn — a conversation no business holds
+   * yet — and refuse everywhere else, at the dispatcher (`deskSurface`, ToolCtx).
    * Schemas are the desk's own, imported so the two surfaces cannot drift.
    */
   {
@@ -1920,25 +1920,25 @@ function relationsNamed(query: string): string[] {
 }
 
 /**
- * @mechanism visitorSurface — the front desk is a MODE of the one brain, not a second
- *   one. A turn whose conversation belongs to no business yet (0039's visitor) runs the
+ * @mechanism deskSurface — the front desk is a MODE of the one brain, not a second
+ *   one. A turn whose conversation belongs to no business yet (0039's front desk) runs the
  *   same loop, the same stable prefix and the same declarations as every tenant turn,
  *   and the SURFACE is gated here at the dispatcher: the four desk verbs run only in
  *   this mode, everything tenant-shaped refuses with the truth, and a tenant turn
  *   reaching for a desk verb is refused the same way — because PREFIX-RULES' own
  *   measured rule is "constrain a round at its dispatcher, never by narrowing what it
- *   is shown", and a visitor-narrowed tool block would be a second cached prefix
+ *   is shown", and a desk-narrowed tool block would be a second cached prefix
  *   whatever it was called. Replaces the second desk brain (`runFrontDeskTurn`) whose
  *   seam cost F-EO, F-EQ, F-CV and the ace month's owner-seat jam; measured against
  *   that arm by A/B.
  */
-async function visitorSurface(
+async function deskSurface(
   name: string,
   args: any,
   ctx: ToolCtx,
 ): Promise<{ result: unknown } | null> {
   const DESK_VERBS = new Set(['find_business', 'join_business', 'start_business', 'stop_messaging'])
-  if (ctx.visitor) {
+  if (ctx.desk) {
     // The hand-over LATCHES: once a verb has decided one, every further call this turn
     // — a parting reply, a second start_business — is refused, because the business is
     // about to answer this same message from inside itself, and the second brain used
@@ -1946,7 +1946,7 @@ async function visitorSurface(
     // round of [join_business, reply] sent the desk's goodbye AND the business's
     // answer, and [start_business A, start_business B] founded two businesses and
     // orphaned the first with the carried transcript).
-    if (ctx.visitor.handover) {
+    if (ctx.desk.handover) {
       return {
         result: {
           ok: false,
@@ -1959,13 +1959,13 @@ async function visitorSurface(
     if (DESK_VERBS.has(name)) {
       const r = await runFrontDeskTool(
         ctx.identity,
-        (ctx.visitor.arrival ?? null) as any,
+        (ctx.desk.arrival ?? null) as any,
         name,
         args ?? {},
-        ctx.visitor.text,
+        ctx.desk.text,
       )
-      if (r.handover) ctx.visitor.handover = r.handover
-      if (r.stopped) ctx.visitor.stopped = true
+      if (r.handover) ctx.desk.handover = r.handover
+      if (r.stopped) ctx.desk.stopped = true
       return { result: r.content }
     }
     if (name !== 'reply' && name !== 'read') {
@@ -1997,7 +1997,7 @@ async function visitorSurface(
 }
 
 /**
- * @mechanism deskLintScope — a visitor turn's lint scope carries the NUMBER's business
+ * @mechanism deskLintScope — a desk turn's lint scope carries the NUMBER's business
  *   names, read at VALIDATION time, never reused from the turn's start: the name a draft
  *   most needs masked is the business founded seconds ago — by the other person in a
  *   founding race, or by this turn's own `start_business` collision. On the 23 Aug ace
@@ -2011,7 +2011,7 @@ async function visitorSurface(
  *   rather than blocking the send. Closes F-EQ.
  */
 export async function deskLintScope(ctx: ToolCtx): Promise<Identity | { academyId: string | null; academy: Identity['academy']; businessNames: string[] }> {
-  if (!ctx.visitor) return ctx.identity
+  if (!ctx.desk) return ctx.identity
   try {
     const names = (await businessesOnThisNumber(ctx.identity)).map((b) => String(b.name ?? '')).filter(Boolean)
     return { academyId: ctx.identity.academyId, academy: ctx.identity.academy, businessNames: names }
@@ -2025,9 +2025,9 @@ export async function runTool(
   args: any,
   ctx: ToolCtx,
 ): Promise<{ result: unknown; note?: string }> {
-  // The visitor-mode surface gate, before the operation rewrite so an operation
+  // The desk-mode surface gate, before the operation rewrite so an operation
   // refuses under its own name, with the truth.
-  const gated = await visitorSurface(name, args, ctx)
+  const gated = await deskSurface(name, args, ctx)
   if (gated) return gated
 
   // An operation called by its own name is exactly the work `act` already does:
@@ -2777,7 +2777,7 @@ export async function runTool(
       // business exists there is no plan to stage and no operation to run, and a payload
       // pretending otherwise is a broken promise on a stranger's screen (review find:
       // the merge had silently widened "four declarations, and nothing else reachable").
-      if (ctx.visitor) {
+      if (ctx.desk) {
         const nonReply = [
           ...((Array.isArray(args?.buttons) ? args.buttons : []) as any[]).map((b) => b?.action),
           ...(((list?.sections ?? []) as any[]).flatMap((s: any) => (s?.rows ?? []).map((r: any) => r?.action))),
@@ -3030,8 +3030,8 @@ export async function runTool(
         // class it closed re-opens (review find — a dead-shipped feed, the hunted
         // shape). Fire-and-forget: a stamp that cannot be written must not undo a
         // send that landed.
-        if (ctx.visitor) {
-          const arrivalId = (ctx.visitor.arrival as { id?: string } | null)?.id
+        if (ctx.desk) {
+          const arrivalId = (ctx.desk.arrival as { id?: string } | null)?.id
           if (arrivalId) {
             void domainNow(ctx.identity.academyId)
               .then((at) => markArrivalAsked(ctx.identity.academyId, String(arrivalId), at))

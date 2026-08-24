@@ -27,7 +27,7 @@ import { unsafeQuery, withSession } from '@/lib/db'
 import type { Tx } from '@/lib/db'
 
 /**
- * `declined` is not "they said no". It is the outcome for a visitor who was answered,
+ * `declined` is not "they said no". It is the outcome for an arrival who was answered,
  * asked to be left alone, and had that honoured — the opt-out shape, at the one point
  * in the product where there is no tenant to record it against. Somebody who simply
  * stopped replying stays `undecided`, which is the honest word for it and the row the

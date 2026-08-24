@@ -178,7 +178,7 @@ async function promoteRates(tx: Tx, academyId: string, today: string): Promise<v
  * is right for every job the planner mints — a desk has no roster and must not
  * initiate — but the pending_request expiry sweep is bookkeeping, not a send, and desk
  * sends mint real `pending_request` rows ("are you looking for classes, or do you run
- * them?") with real expiries. Nothing else visits them, so a visitor who never answered
+ * them?") with real expiries. Nothing else visits them, so an arrival who never answered
  * left a question open forever in the desk's own tail. Sweep only: no agent_task is
  * opened for a stranger, because there is no business to owe them an answer from.
  */
