@@ -80,6 +80,12 @@ export type ComposeSpec = {
    * `OutboundMessage.confirmation`.
    */
   confirmation?: { kind: string; subject: string; question?: string }
+  /**
+   * Additive: this message IS the opt-out's own acknowledgement, the one send
+   * gate 1 lets through. Runtime-set only (the desk's stop, the opt-out
+   * operation's staged ack) — a model argument cannot reach it.
+   */
+  optOutAck?: boolean
 }
 
 /** Mints an action per button, then hands a well-formed OutboundMessage to `send`. */
@@ -172,6 +178,7 @@ export async function composeAndSend(ctx: SessionCtx, spec: ComposeSpec): Promis
     templateParams: spec.templateParams,
     stateKey: spec.stateKey,
     confirmation: spec.confirmation,
+    optOutAck: spec.optOutAck,
     // Carried so `send` can give the pending question the lifetime of the tap that
     // answers it. Left `undefined` where nobody named one, and `send` then falls back
     // to `DEFAULT_ACTION_TTL_MINUTES` — the COMMITTING tier, which is the right one:

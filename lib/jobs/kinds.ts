@@ -15,7 +15,7 @@
 export type JobKind =
   | 'materialize_sessions' | 'coach_day' | 'coach_coming' | 'coach_nudge'
   | 'admin_escalate_uncovered' | 'client_session_trouble' | 'client_reminder'
-  | 'post_class_register' | 'register_expiry' | 'client_outcome'
+  | 'post_class_register' | 'register_expiry' | 'client_outcome' | 'client_receipt'
   | 'admin_morning_brief' | 'admin_evening_digest'
   | 'monthly_lines' | 'month_end_tally' | 'coach_month_lines' | 'dunning'
   | 'first_contact_batch' | 'memory_curate' | 'coach_not_onboarded'
@@ -24,7 +24,7 @@ export type JobKind =
 export const JOB_KINDS: readonly JobKind[] = [
   'materialize_sessions', 'coach_day', 'coach_coming', 'coach_nudge',
   'admin_escalate_uncovered', 'client_session_trouble', 'client_reminder',
-  'post_class_register', 'register_expiry', 'client_outcome',
+  'post_class_register', 'register_expiry', 'client_outcome', 'client_receipt',
   'admin_morning_brief', 'admin_evening_digest',
   'monthly_lines', 'month_end_tally', 'coach_month_lines', 'dunning',
   'first_contact_batch', 'memory_curate', 'coach_not_onboarded',
@@ -35,18 +35,53 @@ export function isJobKind(s: string): s is JobKind {
   return (JOB_KINDS as readonly string[]).includes(s)
 }
 
-/** §13 dedupe keys, exactly as the table writes them. */
+/**
+ * The day's two bookends. A missing digest is not a late job, it is an outage
+ * the admin should hear about — `reportMissed` says MISSED instead of overdue
+ * for these. Declared here beside the kinds rather than as name literals inside
+ * the generic runner, which is not entitled to know what a digest is.
+ */
+export const BOOKEND_KINDS: readonly JobKind[] = ['admin_morning_brief', 'admin_evening_digest']
+
+/**
+ * §13 dedupe keys, exactly as the table writes them — plus the one thing the
+ * table left out: a generation for the session ladder.
+ *
+ * @mechanism dedupe — the session ladder's keys carry the session's
+ *   `rescheduled_n` (`r<n>`, only when > 0), because `job.dedupe_key` is unique
+ *   across EVERY status: a swept ladder's cancelled rows keep their keys, so the
+ *   planner's re-enqueue after a reschedule matched the old rows and wrote
+ *   nothing, silently, forever — a session moved after its ladder was planned
+ *   lost its coach ask, family reminder, register ask and register expiry, and
+ *   with them the per-session billing the register feeds. Redeliver and dunning
+ *   already keyed their attempts for exactly this reason; the ladder never did.
+ *   Legacy keys (rev 0) are byte-identical to before, so nothing re-fires on
+ *   deploy day, and `sessionJobPrefixes` sweeps all generations because the rev
+ *   sits after the session id every prefix anchors on. Closes F-FI.
+ */
+const rev = (n?: number): string => (n && n > 0 ? `r${n}:` : '')
+const revEnd = (n?: number): string => (n && n > 0 ? `:r${n}` : '')
+
 export const dedupe = {
   materializeSessions: (classId: string, date: string) => `materialize:${classId}:${date}`,
   coachDay: (coachId: string, date: string) => `co_day:${coachId}:${date}`,
-  coachComing: (sessionId: string, coachId: string) => `co_coming:${sessionId}:${coachId}`,
-  coachNudge: (sessionId: string, coachId: string) => `co_nudge:${sessionId}:${coachId}`,
-  adminEscalateUncovered: (sessionId: string) => `ad_uncov:${sessionId}`,
-  clientSessionTrouble: (sessionId: string) => `trouble:${sessionId}`,
-  clientReminder: (sessionId: string, playerId: string) => `cl_rem:${sessionId}:${playerId}`,
-  postClassRegister: (sessionId: string) => `register:${sessionId}`,
-  registerExpiry: (sessionId: string) => `reg_exp:${sessionId}`,
+  coachComing: (sessionId: string, coachId: string, n?: number) => `co_coming:${sessionId}:${rev(n)}${coachId}`,
+  coachNudge: (sessionId: string, coachId: string, n?: number) => `co_nudge:${sessionId}:${rev(n)}${coachId}`,
+  adminEscalateUncovered: (sessionId: string, n?: number) => `ad_uncov:${sessionId}${revEnd(n)}`,
+  clientSessionTrouble: (sessionId: string, n?: number) => `trouble:${sessionId}${revEnd(n)}`,
+  clientReminder: (sessionId: string, playerId: string, n?: number) => `cl_rem:${sessionId}:${rev(n)}${playerId}`,
+  postClassRegister: (sessionId: string, n?: number) => `register:${sessionId}${revEnd(n)}`,
+  registerExpiry: (sessionId: string, n?: number) => `reg_exp:${sessionId}${revEnd(n)}`,
   clientOutcome: (sessionId: string, playerId: string) => `outcome:${sessionId}:${playerId}`,
+  /**
+   * CL-RECEIPT rides the PAYMENT's identity, so a receipt exists exactly once
+   * per confirmed payment however the confirmation was written — an operation,
+   * a tap's steps, or raw SQL. The catalog promised this moment to the model
+   * ("code guarantees these reach you") from the day the wrapper operation that
+   * used to raise it was deleted; the sweep in plan-ahead is what makes the
+   * promise true again (F-FK).
+   */
+  clientReceipt: (paymentId: string) => `receipt:${paymentId}`,
   adminMorningBrief: (academyId: string, date: string) => `ad_brief:${academyId}:${date}`,
   adminEveningDigest: (academyId: string, date: string) => `ad_digest:${academyId}:${date}`,
   monthlyLines: (enrollmentId: string, period: string) => `monthly:${enrollmentId}:${period}`,
@@ -195,6 +230,7 @@ export type JobPayloadMap = {
   post_class_register: { academy_id: string; session_id: string }
   register_expiry: { academy_id: string; session_id: string }
   client_outcome: { academy_id: string; session_id: string; player_id: string }
+  client_receipt: { academy_id: string; payment_id: string }
   admin_morning_brief: { academy_id: string; date: string }
   admin_evening_digest: { academy_id: string; date: string }
   monthly_lines: { academy_id: string; enrollment_id: string; period: string }
@@ -205,6 +241,13 @@ export type JobPayloadMap = {
   memory_curate: { academy_id: string; subject_kind: 'academy' | 'person'; subject_id: string; n: number }
   coach_not_onboarded: { academy_id: string; coach_id: string; date: string }
   reconcile: { academy_id: string; payment_id: string; n: number }
+  /**
+   * The one kind enqueued from outside lib/jobs (`suppress` in
+   * lib/messaging/send.ts). It was also the one kind this map left out, so the
+   * typed contract that exists to stop enqueuer/handler drift excluded exactly
+   * the pair living furthest apart.
+   */
+  redeliver: { academy_id: string; message_id: string; attempt: number }
   agent_task: {
     academy_id: string
     instruction: string

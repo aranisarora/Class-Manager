@@ -326,7 +326,7 @@ export async function coachComing(job: Job): Promise<void> {
   // The next rung. Idempotent — planAhead has usually put it there already.
   const nudgeAt = new Date(session.starts_at.getTime() - nudgeLead * 60_000)
   await enqueue(
-    'coach_nudge', nudgeAt, dedupe.coachNudge(session.id, me.coach_id),
+    'coach_nudge', nudgeAt, dedupe.coachNudge(session.id, me.coach_id, session.rescheduled_n),
     { academy_id: academy.id, session_id: session.id, coach_id: me.coach_id }, academy.id,
   )
 }
@@ -396,7 +396,7 @@ export async function coachNudge(job: Job): Promise<void> {
 
   // T-15: the admin is told, and the coach is not chased further (§8.2 step 4).
   await enqueue(
-    'admin_escalate_uncovered', escalateAt, dedupe.adminEscalateUncovered(session.id),
+    'admin_escalate_uncovered', escalateAt, dedupe.adminEscalateUncovered(session.id, session.rescheduled_n),
     { academy_id: academy.id, session_id: session.id }, academy.id,
   )
 }

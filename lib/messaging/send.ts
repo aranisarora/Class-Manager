@@ -496,8 +496,12 @@ async function suppress(
 ): Promise<Prepared> {
   // "Not now" releases the key so the same message may be attempted once the
   // window moves; every other suppression is a decision made once. Quiet hours
-  // and a mute-with-an-end-date are both "not now" — the message is owed, the
-  // hour is wrong.
+  // and the two caps are the "not now" set — and ONLY those. A mute, even one
+  // with an end date, keeps its key: a mute is the person's decision until it
+  // lapses, standing states re-raise themselves through `stateKey` when it
+  // does, and a one-shot message a mute swallowed stays swallowed — that gap is
+  // a design question (does a muted-out recap come late, or not at all?), not a
+  // key to release here.
   const releasesKey =
     reason === 'recipient_frequency_cap' ||
     reason === 'tenant_send_cap' ||
@@ -625,6 +629,10 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     // including `fixed`: a fixed row exists so the business keeps a promise, not so it
     // can message someone who asked it to stop.
     if (rows.length === 0) {
+      // The one gate that writes no `message` row: there is no contact to hang
+      // one on, and `message.contact_id` is the row's spine. ANATOMY's ladder
+      // notes the exception. The `SendOutcome` still carries the reason, so the
+      // caller's record is the evidence.
       return { kind: 'suppressed', reason: 'no_contact', messageId: null }
     }
     const row = rows[0]
@@ -634,8 +642,13 @@ export async function send(ctx: SessionCtx, msg: OutboundMessage): Promise<SendO
     // The acknowledgement of the opt-out is the single exception, and it is not a
     // weakening of the rule — it is the rule's own receipt. The write lands first in
     // the same transaction, so without this the person who just asked to be left
-    // alone gets silence where the confirmation should be, and never learns that
-    // messaging back turns it on again. Runtime-set only; see MessageStep.opt_out_ack.
+    // alone gets silence where the confirmation should be. Runtime-set only; see
+    // MessageStep.opt_out_ack and ComposeSpec.optOutAck (the desk's stop rides the
+    // latter). NOTE there is no automatic re-entry: nothing clears `opted_out_at`
+    // on an inbound, deliberately — a person writing "why am I still charged?" has
+    // asked a question, not to resume messaging — so coming back is a decision a
+    // human or the model makes by clearing the row, and F-FL records that the
+    // route wants a design.
     if ((row.opted_out_at || row.contact_state === 'opted_out') && !msg.optOutAck) {
       return suppress(tx, row, msg, 'opted_out', inWindow)
     }
@@ -1569,10 +1582,11 @@ export async function redeliverStored(
         body: string
         status: string
         queued_at: Date
+        catalog_id: string | null
         payload: Record<string, any> | null
       }[]
     >`
-      select id, contact_id, body, status, queued_at, payload
+      select id, contact_id, body, status, queued_at, catalog_id, payload
         from message where id = ${messageId}`
     if (!m) return null
     const [later] = await tx<{ n: number }[]>`
@@ -1592,6 +1606,12 @@ export async function redeliverStored(
     return { status: 'skip', reason: 'a confirmation request is not re-raised by a timer — its asker owns the re-ask' }
   }
 
+  // The WHOLE message, not a haircut of it. This replay used to drop the
+  // catalog id and the media on the floor, so a redelivered tally answered only
+  // the 'all' mute instead of the money mute, rode the ROLE's template out of
+  // window instead of the catalog's (a payment notice under session_change's
+  // "Change:" lead-in), and shed its attachment silently. What suppress stored
+  // is what redelivery sends.
   return send(ctx, {
     toContactId: row.contact_id,
     body: row.body,
@@ -1600,6 +1620,8 @@ export async function redeliverStored(
     buttons: stored.buttons ?? undefined,
     list: stored.list ?? undefined,
     link: stored.link ?? undefined,
+    media: stored.media ?? undefined,
+    catalogId: row.catalog_id && isCatalogId(row.catalog_id) ? row.catalog_id : null,
     subjectPersonIds: stored.subject_person_ids ?? undefined,
     isEscalation: Boolean(stored.is_escalation),
     fixed: Boolean(stored.fixed),

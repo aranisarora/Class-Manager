@@ -823,7 +823,7 @@ It applies §2.8 to make that call — the same test it applies to messages it c
 
 **Two limits on that freedom.** Rows marked **fixed** cannot be suppressed — they exist for a reason that is not about engagement, though they may still be reworded and merged. And nothing reaches the wire outside the one send path (§16.3), so throttles, caps and staging apply no matter who decided to send.
 
-**Fixed:** `CL-CANCEL-CONFIRM`, `CL-SESSION-CANCELLED`, `CL-TALLY`, `CL-RECEIPT`, `CO-FINAL-STATEMENT`, `AD-NEW-TRIAL`, `AD-OPT-OUT`.
+**Fixed:** `CL-CANCEL-CONFIRM`, `CL-SESSION-CANCELLED`, `CL-TALLY`, `CL-RECEIPT`, `CO-FINAL-STATEMENT`, `AD-NEW-TRIAL`, `AD-OPT-OUT` — plus two the code added with the argument on the row: `CO-INVITE` (the one message that says this business runs here at all) and `AD-NEEDS-YOU` (the refusal path's own escalation; `lib/agent/plan.ts`).
 
 **This is also not the complete set of what the bot sends** — it composes messages nobody specified (§14.4). These are the moments code knows to raise.
 
@@ -885,6 +885,7 @@ It applies §2.8 to make that call — the same test it applies to messages it c
 | `AD-NEW-TRIAL` | Cold-inbound trial booked | `[Message them]` `[Undo]` |
 | `AD-OPT-OUT` | Someone opted out | `[Call them]` |
 | `AD-DELIVERY-FAILURE` | Send failed | `[Fix number]` `[Ignore]` |
+| `AD-NEEDS-YOU` | A person asked for a change only an admin may make (the refusal path escalates it itself — `escalateRefusal`, `lib/agent/plan.ts`) | `[Message them]` |
 
 ---
 
@@ -918,9 +919,21 @@ It applies §2.8 to make that call — the same test it applies to messages it c
 - **Every job is idempotent via `dedupe_key`.** Enqueueing twice is a no-op.
 - **Every job re-checks its precondition at run time.** A cancelled session's `coach_coming` must find `status='cancelled'` and skip. Never trust the enqueue-time world.
 - **A job that did not run is invisible failure.** Alert on it — a missing evening digest is a silent outage.
-- Rescheduling a session cancels its pending jobs by dedupe key and re-enqueues.
+- Rescheduling a session cancels its pending jobs by dedupe key and re-enqueues — and the
+  re-enqueue is real only because a moved session's ladder keys carry its reschedule
+  generation (`r<n>`): `job.dedupe_key` is unique across every status, so without the
+  generation the swept ladder's cancelled rows absorbed their own replacements forever
+  (28 Aug 2026; F-FI).
 
-There are **no quiet hours.** Early-morning classes are normal in India, and holding a 5am coach prompt for a 6am class would break the product for exactly the academies that need it most.
+**Quiet hours are a floor under proactive sends, not a schedule** *(re-decided 17 Aug 2026
+— this section originally said there are none, and going live at 2am then fired three
+reminder templates at 02:02).* The send path enforces a per-academy quiet window
+(21:00–07:00 default, `academy.settings`); no job composes around it. What keeps the 6am
+class working is placement, not an exemption: a computed send time landing inside the
+window is **moved at plan time** in the direction its message survives — a family's
+reminder and the coach's "Coming?" are pulled back to the evening before, a register
+expiry is deferred to morning. Solicited replies and admin escalations are exempt at the
+gate itself.
 
 ### 13.1 `agent_task` — the bot schedules itself
 

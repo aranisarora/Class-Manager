@@ -232,6 +232,7 @@ export type SessionRow = {
   starts_at: Date
   ends_at: Date
   status: 'scheduled' | 'cancelled' | 'completed'
+  rescheduled_n: number
   venue_name: string | null
   venue_address: string | null
 }
@@ -239,7 +240,7 @@ export type SessionRow = {
 export async function loadSession(tx: Tx, sessionId: string): Promise<SessionRow | null> {
   const [row] = await tx<SessionRow[]>`
     select s.id, s.academy_id, s.class_id, cl.name as class_name,
-           s.starts_at, s.ends_at, s.status,
+           s.starts_at, s.ends_at, s.status, s.rescheduled_n,
            v.name as venue_name, v.address as venue_address
       from session s
       join class cl on cl.id = s.class_id

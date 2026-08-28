@@ -1,25 +1,21 @@
 /**
  * lib/frontdesk/context.ts — what the front desk is told (0039).
  *
- * The desk TAIL — the one brain renders it in desk mode (the second prefix is gone), because §4.4's cost model is the
- * reason there is only ever one: the prefix is byte-stable so the provider's automatic
- * cache matches it, and a hit costs 3.2% of a miss. The rule that follows is *never a
- * per-tenant fork*, and this is not one. It is one extra cached block for the whole
- * deployment, shared by every stranger on every number forever, and it is ~2% the size
- * of the tenant prefix because everything that makes that one big — `SCHEMA_DOC`, the
- * operations, the catalog, the domain facts — is about a business the front desk does
- * not have.
+ * The desk TAIL. Since the one-brain merge (23 Aug 2026) a desk turn runs the
+ * ordinary loop under the ONE stable prefix — the desk's standing facts are a
+ * byte-stable section of it (`lib/agent/context.ts`) — and this file's whole job
+ * is the variable tail about one arrival, rendered by `variableTail`'s desk
+ * branch through `frontDeskTail` below. The second prefix this header used to
+ * argue for is gone: it passed the cost test (byte-identical, ~2% the size,
+ * cheaper either way) and failed on the SEAM — two brains meant information died
+ * crossing between them (F-EO, F-EQ, F-CV), which no cost test priced.
+ * ARCHITECTURE.md's "one legitimate second prefix" trap is the full story, and
+ * the two-brain arm remains reachable at commit 791a3f2.
  *
- * Reusing the tenant prefix here was the alternative and it is worse in both directions:
- * it would hand a stranger the full schema and the whole operation surface of an empty
- * tenant, and it would spend ~50k characters telling them about classes, money and
- * rosters that do not exist, on the one turn in the product where none of it applies.
- *
- * PREFIX-RULES.md's admission test was run on every line below. What survived is what a
- * competent model cannot derive: that this number serves several businesses and is none
- * of them, that there are exactly two kinds of arrival, and that calling a tool ends the
- * desk's part of the conversation because the runtime re-enters the turn inside the
- * business. Everything else — be brief with a stranger, do not invent a name, answer the
+ * PREFIX-RULES.md's admission test was run on every line below. What survived is
+ * what a competent model cannot derive: whether the question was already put to
+ * this person, what this number is, and which businesses their own words name.
+ * Everything else — be brief with a stranger, do not invent a name, answer the
  * question they asked — is derivable and is not here.
  */
 
@@ -139,28 +135,28 @@ export function frontDeskTail(o: {
   }
 
   /**
-   * @mechanism answeredSinceAsked — this says WHEN they were asked and sends the model to
-   *   the thread; it no longer asserts that they never answered.
+   * @mechanism answeredSinceAsked — this says WHEN the desk last spoke and sends the model
+   *   to the thread; it asserts nothing about what was asked or answered.
    *
-   *   `arrival.asked_at` is stamped the first time the desk puts the question on their
-   *   screen and is never cleared, so the old sentence — "they have not answered it" —
-   *   became permanently true-shaped and permanently unverified. It is a claim about the
-   *   messages, made by a block that never reads them, while the messages themselves are
-   *   right there in the same request.
-   *
-   *   Divya Rao was asked on day 1 and answered on day 2 (*"joining, my daughter anika is
-   *   in the evening batch already"*). For the rest of her life at this desk the model was
-   *   told she had not answered. It is the "unstamped past" trap from ARCHITECTURE, in the
-   *   one block whose whole job is to stop the desk asking a second time.
+   *   `arrival.asked_at` is stamped by EVERY landed desk send (`markArrivalAsked`), not
+   *   only by ones that asked the routing question — a desk whose first message answered
+   *   "is this free?" is stamped too. The block therefore stopped claiming "that question
+   *   is still on their screen": that was a claim about the messages, made by a block
+   *   that never reads them, while the messages themselves are right there in the same
+   *   request. Two earlier wordings each asserted one half too much — "they have not
+   *   answered" (Divya Rao answered on day 2 and was described as silent forever), then
+   *   "you put that question to them" (sometimes no question had been put at all, which
+   *   fed F-DP from the other side). What is left is the stamp's own truth: the desk has
+   *   spoken before, and the thread is the record of what about.
    */
   const answeredSinceAsked = o.arrival?.askedAt ?? null
   if (answeredSinceAsked) {
     lines.push('')
     lines.push(
-      `You put that question to this person at ${answeredSinceAsked.toISOString()}, and it is still on their ` +
-        'screen. Anything they have said since is in the thread above — read it before asking again. If they ' +
-        'have already told you, in any words, whether they are looking for classes or run them, that is the ' +
-        'answer and asking a second time is how somebody decides this number is a waste of their time.',
+      `The desk has already spoken to this person — last at ${answeredSinceAsked.toISOString()}. What was ` +
+        'said, in both directions, is in the thread above — read it before asking anything. If they have ' +
+        'already told you, in any words, whether they are looking for classes or run them, that is the ' +
+        'answer and asking again is how somebody decides this number is a waste of their time.',
     )
   }
 

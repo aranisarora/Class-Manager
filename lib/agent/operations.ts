@@ -1099,11 +1099,16 @@ const moveClass: OperationDef = {
       // recreating them: cancellations and marked attendance ride on the row.
       const dayShift = ((newWeekday - slot.weekday) % 7 + 7) % 7
       steps.push({
+        // The bump regenerates each session's ladder keys (kinds.ts `dedupe`) so
+        // the re-plan is not absorbed by the swept rows. No `origin_starts_at`
+        // here: the SLOT moves with these sessions, so the materializer's
+        // derived times agree with the new reality and nothing needs pinning.
         write: `update session set
                   starts_at = ((starts_at at time zone ${lit(a.timezone)})::date + ${lit(dayShift)}
                                 + time ${lit(String(newStart))}) at time zone ${lit(a.timezone)},
                   ends_at   = ((starts_at at time zone ${lit(a.timezone)})::date + ${lit(dayShift)}
-                                + time ${lit(String(newEnd))}) at time zone ${lit(a.timezone)}
+                                + time ${lit(String(newEnd))}) at time zone ${lit(a.timezone)},
+                  rescheduled_n = rescheduled_n + 1
                  where id in (${affected.map((s) => uid(s.id)).join(',')})`,
       })
       for (const s of affected) steps.push(...cancelJobsForSession(s.id))
@@ -1162,8 +1167,15 @@ const rescheduleSession: OperationDef = {
         )}`,
       },
       {
+        // `rescheduled_n` regenerates the ladder's dedupe keys past the swept
+        // rows (kinds.ts `dedupe`); `origin_starts_at` remembers the slot time
+        // this occurrence was moved OFF, so the materializer neither deletes the
+        // moved row nor re-manufactures the vacated time (0054). Both read the
+        // OLD row values, which is Postgres's own semantics for SET expressions.
         write: `update session set starts_at = timestamptz ${lit(start.toISOString())},
-                       ends_at = timestamptz ${lit(end.toISOString())}
+                       ends_at = timestamptz ${lit(end.toISOString())},
+                       rescheduled_n = rescheduled_n + 1,
+                       origin_starts_at = coalesce(origin_starts_at, starts_at)
                        ${args.venue_id ? `, venue_id = ${uid(args.venue_id)}` : ''}
                  where id = ${uid(s.id)} and academy_id = ${uid(ctx.academyId)}`,
         requireRows: 1,
@@ -1940,11 +1952,17 @@ const confirmCoach: OperationDef = {
         requireRows: 1,
       },
       {
+        // Matched on payload, not on dedupe_key: a rescheduled session's ladder
+        // keys carry an `r<n>` generation (kinds.ts `dedupe`), so an exact key
+        // reconstruction here would miss every job planned after a move.
         write: `update job set status = 'cancelled'
-                 where status = 'pending' and dedupe_key in (
-                   ${lit(dedupe.coachNudge(args.session_id, coachId))},
-                   ${lit(dedupe.coachComing(args.session_id, coachId))},
-                   ${lit(dedupe.adminEscalateUncovered(args.session_id))})`,
+                 where status = 'pending'
+                   and payload->>'academy_id' = ${lit(ctx.academyId)}
+                   and ((kind in ('coach_coming', 'coach_nudge')
+                         and payload->>'session_id' = ${lit(args.session_id)}
+                         and payload->>'coach_id' = ${lit(coachId)})
+                     or (kind = 'admin_escalate_uncovered'
+                         and payload->>'session_id' = ${lit(args.session_id)}))`,
         service: true,
       },
     ]
@@ -2423,8 +2441,14 @@ const clientCancel: OperationDef = {
         requireRows: 1,
       },
       {
+        // Payload, not key: the reminder for a rescheduled session lives under a
+        // generation-suffixed key (kinds.ts `dedupe`), which no reconstruction
+        // from (session, player) alone can name.
         write: `update job set status = 'cancelled'
-                 where status = 'pending' and dedupe_key = ${lit(dedupe.clientReminder(s.id, r.player_id))}`,
+                 where status = 'pending' and kind = 'client_reminder'
+                   and payload->>'academy_id' = ${lit(ctx.academyId)}
+                   and payload->>'session_id' = ${lit(s.id)}
+                   and payload->>'player_id' = ${lit(r.player_id)}`,
         service: true,
       },
     ]

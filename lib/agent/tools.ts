@@ -99,6 +99,21 @@ export type ToolCtx = {
    */
   repliedTo?: Set<string>
   /**
+   * `handoff`'s one repair round has been spent. The escalation body passes the
+   * same prose validation every other outbound passes (the first recorded
+   * `handoff` in the product's history put a raw contact uuid and a phone number
+   * in front of the admin) — but an escalation that cannot land is worse than an
+   * ugly one, so the second attempt goes through as written, like the trailing
+   * send's own one-round deal.
+   */
+  handoffLintWarned?: boolean
+  /**
+   * The catalog moment a job turn's deliverable IS (`TurnInput.task.catalogId`).
+   * The reply to the ASKER inherits it when the model omits `catalog_id`, so the
+   * brief/digest news window stops depending on prompt obedience.
+   */
+  taskCatalogId?: CatalogId
+  /**
    * Who has a confirmation question from THIS turn sitting on their screen —
    * put there by an operation that confirms itself (`client_cancel`,
    * `opt_out`…). One tap answers it; anything further this turn teaches them
@@ -2547,16 +2562,36 @@ export async function runTool(
       // something. A first attempt that was suppressed or failed does not count —
       // that person has heard nothing, so a second try is the point.
       if (ctx.repliedTo?.has(to)) {
+        // The commonest way to land here wrongly is a missing `to_contact_id`: it
+        // defaults to the person in front of you, so a message composed for
+        // somebody else silently retargets, dies on this gate — and the model then
+        // told a customer "I've flagged it to Sunil" about a message Sunil never
+        // saw. Name the likely cause while the round can still fix it.
+        const retargeted = args?.to_contact_id === undefined || args?.to_contact_id === null
         return {
           result: {
             error: 'you have already sent this person a message in this turn, and it reached them',
             hint:
+              (retargeted
+                ? 'You left out to_contact_id, so this send was addressed to the person in front of you. If it was ' +
+                  'meant for somebody else, send it again WITH their contact id (the ids are in the tail). If it ' +
+                  'really was for this person: '
+                : '') +
               'Do not send a second. If you learned something after sending, it waits for their next message, or rides a ' +
               'button on the one already in front of them. Two messages for one turn is how a manager becomes a ticker.',
           },
         }
       }
-      const catalogId = args?.catalog_id && args.catalog_id in CATALOG ? (args.catalog_id as CatalogId) : null
+      // The task's own moment is the runtime's to guarantee: a brief that goes
+      // out unstamped makes the NEXT brief re-count the same news, and the stamp
+      // survived only on prompt obedience. Only the reply to the asker inherits —
+      // an escalation to a third party mid-digest is not the digest.
+      const catalogId =
+        args?.catalog_id && args.catalog_id in CATALOG
+          ? (args.catalog_id as CatalogId)
+          : ctx.taskCatalogId && to === ctx.identity.contact.id
+            ? ctx.taskCatalogId
+            : null
       // Resolve and validate every action BEFORE anything is composed. A button
       // that cannot be minted used to take the whole message down with it, and
       // the error the model got back named no button and suggested no repair —
@@ -3022,6 +3057,14 @@ export async function runTool(
         subjectPersonIds: Array.isArray(args?.subject_person_ids) ? args.subject_person_ids : undefined,
         isConfirmationRequest: awaitsATap,
         confirmation,
+        // A desk turn that just wrote `opted_out_at` still owes the person one
+        // acknowledgement — the same exception the tenant opt-out's own ack rides.
+        // Without it, gate 1 suppressed the desk's "understood, nothing more from
+        // us" because of the very row the verb had just written, and the person
+        // who asked to be left alone was answered with silence — which cannot be
+        // told apart from being ignored. Only to the asker, only on the turn that
+        // stopped them; `repliedTo` keeps it to one message.
+        optOutAck: Boolean(ctx.desk?.stopped) && to === ctx.identity.contact.id,
       })
       ctx.outcomes?.push(outcome)
       if (outcome.status === 'sent' || outcome.status === 'queued') {
@@ -3410,6 +3453,26 @@ export async function runTool(
       const isAdmin = ctx.identity.roles.includes('admin')
       const reason = String(args?.reason ?? 'needs a person')
       const summary = String(args?.summary ?? '')
+      // The admin copy is an outbound like any other and passes the same prose
+      // validation — refused once with the reasons, while the model can still
+      // reword; a second attempt goes through as written, because a delayed
+      // escalation is a worse failure than a uuid on an admin's screen.
+      {
+        const violations = proseViolations(`${reason}\n${summary}`)
+        if (violations.length && !ctx.handoffLintWarned) {
+          ctx.handoffLintWarned = true
+          return {
+            result: {
+              error:
+                'not sent yet — the reason/summary would reach the admin with machinery in it: ' +
+                violations.map((v) => `${v.what} (${JSON.stringify(v.sample ?? '')})`).join('; '),
+              hint:
+                'Say the person, the class and the problem in plain words — no ids, no phone numbers, no column names — ' +
+                'and call handoff again. If you call it again unchanged it WILL go out as written.',
+            },
+          }
+        }
+      }
       const sent: string[] = []
       if (!isAdmin) {
         const contactIds = await adminContactIds(ctx.session.academyId)

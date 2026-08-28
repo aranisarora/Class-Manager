@@ -352,6 +352,10 @@ async function runSynthesis(job: Job, kind: 'brief' | 'digest'): Promise<void> {
     contactId: first.contact_id as string,
     source: 'job',
     task: {
+      // Stamped by the runtime whether or not the model remembers the
+      // instruction below: the news window is keyed on this id, and it must not
+      // depend on prompt obedience (the reply to the asker inherits it).
+      catalogId: kind === 'brief' ? 'AD-MORNING-BRIEF' : 'AD-EVENING-DIGEST',
       instruction:
         `Send it with catalog_id "${kind === 'brief' ? 'AD-MORNING-BRIEF' : 'AD-EVENING-DIGEST'}" — that is ` +
         `what marks it as this moment, and what stops the next one counting news you have already reported. ` +

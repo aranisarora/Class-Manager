@@ -188,16 +188,20 @@ export async function enqueueMany(specs: JobSpec[]): Promise<number> {
   if (specs.length === 0) return 0
 
   // Collapse duplicates inside the batch itself — planAhead can legitimately
-  // derive the same moment from two directions.
+  // derive the same moment from two directions. An INVALID spec is a planner
+  // bug and is reported, never silently filtered: the silent filter is how a
+  // whole family of jobs could stop existing with every gate green.
   const seen = new Set<string>()
-  const rows = specs
-    .filter((s) => {
-      if (!isJobKind(s.kind) || !s.dedupeKey) return false
-      if (seen.has(s.dedupeKey)) return false
-      seen.add(s.dedupeKey)
-      return true
-    })
-    .map(toRow)
+  const rows: ReturnType<typeof toRow>[] = []
+  for (const s of specs) {
+    if (!isJobKind(s.kind) || !s.dedupeKey) {
+      console.error(`enqueueMany: dropped an invalid spec — kind=${String((s as any)?.kind)} dedupeKey=${String((s as any)?.dedupeKey)}`)
+      continue
+    }
+    if (seen.has(s.dedupeKey)) continue
+    seen.add(s.dedupeKey)
+    rows.push(toRow(s))
+  }
 
   if (rows.length === 0) return 0
 
@@ -205,18 +209,34 @@ export async function enqueueMany(specs: JobSpec[]): Promise<number> {
   const CHUNK = 500
   for (let i = 0; i < rows.length; i += CHUNK) {
     const chunk = rows.slice(i, i + CHUNK)
-    const inserted = await withInfra((tx) => tx<{ id: string }[]>`
-      insert into job (kind, run_at, dedupe_key, payload)
-      select t.k, t.r::timestamptz, t.d, t.p::jsonb
-        from unnest(
-          ${chunk.map((r) => r.kind)}::text[],
-          ${chunk.map((r) => r.run_at)}::text[],
-          ${chunk.map((r) => r.dedupe_key)}::text[],
-          ${chunk.map((r) => r.payload)}::text[]
-        ) as t(k, r, d, p)
-      on conflict (dedupe_key) do nothing
-      returning id
-    `)
+    const inserted = await withInfra(async (tx) => {
+      // Parity with `enqueue` above: a batch-minted watch supersedes the older
+      // watch on the same subject exactly the way a single-minted one does. The
+      // bulk path used to drop `subject_key` on the floor entirely, so half of
+      // F-C's fix did not apply to one of the table's two writers — a
+      // planner-minted follow-up could neither supersede nor be superseded.
+      const subjects = [...new Set(chunk.map((r) => r.subject_key).filter((s): s is string => Boolean(s)))]
+      if (subjects.length) {
+        await tx`
+          update job set status = 'superseded'
+           where subject_key = any (${subjects}::text[])
+             and status in ('pending', 'running')
+        `
+      }
+      return tx<{ id: string }[]>`
+        insert into job (kind, run_at, dedupe_key, subject_key, payload)
+        select t.k, t.r::timestamptz, t.d, nullif(t.s, ''), t.p::jsonb
+          from unnest(
+            ${chunk.map((r) => r.kind)}::text[],
+            ${chunk.map((r) => r.run_at)}::text[],
+            ${chunk.map((r) => r.dedupe_key)}::text[],
+            ${chunk.map((r) => r.subject_key ?? '')}::text[],
+            ${chunk.map((r) => r.payload)}::text[]
+          ) as t(k, r, d, s, p)
+        on conflict (dedupe_key) do nothing
+        returning id
+      `
+    })
     written += inserted.length
   }
   return written

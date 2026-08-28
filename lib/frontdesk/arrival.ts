@@ -133,11 +133,14 @@ export async function arrivalForContact(frontDeskId: string, contactId: string):
 }
 
 /**
- * The question went on their screen. Stamped once and never overwritten, so
- * "asked and never answered" stays distinguishable from "asked again yesterday" —
- * and so `asked_at is null` keeps meaning what it should: the opening message
- * already said which side they were on, and §10.1's "a conversation, not a wizard"
- * was satisfied by not asking.
+ * The desk spoke to them — stamped on EVERY landed desk send (tools.ts calls
+ * this after each one), first time wins. The name is historical: the stamp used
+ * to claim "the routing question went on their screen", but a desk send that
+ * answered "is this free?" stamps it too, so what `asked_at` actually means is
+ * "the desk has spoken, first at T" — and `frontDeskTail` words it exactly that
+ * way, sending the model to the thread for what was said. `asked_at is null`
+ * still means the strongest thing it can: this person has never heard from the
+ * desk at all.
  */
 export async function markArrivalAsked(frontDeskId: string, arrivalId: string, at: Date): Promise<void> {
   await withSession(deskCtx(frontDeskId), (tx) =>
@@ -205,12 +208,3 @@ export async function foundedByRecently(
   return Number(rows[0]?.n ?? 0)
 }
 
-/** Same shape, for callers that already hold a transaction on the front desk. */
-export async function arrivalInTx(tx: Tx, contactId: string): Promise<Arrival | null> {
-  const rows = await unsafeQuery<ArrivalRow>(
-    tx,
-    `select * from arrival where contact_id = $1::uuid`,
-    [contactId],
-  )
-  return rows[0] ? hydrate(rows[0]) : null
-}
