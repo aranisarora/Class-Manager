@@ -500,10 +500,31 @@ export async function openEvents(o: {
   const chaos: Chaos = o.spec.chaos ?? {}
   const active = events.length > 0 || Object.values(chaos).some((r) => (r ?? 0) > 0)
 
-  /** name (lowercased) → seat key, for everybody who has a phone in this run. */
+  /**
+   * name (lowercased) → seat key, for everybody who has a phone in this run.
+   *
+   * First binding wins (F-FE). The cast is admitted before anybody arrives, so a
+   * written events line naming "Kiran" always means the cast's Kiran — a
+   * product-created stranger who happens to share the name (arrivals suffix the
+   * SEAT KEY, `kiran-2`, but keep the display name) must not silently take over
+   * the weather: his absence used to roll against the wrong register. The
+   * shadowed admit is reported, because a collision the file can see is a
+   * roster fact and a collision it cannot is a mis-bound world.
+   */
   const keyByName = new Map<string, Person>()
   const admit = (people: Person[]) => {
-    for (const p of people) keyByName.set(p.name.trim().toLowerCase(), p)
+    for (const p of people) {
+      const k = p.name.trim().toLowerCase()
+      const bound = keyByName.get(k)
+      if (bound && bound.key !== p.key) {
+        console.error(
+          `  events: "${p.name}" (${p.key}) shares a name with ${bound.key}, who keeps it — ` +
+          `event lines naming "${p.name}" bind to ${bound.key}`,
+        )
+        continue
+      }
+      keyByName.set(k, p)
+    }
   }
   admit(o.people)
 

@@ -5,12 +5,13 @@
  *
  * WHY THIS EXISTS
  * -----------------------------------------------------------------------------
- * `probe-model.ts` writes its records in a `finally` block, so the full anatomy
- * of a run — reasoning, every query, every row that came back — does not exist
- * until the process exits. That makes judging-as-you-go impossible from the
- * records, and judging at the end is the only thing anybody has ever done here.
+ * (Since 20 Aug 2026 the records DO exist as the run walks — `_capture` appends
+ * one line per turn and `_derive` rebuilds `record.json` after each — so
+ * `judge.mjs --run` can also follow a live run now. This feed keeps its own
+ * reason to exist: it renders for a PERSON, in reading order, without asking
+ * them to open JSON.)
  *
- * It is also unnecessary, because the product already records all of it, live,
+ * The product also records all of it, live,
  * in `turn`: `tool_calls` carries one `(model)` entry per round holding the
  * reasoning, and one entry per call holding the arguments and the result. The
  * records file is a COPY. This reads the original, while the drive is still

@@ -13,19 +13,13 @@
  *
  * WHY THIS EXISTS BESIDE `sim`
  * -----------------------------------------------------------------------------
- * `sim` scripts twenty-eight sentences and posts them in order. Whatever
- * the product replies, the next sentence is the same one. That harness cannot
- * represent the three commonest things a real person does:
- *
- *   - ask again, because the first answer did not answer it
- *   - act on a misreading, because the important number was in sentence four
- *   - go quiet and leave
- *
- * All three are outcomes. None of them is expressible as a fixture, and the last
- * one is the one the business actually cares about. So the sentences are not in
- * this file. What is in this file is a SEAT: a way to say something as a
- * particular person, and see exactly — and only — what their phone would show.
- * Somebody else sits in it, reads, and decides what to type next.
+ * `sim` seats persona AGENTS — they read what their phone shows and decide what
+ * to type, which retired the old scripted-sentences harness this header used to
+ * argue against. What `sim` still cannot seat is a HUMAN. This file is that
+ * seat: a way to say something as a particular person, and see exactly — and
+ * only — what their phone would show (`_seat.ts`, shared with the agent week so
+ * the blindfold cannot exist in two copies). A person sits in it, reads, and
+ * decides what to type next — the judgement no persona brief can stand in for.
  *
  * THE BLINDFOLD, AND WHY IT IS ENFORCED HERE RATHER THAN PROMISED
  * -----------------------------------------------------------------------------

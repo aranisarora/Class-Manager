@@ -48,13 +48,13 @@
  *
  * WHICH WORLD, AND WHY THE DEFAULT IS A WORD RATHER THAN AN ABSENCE
  * -----------------------------------------------------------------------------
- * `--world` names the academy the week happens in. `canonical` is the four-family
- * tennis club `_personas.ts` states once and `sim.ts` builds from it;
- * `blank` is the owner alone, the morning after onboarding finished; anything else
- * is a reference `scripts/_world-spec.ts` resolves — a bare name, a path, or
- * inline JSON. Unset resolves to the *word* `canonical` rather than to nothing,
- * because two runs whose world field is absent are indistinguishable from two runs
- * of the same world, and they may have been about two different businesses.
+ * `--world` names the world file the week happens in (`worlds/` holds them —
+ * see `scripts/_world-file.ts`; the old `_world-spec.ts` builder and its
+ * `canonical` fixture are gone). Unset resolves to the *word* `blank` — one
+ * founder, nobody else, the business talked into existence — rather than to
+ * nothing, because two runs whose world field is absent are indistinguishable
+ * from two runs of the same world, and they may have been about two different
+ * businesses.
  *
  * The REFERENCE is carried here and never the spec. Reading one is asynchronous
  * and this function is not — but the real reason is that a spec which resolves is

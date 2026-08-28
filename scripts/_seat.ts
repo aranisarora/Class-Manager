@@ -984,6 +984,17 @@ async function academyAlive(academyId: string): Promise<boolean> {
     .catch(() => true)
 }
 
+/**
+ * @mechanism queueTurn — every clock walk and queue drain is recorded as a turn of its
+ *   own, inside the same lock the seat turns use, so the proactive surface — the ~70% of
+ *   what this product says — lands in `rounds`, `sql`, `messages` and `inr` like any
+ *   conversational turn instead of as a list of job names in a sidecar nothing rendered.
+ *   Before it, 49 of 137 delivered messages in one run went out from a job with ₹0
+ *   recorded against them, and the run's own cost table priced the conversational third
+ *   and presented it as the run. `who` and `persona` are both `queue`; `say` stays empty
+ *   because nobody typed, and inventing a sentence there would be the harness putting
+ *   words in the product's mouth. Closes F-BU.
+ */
 export async function queueTurn(
   s: Session,
   id: string,

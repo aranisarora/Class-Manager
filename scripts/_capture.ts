@@ -538,6 +538,14 @@ export type TurnMeta = {
  *
  * The drain already returns exactly the right answer and always did. This is
  * where it is put, and there is no query to get it wrong.
+ *
+ * @mechanism TurnSink — a turn's jobs are what its own drain HANDED BACK, pushed into the
+ *   sink by the driver, never reconstructed by a window over `job` — no column on that
+ *   table records when a job finished, so the old cursor query re-listed every finished
+ *   job still scheduled ahead of it on every turn for the rest of the run: 6,912 job
+ *   strings across 68 turns from 31 distinct values, a shrinking horizon rendered as
+ *   per-turn work. The query is gone; there is no predicate left to get wrong.
+ *   Closes F-BV.
  */
 export type TurnSink = { jobs: string[] }
 

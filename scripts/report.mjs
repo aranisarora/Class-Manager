@@ -76,11 +76,33 @@ const RUNS = join('.probe', 'runs')
  */
 function allRuns() {
   if (!existsSync(RUNS)) return []
-  return readdirSync(RUNS)
-    .map((d) => join(RUNS, d))
-    .filter((d) => existsSync(join(d, 'record.json')))
-    .sort()
-    .reverse()
+  const out = []
+  for (const d of readdirSync(RUNS)) {
+    const dir = join(RUNS, d)
+    if (existsSync(join(dir, 'record.json'))) {
+      out.push(dir)
+      continue
+    }
+    // An A/B parent: each arm is a whole sim in a root of its own, so its runs
+    // live at <ab>/<arm-root>/.probe/runs/<run>. They used to be invisible to
+    // this index (and so to `npm run runs`, `report` and `watch`), and the way
+    // back to an arm's record was reading arms.json by hand.
+    if (!existsSync(join(dir, 'arms.json'))) continue
+    let armRoots = []
+    try {
+      armRoots = readdirSync(dir).filter((a) => existsSync(join(dir, a, '.probe', 'runs')))
+    } catch {
+      continue
+    }
+    for (const arm of armRoots) {
+      const armRuns = join(dir, arm, '.probe', 'runs')
+      for (const r of readdirSync(armRuns)) {
+        const rd = join(armRuns, r)
+        if (existsSync(join(rd, 'record.json'))) out.push(rd)
+      }
+    }
+  }
+  return out.sort().reverse()
 }
 
 if (args.includes('--list')) {
@@ -88,7 +110,18 @@ if (args.includes('--list')) {
   if (!runs.length) console.log('  no runs in .probe/runs')
   for (const r of runs) {
     const rec = JSON.parse(readFileSync(join(r, 'record.json'), 'utf8'))
-    const judged = existsSync(join(r, 'judgement.json')) ? 'judged' : 'unjudged'
+    // "judged" means RENDERABLE — an array of turn verdicts this reader can join
+    // on `n` — not merely that a file exists. A legacy object-shaped judgement
+    // (the pre-fix judge.mjs shape) rendered unjudged while listing as judged,
+    // which sent readers to a page with no verdict on it.
+    const judged = (() => {
+      try {
+        const j = JSON.parse(readFileSync(join(r, 'judgement.json'), 'utf8'))
+        return Array.isArray(j?.turns) && j.turns.length ? 'judged' : 'unjudged'
+      } catch {
+        return 'unjudged'
+      }
+    })()
     console.log(
       `  ${basename(r).padEnd(34)} ${String(rec.suite ?? '?').padEnd(8)} ` +
         `${String(rec.turns?.length ?? 0).padStart(3)} turns  ${judged}`,
@@ -933,6 +966,24 @@ for (const t of turns) {
 
   /* the tool calls */
   const calls = rounds.filter((r) => r.name && !String(r.name).startsWith('('))
+  // `(`-named rows are the RUNTIME acting — the granted-round marker, a held
+  // draft's disposition, a job turn's discarded trailing prose. The page used to
+  // filter them out entirely, so a reader who only opened the HTML could not see
+  // the runtime intervene at all (`--text` showed them; the page did not), and
+  // the one thing the exits chapter is about was invisible on the default view.
+  const runtimeActs = rounds.filter(
+    (r) => r.name && String(r.name).startsWith('(') && r.name !== '(model)' && r.name !== '(context)',
+  )
+  if (runtimeActs.length) {
+    body += `<h4>What the runtime did <span class="dim">— not the model's own calls</span></h4>`
+    for (const r of runtimeActs) {
+      body += `<div class="stmt"><div class="hd">round ${r.round} · <code>${esc(r.name)}</code></div>`
+      if (r.args !== undefined && r.args !== null && String(r.args).length) body += `<pre>${capped(r.args)}</pre>`
+      if (r.result !== undefined && r.result !== null) body += `<div class="hd">came back</div><pre>${capped(r.result)}</pre>`
+      if (r.error) body += `<div class="err">${esc(r.error)}</div>`
+      body += `</div>`
+    }
+  }
   if (calls.length) {
     body += `<h4>What it reached for <span class="dim">— ${calls.map((r) => r.name).join(', ')}</span></h4>`
     for (const r of calls) {

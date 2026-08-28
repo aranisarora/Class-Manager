@@ -815,7 +815,10 @@ async function main(): Promise<void> {
         const handler = (HANDLERS as any)[job.kind]
         if (!handler) {
           await q(`update job set status = 'failed', last_error = 'no handler', locked_at = null where id = '${job.id}'::uuid`)
-          log.push(`FAIL ${job.kind} — no handler`)
+          // `failed`, lower-case, because report.mjs's `kindOf` strips the
+          // outcome prefix with /^(?:ran|skip|skipped|failed)\s+/ — "FAIL" fell
+          // through it and rendered as a job kind called "FAIL x".
+          log.push(`failed ${job.kind} — no handler`)
           continue
         }
         try {
@@ -829,7 +832,7 @@ async function main(): Promise<void> {
             `update job set status = '${skipped ? 'skipped' : 'failed'}', last_error = '${reason}', locked_at = null
               where id = '${job.id}'::uuid`,
           )
-          log.push(`${skipped ? 'skip' : 'FAIL'} ${job.kind} — ${reason}`)
+          log.push(`${skipped ? 'skip' : 'failed'} ${job.kind} — ${reason}`)
         }
       }
     }
@@ -1070,12 +1073,14 @@ async function report(results: Result[], academyId: string): Promise<void> {
    * is genuinely this probe's own question — but they are the same run, so they are
    * in the same directory.
    *
-   * **This probe still carries per-case `check` closures, and they are the last
-   * deterministic verdicts left in the instrument.** They are deliberately NOT
-   * copied into the record: the record holds evidence, and a verdict written into
-   * it is a verdict the next reader cannot argue with. Judge it from JUDGING.md
-   * like anything else, and read `verdict`/`why` in `ladder.json` as one earlier
-   * reader's opinion rather than as a result.
+   * **The per-case `check` closures are GONE** — removed with the rest of the
+   * deterministic verdicts (see the header note where the removal is argued).
+   * There is no `verdict` or `why` in `ladder.json` to read: the ladder holds
+   * evidence — the statements, the rows, the photographs either side — and a
+   * verdict is written by a reader into `judgement.json`, per JUDGING.md, like
+   * every other run. (An earlier version of this comment claimed the closures
+   * still existed, which sent auditors hunting for verdicts that are not there —
+   * and would have licensed re-adding them.)
    */
   await saveRun(dir, {
     suite: 'sql',
