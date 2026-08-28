@@ -839,6 +839,19 @@ export type Thread = {
   messages: ThreadMessage[]
 }
 
+/**
+ * The most messages one pane fetch carries — a phone shows recent traffic.
+ *
+ * @mechanism threadFor — a pane re-read is bounded: the newest THREAD_MESSAGE_LIMIT
+ *   rows, taken newest-first in SQL and reversed here, with `message_count` computed
+ *   in the head query so the chip still tells the truth past the cap. The body query
+ *   had no limit at all — every status nudge re-read a whole thread of full `body` +
+ *   `payload` jsonb rows (87k calls moved 1.5M such rows, the largest single reader
+ *   in pg_stat_statements by bytes), which is F-CP's standing-cost class on the pane
+ *   instead of the poll. Closes F-FG.
+ */
+const THREAD_MESSAGE_LIMIT = 300
+
 /** One pane's messages — `GET /api/emulator/thread`. */
 export async function threadFor(contactId: string): Promise<Thread | null> {
   for (const academyId of await worldAcademyIds()) {
@@ -867,13 +880,16 @@ export async function threadFor(contactId: string): Promise<Thread | null> {
                exists (select 1 from account ac
                         where ac.academy_id = c.academy_id and ac.holder_person_id = c.person_id) as is_holder,
                exists (select 1 from player pl
-                        where pl.academy_id = c.academy_id and pl.person_id = c.person_id) as is_player
+                        where pl.academy_id = c.academy_id and pl.person_id = c.person_id) as is_player,
+               (select count(*)::int from message m2 where m2.contact_id = c.id) as message_count
         from contact c
         join person p on p.id = c.person_id
         join tenant t on t.id = c.academy_id
         left join academy a on a.id = t.id
         where c.id = ${contactId}::uuid`
       if (head.length === 0) return null
+      // Newest-first under the cap, then reversed below: the pane always holds
+      // the RECENT end of a long thread, never the first 300 rows of history.
       const messages = await tx`
         select m.id, m.direction, m.catalog_id, m.template_name, m.in_window, m.status,
                m.body, m.payload, m.media_url, m.wa_message_id, m.reply_to_action_id,
@@ -883,8 +899,9 @@ export async function threadFor(contactId: string): Promise<Thread | null> {
         from message m
         join sender s on s.id = m.sender_id
         where m.contact_id = ${contactId}::uuid
-        order by m.queued_at asc, m.created_at asc`
-      return { head: head[0], messages }
+        order by m.queued_at desc, m.created_at desc
+        limit ${THREAD_MESSAGE_LIMIT}`
+      return { head: head[0], messages: [...messages].reverse() }
     })
     if (!found) continue
 
@@ -917,7 +934,8 @@ export async function threadFor(contactId: string): Promise<Thread | null> {
         optedOutAt: isoOrNull(c.opted_out_at),
         lastInboundAt: last,
         inWindow: isInWindowAt({ last_inbound_at: last }, nowD),
-        messageCount: found.messages.length,
+        // From the head query, not `messages.length` — the pane read is capped.
+        messageCount: Number(c.message_count ?? found.messages.length),
         lastMessageAt: isoOrNull(found.messages[found.messages.length - 1]?.queued_at),
         // Same rule as the tray's: the last message that actually went somewhere.
         lastMessageBody: (lastDelivered?.body as string) ?? null,
@@ -2229,10 +2247,11 @@ export type MessageStatusRow = {
    *
    * @mechanism MessageStatusRow — a status frame that cannot say whose thread it is
    *   sends the client to `nudgeThread(null)` (lib/emulator/state.ts:1755), which
-   *   re-reads EVERY open pane's entire thread — and `threadFor`'s body query has no
-   *   `limit` at all. One field turns a blanket re-read on every delivery receipt into
-   *   a targeted one. No client change: `state.ts:1753` already reads `contactId` off
-   *   the frame, and `stream/route.ts:78` already spreads the row into it.
+   *   re-reads EVERY open pane's thread — each read now capped at
+   *   `THREAD_MESSAGE_LIMIT`, but a blanket re-read is still N panes of full-payload
+   *   rows. One field turns that into a targeted one on every delivery receipt. No
+   *   client change: `state.ts:1753` already reads `contactId` off the frame, and
+   *   `stream/route.ts:78` already spreads the row into it.
    */
   contactId: string | null
   status: string
