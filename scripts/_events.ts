@@ -362,7 +362,7 @@ export function validateEventSpec(spec: EventSpec, days: number): WorldEvent[] {
  * them. This is the property `ab.ts` rests on: it hands both arms one seed, and
  * the arm that changed the doctrine must not also have changed the weather.
  */
-function coin(seed: string, parts: (string | number)[]): number {
+export function coin(seed: string, parts: (string | number)[]): number {
   let h = 0x811c9dc5
   for (const ch of `${seed}|${parts.join('|')}`) {
     h ^= ch.charCodeAt(0)

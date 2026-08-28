@@ -23,7 +23,8 @@
         "3": "Kiran asked you at the courts whether the thing pays him correctly for a cancelled session. You did not know. You want the answer written down where he can see it.",
         "5": "The 1st is coming. You want to see exactly who owes what before the chasing starts, because Mrs Kulkarni paid cash for two months in advance and must not be chased.",
         "7": "Prakash asked you at dinner how it is going. You want to look at a week's numbers and answer him honestly."
-      }
+      },
+      "present": true
     },
     {
       "name": "Kiran Joshi",
@@ -70,7 +71,8 @@
       ],
       "life": {
         "3": "Your nephew's mother wants to know the fee and the seniors' timings before she commits to the drive across town."
-      }
+      },
+      "arrives": 3
     }
   ]
 }

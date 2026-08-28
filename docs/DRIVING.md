@@ -65,19 +65,14 @@ This is the part that costs money, and all of it but the first costs nothing to 
 TRANSPORT=emulator npx tsx scripts/sim.ts --preset smoke
 ```
 
-One day, one window, two seats — read off `SCHEDULE` rather than chosen, so it drives the same
-harness everybody else drives. Two measured runs, either side of the world growing from one
-family and four fixtures to four families, five children and seven:
-
-```
-2026-08-20-13-28-week-cu9z   6 turns · 23 jobs · ₹1.11 · 6.4 min
-2026-08-20-14-20-week-nmrq   6 turns · 38 jobs · ₹1.18 · 4.0 min
-```
-
-The second is the world as it stands. Standing jobs scale with enrolments × sessions, so the
-queue work went up by two thirds while the money went up by a tenth — the jobs that grew are
-cheap ones, and the turn count is set by the window rather than by the world. Wall clock is the
-noisiest of the four and is not a per-run constant.
+One day, one window, the first seats the world has — a shape, not named people, so it points at
+any world. Since 24 Aug a smoke window is a SITTING: the persona speaks, reads the reply within
+simulated minutes, and follows up until they put the phone down — so the cheap run finally
+exercises reply comprehension, the dimension the seats exist to test. The measured smoke of that
+day, blank world: the founder asked the price, founded the business, dictated the timetable and
+fees, tapped the staged plan and `[ Go live ]`, all inside one evening window — 7 turns, ₹0.33
+product, about a minute of wall clock (seats ₹16, not counted). Wall clock is the noisiest
+number here and is not a per-run constant.
 
 **Every rupee printed anywhere is the PRODUCT's.** The seats are Claude playing the people and
 they are not what a run costs — they are what the harness pays to ask the question. They are
@@ -91,13 +86,21 @@ Prove the plumbing on that before you spend a week. A week that dies on turn 3 b
 `TRANSPORT` was wrong, or because a worktree has no `.env.local`, costs the same seven minutes
 to discover and forty times as much to discover late.
 
-The three presets are frozen in `scripts/_drive-config.ts`:
+The four presets are frozen in `scripts/_drive-config.ts`:
 
-| preset | days | windows | seats |
-| --- | --- | --- | --- |
-| `smoke` | 1 | evening | arjun, farah |
-| `day` | 1 | all | all four |
-| `week` | 7 | all | all four |
+| preset | days | windows | seats | start |
+| --- | --- | --- | --- | --- |
+| `smoke` | 1 | evening | first 2 | next Monday |
+| `day` | 1 | all | all present | next Monday |
+| `week` | 7 | all | all present | next Monday |
+| `e2e` | 14 | all | all present | `day:25` |
+
+`e2e` is the lifecycle run: it opens on the 25th so the first week is founding and setup, day
+6-ish crosses the 1st and `monthly_lines` / `month_end_tally` fire against real enrolments, and
+the week after is the payment and reconciliation the exit bar asks for. `--start YYYY-MM-DD` (or
+`day:N`, future only) aims any run at the calendar the same way; the resolved date lands in
+`manifest.json.world.startAt`, and the run warns when a world's `life` prose (written against
+Monday-start weeks) meets a non-Monday start.
 
 ### `--days`/`--windows` set the SIMULATED length. `--budget-*` set the REAL stop.
 
@@ -219,6 +222,34 @@ seat with nothing but what the phone shows. Its three moves are `say`, `quiet` a
 `giveup` may carry a last message, because walking out loudly and walking out in silence are
 different findings. Departures land in `extra.departures`.
 
+### A window is a sitting, and presence is a coin, not a deal (24 Aug 2026)
+
+Two structural changes, made together because each was half of one defect — the sim measuring
+correspondence where the product's whole medium is conversation:
+
+**The sitting.** Inside a window, everybody present speaks concurrently, the replies land, the
+clock advances ~3 simulated minutes with a recorded drain, and whoever a reply reached answers
+it — until they choose `quiet` (the phone going down), a beat brings nothing back, or the caps
+(`MAX_EXCHANGES` 6 per seat, `MAX_BEATS` 8 per window) stop a looping seat from spending an
+evening's budget. Every exchange is its own turn line; `days.jsonl` carries `beats` and the
+per-seat exchange counts. The seat prompt knows about time now — replies arrive in minutes while
+you hold the phone, `quiet` means hours — and a business founded mid-sitting is adopted between
+beats, so the founder reads "you're set up" in the sitting it happened in.
+
+**Presence.** Nobody is dealt a schedule. Each live seat flips a seeded hash coin per window —
+role base rates (admin .85 · prospect .6 · coach .5 · client .4, or the person's own
+`style.presence`), a founder-bias while nothing is founded, +.35 with something unread, a
+FORCED look after two ignored unread windows, and the opening errand as a certainty. Every
+decision is in `extra.presence` and `days.jsonl` (`skippedPresence`). One caveat, the same class
+as arrivals: the unread boost depends on what the PRODUCT sent, so a seed-matched A/B's arms
+can diverge in presence once their products diverge — inherent to emulating production, and the
+record keeps every decision so a reader can see where.
+
+The judging consequence: `extra.lifecycle` now closes every sim record with the arc's
+first-timestamps — founded, first class, first enrolment, first attendance, first tally line,
+month-end tally, first payment requested/confirmed — nulls included, verdicts never.
+`report.mjs` renders it as a timeline; the exit bar's money-loop question is read off it.
+
 **The people are not played by the product.** The brain is DeepSeek; every seat is Claude,
 through the `claude` CLI, so it spends a Claude Code subscription rather than DeepSeek credit.
 `--seat-model claude:haiku` is the cheaper one and `claude:sonnet` the default; a DeepSeek seat
@@ -263,11 +294,13 @@ A generated brief cannot contradict the world because it is read out of it.
 **And the roster is a question, not a decision.** After every window's drain, the run asks the
 database who now has a phone and no seat, and seats them for the rest of the week —
 `scripts/_arrivals.ts`. A coach hired on Wednesday, a family written down on Tuesday, a stranger
-whose number the owner typed off the back of a receipt: each gets a brief composed out of their
-own rows by the same composer that reads a spec, and a child process of their own from that
-window on. The windows still ahead are re-dealt over the new roster; the ones already run are
-never touched, so somebody who joined on Friday has two windows against the owner's twelve and
-the record says so rather than smoothing it.
+whose number the owner typed off the back of a receipt: each gets a brief and a child process of
+their own from that window on. Identity is the **phone**, never the name — one human is one
+number across every tenant, a product-created namesake gets a suffixed key, and when the
+arriving number belongs to the world's own **withheld cast** (`worlds/README.md`), the person
+who sits down is the world's own: their about, their goals, their life. An arrival simply joins
+the presence pool; there is no schedule to re-deal, and their first look is usually pulled
+forward by the unread message that created them.
 
 This is what makes a **blank** world drivable as a week rather than as a monologue. The seats
 used to be fixed at start-up, which is right for a settled academy and silently wrong everywhere

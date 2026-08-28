@@ -99,6 +99,8 @@ import {
   readPhone,
   readSession,
   renderPhone,
+  seatContactLookup,
+  seatContacts,
   updateSession,
   walkTo,
   withLock,
@@ -116,7 +118,6 @@ loadEnvFiles()
 process.env.TRANSPORT = 'emulator'
 
 const { dropAcademy, inboundFromContact } = await import('@/lib/seed')
-const { phonebookLookup, phonebookNames } = await import('@/lib/phonebook')
 const { bodyWithSharedContacts } = await import('@/lib/messaging/contact-card')
 const { reopenRun, saveRun, runDir } = await import('./_capture')
 const clock = await import('@/lib/clock')
@@ -410,7 +411,10 @@ async function main(): Promise<void> {
       // the academy, so it passes the blindfold — and without it `share` is a
       // command aimed at nobody. Names only: see `lib/phonebook.ts`.
       L.push('SAVED IN YOUR CONTACTS  (npx tsx scripts/live.ts share <you> "<name>")')
-      const book = phonebookNames(s.academyId)
+      // The world's own withheld people first, then the derived pool — the same
+      // book the sim's seats hold (`seatContacts`); pool-only when the session
+      // predates the cast.
+      const book = seatContacts(s)
       L.push(book.length ? book.map((n) => `  ${n}`).join('\n') : '  (nobody)')
       const text = L.join('\n')
       console.log(text)
@@ -462,10 +466,10 @@ async function main(): Promise<void> {
       if (!sharer) die(`no such seat: ${key}`)
       if (!name) die('share who? Give the name as it is saved in your contacts.')
 
-      const hit = phonebookLookup(s.academyId, name)
+      const hit = seatContactLookup(s, name)
       if (!hit) {
         console.log(`  there is nobody called "${name}" in your contacts.`)
-        console.log(`  you have: ${phonebookNames(s.academyId).join(', ')}`)
+        console.log(`  you have: ${seatContacts(s).join(', ')}`)
         await logSeat(s, { persona: key, cmd: 'share', name, resolved: false })
         break
       }

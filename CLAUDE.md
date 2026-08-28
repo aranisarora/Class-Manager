@@ -126,7 +126,8 @@ npm run probe:sql           # the SQL ladder
 npm run sim          # a simulated business; personas who see only their phone
 npm run sim -- --world settled-tennis      # blank is the default; worlds/ holds the rest
 npm run sim -- --seat-model claude:haiku   # seats are Claude; DeepSeek is the brain only
-npm run sim -- --preset smoke        # one day, one window: ~₹1.30 and 4-7 min
+npm run sim -- --preset smoke        # one day, one window, a real sitting: ~₹1 and a few min
+npm run sim -- --preset e2e          # the lifecycle arc: opens on the 25th, crosses month-end billing
 npm run sim -- --days 7 --budget-min 40   # simulated length, then the real stop
 npm run sim -- gc --hours 6           # reap this driver's stale worlds
 npm run ab -- --variant doctrine=<file>      # the same week twice, one thing changed

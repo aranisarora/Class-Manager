@@ -56,6 +56,8 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { DateTime as LuxonDateTime } from 'luxon'
+
 import type { EventSpec } from './_events'
 import { c } from './_env'
 import { INPUT_REALISM, type SeatRole, type Window } from './_personas'
@@ -93,6 +95,39 @@ export type WorldPerson = {
   redLines?: string[]
   /** What happens TO them, by day. Never what they say about it. */
   life?: Record<number, string>
+  /**
+   * Whether this person is AT the number when the run opens.
+   *
+   * Production does not open with a cast: one person texts a number, and
+   * everybody else exists because the business reached them. So a world's
+   * people[] is a CAST, not a seating plan — the withheld ones are the founder's
+   * circle, seeded into the contact book as real names with real numbers, and
+   * seated by `_arrivals.ts` with THIS spec as their brief the moment the
+   * product actually reaches their phone. That is also what dissolved the
+   * fifth-Kiran class: an invented number used to collide with a pre-seated
+   * person at a different one, and there is nobody pre-seated to collide with.
+   *
+   * The rule is activated by presence of the field: if ANY person sets
+   * `present` or `arrives`, the field is authoritative for all (unset =
+   * withheld). If nobody sets either, everyone is present — which keeps `blank`
+   * and every legacy file byte-identical in behaviour.
+   */
+  present?: boolean
+  /**
+   * The day this person walks in off the street — seated as a front-desk
+   * contact at the top of that day, exactly like a stranger texting the number
+   * in production. Mutually exclusive with `present: true`; implies withheld
+   * until the day comes.
+   */
+  arrives?: number
+  /**
+   * How this person is at a machine — the dial `_personas.ts` reads.
+   * `skepticism` picks the posture level; `messiness` is the garble rate (0..1);
+   * `presence` overrides the role's phone-checking habit (0..1). All optional;
+   * unset values are drawn per person from a stable hash, so a person's
+   * temperament survives reseeding.
+   */
+  style?: { skepticism?: 'trusting' | 'ordinary' | 'hard'; messiness?: number; presence?: number }
 }
 
 export type World = {
@@ -109,7 +144,11 @@ export type World = {
  * ========================================================================== */
 
 const TOP_KEYS = ['name', 'timezone', 'people', 'week']
-const PERSON_KEYS = ['name', 'seat', 'oneLine', 'about', 'goals', 'voice', 'typing', 'redLines', 'life']
+const PERSON_KEYS = [
+  'name', 'seat', 'oneLine', 'about', 'goals', 'voice', 'typing', 'redLines', 'life',
+  'present', 'arrives', 'style',
+]
+const SKEPTICISM_LEVELS = ['trusting', 'ordinary', 'hard'] as const
 
 /**
  * The blank world: one person, at a number, belonging to nothing.
@@ -270,6 +309,37 @@ export function validateWorld(input: unknown, where = 'this world'): World {
         life[d] = v.trim()
       }
     }
+    if (o.present !== undefined && typeof o.present !== 'boolean') {
+      throw new Error(`${at}.present must be true or false, not ${JSON.stringify(o.present)}`)
+    }
+    if (o.arrives !== undefined) {
+      const d = Number(o.arrives)
+      if (!Number.isInteger(d) || d < 1) throw new Error(`${at}.arrives must be a day number, not ${JSON.stringify(o.arrives)}`)
+      if (o.present === true) {
+        throw new Error(`${at} has both present: true and arrives: ${d} — somebody already at the number cannot also walk in later`)
+      }
+    }
+    let style: WorldPerson['style']
+    if (o.style !== undefined) {
+      if (typeof o.style !== 'object' || o.style === null || Array.isArray(o.style)) {
+        throw new Error(`${at}.style must be an object`)
+      }
+      const s = o.style as Record<string, unknown>
+      for (const k of Object.keys(s)) {
+        if (!['skepticism', 'messiness', 'presence'].includes(k)) {
+          throw new Error(`${at}.style has an unknown key "${k}" — known keys: skepticism, messiness, presence`)
+        }
+      }
+      if (s.skepticism !== undefined && !SKEPTICISM_LEVELS.includes(s.skepticism as (typeof SKEPTICISM_LEVELS)[number])) {
+        throw new Error(`${at}.style.skepticism is ${JSON.stringify(s.skepticism)} — it must be one of ${SKEPTICISM_LEVELS.join(', ')}`)
+      }
+      for (const k of ['messiness', 'presence'] as const) {
+        if (s[k] === undefined) continue
+        const n = Number(s[k])
+        if (!Number.isFinite(n) || n < 0 || n > 1) throw new Error(`${at}.style.${k} must be between 0 and 1, not ${JSON.stringify(s[k])}`)
+      }
+      style = s as WorldPerson['style']
+    }
     return {
       name: pname,
       seat,
@@ -280,8 +350,28 @@ export function validateWorld(input: unknown, where = 'this world'): World {
       ...(o.typing ? { typing: String(o.typing).trim() } : {}),
       ...(o.redLines ? { redLines: (o.redLines as string[]).map((s) => s.trim()) } : {}),
       life,
+      ...(o.present !== undefined ? { present: o.present as boolean } : {}),
+      ...(o.arrives !== undefined ? { arrives: Number(o.arrives) } : {}),
+      ...(style !== undefined ? { style } : {}),
     }
   })
+
+  /**
+   * The activation rule, normalised so nothing downstream re-derives it: if any
+   * person declares `present` or `arrives`, the declaration is authoritative for
+   * everyone — unset means withheld. If nobody declares either, everyone is
+   * present, which is byte-identical to how every legacy world always behaved.
+   */
+  const declared = people.some((p) => p.present !== undefined || p.arrives !== undefined)
+  for (const p of people) {
+    p.present = declared ? p.present === true : true
+  }
+  if (!people.some((p) => p.present)) {
+    throw new Error(
+      `${where} has nobody present when the run opens. A world of withheld people is a week ` +
+        `in which nothing can happen — mark at least one person present: true, or give somebody arrives.`,
+    )
+  }
 
   const seen = new Map<string, number>()
   for (const [i, p] of people.entries()) {
@@ -427,7 +517,16 @@ export type BuiltWorld = {
   frontDeskId: string
   /** Seat key → the contact they hold AT THE FRONT DESK, to begin with. */
   contacts: Record<string, string>
-  roster: { name: string; role: SeatRole; contactId: string; phone: string; academyId: string }[]
+  roster: { name: string; role: SeatRole; contactId: string; phone: string; academyId: string; key: string }[]
+  /**
+   * The withheld cast: people the world describes and the product does not know
+   * yet. Their phones are allocated (index-stable, so a person's number is the
+   * same whether withheld or present) and no contact exists — they are what the
+   * founder's contact book holds, they spawn through `_arrivals.ts` when the
+   * product reaches their number, and the ones with `arrives` walk in on their
+   * day. Nobody in here has a row anywhere.
+   */
+  cast: { name: string; seat: SeatRole; phone: string; key: string; arrives?: number }[]
 }
 
 /**
@@ -449,9 +548,43 @@ export type BuiltWorld = {
  * `sim.ts` gives that business a clock of its own at the same instant, and the
  * week carries on across the handover without a jump.
  */
+/**
+ * Where `--start` lands on the calendar, in the world's own timezone.
+ *
+ * `YYYY-MM-DD` is that date; `day:N` is the next FUTURE Nth of a month (N is
+ * 1..28, checked at the flag, so it exists in every month). Either way the run
+ * opens at 06:00 local — before the earliest standing job, so day 1 opens with
+ * nothing already missed, exactly as the Monday default does.
+ *
+ * Past dates are refused with the two reasons: every drive walks its clock
+ * FORWARD only, and `gc` measures a world's age off the tenant clock — a run
+ * opened last week reads as a week old the moment it is built, and `gc --hours 6`
+ * would reap it mid-run.
+ */
+export function resolveStart(ref: string, timezone: string): Date {
+  const now = LuxonDateTime.now().setZone(timezone)
+  let at: LuxonDateTime
+  const dayForm = ref.match(/^day:(\d{1,2})$/)
+  if (dayForm) {
+    const d = Number(dayForm[1])
+    at = now.set({ day: d, hour: 6, minute: 0, second: 0, millisecond: 0 })
+    while (at <= now) at = at.plus({ months: 1 }).set({ day: d })
+  } else {
+    at = LuxonDateTime.fromISO(ref, { zone: timezone }).set({ hour: 6, minute: 0, second: 0, millisecond: 0 })
+    if (!at.isValid) throw new Error(`--start ${ref} is not a date`)
+    if (at <= now) {
+      throw new Error(
+        `--start ${ref} is in the past (${timezone}). A drive walks its clock forward only, ` +
+          `and gc ages worlds by the tenant clock — a run opened in the past would be reaped as stale mid-week.`,
+      )
+    }
+  }
+  return at.toJSDate()
+}
+
 export async function buildWorld(
   w: World,
-  o: { token: string; log?: (s: string) => void },
+  o: { token: string; log?: (s: string) => void; startAt?: Date },
 ): Promise<BuiltWorld> {
   const log = o.log ?? (() => {})
   const { withSession } = await import('@/lib/db')
@@ -505,10 +638,27 @@ export async function buildWorld(
   const at = await clock.now(senderId).catch(() => new Date())
   const contacts: Record<string, string> = {}
   const roster: BuiltWorld['roster'] = []
+  const cast: BuiltWorld['cast'] = []
   let frontDeskId = ''
 
   for (const [i, person] of w.people.entries()) {
+    /**
+     * The phone is allocated off the person's POSITION in the file, present or
+     * not — so marking somebody withheld does not renumber everyone after them,
+     * and the number the founder's contact book promises is the number the
+     * contact really gets when the product finally reaches it.
+     */
     const phone = phoneFor(i + 1)
+    if (!person.present) {
+      cast.push({
+        name: person.name,
+        seat: person.seat,
+        phone,
+        key: keyOf(person.name),
+        ...(person.arrives !== undefined ? { arrives: person.arrives } : {}),
+      })
+      continue
+    }
     const [row] = await withSession(
       { role: 'service', academyId: frontDeskId || senderId },
       async (tx) =>
@@ -530,6 +680,7 @@ export async function buildWorld(
       contactId: out.contact_id,
       phone,
       academyId: out.front_desk_id,
+      key,
     })
   }
 
@@ -542,17 +693,48 @@ export async function buildWorld(
    * `app.now()`. The hour matters too — six is before the earliest standing job,
    * so day 1 opens with nothing already missed.
    */
-  let monday = DateTime.now()
-    .setZone(w.timezone)
-    .startOf('week')
-    .set({ hour: 6, minute: 0, second: 0, millisecond: 0 })
-  if (monday <= DateTime.now().setZone(w.timezone)) monday = monday.plus({ weeks: 1 })
-  await clock.setTo(monday.toJSDate(), frontDeskId)
+  let opens: import('luxon').DateTime
+  if (o.startAt) {
+    opens = DateTime.fromJSDate(o.startAt).setZone(w.timezone)
+    /**
+     * `life` prose was written against Monday-start weeks — "day 2" in a
+     * canonical file means a Tuesday. A warning and not a refusal: the
+     * calendar-aimed runs (`--preset e2e`) care about the 1st, not the weekday,
+     * and their worlds carry little or no `life`.
+     */
+    const hasLife = w.people.some((p) => Object.keys(p.life ?? {}).length > 0)
+    if (hasLife && opens.weekday !== 1) {
+      log(`note: this world has life entries written against Monday-start weeks, and this run opens on a ${opens.toFormat('EEEE')}`)
+    }
+  } else {
+    opens = DateTime.now()
+      .setZone(w.timezone)
+      .startOf('week')
+      .set({ hour: 6, minute: 0, second: 0, millisecond: 0 })
+    if (opens <= DateTime.now().setZone(w.timezone)) opens = opens.plus({ weeks: 1 })
+  }
+  await clock.setTo(opens.toJSDate(), frontDeskId)
 
-  log(`front desk ${frontDeskId.slice(0, 8)} · ${w.people.length} at the number, in no business`)
-  log(`clock set to ${monday.toFormat('EEE d LLL yyyy, HH:mm')} ${w.timezone}`)
+  /**
+   * A world of only-withheld people never called `front_desk_contact`, so the
+   * desk would not exist and the walk-in path would have no tenant to seat into.
+   * `validateWorld` refuses that world, so this is belt and braces — but the
+   * belt is one query and the alternative is a run that dies on day N.
+   */
+  if (!frontDeskId) {
+    const [row] = await withSession({ role: 'service', academyId: senderId }, async (tx) =>
+      (await tx`select app.front_desk_for(${senderId}::uuid) as id`) as unknown as { id: string }[],
+    )
+    frontDeskId = row?.id ?? ''
+  }
 
-  return { senderId, senderPhone, frontDeskId, contacts, roster }
+  log(
+    `front desk ${frontDeskId.slice(0, 8)} · ${roster.length} at the number, in no business` +
+      (cast.length ? ` · ${cast.length} withheld — reachable, not yet reached` : ''),
+  )
+  log(`clock set to ${opens.toFormat('EEE d LLL yyyy, HH:mm')} ${w.timezone}`)
+
+  return { senderId, senderPhone, frontDeskId, contacts, roster, cast }
 }
 
 export { INPUT_REALISM }

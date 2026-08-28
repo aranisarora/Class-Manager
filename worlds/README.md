@@ -69,15 +69,32 @@ Everything except `people` is optional.
 | --- | --- |
 | `name` | What the scenario is called. Names the run and this run's sender. |
 | `timezone` | Defaults to `Asia/Kolkata`. |
-| `people[].name` | The name on the phone. **Must be unique** — a seat key, an event's `who` and an arrival match are all by name. |
+| `people[].name` | The name on the phone. **Must be unique** — a seat key and an event's `who` are by name. (Arrivals are matched by **phone**; a product-created stranger who shares a cast name gets a suffixed key, never a shared seat.) |
 | `people[].seat` | `admin`, `coach`, `client`, `prospect`. The axis every score is split by. **Declared, not derived** — nobody is an admin of anything yet. |
 | `people[].about` | Who they are, in their own frame. The main thing you write. |
 | `people[].goals` | What they want. Falls back to a thin role default. |
 | `people[].voice` | How they type. **Replaces** the role default. |
 | `people[].typing` | The specific mess they make, on top of the shared input realism. |
 | `people[].redLines` | What would make them complain, escalate or leave. **Added** to the role's. |
-| `people[].life` | What happens **to** them, keyed by day number. Day 1 is a Monday. |
+| `people[].life` | What happens **to** them, keyed by day number. Day 1 is a Monday (unless `--start` moved it — the run warns). |
+| `people[].present` | Whether they are **at the number when the run opens**. The rule activates on first use: if *any* person sets `present` or `arrives`, unset means **withheld**; if nobody sets either, everyone is present (every legacy file behaves exactly as before). |
+| `people[].arrives` | The day a withheld person **walks in** — seated as a front-desk contact at the top of that day, like any stranger texting the number. Mutually exclusive with `present: true`. |
+| `people[].style` | How they are at a machine: `skepticism` (`trusting` \| `ordinary` \| `hard`), `messiness` (0–1, the garble rate), `presence` (0–1, how often they check the phone). Unset values are drawn per person from a stable hash, so temperament survives reseeding. |
 | `week` | What happens to the business — [`events/`](../events/README.md) owns the shape. |
+
+## The cast is not a seating plan
+
+Production does not open with four people mid-conversation: one person texts a number, and
+everyone else exists because the business reached them. `people[]` is therefore a **cast**.
+The present ones hold phones from minute one. The withheld ones are the founder's circle —
+their names and numbers seed the founder's contact book, so "add Kiran" is a card-share
+rather than an invented number — and the moment the product actually reaches their phone,
+`_arrivals.ts` seats them **with the brief written here**: their about, their goals, their
+life. A withheld person the product never reaches is a week that person never had, which is
+itself a finding.
+
+`arrives` is for the people the *product* cannot cause: the walk-in prospect, the referral
+texting from a phone nobody knows. They join the front desk on their day, unprompted.
 
 `blank` is a **word, not a file**, so a missing file cannot break the default: one prospect, a
 phone, and no instructions about what the product can do for them.

@@ -158,7 +158,7 @@ import { loadEnvFiles, c } from './_env'
  * emulator transport in its own module body, because either file can be the
  * process's entry point and an importer's body has not run yet when this one does.
  */
-import { TZ, WorldGone, die, drain, q, queueTurn, walkTo, writeSession, type Session } from './_seat'
+import { TZ, WorldGone, die, drain, q, queueTurn, unreadOnPhone, walkTo, writeSession, type Session } from './_seat'
 
 loadEnvFiles()
 /**
@@ -174,8 +174,7 @@ const { reopenRun, runDir, saveRun, writeSidecar } = await import('./_capture')
 const { readTurns } = await import('./_derive')
 const clock = await import('@/lib/clock')
 const { briefsFor, INPUT_REALISM, WINDOW_AT } = await import('./_personas')
-const { buildWorld, deriveSchedule, describeWorld, keyOf, loadWorld, windowsPerSeat } =
-  await import('./_world-file')
+const { buildWorld, describeWorld, keyOf, loadWorld, resolveStart } = await import('./_world-file')
 const { SEAT_EFFORT } = await import('./_persona-agent')
 /**
  * Who has turned up since the run started. Imported here with the rest, because
@@ -188,7 +187,7 @@ const { arrivals } = await import('./_arrivals')
  * can only learn by being told. Imported here for the same reason `arrivals` is:
  * it reads the database.
  */
-const { openEvents, readEventSpecs, validateEventSpec } = await import('./_events')
+const { coin, openEvents, readEventSpecs, validateEventSpec } = await import('./_events')
 const { BLANK_WORLD, describeConfig, makeBudget, recordedConfig, resolveConfig } =
   await import('./_drive-config')
 const { costInr, USD_INR } = await import('@/lib/pricing')
@@ -268,7 +267,9 @@ type BuiltWorld = {
   frontDeskId: string
   /** Contact id per SEAT KEY — what `_seat-worker.ts` looks itself up by. */
   contacts: Record<string, string>
-  roster: { name: string; role: string; contactId: string; phone: string }[]
+  roster: { name: string; role: string; contactId: string; phone: string; key: string }[]
+  /** The withheld cast — reachable numbers, no rows. See `_world-file.ts`. */
+  cast: { name: string; seat: string; phone: string; key: string; arrives?: number }[]
 }
 
 /**
@@ -289,13 +290,20 @@ type WorldPlan = {
   world: World
   /** Every seat this world has, keyed as the driver and the worker name them. */
   briefs: Record<string, Brief>
-  /** Who is at a phone, in which window of which day. */
-  schedule: Record<number, Record<WindowName, string[]>>
+  /**
+   * Who this run drives — `--personas`/`--seats` applied, in the file's order.
+   * WHEN each of them is at a phone is not dealt any more: presence is decided
+   * per window by `whoChecks`, the way production decides it — nobody deals a
+   * customer a schedule.
+   */
+  seats: string[]
   /**
    * This world's own weather, when its file carries a `week` block — the base
    * `--events` is laid over.
    */
   week?: EventSpec
+  /** Where `--start` landed on the calendar, resolved once so the build and the record agree. */
+  startAt?: Date
   build(token: string, log: (s: string) => void): Promise<BuiltWorld>
 }
 
@@ -305,83 +313,50 @@ type WorldPlan = {
  * ========================================================================== */
 
 /**
- * How thickly a week fills its windows: seat turns per window.
+ * THE SITTING: how long one person may keep the phone in hand inside a window.
  *
- * `24 / 14` — twenty-four seat turns over fourteen windows, a shade under two
- * people at a phone at once. That is what a Tuesday evening at a real academy
- * looks like and it is the only density anybody here has driven and read back.
+ * A window used to be one move per person, with the reply held back to their
+ * NEXT dealt window — measured across 101 seat turns: a maximum of one message
+ * per person per window, zero exceptions, and a shortest gap between anybody's
+ * two messages of 12.26 hours. That is correspondence, not WhatsApp. Every
+ * multi-step flow the product exists for — setup, a staged confirmation, a
+ * clarifying question answered — ran at one exchange per simulated half-day,
+ * so a week could not tell "the flow is too slow" from "the harness allows nine
+ * exchanges per person per week", and every clarifying question the brain asked
+ * cost the flow half a day, which punished exactly the behaviour a careful
+ * product should show.
  *
- * It was computed off `SCHEDULE`, a hand-written table saying which of four named
- * humans spoke in which window of which day. The table is gone with the fixtures,
- * so the number it produced is written down instead — a constant it always was,
- * now visibly. A week aims at this rather than at one speaker per window, because
- * concurrent messages are half of what this instrument is for: eleven people and
- * one speaker per window is a different instrument wearing this one's name.
+ * Now a window is a SITTING: the person speaks, the product replies within the
+ * beat, and while something arrived and they have not put the phone down they
+ * may answer it a few simulated minutes later. The sitting ends the way a real
+ * one does — `quiet` or `giveup` is the phone going down, a beat with nothing
+ * arrived is a chat that has run dry — or at these two caps, which exist so a
+ * looping seat cannot spend a week's budget in one evening. Worst case the
+ * clock moves `MAX_BEATS × BEAT_MS` ≈ 24 simulated minutes inside a window,
+ * which never crosses into the next window's hour.
+ *
+ * @mechanism MAX_EXCHANGES — the sitting: inside a window the clock advances a few
+ *   simulated minutes per beat (with a recorded drain), and whoever a reply reached
+ *   keeps the phone in hand until quiet/giveup, a dry beat, or the caps. Retires the
+ *   correspondence cadence — one move per window, the reply held to the persona's next
+ *   dealt window, a measured maximum of one message per person per window with a 12.26h
+ *   floor between anybody's two messages — under which multi-step setup was structurally
+ *   untestable and every clarifying question cost the flow half a simulated day.
+ *   Closes F-EX.
  */
-const DENSITY = 24 / 14
+const MAX_EXCHANGES = 6
+const MAX_BEATS = 8
+const BEAT_MS = 3 * 60_000
 
-
-// `deriveSchedule` moved to `_world-file.ts` — `live.ts` deals a week too.
 
 /**
- * Deal the windows that have not happened yet, over the roster as it stands now.
- *
- * `deriveSchedule` above is the whole week decided before anybody speaks, and it
- * is right for the roster it was given. It cannot be right for a roster that
- * changes on Wednesday — a business that gains four families gains them into a
- * week whose every window was already handed out to the one man who started it.
- *
- * So this re-deals the REMAINDER and never touches a window that has run. Two
- * things follow from that and both are deliberate:
- *
- * **It does not assert balance, and `deriveSchedule` must.** A person who arrives
- * on Friday cannot have had Monday, and a check demanding they did would refuse
- * every week in which the product did its job. What is balanced here is the share
- * of what is LEFT, which is the only thing that can be. The record keeps the
- * whole schedule, so the imbalance is legible rather than smoothed over: a seat
- * with two windows against the owner's twelve is a person who joined on day six,
- * and reading their week as the product's is the same mistake `deriveSchedule`'s
- * own header names.
- *
- * **A duplicate is dropped rather than fatal.** `deriveSchedule` dies when a cell
- * gets the same person twice, because at start-up that is a bug in the deal and
- * nothing has been spent. Here it is Wednesday, ten model turns are on disk, and
- * killing the run over a scheduling artifact would destroy evidence to protect a
- * property nobody is judging. Somebody cannot be at their own phone twice in one
- * window; the second copy is simply not dealt.
+ * `deriveSchedule` still lives in `_world-file.ts` for `live.ts`, which deals a
+ * human's week in advance because a human has to plan an evening around it. The
+ * sim does not use it any more: nobody deals a customer a schedule in
+ * production, so who checks a phone in which window is decided per window by
+ * `whoChecks` below — and `redealFrom`, which existed to patch a dealt week
+ * when the roster grew, went with it. An arrival simply joins the presence pool.
  */
-function redealFrom(
-  schedule: Record<number, Record<WindowName, string[]>>,
-  seats: string[],
-  days: number,
-  windows: WindowName[],
-  after: { day: number; window: WindowName },
-): number {
-  if (!seats.length) return 0
-  const per = windows.length
-  const cells = days * per
-  const from = (after.day - 1) * per + windows.indexOf(after.window) + 1
-  const left = cells - from
-  if (left <= 0) return 0
-
-  const perSeat = Math.min(left, Math.max(1, Math.round((left * DENSITY) / seats.length)))
-  const turns = perSeat * seats.length
-  const dealt: string[][] = Array.from({ length: left }, () => [])
-  for (let t = 0; t < turns; t++) {
-    const cell = dealt[Math.floor((t * left) / turns)] as string[]
-    const who = seats[t % seats.length] as string
-    if (!cell.includes(who)) cell.push(who)
-  }
-
-  for (let i = 0; i < left; i++) {
-    const at = from + i
-    const day = Math.floor(at / per) + 1
-    const w = windows[at % per] as WindowName
-    const row = (schedule[day] ??= {} as Record<WindowName, string[]>)
-    row[w] = dealt[i] ?? []
-  }
-  return left
-}
 
 /**
  * Read `--world`, refuse it if it is not one, and hand back everything the run
@@ -427,26 +402,53 @@ async function planWorld(cfg: DriveConfig): Promise<WorldPlan> {
    * wrote them, so a cheap run is a shape anybody can ask for without knowing who
    * lives in the world yet.
    */
+  /**
+   * The starters are the PRESENT people — the withheld cast has no phone at the
+   * desk yet and is seated by arrivals or walk-ins when its day comes. Naming a
+   * withheld person with `--personas` is an explicit ask to drive them, so it
+   * makes them present rather than refusing: the flag exists for cheap targeted
+   * runs, and "you cannot drive Kiran because the file withholds him" would make
+   * the file's realism the enemy of the person testing it.
+   */
+  const presentKeys = new Set(world.people.filter((p) => p.present).map((p) => keyOf(p.name)))
   const chosen =
     cfg.personas.length ? cfg.personas.map((k) => seatIn(known, k, ref))
-    : cfg.seats > 0 ? all.slice(0, cfg.seats)
-    : all
+    : cfg.seats > 0 ? all.filter((b) => presentKeys.has(b.key)).slice(0, cfg.seats)
+    : all.filter((b) => presentKeys.has(b.key))
+  for (const b of chosen) {
+    const p = world.people.find((x) => keyOf(x.name) === b.key)
+    if (p && !p.present) {
+      p.present = true
+      delete p.arrives
+    }
+  }
+
+  let startAt: Date | undefined
+  if (cfg.start) {
+    try {
+      startAt = resolveStart(cfg.start, world.timezone)
+    } catch (e) {
+      die(`${c.red('x')}  ${(e as Error).message}`)
+    }
+  }
 
   return {
     ref,
     is: describeWorld(world),
     world,
     briefs: Object.fromEntries(known),
-    schedule: deriveSchedule(chosen.map((b) => b.key), cfg.days, cfg.windows),
+    seats: chosen.map((b) => b.key),
     ...(world.week !== undefined ? { week: world.week as EventSpec } : {}),
+    ...(startAt ? { startAt } : {}),
     async build(token, log): Promise<BuiltWorld> {
-      const built = await buildWorld(world, { token, log })
+      const built = await buildWorld(world, { token, log, ...(startAt ? { startAt } : {}) })
       return {
         senderId: built.senderId,
         senderPhone: built.senderPhone,
         frontDeskId: built.frontDeskId,
         contacts: built.contacts,
         roster: built.roster,
+        cast: built.cast,
       }
     },
   }
@@ -480,6 +482,12 @@ type Seat = {
   ask(a: Ask): Promise<Told>
   /** Did this seat sit down? Asked once, before the week, and never again. */
   ready(): Promise<boolean>
+  /**
+   * Make the worker re-read `session.json` in place, keeping the process — and
+   * with it the seat model's live thread. False when the worker is dead or does
+   * not answer, which is the caller's cue to fall back to a restart.
+   */
+  reload(): Promise<boolean>
   end(): void
 }
 
@@ -494,6 +502,7 @@ type Seat = {
 function openSeat(key: string, dir: string, cfg: DriveConfig): Seat {
   let child: ChildProcess | null = null
   let booting: Promise<void> | null = null
+  let reloads = 0
   const waiting = new Map<string, (t: Told) => void>()
 
   const failed = (id: string, error: string): Told => ({
@@ -560,6 +569,30 @@ function openSeat(key: string, dir: string, cfg: DriveConfig): Seat {
     async ready(): Promise<boolean> {
       if (booting) await booting
       return !!child && child.connected
+    },
+    /**
+     * The founder's memory is what this preserves. A restart rebuilds what the
+     * person SAID from the run's own log, but everything the product ever TOLD
+     * them lives in the seat model's session inside the worker process — and
+     * founding used to restart every worker at exactly the moment that context
+     * mattered most. Ten seconds is generous for two file reads; a worker that
+     * cannot manage it is treated as dead, which is what it is.
+     */
+    async reload(): Promise<boolean> {
+      const ch = child
+      if (!ch || !ch.connected) return false
+      const id = `ctl-reload-${++reloads}`
+      return new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => {
+          waiting.delete(id)
+          resolve(false)
+        }, 10_000)
+        waiting.set(id, (t) => {
+          clearTimeout(timer)
+          resolve(t.kind === 'reloaded')
+        })
+        ch.send({ id, kind: 'reload' })
+      })
     },
     async ask(a: Ask): Promise<Told> {
       if (!child) booting = start()
@@ -673,31 +706,11 @@ async function main(): Promise<void> {
   }
 
   /**
-   * How many windows each seat got, for the top of the run and for the record.
-   *
-   * Not asserted here any more, and it is not a check that went missing:
-   * `deriveSchedule` builds this week and refuses an unbalanced one at the moment
-   * it deals it, which is both earlier and stricter than a second look would be.
-   * What used to be asserted here was `SCHEDULE` — a hand-written table for four
-   * named humans — and the assertion existed because a table somebody typed can be
-   * wrong in a way a construction cannot.
-   *
-   * The number still matters and is still printed. A week claiming equal coverage
-   * while running eleven owner windows and two client ones reports the owner's
-   * experience as though it were the product's, and the imbalance is invisible in
-   * the report it writes.
+   * Who is actually driven. `plan.seats` is `--personas`/`--seats` already
+   * applied; arrivals join this set as the business gains them. WHEN any of
+   * them speaks is not a schedule any more — see `whoChecks`.
    */
-  const counts = windowsPerSeat(plan.schedule, cfg)
-  const balance = Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(' · ')
-
-  /**
-   * Who is actually driven.
-   *
-   * `cfg.personas` is empty only for a spec world nobody narrowed — the canonical
-   * one always names its four, because `_drive-config.ts` knows them and fills
-   * them in. Empty therefore means everybody this world has.
-   */
-  const driven = new Set<string>(cfg.personas.length ? cfg.personas : Object.keys(plan.briefs))
+  const driven = new Set<string>(plan.seats)
   /**
    * How many of them may be mid-turn together. `cfg.concurrency` is `0` when a
    * spec world's seats had not been counted yet, and "everybody at once" is what
@@ -737,7 +750,12 @@ async function main(): Promise<void> {
       ),
     )
   }
-  console.log(c.dim(`  schedule: ${balance}\n`))
+  console.log(
+    c.dim(
+      `  presence: decided per window — admin .85 · prospect .6 · coach .5 · client .4, ` +
+        `+.35 with unread, forced after two unread windows\n`,
+    ),
+  )
 
   const dir = await runDir('sim')
   /**
@@ -752,6 +770,17 @@ async function main(): Promise<void> {
   const token = /^[0-9a-z]{4}$/.test(tail) ? tail : 'zzzz'
 
   const world = await plan.build(token, (m) => console.log(c.dim(`  ${m}`)))
+
+  /**
+   * The withheld cast by phone, for `_arrivals.ts`: when the product reaches one
+   * of these numbers, the person who sits down is the world's own — their brief,
+   * their goals, their life — rather than a generic role.
+   */
+  const castByPhone = new Map(
+    world.cast
+      .map((entry) => [entry.phone, plan.world.people.find((p) => keyOf(p.name) === entry.key)] as const)
+      .filter((pair): pair is [string, (typeof plan.world.people)[number]] => pair[1] !== undefined),
+  )
 
   /**
    * THE TENANT THIS RUN IS ABOUT, WHICH DOES NOT EXIST YET.
@@ -785,6 +814,8 @@ async function main(): Promise<void> {
     day: 1,
     contacts: world.contacts,
     roster: world.roster,
+    // The withheld cast, into every seat's contact book — see `Session.cast`.
+    cast: world.cast,
     startedAt,
   }
   await writeSession(session)
@@ -1061,37 +1092,56 @@ async function main(): Promise<void> {
    * `session.json` once at boot and rebuilds what its person has already said from
    * the run's own log, which is what makes a restart cheap and lossless.
    */
-  const follow = async (restart = true): Promise<number> => {
-    if (!founded) return 0
-    const moved = await q<{ id: string; full_name: string }>(
+  const follow = async (reloadSeats = true): Promise<string[]> => {
+    if (!founded) return []
+    const moved = await q<{ id: string; full_name: string; phone_e164: string }>(
       founded,
-      `select ct.id::text, p.full_name
+      `select ct.id::text, p.full_name, ct.phone_e164
          from contact ct join person p on p.id = ct.person_id
         where ct.opted_out_at is null`,
-    ).catch(() => [] as { id: string; full_name: string }[])
-    let followed = 0
+    ).catch(() => [] as { id: string; full_name: string; phone_e164: string }[])
+    const movedKeys: string[] = []
     for (const m of moved) {
-      const key = keyOf(m.full_name)
+      /**
+       * Matched by PHONE, which is the person's one stable identity across
+       * tenants — a name match followed the fifth-Kiran class: a stranger who
+       * shares a cast name has a suffixed key, and `keyOf(full_name)` would
+       * move the wrong seat, or a seat whose owner-typo'd name no longer
+       * matches would be orphaned in the desk tenant for the rest of the week.
+       */
+      const seat = session.roster.find((r) => r.phone === m.phone_e164)
+      if (!seat) continue
+      const key = seat.key ?? keyOf(seat.name)
       if (!session.contacts[key] || session.contacts[key] === m.id) continue
       session.contacts[key] = m.id
-      const seat = session.roster.find((r) => keyOf(r.name) === key)
-      if (seat) {
-        seat.contactId = m.id
-        // The half that was missing: the tenant their evidence must be read in.
-        seat.academyId = founded
-      }
-      followed += 1
-      const worker = restart ? seats.get(key) : undefined
-      if (worker) {
-        worker.end()
-        seats.set(key, openSeat(key, dir, cfg))
+      seat.contactId = m.id
+      // The half that was missing: the tenant their evidence must be read in.
+      seat.academyId = founded
+      movedKeys.push(key)
+    }
+    /**
+     * The file first, then the workers. A reload is a re-read of `session.json`,
+     * so a worker told to reload before the file is written would faithfully
+     * re-read the stale one — the same race the old restart path carried, made
+     * deterministic here instead of narrow.
+     */
+    if (movedKeys.length) await writeSession(session)
+    if (reloadSeats) {
+      for (const key of movedKeys) {
+        const worker = seats.get(key)
+        if (!worker) continue
+        // Reload keeps the process and the seat model's thread; a worker that
+        // does not answer is dead and gets the restart it always got.
+        if (!(await worker.reload())) {
+          worker.end()
+          seats.set(key, openSeat(key, dir, cfg))
+        }
       }
     }
-    if (followed && restart) await writeSession(session)
-    return followed
+    return movedKeys
   }
 
-  const adopt = async (): Promise<void> => {
+  const adopt = async (): Promise<string[]> => {
     /**
      * `app.businesses_on_sender`, and NOT a select on `academy`.
      *
@@ -1112,7 +1162,7 @@ async function main(): Promise<void> {
       world.frontDeskId,
       `select id::text, name from app.businesses_on_sender('${world.senderId}'::uuid) limit 1`,
     ).catch(() => [] as { id: string; name: string }[])
-    if (!row) return
+    if (!row) return []
 
     founded = row.id
     academyId = row.id
@@ -1122,20 +1172,29 @@ async function main(): Promise<void> {
     // The new tenant starts where the old one is standing, not at real time.
     await clock.setTo(await clock.now(world.frontDeskId), row.id)
 
-    // `false`: this path restarts EVERY worker a few lines below, so a per-seat
-    // restart here would be a second one for the same people.
+    // `false`: this path reloads EVERY worker a few lines below, so a per-seat
+    // reload here would be a second one for the same people.
     const followed = await follow(false)
     await writeSession(session)
 
     console.log(
       `      ${c.green('★')} ${c.bold(academyName)} exists now ` +
-        c.dim(`— founded from the front desk${followed ? `, ${followed} seat${followed === 1 ? '' : 's'} followed` : ''}`),
+        c.dim(`— founded from the front desk${followed.length ? `, ${followed.length} seat${followed.length === 1 ? '' : 's'} followed` : ''}`),
     )
 
-    // Restart, so every worker reads the contact it should now be holding.
+    /**
+     * Reload, not restart. A restart rebuilds what each person SAID from the
+     * run's own log, but everything the product had TOLD them lives only in the
+     * seat model's session inside the worker — and founding is exactly the
+     * moment that context matters: the setup conversation continues on the
+     * other side of it. `reload` re-reads `session.json` in place; a worker
+     * that does not answer is dead and gets the restart it always got.
+     */
     for (const [key, seat] of seats) {
-      seat.end()
-      seats.set(key, openSeat(key, dir, cfg))
+      if (!(await seat.reload())) {
+        seat.end()
+        seats.set(key, openSeat(key, dir, cfg))
+      }
     }
 
     if (eventSpecActive && !events.active) {
@@ -1155,6 +1214,7 @@ async function main(): Promise<void> {
         die(`${c.red('x')}  ${(e as Error).message}`)
       }
     }
+    return followed
   }
 
   const settle = async (): Promise<number> => {
@@ -1226,6 +1286,76 @@ async function main(): Promise<void> {
     }
   }
 
+  /**
+   * PRESENCE — who checks their phone this window, decided the way production
+   * decides it: nobody is dealt a schedule.
+   *
+   * The dealt week measured a correspondence world — ~9 of 21 windows per
+   * persona, decided before anybody had spoken, so the week's shape was the
+   * harness's and not the people's. Now each live seat flips a seeded coin per
+   * window against a rate that is about THEM: the role's base habit, a founder
+   * mid-setup who checks constantly, and the pull of an unread phone. The coin
+   * is `_events.ts`'s hash, not a stream, so a seed reproduces the same
+   * presence — with the one caveat the arrivals mechanism already carries: the
+   * unread boost depends on what the PRODUCT sent, so two A/B arms diverge in
+   * presence once their products diverge. That is inherent to emulating
+   * production, and the record keeps every decision so a reader can see it.
+   *
+   * The forced look is the floor under realism: two windows in a row with
+   * something unread and nobody looks is a phone nobody owns. Real people
+   * eventually read the message, even the ones who then choose `quiet` — and
+   * `quiet` is the move that records "read it, wanted nothing", which the run
+   * cannot distinguish from harness absence unless the look happens.
+   *
+   * @mechanism whoChecks — presence per window per live seat, off a seeded hash coin:
+   *   role base rates or the person's own `style.presence`, a founder-bias while nothing
+   *   is founded, an unread boost with a forced look after two ignored windows, and the
+   *   opening errand as a certainty. Retires the dealt schedule, under which the week's
+   *   shape was decided before anybody spoke (~9 of 21 windows per persona) and an
+   *   arrival was patched in by re-dealing the remainder. Every decision lands in
+   *   `extra.presence` and `days.jsonl`. Closes F-EZ.
+   */
+  const PRESENCE_BASE: Record<string, number> = { admin: 0.85, prospect: 0.6, coach: 0.5, client: 0.4 }
+  const initialCast = new Set(driven)
+  const unseenStreak = new Map<string, number>()
+  /** Who has ever actually spoken. The opening errand is not left to a coin. */
+  const spoke = new Set<string>()
+  const presenceLog: { day: number; window: string; checked: string[]; skipped: string[] }[] = []
+
+  const whoChecks = async (
+    day: number,
+    w: WindowName,
+  ): Promise<{ checked: string[]; skipped: string[] }> => {
+    const checked: string[] = []
+    const skipped: string[] = []
+    for (const key of driven) {
+      if (gone.has(key)) continue
+      const role = plan.briefs[key]?.seat ?? 'prospect'
+      // The person's own habit when the world wrote one; the role's otherwise.
+      let rate = plan.briefs[key]?.style?.presence ?? PRESENCE_BASE[role] ?? 0.5
+      // Somebody mid-founding checks the phone the way anybody awaiting an
+      // answer does. The bias belongs to the initial cast only: an arrival was
+      // brought in BY the business and has no founding to be anxious about.
+      if (!founded && initialCast.has(key)) rate = Math.max(rate, 0.9)
+      // The opening errand is a certainty, not a habit: the world file says this
+      // person was just given the number and means to use it. A run whose
+      // protagonist never opens their mouth measures a coin, not the product.
+      if (initialCast.has(key) && !spoke.has(key)) rate = 1
+      const unread = await unreadOnPhone(session, key).catch(() => 0)
+      if (unread > 0) rate = Math.min(0.95, rate + 0.35)
+      const forced = unread > 0 && (unseenStreak.get(key) ?? 0) >= 2
+      if (forced || coin(cfg.seed, ['presence', day, w, key]) < rate) {
+        unseenStreak.set(key, 0)
+        checked.push(key)
+      } else {
+        unseenStreak.set(key, unread > 0 ? (unseenStreak.get(key) ?? 0) + 1 : 0)
+        skipped.push(key)
+      }
+    }
+    presenceLog.push({ day, window: w, checked, skipped })
+    return { checked, skipped }
+  }
+
   for (let day = 1; day <= cfg.days && !stoppedBy; day++) {
     session.day = day
     // The file on disk is what a worker reads when it is restarted mid-week; a
@@ -1255,6 +1385,46 @@ async function main(): Promise<void> {
       } catch (e) {
         die(`${c.red('x')}  ${(e as Error).message}`)
       }
+    }
+
+    /**
+     * Whoever the world says walks in today — a stranger texting the number,
+     * exactly as production sees one. `arrives: N` on a withheld person seats
+     * them as a FRONT-DESK contact at the top of day N: no business knows them,
+     * nothing reached out to them, they simply have the number and a reason.
+     * The product's own `front_desk_contact` makes the rows, as it does for
+     * everybody, so there is no second definition of what a visitor is.
+     */
+    for (const p of world.cast) {
+      if (p.arrives !== day) continue
+      if (session.roster.some((r) => r.phone === p.phone)) continue
+      const safeName = p.name.replace(/'/g, "''")
+      const [row] = await q<{ out: { front_desk_id: string; contact_id: string } }>(
+        world.frontDeskId,
+        `select app.front_desk_contact('${world.senderId}'::uuid, '${p.phone}', '${safeName}', '${safeName}', app.now()) as out`,
+      ).catch(() => [] as { out: { front_desk_id: string; contact_id: string } }[])
+      if (!row) {
+        console.log(c.yellow(`  ! ${p.name} could not walk in — front_desk_contact failed; today goes on without them`))
+        continue
+      }
+      session.contacts[p.key] = row.out.contact_id
+      session.roster.push({
+        name: p.name,
+        role: p.seat,
+        contactId: row.out.contact_id,
+        phone: p.phone,
+        academyId: row.out.front_desk_id,
+        key: p.key,
+      })
+      driven.add(p.key)
+      // A walk-in has an errand the way the initial cast does — their first
+      // look is a certainty, not a coin (see `whoChecks`).
+      initialCast.add(p.key)
+      await writeSidecar(dir, 'briefs.json', plan.briefs)
+      await writeSession(session)
+      if (!seats.has(p.key)) seats.set(p.key, openSeat(p.key, dir, cfg))
+      width = cfg.concurrency || driven.size
+      console.log(`  ${c.green('+')} ${p.name} ${c.dim(`(${p.seat}) walked in — day ${day}`)}`)
     }
 
     for (const w of cfg.windows) {
@@ -1299,7 +1469,12 @@ async function main(): Promise<void> {
           events.forWindow(day, w)
         : { today: {} as Record<string, string[]>, skip: new Map<string, string>(), lag: new Map<string, number>() }
 
-      const dealt = (plan.schedule[day]?.[w] ?? []).filter((k) => driven.has(k) && !gone.has(k))
+      /**
+       * Decided AFTER the clock walk, deliberately: the walk is what fires this
+       * window's jobs, and "is there something unread pulling them to the
+       * phone" has to be asked of the phone as it stands now.
+       */
+      const { checked: dealt, skipped: skippedPresence } = await whoChecks(day, w)
       /**
        * Somebody away is not driven, and is not `quiet` either.
        *
@@ -1321,103 +1496,202 @@ async function main(): Promise<void> {
             : ''),
       )
 
-      await inFlight(active, width, async (key) => {
-        const seat = seats.get(key)
-        if (!seat) return
-        /**
-         * What somebody wrote about this person's day, out of the world file.
-         *
-         * One source now, where there were three — the file, plus a five-tier
-         * ramp keyed by four hard-coded names, plus a set of fixtures the ramp was
-         * anchored to. The ramp is gone: it could only ever apply to those four,
-         * so against any world file every lookup missed, the week was the ordinary
-         * one, and the record still said it was ramped.
-         *
-         * A day nobody wrote is not an error. `life` is narrative and most days do
-         * not have any — the seat is told nothing unusual is happening, which is
-         * true of most days for most people. `events/` is where the days that DO
-         * have something in them come from, and unlike `life` it is checked
-         * against the rows.
-         */
-        const written = plan.briefs[key]?.life[day]
-        /**
-         * What was written about today, and then what actually happened in it.
-         *
-         * In that order, and joined rather than replaced. `life` is the standing
-         * situation somebody wrote down — Priya asked for a raise, you are fed up
-         * being asked about waivers — and the event lines are the physical facts
-         * of the day: a class that did not run, a child who was not there, no
-         * signal at the courts. Neither substitutes for the other, and a world
-         * event that silently overwrote a `life` string would delete the reason
-         * the persona was written.
-         *
-         * This is also the ONLY channel the world reaches a seat by. Nothing here
-         * says what the product can do about any of it, which is the rule
-         * `_personas.ts` and `_ramp.ts` both open with: a persona who has been
-         * told the answer is not a persona.
-         */
-        const today = [written, ...(effects.today[key] ?? [])].filter(Boolean).join('\n\n') || undefined
-        const lag = effects.lag.get(key)
-        const told = await seat.ask({
-          id: `d${day}-${w}-${key}`,
-          day,
-          window: w,
-          ...(today ? { today } : {}),
-          ...(lag ? { lag } : {}),
+      /**
+       * THE SITTING. One window is no longer one move per person: everybody
+       * dealt in speaks concurrently, the replies land within the beat, the
+       * clock moves a few simulated minutes, and whoever is still holding the
+       * phone — something arrived, and they did not choose `quiet` or `giveup`
+       * — answers it. See `MAX_EXCHANGES` above for the argument; the old
+       * single pass is exactly this loop's first beat.
+       */
+      const engaged = new Set(active)
+      const exchanges = new Map<string, number>()
+      /**
+       * Who put the phone down only because nothing came back — as opposed to
+       * choosing to. Founding is the one moment that reading was wrong: the
+       * founding turn's reply lands on the founder's NEW contact in the new
+       * tenant, where the drive-time read of the old desk contact cannot see
+       * it, so the founder reads as run-dry with "you're set up" sitting unread.
+       * When a founding moves their contact between beats, these seats get the
+       * phone back in hand.
+       */
+      const ranDry = new Set<string>()
+      let beats = 0
+      while (engaged.size && beats < MAX_BEATS && !stoppedBy) {
+        beats += 1
+        const first = beats === 1
+        await inFlight([...engaged], width, async (key) => {
+          const seat = seats.get(key)
+          if (!seat) {
+            engaged.delete(key)
+            return
+          }
+          /**
+           * What somebody wrote about this person's day, out of the world file.
+           *
+           * One source now, where there were three — the file, plus a five-tier
+           * ramp keyed by four hard-coded names, plus a set of fixtures the ramp was
+           * anchored to. The ramp is gone: it could only ever apply to those four,
+           * so against any world file every lookup missed, the week was the ordinary
+           * one, and the record still said it was ramped.
+           *
+           * A day nobody wrote is not an error. `life` is narrative and most days do
+           * not have any — the seat is told nothing unusual is happening, which is
+           * true of most days for most people. `events/` is where the days that DO
+           * have something in them come from, and unlike `life` it is checked
+           * against the rows.
+           */
+          const written = plan.briefs[key]?.life[day]
+          /**
+           * What was written about today, and then what actually happened in it.
+           *
+           * In that order, and joined rather than replaced. `life` is the standing
+           * situation somebody wrote down — Priya asked for a raise, you are fed up
+           * being asked about waivers — and the event lines are the physical facts
+           * of the day: a class that did not run, a child who was not there, no
+           * signal at the courts. Neither substitutes for the other, and a world
+           * event that silently overwrote a `life` string would delete the reason
+           * the persona was written.
+           *
+           * This is also the ONLY channel the world reaches a seat by. Nothing here
+           * says what the product can do about any of it, which is the rule
+           * `_personas.ts` and `_ramp.ts` both open with: a persona who has been
+           * told the answer is not a persona.
+           *
+           * Both go with the FIRST exchange only: the day's pressure was
+           * delivered when the sitting opened, and the lag applied to that first
+           * look — a follow-up seconds later is the same phone, already caught up.
+           */
+          const today = [written, ...(effects.today[key] ?? [])].filter(Boolean).join('\n\n') || undefined
+          const lag = effects.lag.get(key)
+          const n = (exchanges.get(key) ?? 0) + 1
+          exchanges.set(key, n)
+          const told = await seat.ask({
+            id: first ? `d${day}-${w}-${key}` : `d${day}-${w}-${key}-x${n}`,
+            day,
+            window: w,
+            exchange: n,
+            ...(first && today ? { today } : {}),
+            ...(first && lag ? { lag } : {}),
+          })
+
+          if (told.kind === 'ready' || told.kind === 'reloaded') return
+          seatSpend.prompt += told.usage.promptTokens
+          seatSpend.cached += told.usage.cachedTokens
+          seatSpend.output += told.usage.outputTokens
+          seatSpend.inr +=
+            /**
+             * A measured figure beats a rate table. The Claude CLI reports what the
+             * call actually cost; `costInr` knows only the DeepSeek rows and returns
+             * null for anything else, which `?? 0` would render as free.
+             */
+            (told.costUsd !== undefined
+              ? told.costUsd * USD_INR
+              : costInr(told.model, told.usage.promptTokens, told.usage.cachedTokens, told.usage.outputTokens)) ?? 0
+
+          if (told.kind === 'failed') {
+            seatSpend.failures += 1
+            engaged.delete(key)
+            console.log(`      ${c.dim(key.padEnd(7))} ${c.red('seat failed')} ${c.dim(told.error.slice(0, 120))}`)
+            return
+          }
+          seatSpend.moves += 1
+          spoke.add(key)
+          if (told.action === 'giveup') {
+            gone.add(key)
+            // Told to the world as well as to the schedule. `gone` stops them being
+            // DEALT a window; it does not stop the world rolling weather at them, and
+            // for thirty days it did exactly that — a third of the chaos in the last
+            // run's `truth.json` was rain falling on two people who had walked out on
+            // day 5. The record of a week has to be a record of the people in it.
+            events.depart(key)
+            departures.push({ persona: key, day, window: w, say: told.say })
+          }
+          const what =
+            told.tapped ? c.bold(`tapped [ ${told.tapped} ]`)
+            : told.say ? `“${told.say.replace(/\s+/g, ' ').slice(0, 88)}”`
+            : c.dim('(said nothing)')
+          // A shared card is a thing that happened in this window and the body already
+          // carries it, so the line would read as prose about a contact rather than as
+          // an attachment. Named separately, and so is a name their phone did not have
+          // — a seat reaching repeatedly for somebody who is not in its contacts is a
+          // finding about the world, not noise to swallow.
+          const attached =
+            told.shared?.length ? c.dim(` 📎 ${told.shared.join(', ')}`)
+            : told.notInContacts?.length ? c.yellow(` 📎 not in contacts: ${told.notInContacts.join(', ')}`)
+            : ''
+          console.log(
+            `      ${c.dim(key.padEnd(7))} ${told.action === 'giveup' ? c.red('giveup ') : told.action === 'quiet' ? c.yellow('quiet  ') : told.action === 'tap' ? c.green('tap    ') : 'say    '}` +
+              `${what}${attached} ${c.dim(`· ${told.arrived} back · ${Math.round(told.ms / 1000)}s`)}` +
+              (n > 1 ? c.dim(` · x${n}`) : '') +
+              // Printed beside the move, because a quiet turn on a lagged phone and
+              // a quiet turn on a phone that showed everything are different
+              // findings, and the line is where a reader forms the first of the two.
+              (first && lag ? c.yellow(` · phone ${lag}h behind`) : ''),
+          )
+          /**
+           * Who keeps the phone in hand. `quiet` and `giveup` are the phone going
+           * down; a beat that brought nothing back is a chat that has run dry —
+           * nothing new exists to answer, and asking again would put words in the
+           * mouth of somebody staring at their own last message.
+           */
+          if (told.action === 'quiet' || told.action === 'giveup' || told.arrived === 0 || n >= MAX_EXCHANGES) {
+            engaged.delete(key)
+            if (told.action !== 'quiet' && told.action !== 'giveup' && told.arrived === 0 && n < MAX_EXCHANGES) {
+              ranDry.add(key)
+            }
+          }
         })
 
-        if (told.kind === 'ready') return
-        seatSpend.prompt += told.usage.promptTokens
-        seatSpend.cached += told.usage.cachedTokens
-        seatSpend.output += told.usage.outputTokens
-        seatSpend.inr +=
-          /**
-           * A measured figure beats a rate table. The Claude CLI reports what the
-           * call actually cost; `costInr` knows only the DeepSeek rows and returns
-           * null for anything else, which `?? 0` would render as free.
-           */
-          (told.costUsd !== undefined
-            ? told.costUsd * USD_INR
-            : costInr(told.model, told.usage.promptTokens, told.usage.cachedTokens, told.usage.outputTokens)) ?? 0
+        if (stoppedBy || beats >= MAX_BEATS) break
+        // The sitting continues while somebody holds the phone — or while a
+        // founding might hand it back to somebody who ran dry (see `ranDry`).
+        if (!engaged.size && (founded || !ranDry.size)) break
 
-        if (told.kind === 'failed') {
-          seatSpend.failures += 1
-          console.log(`      ${c.dim(key.padEnd(7))} ${c.red('seat failed')} ${c.dim(told.error.slice(0, 120))}`)
-          return
-        }
-        seatSpend.moves += 1
-        if (told.action === 'giveup') {
-          gone.add(key)
-          // Told to the world as well as to the schedule. `gone` stops them being
-          // DEALT a window; it does not stop the world rolling weather at them, and
-          // for thirty days it did exactly that — a third of the chaos in the last
-          // run's `truth.json` was rain falling on two people who had walked out on
-          // day 5. The record of a week has to be a record of the people in it.
-          events.depart(key)
-          departures.push({ persona: key, day, window: w, say: told.say })
-        }
-        const what =
-          told.tapped ? c.bold(`tapped [ ${told.tapped} ]`)
-          : told.say ? `“${told.say.replace(/\s+/g, ' ').slice(0, 88)}”`
-          : c.dim('(said nothing)')
-        // A shared card is a thing that happened in this window and the body already
-        // carries it, so the line would read as prose about a contact rather than as
-        // an attachment. Named separately, and so is a name their phone did not have
-        // — a seat reaching repeatedly for somebody who is not in its contacts is a
-        // finding about the world, not noise to swallow.
-        const attached =
-          told.shared?.length ? c.dim(` 📎 ${told.shared.join(', ')}`)
-          : told.notInContacts?.length ? c.yellow(` 📎 not in contacts: ${told.notInContacts.join(', ')}`)
-          : ''
-        console.log(
-          `      ${c.dim(key.padEnd(7))} ${told.action === 'giveup' ? c.red('giveup ') : told.action === 'quiet' ? c.yellow('quiet  ') : told.action === 'tap' ? c.green('tap    ') : 'say    '}` +
-            `${what}${attached} ${c.dim(`· ${told.arrived} back · ${Math.round(told.ms / 1000)}s`)}` +
-            // Printed beside the move, because a quiet turn on a lagged phone and
-            // a quiet turn on a phone that showed everything are different
-            // findings, and the line is where a reader forms the first of the two.
-            (lag ? c.yellow(` · phone ${lag}h behind`) : ''),
+        /**
+         * Between beats a few simulated minutes pass, and whatever the replies
+         * set off runs where the clock stands — a job scheduled "in a minute" by
+         * a reply fires inside the sitting it was promised in. The drain is a
+         * recorded queue turn like every other; a sitting's cost is on the log
+         * before the next exchange spends anything.
+         */
+        await queue(
+          session,
+          `d${day}-${w}-b${beats}-drain`,
+          async () => {
+            await clock.advance(BEAT_MS, academyId)
+            await keepDeskInStep()
+            return drain(academyId)
+          },
+          { window: w },
         )
-      })
+        if (stoppedBy) break
+        /**
+         * A business founded in exchange 1 must exist for exchange 2: the founder
+         * is mid-conversation about their own setup, and adopting only at the end
+         * of the window would leave the rest of the sitting talking to the desk.
+         * A seat whose contact just moved and who ran dry gets the phone back —
+         * the reply that looked missing is on their new contact, unread.
+         */
+        if (!founded) {
+          const movedNow = await adopt()
+          for (const k of movedNow) {
+            if (ranDry.has(k) && !gone.has(k) && (exchanges.get(k) ?? 0) < MAX_EXCHANGES) engaged.add(k)
+          }
+        }
+        ranDry.clear()
+        if (!engaged.size) break
+        await settle()
+        const hit = budget.exhausted()
+        if (hit) {
+          stoppedBy = hit.hit
+          console.log(
+            c.yellow(
+              `    budget reached (${hit.hit === 'min' ? `${budget.elapsedMin().toFixed(0)} min` : `₹${counted.toFixed(2)}`}) — closing the record here`,
+            ),
+          )
+        }
+      }
 
       /**
        * Everything the window's own messages set off, drained where the clock
@@ -1443,8 +1717,8 @@ async function main(): Promise<void> {
         // has to move with them or it spends the rest of the run reading a phone
         // in a tenant nobody is writing to.
         const moved = await follow()
-        if (moved) {
-          console.log(c.dim(`      ${moved} seat${moved === 1 ? '' : 's'} moved into ${academyName}`))
+        if (moved.length) {
+          console.log(c.dim(`      ${moved.length} seat${moved.length === 1 ? '' : 's'} moved into ${academyName}`))
         }
       }
 
@@ -1469,7 +1743,12 @@ async function main(): Promise<void> {
         const joined = await arrivals({
           academyId,
           days: cfg.days,
-          known: new Set(Object.keys(plan.briefs)),
+          // Keys currently LIVE, for key allocation — not brief keys: a withheld
+          // cast member's brief is written before they exist, and counting it as
+          // taken would suffix the very person the key was written for.
+          known: new Set([...driven]),
+          knownPhones: new Set(session.roster.map((r) => r.phone)),
+          cast: castByPhone,
           worldName: plan.world.name,
         }).catch((e) => {
           // A failed roster read is a window without newcomers, never a dead run.
@@ -1488,6 +1767,7 @@ async function main(): Promise<void> {
             phone: a.phone,
             // Arrivals are read OUT of the business, so their contact is in it.
             academyId,
+            key: a.key,
           })
           driven.add(a.key)
         }
@@ -1523,17 +1803,11 @@ async function main(): Promise<void> {
             )
           }
           width = cfg.concurrency || driven.size
-          const left = redealFrom(
-            plan.schedule,
-            [...driven].filter((k) => !gone.has(k)),
-            cfg.days,
-            cfg.windows,
-            { day, window: w },
-          )
+          // No re-deal: an arrival simply joins the presence pool, and their
+          // first look is next window's coin — usually boosted, because the
+          // message that created them is sitting unread on their phone.
           console.log(
-            c.dim(
-              `        ${joined.length} joined · ${driven.size} seats now · ${left} windows re-dealt`,
-            ),
+            c.dim(`        ${joined.length} joined · ${driven.size} seats now, in the presence pool`),
           )
         }
       }
@@ -1544,6 +1818,15 @@ async function main(): Promise<void> {
           window: w,
           at: at.label,
           jobs: [...walked, ...after],
+          // The sitting's shape: how many beats the window ran and how many
+          // exchanges each seat used. A reader asking "what happened on
+          // Wednesday evening" reads a six-exchange sitting differently from
+          // six windows, and nothing else records the difference.
+          ...(active.length ? { beats, exchanges: Object.fromEntries(exchanges) } : {}),
+          // Who decided not to look at the phone this window — a presence
+          // decision, not an event skip. `away` below is the world removing
+          // somebody; this is the person not checking.
+          ...(skippedPresence.length ? { skippedPresence } : {}),
           // What the world did to this window, beside what the queue did.
           // `days.jsonl` is where a reader goes to ask "what happened on
           // Wednesday evening", and a window in which two people were away and
@@ -1649,6 +1932,36 @@ async function main(): Promise<void> {
             (select count(*) from audit_entry) audited`,
   )
 
+  /**
+   * THE LIFECYCLE, AS FIRST-TIMESTAMPS.
+   *
+   * The production exit bar asks whether the money loop completes — billed →
+   * paid → reconciled — and until now the only way to answer it was to read the
+   * whole run. This is the evidence in one row: the first moment each stage of
+   * the arc existed, or null because it never did. Timestamps and never
+   * booleans — "did the arc complete" is a verdict, verdicts live in
+   * `judgement.json`, and a null here is a fact a judge interprets (a 3-day run
+   * with a null tally is not a product that cannot bill).
+   */
+  const lifecycle =
+    founded ?
+      ((
+        await sql(
+          `select
+             (select min(created_at) from academy)                                                  as founded,
+             (select min(created_at) from class)                                                    as first_class,
+             (select min(created_at) from enrollment)                                               as first_enrollment,
+             (select min(created_at) from session)                                                  as first_session,
+             (select min(starts_at)  from session where status = 'completed')                       as first_session_completed,
+             (select min(created_at) from attendance)                                               as first_attendance,
+             (select min(created_at) from tally_line)                                               as first_tally_line,
+             (select min(created_at) from job where kind = 'month_end_tally' and status = 'done')   as first_month_end_tally_done,
+             (select min(coalesce(requested_at, created_at)) from payment)                          as first_payment_requested,
+             (select min(confirmed_at) from payment where status = 'confirmed')                     as first_payment_confirmed`,
+        ).catch(() => [] as unknown[])
+      )[0] ?? null)
+    : null
+
   const rec = await reopenRun(dir, {
     academyId,
     q: sql,
@@ -1666,7 +1979,12 @@ async function main(): Promise<void> {
       // who was left out of the narrower of them.
       personas: plan.briefs,
       inputRealism: INPUT_REALISM,
-      schedule: plan.schedule,
+      /**
+       * Every presence decision the run made, in order. What `extra.schedule`
+       * used to hold was a week decided before anybody spoke; this is the week
+       * as it was actually lived — who looked, who did not, window by window.
+       */
+      presence: presenceLog,
       windowAt: WINDOW_AT,
       /**
        * The reference, and the line it meant on the day. Named `builtFrom` rather
@@ -1694,6 +2012,8 @@ async function main(): Promise<void> {
        * `ab.ts` prints two columns and no third.
        */
       truth: events.active ? events.truth() : null,
+      /** See the query above: the arc's first-timestamps, or null per stage. */
+      lifecycle,
       run: {
         academyName,
         elapsedMin: Number(budget.elapsedMin().toFixed(2)),
@@ -1935,6 +2255,14 @@ async function manifest(
        * "off" was never true of a Claude seat and no run said what was.
        */
       seatEffort: SEAT_EFFORT,
+      /**
+       * What the seat's sampling actually was, said rather than assumed.
+       * `SEAT_TEMPERATURE` in `_persona-agent.ts` reaches only the DeepSeek
+       * branch; a Claude seat runs at whatever the CLI defaults to, and no run
+       * ever recorded that. A reader comparing two runs' seat variance needs to
+       * know the knob was never turned, not guess it.
+       */
+      seatSampling: { temperature: 'cli-default', effort: SEAT_EFFORT, note: 'SEAT_TEMPERATURE applies to the DeepSeek seat branch only' },
       thinkingPin: process.env.PROBE_THINKING ?? null,
     },
     /**
@@ -1962,7 +2290,15 @@ async function manifest(
     // `ref` is what was typed and `is` is what it turned out to mean. A manifest
     // is a file people paste into issues, and "worlds/multi-coach.json" pasted
     // into one six months from now names whatever that file holds then.
-    world: { academyId, academyName, ref: plan.ref, is: plan.is },
+    world: {
+      academyId,
+      academyName,
+      ref: plan.ref,
+      is: plan.is,
+      // The resolved instant, not the flag: `day:25` names a different date next
+      // month, and the record has to hold the one this run actually opened on.
+      ...(plan.startAt ? { startAt: plan.startAt.toISOString() } : {}),
+    },
     /**
      * What was supposed to happen to the business this week, beside what the
      * business was.

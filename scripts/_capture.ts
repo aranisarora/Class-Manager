@@ -459,6 +459,19 @@ export type TurnMeta = {
    */
   contactId?: string | null
   /**
+   * WHOSE PHONE the `reply` field is read for — this seat's own number.
+   *
+   * `messages` deliberately stays whole: everything the turn put on the wire,
+   * every recipient, is evidence. But `reply` is "what came back to the
+   * speaker", and a founding or an invite sends to TWO recipients inside one
+   * turn — on the 24 Aug review, a tap turn's recorded `reply` was the invite
+   * sent to somebody else's number, and a judge reading it would think the bot
+   * answered the owner with "Hi Kiran —". When `to` is present, `reply` and
+   * `buttons` are filtered to it; absent (queue turns, older drivers), they
+   * blend exactly as before, which is at least the devil the reader knows.
+   */
+  to?: string | null
+  /**
    * The tenant this turn's evidence must be read in, when it is not the run's.
    *
    * A seat's academy is its own contact's and not the run's (`_seat.academyOf`).
@@ -1052,8 +1065,15 @@ async function attach(dir: string, run: Run, opts: OpenOpts) {
       rounds,
       sql,
       messages: out,
-      reply: out.filter((m) => !m.suppressedReason).map((m) => m.body).join('\n---\n') || null,
-      buttons: out.flatMap((m) => m.buttons),
+      // What THIS person read and could tap — see `TurnMeta.to`. `messages`
+      // above keeps every recipient; these two are the speaker's own screen.
+      ...(() => {
+        const heard = out.filter((m) => !m.suppressedReason && (!meta.to || !m.to || m.to === meta.to))
+        return {
+          reply: heard.map((m) => m.body).join('\n---\n') || null,
+          buttons: heard.flatMap((m) => m.buttons),
+        }
+      })(),
       tapped: meta.tapped ?? null,
       jobs: sink.jobs,
       tokens,

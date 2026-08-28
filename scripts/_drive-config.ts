@@ -233,6 +233,22 @@ export type DriveConfig = {
    * age and only ever matches a name this driver made. See `collectGarbage`.
    */
   keep: boolean
+  /**
+   * Where on the CALENDAR the run opens — `YYYY-MM-DD`, or `day:N` for the next
+   * future Nth of a month. Absent means next Monday, which is what every run
+   * before this flag opened on.
+   *
+   * It exists for the money loop. Billing is month-end (`month_end_tally` fires
+   * at 09:00 on the 1st), so whether a run ever crosses a month boundary used to
+   * be luck plus `--days` — a 14-day run starting the 3rd measures no billing at
+   * all, and nothing anywhere said so. `day:25` + `--days 14` is a founding week,
+   * the 1st, and the payment window after it, deterministically.
+   *
+   * Future dates only, refused at resolve time against the world's timezone:
+   * every drive walks its clock FORWARD only, and `gc` ages worlds by the tenant
+   * clock, so a run opened in the past would be reaped as stale mid-week.
+   */
+  start?: string
 }
 
 /* ------------------------------------------------------------ what exists */
@@ -327,6 +343,14 @@ export const PRESETS: Readonly<Record<string, Preset>> = Object.freeze({
   smoke: frozen({ days: 1, windows: ['evening'], seats: 2 }),
   day: frozen({ days: 1, windows: [...ALL_WINDOWS] }),
   week: frozen({ days: 7, windows: [...ALL_WINDOWS] }),
+  /**
+   * The whole lifecycle, aimed at the calendar: open on the 25th, so the first
+   * week is founding and setup, day 6-ish crosses the 1st and `monthly_lines` /
+   * `month_end_tally` fire against real enrolments, and the week after is the
+   * payment and reconciliation the exit bar asks for. This arc has never once
+   * completed in a recorded run; this preset is the run that asks for it.
+   */
+  e2e: frozen({ days: 14, windows: [...ALL_WINDOWS], start: 'day:25' }),
 })
 
 /* -------------------------------------------------------------- refusing */
@@ -392,6 +416,7 @@ const FLAGS = {
   seed: 'value',
   model: 'value',
   arm: 'value',
+  start: 'value',
   config: 'value',
   keep: 'bare',
   drop: 'bare',
@@ -614,6 +639,26 @@ function toLayer(raw: Record<string, unknown>, where: (key: string) => string): 
       case 'arm':
         L.arm = str(value, at)
         break
+      case 'start': {
+        const v = str(value, at)
+        // Shape only — whether the date is in the future needs the world's
+        // timezone, which nothing here has read. `resolveStart` in
+        // `_world-file.ts` refuses a past date with the reason.
+        const dayForm = v.match(/^day:(\d{1,2})$/)
+        if (dayForm) {
+          const d = Number(dayForm[1])
+          if (d < 1 || d > 28) {
+            fail(`${at}: day:${d} — the day must be 1..28, so it exists in every month`)
+          }
+        } else if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+          fail(
+            `${at}: "${v}" is not a start`,
+            'Give YYYY-MM-DD, or day:N for the next future Nth of a month (N in 1..28).',
+          )
+        }
+        L.start = v
+        break
+      }
       case 'keep':
         L.keep = bool(value, at)
         break
@@ -816,6 +861,7 @@ export function resolveConfig(argv: string[]): DriveConfig {
     ...(m.budgetMin !== undefined ? { budgetMin: m.budgetMin } : {}),
     ...(m.budgetInr !== undefined ? { budgetInr: m.budgetInr } : {}),
     ...(m.arm !== undefined ? { arm: m.arm } : {}),
+    ...(m.start !== undefined ? { start: m.start } : {}),
   }
 
   check(cfg)
@@ -961,6 +1007,7 @@ export function describeConfig(cfg: DriveConfig): string {
    * records looks first. Silence here on a run that had weather is how two
    * incomparable records come to look like a repeat.
    */
+  if (cfg.start) parts.push(`start ${cfg.start}`)
   if (cfg.events) parts.push(`events ${cfg.events}`)
   const chaos = Object.entries(cfg.chaos).filter(([, v]) => v > 0)
   if (chaos.length) parts.push(`chaos ${chaos.map(([k, v]) => `${k}=${v}`).join(',')}`)

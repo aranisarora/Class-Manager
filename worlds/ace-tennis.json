@@ -22,6 +22,10 @@
         "2": "Priya messaged you privately last night asking for a raise. You have no idea what you currently pay her against what you pay Arjun, and you are not answering until you do.",
         "5": "Priya has told you she cannot do Saturday. Saturday is the weekend squad and you are the only other name on it, so unless somebody covers it, it is you, and you had plans.",
         "7": "Sunday morning, coffee, ten minutes. You want to know how the week went and what is going wrong before it becomes expensive."
+      },
+      "present": true,
+      "style": {
+        "skepticism": "hard"
       }
     },
     {
@@ -37,6 +41,9 @@
       "life": {
         "1": "You were ten minutes late to the six o'clock — stuck at Silk Board — and you have only just got to the car.",
         "5": "You have heard Priya cannot do Saturday. You would like it. You need to know if it pays the same."
+      },
+      "style": {
+        "skepticism": "hard"
       }
     },
     {
@@ -52,6 +59,9 @@
       "life": {
         "3": "Anika has a fever. She is not going tomorrow evening and you have told nobody yet.",
         "5": "Anika is still off. You have started wondering what you are paying for."
+      },
+      "style": {
+        "skepticism": "hard"
       }
     },
     {
@@ -71,6 +81,10 @@
       ],
       "life": {
         "1": "You are going to try this number today because a neighbour said it answers quickly."
+      },
+      "arrives": 2,
+      "style": {
+        "skepticism": "hard"
       }
     }
   ]

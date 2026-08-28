@@ -73,7 +73,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { academyOf, drive, logSeat, q, readPhone, renderPhone, takeHeldBack, type Seen, type Session } from './_seat'
+import { academyOf, drive, logSeat, q, readPhone, renderPhone, seatContactLookup, seatContacts, takeHeldBack, type Seen, type Session } from './_seat'
 
 /**
  * Forced before anything is imported that can send, exactly as `_seat.ts` and
@@ -100,7 +100,6 @@ if (!process.send) {
 const { openSeatModel } = await import('./_persona-agent')
 const { readTurns } = await import('./_derive')
 const { inboundFromContact } = await import('@/lib/seed')
-const { phonebookLookup, phonebookNames } = await import('@/lib/phonebook')
 const { bodyWithSharedContacts } = await import('@/lib/messaging/contact-card')
 
 /** A seat key is derived from a name in the world file: `Rahul Menon` → `rahul-menon`. */
@@ -127,7 +126,27 @@ export type Ask = {
    * evening has an ordinary phone on Saturday morning.
    */
   lag?: number
+  /**
+   * Which exchange of this window's sitting this is, 1-based.
+   *
+   * `1` (or absent) is the window's first look — the day's pressure and the lag
+   * arrive with it. Anything higher is the same person still holding the phone a
+   * few simulated minutes later, reading the reply their last message earned:
+   * the driver's beat loop asks again only while something arrived and the seat
+   * has not put the phone down.
+   */
+  exchange?: number
 }
+
+/**
+ * A control message rather than an ask: re-read `session.json` without losing
+ * the process — and with it the seat model's live thread, which is the founder's
+ * memory of everything said before the business existed. Sent by the driver at
+ * founding and when a seat's contact moves between tenants; answered with
+ * `{ id, kind: 'reloaded' }` once the new session is the one every later ask
+ * resolves contacts against.
+ */
+export type Ctl = { id: string; kind: 'reload' }
 
 /**
  * What came back. `kind` names which of the two things happened rather than
@@ -141,6 +160,7 @@ export type Ask = {
  */
 export type Told =
   | { id: 'ready'; kind: 'ready'; persona: string }
+  | { id: string; kind: 'reloaded'; persona: string }
   | {
       id: string
       kind: 'moved'
@@ -232,12 +252,35 @@ if (!persona) {
  */
 const seat = openSeatModel(MODEL, persona)
 
-const session = JSON.parse(await readFile(join(DIR, 'session.json'), 'utf8')) as Session
-const contactId = session.contacts[KEY]
-if (!contactId) {
-  console.error(`  _seat-worker: ${KEY} has no contact in ${join(DIR, 'session.json')}`)
-  process.exit(2)
+/**
+ * `let` rather than `const`, because founding moves people: the founder gets a
+ * NEW contact inside the business they just created, and a worker still holding
+ * the front-desk one would read an empty thread for the rest of the week. The
+ * driver used to fix that by restarting every worker — which threw away the seat
+ * model's live thread, so the founder forgot everything the product had told
+ * them at exactly the setup pivot. Now it sends `reload` and only these two
+ * bindings change; the process, and the conversation it holds, survive.
+ */
+let session!: Session
+let contactId!: string
+
+async function loadSession(): Promise<void> {
+  const next = JSON.parse(await readFile(join(DIR, 'session.json'), 'utf8')) as Session
+  const ct = next.contacts[KEY]
+  if (!ct) {
+    // At boot this is fatal — the seat has nobody to speak as. On a reload it
+    // would mean session.json lost a key mid-run, and keeping the contact we
+    // have is the only move that does not kill a week over a driver bug.
+    if (!contactId) {
+      console.error(`  _seat-worker: ${KEY} has no contact in ${join(DIR, 'session.json')}`)
+      process.exit(2)
+    }
+    return
+  }
+  session = next
+  contactId = ct
 }
+await loadSession()
 
 /**
  * Their memory, rebuilt from the run rather than from this process's lifetime.
@@ -351,11 +394,13 @@ async function move(ask: Ask): Promise<Told> {
     phone,
     said,
     seed: SEED,
-    // Names only — see `SeatMove.attach`. The numbers behind them are derived from
-    // this academy's id and never enter the prompt, so a seat cannot invent one and
-    // cannot hand a number another tenant already holds.
-    contacts: phonebookNames(session.academyId),
+    // Names only — see `SeatMove.attach`. The numbers behind them never enter
+    // the prompt, so a seat cannot invent one and cannot hand a number another
+    // tenant already holds. The book is the world's own withheld people first
+    // (`Session.cast`), then the derived pool — see `seatContacts`.
+    contacts: seatContacts(session),
     ...(ask.today ? { today: ask.today } : {}),
+    ...(ask.exchange ? { exchange: ask.exchange } : {}),
   })
 
   /**
@@ -374,6 +419,9 @@ async function move(ask: Ask): Promise<Told> {
     // where she had not been told yet.
     ...(ask.lag ? { lagHours: ask.lag } : {}),
     ...(ask.today ? { today: ask.today } : {}),
+    // Which exchange of the sitting this was — a reader of `seat.jsonl` telling a
+    // window's opening look from a follow-up needs it on the row.
+    ...(ask.exchange && ask.exchange > 1 ? { exchange: ask.exchange } : {}),
     shown: seen,
     move: turn.move,
     ...(turn.error ? { error: turn.error } : {}),
@@ -432,9 +480,9 @@ async function move(ask: Ask): Promise<Told> {
    */
   const attachNames = actionId ? [] : (m.attach ?? [])
   const shared = attachNames
-    .map((n) => phonebookLookup(session.academyId, n))
+    .map((n) => seatContactLookup(session, n))
     .filter((c): c is NonNullable<typeof c> => c !== null)
-  const unknownNames = attachNames.filter((n) => phonebookLookup(session.academyId, n) === null)
+  const unknownNames = attachNames.filter((n) => seatContactLookup(session, n) === null)
 
   /**
    * A silent move is still a turn: the thunk posts nothing, and the turn is
@@ -574,6 +622,32 @@ let queue: Promise<void> = Promise.resolve()
 process.on('message', (raw: unknown) => {
   const ask = raw as Ask
   if (!ask || typeof ask !== 'object' || typeof ask.id !== 'string') return
+  /**
+   * `reload` rides the same queue as the asks, so it can never land mid-move: a
+   * session swapped under a turn in flight would post the rest of that turn
+   * through a contact the move was not decided about.
+   */
+  if ((raw as Ctl).kind === 'reload') {
+    queue = queue.then(async () => {
+      try {
+        await loadSession()
+        send({ id: ask.id, kind: 'reloaded', persona: KEY })
+      } catch (e) {
+        // A reload that cannot read the file is reported as a failure; the driver
+        // falls back to the restart it would have done anyway.
+        send({
+          id: ask.id,
+          kind: 'failed',
+          error: e instanceof Error ? e.message : String(e),
+          usage: { promptTokens: 0, outputTokens: 0, cachedTokens: 0 },
+          attempts: 0,
+          ms: 0,
+          model: MODEL,
+        })
+      }
+    })
+    return
+  }
   queue = queue.then(async () => {
     try {
       send(await move(ask))

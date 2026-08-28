@@ -43,6 +43,7 @@
  */
 import type { SeatRole } from './_personas'
 import type { Brief } from './_personas'
+import type { WorldPerson } from './_world-file'
 
 import { briefFor } from './_personas'
 import { keyOf } from './_world-file'
@@ -66,16 +67,49 @@ export type Arrival = {
  * gap, and reading them as a coach would give them a coach's blindfold about
  * money in a week where they are the one being asked about it.
  *
- * `known` is the set of seat keys already seated. It is passed in rather than
- * re-derived because the caller is the only thing that knows who it spawned, and
- * a person seated twice gets two child processes reading one phone — both see the
- * same messages, both reply, and the transcript shows somebody arguing with
- * themselves.
+ * IDENTITY IS THE PHONE, NOT THE NAME
+ * -----------------------------------------------------------------------------
+ * The dedupe used to be `keyOf(full_name)`, and it manufactured a person: the
+ * owner typed an invented number for "Kiran", the world already seated a "Kiran
+ * Joshi" at a different one, `keyOf` said they were different people — true —
+ * and then a later run's "Kiran" vs "Kiran" said two contacts of one human were
+ * two humans. Both directions are wrong for the same reason: a human in this
+ * harness IS a phone. One person holds one number across every tenant (§10.1
+ * resolves inbound by `(from, sender)`), so `knownPhones` is the dedupe, and a
+ * NEW arrival is exactly a NEW number the product can reach. The seat KEY is
+ * only a handle: derived from the name and suffixed (`kiran-2`) when the name
+ * is already taken by somebody at a different number — legible in the roster,
+ * never a second process on one phone.
+ *
+ * WHO SITS DOWN: THE CAST'S OWN PERSON, WHEN THE PHONE MATCHES
+ * -----------------------------------------------------------------------------
+ * A world's withheld people are reachable numbers with written briefs. When the
+ * arriving phone is one of theirs, the seat gets the WORLD's person — their
+ * about, goals, voice, life — with the role the rows actually gave them winning
+ * over the file's when the rows say more (a cast "prospect" the owner enrolled
+ * is a client now). A phone the world never wrote gets the generic role brief,
+ * as ever.
+ *
+ * `known` is the set of seat keys already live, for key allocation only. It is
+ * passed in rather than re-derived because the caller is the only thing that
+ * knows who it spawned.
+ *
+ * @mechanism arrivals — identity is the phone and the cast supplies the person: dedupe
+ *   by `knownPhones` (one human is one number across every tenant), a colliding display
+ *   name gets a suffixed seat key, and an arriving number the world wrote is seated with
+ *   the world's own brief, the rows winning the role. With the withheld cast
+ *   (`buildWorld`/`seatContacts`) this retires the fifth-Kiran class: a pre-seated cast
+ *   used to collide with the people the product created, and the only invite path was
+ *   typing a number the blindfolded seat had to invent. Closes F-FA.
  */
 export async function arrivals(o: {
   academyId: string
   days: number
   known: Set<string>
+  /** Every phone already at a seat — the dedupe. A person is their number. */
+  knownPhones: Set<string>
+  /** The world's withheld people, by phone. */
+  cast?: Map<string, WorldPerson>
   worldName: string
 }): Promise<Arrival[]> {
   const rows = await q<{
@@ -101,35 +135,46 @@ export async function arrivals(o: {
       order by ct.is_primary desc nulls last, ct.created_at asc`,
   )
 
-  const seen = new Set<string>()
+  const seenPhones = new Set<string>()
+  const taken = (key: string, out: Arrival[]): boolean =>
+    o.known.has(key) || out.some((a) => a.key === key)
   const out: Arrival[] = []
   for (const r of rows) {
-    const key = keyOf(r.full_name)
-    // The FIRST contact of a person wins: `order by` puts the primary first, and
-    // a second number for one human is the same human, not a second seat.
-    if (seen.has(key) || o.known.has(key)) continue
-    seen.add(key)
+    // The FIRST contact of a phone wins: `order by` puts the primary first, and
+    // a second contact row for one number is the same human, not a second seat.
+    if (seenPhones.has(r.phone_e164) || o.knownPhones.has(r.phone_e164)) continue
+    seenPhones.add(r.phone_e164)
 
-    const seat: SeatRole =
+    const rowSeat: SeatRole =
       r.is_admin ? 'admin'
       : r.is_coach ? 'coach'
       : r.is_client ? 'client'
       : 'prospect'
 
+    const castPerson = o.cast?.get(r.phone_e164)
+    const person: WorldPerson =
+      castPerson ?
+        // The rows win the ROLE when they say more than the file: the file wrote
+        // who this person is, the business decided what they are to it.
+        { ...castPerson, seat: rowSeat !== 'prospect' ? rowSeat : castPerson.seat }
+      : { name: r.full_name, seat: rowSeat, about: ABOUT[rowSeat], life: {} }
+
+    let key = keyOf(person.name)
+    if (taken(key, out)) {
+      let i = 2
+      while (taken(`${key}-${i}`, out)) i += 1
+      key = `${key}-${i}`
+    }
+
+    const brief = briefFor({ person, worldName: o.worldName, days: o.days })
     out.push({
       key,
       contactId: r.id,
       phone: r.phone_e164,
-      brief: briefFor({
-        person: {
-          name: r.full_name,
-          seat,
-          about: ABOUT[seat],
-          life: {},
-        },
-        worldName: o.worldName,
-        days: o.days,
-      }),
+      // The suffixed key, when there was a collision — `briefFor` derives its
+      // own from the name, and two seats answering one key is the defect the
+      // suffix exists to prevent.
+      brief: { ...brief, key },
     })
   }
   return out

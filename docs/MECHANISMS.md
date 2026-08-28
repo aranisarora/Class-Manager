@@ -32,7 +32,7 @@ The name must be a symbol that really appears in that file — the build rejects
 `Closes F-XX` is optional, and is checked against the ledger: naming a finding that does not
 exist, or one still marked open, fails. Then run `npm run mechanisms`.
 
-239 mechanisms · 47 findings closed by one · 26 findings still open
+242 mechanisms · 50 findings closed by one · 28 findings still open
 
 ## The scan
 
@@ -278,6 +278,7 @@ One line each. Find a candidate here, then read its entry below.
 `validateOutbound` — enumerates every way a message would fail on the real wire (LIMITS are the Cloud API's own numbers) and returns reasons instead of repairing anything: a…  
 
 **`scripts/`**  
+`arrivals` — identity is the phone and the cast supplies the person: dedupe by `knownPhones` (one human is one number across every tenant), a colliding display name gets a…  
 `alsoRead` — the evidence queries are re-run under every tenant this turn strayed into, so a founding turn records the business it created rather than recording silence.  
 `bySeatKey` — the per-person axis is the PERSON (`who`), never the role (`persona`): two people share a role, and keying the split on it filed both owner departures in this…  
 `omitUnspecified` — every key whose value is its own "unspecified" sentinel is dropped before a config reaches disk, because the parser refuses each sentinel BY DESIGN and F-CN's…  
@@ -288,7 +289,9 @@ One line each. Find a candidate here, then read its entry below.
 `heldBack` — replies a persona has not looked at yet survive their worker.  
 `requiredPolicyClauses` — named policies must CONTAIN the clause that makes them safe, retiring the class of defect where a migration is in the repo and not in the database and every…  
 `parseSignatures` — reads a signature wherever it sits on the line, and counts what it read, retiring the class of defect where a gate passes because its own reader matched…  
+`MAX_EXCHANGES` — the sitting: inside a window the clock advances a few simulated minutes per beat (with a recorded drain), and whoever a reply reached keeps the phone in hand…  
 `everyTenantOnTheNumber` — every business on this sender is moved to the same moment, not only the desk and the one the run adopted.  
+`whoChecks` — presence per window per live seat, off a seeded hash coin: role base rates or the person's own `style.presence`, a founder-bias while nothing is founded, an…  
 
 **`supabase/migrations/`**  
 `player_attendance` — the per-player register aggregate: due, marked, attended and absent already counted over app.session_roster, the rate's denominator carried beside its…  
@@ -771,28 +774,34 @@ One line each. Find a candidate here, then read its entry below.
 
 ## `scripts/`
 
-- **`alsoRead`** — `scripts/_capture.ts:895`  
+- **`arrivals`** — `scripts/_arrivals.ts:97`  
+  identity is the phone and the cast supplies the person: dedupe by `knownPhones` (one human is one number across every tenant), a colliding display name gets a suffixed seat key, and an arriving number the world wrote is seated with the world's own brief, the rows winning the role. With the withheld cast (`buildWorld`/`seatContacts`) this retires the fifth-Kiran class: a pre-seated cast used to collide with the people the product created, and the only invite path was typing a number the blindfolded seat had to invent. **Closes F-FA.**
+- **`alsoRead`** — `scripts/_capture.ts:908`  
   the evidence queries are re-run under every tenant this turn strayed into, so a founding turn records the business it created rather than recording silence. The note below has stated this gap in words since it was written — "the rows are not missing from the run, they are missing from the record" — and a reader who did not read the note took `sent: 0` on the most important conversation in the product as a product failure. Measured on `2026-08-22-13-29-sim-8528`: three hand-over turns, each carrying the note, each recording no reply, no tokens and no cost against an onward turn of 85,082 prompt tokens that had answered the person. Every rupee figure in every record was a floor.
 - **`bySeatKey`** — `scripts/_derive.ts:245`  
   the per-person axis is the PERSON (`who`), never the role (`persona`): two people share a role, and keying the split on it filed both owner departures in this corpus under `prospect.jsonl` beside a stranger who wandered off — a business's operator walking out, invisible in the one view built for reading a run person by person. `persona` stays in every row for filtering by role; it just no longer names the file. Queue turns have no person and keep their own file, as before. **Closes F-EJ.**
-- **`omitUnspecified`** — `scripts/_drive-config.ts:1000`  
+- **`omitUnspecified`** — `scripts/_drive-config.ts:1047`  
   every key whose value is its own "unspecified" sentinel is dropped before a config reaches disk, because the parser refuses each sentinel BY DESIGN and F-CN's first fix listed the two keys it had measured instead of the class: on 23 Aug 2026 `npm run ab` died at second zero three times in a row — `seats: 0`, then `personas: []`, then `events: ""` — each key surviving the previous fix's list, because ab's parent sidecar never went through `recordedConfig` at all. Both writers go through this one strip now, so a new sentinel key fails ONCE and is added HERE, not discovered by a run of arms dying in sequence.
-- **`recordedConfig`** — `scripts/_drive-config.ts:1030`  
+- **`recordedConfig`** — `scripts/_drive-config.ts:1077`  
   "unspecified" is spelled by ABSENCE on disk, never by a sentinel value. `seats: 0` means "all of them" in memory and the parser refuses it from a file (`min: 1`); `personas: []` means "everybody this world has" and `list()` refuses an empty list. Both round-tripped through `config.json` as literals, so `npm run ab` handed its children a config its own parser would not accept and both arms died at second zero. A key whose value is the unspecified sentinel is omitted, and an absent key re-resolves to the same default on read. **Closes F-CN.**
 - **`departed`** — `scripts/_events.ts:915`  
   chaos is not rolled for somebody who has left the run, retiring the class of defect where the record of a week describes people who were not in it. `giveup` is a first-class seat action and a persona who takes it is never seated again; nothing here knew that, so the roll kept going. On the 30-day run of 22 Aug 2026 divya-rao and farah-sheikh both gave up on day 5, were correctly never driven after it, and between them account for 17 of the 45 chaos events `truth.json` records — dated days 10 to 30, every one of them a fact about nobody. A reader counting "how messy was this week" counted a third again more weather than the week actually had.
-- **`WINDOW_AT`** — `scripts/_personas.ts:167`  
+- **`WINDOW_AT`** — `scripts/_personas.ts:232`  
   three looks at the phone, with the afternoon one between the coach ladder's ask (17:00) and its escalation (17:45), because two windows a day CANNOT answer a ladder built for three: every rung landed between the two moments a seat existed, so the record showed a coach who never answered, every run, and the drive could never once observe the ladder working (F-EJ). 17:20 sits after the ask and before the nudge — the moment a real coach glances at their phone on the way to the court.
-- **`secondBreath`** — `scripts/_seat-worker.ts:469`  
+- **`secondBreath`** — `scripts/_seat-worker.ts:517`  
   a persona may send a second message before the product has answered, which is what `INPUT_REALISM` has instructed since it was written — "HALF MESSAGES sent by accident, then finished in the next one", "THE SAME THING TWICE, because the first one looked like it did not send" — and what `SeatAction` made structurally impossible: one move per window, one string in it, a measured maximum of 1 message per person per window across 101 sim seat turns with zero exceptions. So `repliedTo` had never once faced a second inbound, and §7.1's "bring the timetable in one message, however messy" was only ever measured with nothing else in flight. Bounded at exactly one extra so a run cannot become a stress test of an uncommon shape. **Closes F-DW.**
-- **`heldBack`** — `scripts/_seat.ts:564`  
+- **`heldBack`** — `scripts/_seat.ts:626`  
   replies a persona has not looked at yet survive their worker. `drive()` writes what it just produced here after advancing the cursor past it; the next `move()` drains and clears it. Reading without advancing was the other candidate and is wrong twice: it re-shows rows the person has already seen, which `readPhone`'s own comment calls a defect that would have been written up as a product bug, and after a hand-over the persona holds a DIFFERENT contact row in a different tenant, so no cursor position can reach those messages at all. **Closes F-DX.**
 - **`requiredPolicyClauses`** — `scripts/check-rls-doc.ts:145`  
   named policies must CONTAIN the clause that makes them safe, retiring the class of defect where a migration is in the repo and not in the database and every gate still reports success. Presence of a policy is not the property anybody cares about: `player_cm_user_select` existed throughout, in 0003's form, and 0003's form lets a parent read the whole academy's children. What was missing was one clause, and a check that never names a clause cannot miss one.
 - **`parseSignatures`** — `scripts/check-schema-doc.ts:123`  
   reads a signature wherever it sits on the line, and counts what it read, retiring the class of defect where a gate passes because its own reader matched nothing. The anchor used to be `\n([a-z_]+)\(` — column zero or nothing — so the twelve indented signatures under `## The views`, and the one real TABLE filed among them, were never compared to the database at all. Two spaces of indentation, chosen for layout, silently switched the check off for a table the model writes to. Leading whitespace is now allowed, and the openings it walked are counted and asserted against `MIN_SIGNATURE_OPENINGS`, so the next reader that stops matching fails instead of congratulating itself.
-- **`everyTenantOnTheNumber`** — `scripts/sim.ts:1192`  
+- **`MAX_EXCHANGES`** — `scripts/sim.ts:338`  
+  the sitting: inside a window the clock advances a few simulated minutes per beat (with a recorded drain), and whoever a reply reached keeps the phone in hand until quiet/giveup, a dry beat, or the caps. Retires the correspondence cadence — one move per window, the reply held to the persona's next dealt window, a measured maximum of one message per person per window with a 12.26h floor between anybody's two messages — under which multi-step setup was structurally untestable and every clarifying question cost the flow half a simulated day. **Closes F-EX.**
+- **`everyTenantOnTheNumber`** — `scripts/sim.ts:1252`  
   every business on this sender is moved to the same moment, not only the desk and the one the run adopted.
+- **`whoChecks`** — `scripts/sim.ts:1310`  
+  presence per window per live seat, off a seeded hash coin: role base rates or the person's own `style.presence`, a founder-bias while nothing is founded, an unread boost with a forced look after two ignored windows, and the opening errand as a certainty. Retires the dealt schedule, under which the week's shape was decided before anybody spoke (~9 of 21 windows per persona) and an arrival was patched in by re-dealing the remainder. Every decision lands in `extra.presence` and `days.jsonl`. **Closes F-EZ.**
 
 ## `supabase/migrations/`
 
@@ -801,6 +810,6 @@ One line each. Find a candidate here, then read its entry below.
 
 ## Still open
 
-No mechanism claims 26 findings. They are listed in
+No mechanism claims 28 findings. They are listed in
 [`../findings/OPEN.md`](../findings/OPEN.md), which is generated from the ledger and is the
 one place that list lives.

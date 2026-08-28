@@ -1,6 +1,6 @@
 # What is open
 
-26 findings. This file is the source of truth for what is broken — hand-written, and short on
+28 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -43,6 +43,8 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-DP** | The desk asks which side somebody is on when their own words have already said, and the prefix telling it not to is the only thing stopping it | [detail](#f-dp--the-desk-asks-which-side-somebody-is-on-when-their-own-words-have-already-said-and-the-prefix-telling-it-not-to-is-the-only-thing-stopping-it) |
 | **F-EE** | §16.3's per-tenant quality proxies — delivery failures, read rate, **response rate**, opt-outs — have no reader, so nothing notices a tenant shouting into silence on a shared number. **The send-path half is built** (`silenceBackoff`); the scheduled roll-up is what remains | [detail](#f-ee--1633s-per-tenant-quality-proxies-have-no-reader) |
 | **F-EV** | `cancel_session`'s credit-back dedupe is keyed on prose with a relative day label, so a re-attempt double-credits and a same-day second session under-credits | [detail](#f-ev--cancel_sessions-credit-back-dedupe-is-keyed-on-prose) |
+| **F-FD** | `changed` bleeds across concurrent turns in one window, and sittings raised same-window concurrency | [detail](#f-fd--changed-bleeds-across-concurrent-turns-in-one-window-and-sittings-raised-same-window-concurrency) |
+| **F-FE** | An event's `who` binds by display name, so a product-created stranger sharing a cast name takes their weather | [detail](#f-fe--an-events-who-binds-by-display-name-so-a-product-created-stranger-sharing-a-cast-name-takes-their-weather) |
 
 ---
 
@@ -1161,3 +1163,34 @@ adjustment row deliberately carries `session_id = null` (§6.4: a cancelled sess
 credited (e.g. carried in `reason` or a dedicated column), which survives renames, relative
 dates and same-day siblings. It is a money-behaviour change, so per the F-BA precedent it
 deserves a drive behind it rather than a unit-proof ship.
+
+### F-FD · `changed` bleeds across concurrent turns in one window, and sittings raised same-window concurrency
+
+**Saw:** 24 Aug 2026 review of `2026-08-24-07-28-sim-df05` — turn #20 (Prakash) carries the same
+venue insert as #19 (Sunil): `_capture.ts` scopes a turn's changed-row images by domain time plus
+contact, and audit rows written by a concurrent turn inside the same window land in whichever
+record flushes second. The sitting mechanism (F-EX's fix) multiplies same-window concurrency, so
+the class fires more often now, not less.
+
+**Root:** an instrument attribution gap — the audit window cannot tell two writers apart when
+their turns overlap and the rows do not carry the writer's turn id in a place the capture reads.
+
+**Where it lives:** scoping `changed` to the turn's own contact/turn id, the way `messages` was
+scoped by 0019's `turn_id` stamp — needs an `audit_entry` schema look before the fix is chosen.
+Until then, a reader of `changed` on overlapping turns is reading a union; the turn-level
+`turnIds` field is the disambiguator that already exists.
+
+### F-FE · An event's `who` binds by display name, so a product-created stranger sharing a cast name takes their weather
+
+**Saw:** 24 Aug 2026, by construction during the withheld-cast change (F-FA): `_events.ts` builds
+`keyByName` from display names (`:504-507`), and arrivals now suffix a colliding seat key
+(`kiran-2`) while keeping the person's display name. An events file naming "Kiran" binds to
+whichever Kiran was admitted last; his absence rolls against the wrong register.
+
+**Root:** the event layer's person identity is the name, while the harness's is now the phone.
+
+**Where it lives:** `keyByName` in `scripts/_events.ts` — bind by seat key (unique by
+construction) with the name kept for display, or refuse an `admit` that would shadow a bound
+name. The world-file validator already refuses in-file duplicates, so this only fires when the
+PRODUCT creates the namesake — rare, and legible in the roster when it happens.
+

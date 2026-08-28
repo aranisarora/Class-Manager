@@ -114,7 +114,7 @@
 import type { GenResult } from '@/lib/agent/deepseek'
 import { generateJson } from '@/lib/agent/deepseek'
 
-import { INPUT_REALISM, MACHINE_POSTURE, type Persona, type Window } from './_personas'
+import { INPUT_REALISM, MACHINE_POSTURE_LEVELS, type Persona, type Window } from './_personas'
 
 /* ------------------------------------------------------------------ shape */
 
@@ -234,6 +234,14 @@ export type SeatContext = {
    * has stopped being a persona and started being a test case.
    */
   today?: string
+  /**
+   * Which exchange of this window's sitting this is, 1-based. Absent or `1` is
+   * the first look of the window; higher means the person is still holding the
+   * phone and the reply to their last message has just arrived. It changes the
+   * situation's opening line and nothing else — the day's pressure was delivered
+   * with exchange 1 and is not re-primed.
+   */
+  exchange?: number
 }
 
 export type SeatTurn = {
@@ -318,6 +326,15 @@ you do not care. Do not name its features, do not suggest what it ought to be ab
 to do, and do not help it along. You are not testing it. You are a person trying
 to get something you need before you have to go and do something else.
 
+TIME
+Replies from this number usually arrive within a minute or two, while you are
+still holding the phone. If it answered you and there is more to say — the answer
+begs a follow-up, or it asked you something — say it now, the way you would in a
+real chat, instead of saving it for later. Choosing "quiet" is putting the phone
+down: you will not look at it again until the next time you naturally check,
+hours from now. Put it down when the errand is done or you have had enough; do
+not stretch a finished conversation just to keep talking.
+
 THE FOUR THINGS YOU CAN DO
 
   tap      Press one of the buttons on a message you can see. Put its words in
@@ -329,6 +346,11 @@ THE FOUR THINGS YOU CAN DO
   say      Type the next message. ONE message, the length you would really send —
            usually well under twenty words, sometimes a single word, occasionally
            one long dictated run-on. Never an essay.
+
+           The exception is reading something OUT: when you have the notebook or
+           the register open in front of you — a timetable, a fee list, a set of
+           names — send the lot, however messy, in one long run-on or with a
+           "then" straight after. Nobody dictates a list one item per day.
 
            Sometimes a second one follows it before they have answered, and that
            is "then". Use it when you would really send two: you hit send early
@@ -396,7 +418,14 @@ function seatSystem(p: Persona): string {
     INPUT_REALISM.trim(),
     '',
     'WHO IS ON THE OTHER END',
-    MACHINE_POSTURE.trim(),
+    /**
+     * The posture is the PERSON's, not the harness's. One hard-mode text used
+     * to be welded in here for every seat — so `eager-owner`, a world written
+     * to measure whether a motivated owner can succeed at all, ran with people
+     * instructed to withhold context and never rephrase. `ordinary` is the
+     * fallback for a brief written before the dial existed.
+     */
+    MACHINE_POSTURE_LEVELS[p.style?.skepticism ?? 'ordinary'].trim(),
     '',
     'WHAT YOU WANT OUT OF THIS WEEK',
     ...p.goals.map((g) => `  - ${g}`),
@@ -442,7 +471,14 @@ function hash(text: string): number {
  * carries the mess that is only theirs.
  */
 function messyLine(o: SeatContext): string {
-  const messy = hash([o.seed, o.persona.key, o.day, o.window, o.said.length].join('|')) % 1000 < 500
+  /**
+   * The rate is the person's (`style.messiness`), not a constant. The literal
+   * 50% meant the fee table had the same forced-typo odds as "ok" and a careful
+   * typist could not exist without editing this file; the coin's placement is
+   * still the seed's, so a re-run asks for the mess in the same places.
+   */
+  const rate = Math.round((o.persona.style?.messiness ?? 0.5) * 1000)
+  const messy = hash([o.seed, o.persona.key, o.day, o.window, o.said.length].join('|')) % 1000 < rate
   return messy
     ? `RIGHT NOW you are moving, or holding something, or annoyed, or all three. Let at
 least one of the things under THE MEDIUM happen to this message, and do not go
@@ -460,12 +496,24 @@ clean. Do not put mistakes in on purpose.`
  * first turn of the week.
  */
 function seatSituation(o: SeatContext): string {
-  const today = (o.today ?? o.persona.life[o.day] ?? '').trim()
+  const midSitting = (o.exchange ?? 1) > 1
   const L: string[] = []
-  L.push(`TODAY — day ${o.day}, the ${o.window}.`)
-  // The same fallback `live.ts` prints for a day this person has nothing
-  // happening on. An empty day is not the same as a day nobody wrote down.
-  L.push(`  ${today || 'Nothing unusual is happening to you today.'}`)
+  if (midSitting) {
+    /**
+     * The same window, minutes later. The day's pressure went with exchange 1
+     * and re-priming it here would hand the person their own morning twice —
+     * what changed is only what is on the phone.
+     */
+    L.push(
+      `STILL AT YOUR PHONE — day ${o.day}, the ${o.window}, a few minutes on. What is\nbelow arrived just now, moments after your last message.`,
+    )
+  } else {
+    const today = (o.today ?? o.persona.life[o.day] ?? '').trim()
+    L.push(`TODAY — day ${o.day}, the ${o.window}.`)
+    // The same fallback `live.ts` prints for a day this person has nothing
+    // happening on. An empty day is not the same as a day nobody wrote down.
+    L.push(`  ${today || 'Nothing unusual is happening to you today.'}`)
+  }
   L.push('')
   // In a live thread their own outbox is already theirs — see `SeatContext.continuing`.
   if (!o.continuing) {

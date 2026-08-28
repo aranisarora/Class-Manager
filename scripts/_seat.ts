@@ -110,6 +110,7 @@ const clock = await import('@/lib/clock')
 const { HANDLERS, JobSkip, planAheadFor } = await import('@/lib/jobs')
 const { msOf } = await import('@/lib/jobs/util')
 const { reopenRun } = await import('./_capture')
+const { phonebookLookup, phonebookNames } = await import('@/lib/phonebook')
 
 export const TZ = 'Asia/Kolkata'
 /** Where a live run's pointer and lock live. One per checkout, not one per run. */
@@ -144,7 +145,22 @@ export type Session = {
      * those runs assumed.
      */
     academyId?: string
+    /**
+     * The seat key this row answers to. Optional for the same era reason as
+     * `academyId`; readers fall back to deriving it from the name — which is
+     * wrong exactly when a product-created stranger shares a cast name and got a
+     * suffixed key, so writers always fill it.
+     */
+    key?: string
   }[]
+  /**
+   * The withheld cast: the world's people the product has not reached yet.
+   * Their names seed every seat's contact book (`seatContacts`), so "add Kiran"
+   * is a card-share carrying a real allocated number rather than an invented
+   * one. A cast member leaves the book the moment a roster row holds their
+   * phone — from then on they are a person the product knows.
+   */
+  cast?: { name: string; seat: string; phone: string; key: string; arrives?: number }[]
   /** Legacy: per persona, the `created_at` of the last message their phone showed. */
   cursor?: Record<string, string>
   startedAt: string
@@ -204,6 +220,52 @@ export const q = async <T = any>(academyId: string, sql: string): Promise<T[]> =
  * Resolved by contact id rather than by name, so it needs no second copy of
  * `keyOf` and cannot disagree with `session.contacts` — both move together.
  */
+/**
+ * THE CONTACT BOOK A SEAT ACTUALLY HOLDS: the world's own people first, then the
+ * derived pool.
+ *
+ * The pool (`lib/phonebook.ts`) is strangers — names the business knows and the
+ * product does not, numbers derived so no two tenants ever share one. What it
+ * could never hold was the world's OWN people: the founder's coach, the family
+ * he means to enrol. So "add Kiran" had exactly one path — typing a number —
+ * and the seat model, forbidden from seeing numbers, invented one; the run then
+ * spent four days on a person the harness had manufactured. The withheld cast
+ * closes that path the way a real handset does: those people are IN the phone,
+ * card-shareable, at the numbers `buildWorld` really allocated them.
+ *
+ * A cast member leaves the book the moment any roster row holds their phone —
+ * the same contract the pool has always had ("nobody in this book exists in the
+ * database"), because from then on sharing them is describing somebody the
+ * product already knows. Names only ever reach a seat; the numbers stay here.
+ */
+function unseatedCast(s: Session): { name: string; phone: string }[] {
+  const seated = new Set(s.roster.map((r) => r.phone))
+  return (s.cast ?? []).filter((p) => !seated.has(p.phone)).map(({ name, phone }) => ({ name, phone }))
+}
+
+export function seatContacts(s: Session): string[] {
+  const cast = unseatedCast(s)
+  const taken = new Set(cast.map((p) => p.name.toLowerCase()))
+  return [...cast.map((p) => p.name), ...phonebookNames(s.academyId).filter((n) => !taken.has(n.toLowerCase()))]
+}
+
+/** A name to a card — the cast first, the pool behind it. Same semantics as `phonebookLookup`. */
+export function seatContactLookup(s: Session, name: string): { name: string; phone: string } | null {
+  const want = name.trim().toLowerCase().replace(/\s+/g, ' ')
+  if (!want) return null
+  const cast = unseatedCast(s)
+  const exact = cast.filter((e) => e.name.toLowerCase() === want)
+  if (exact.length === 1) return exact[0]!
+  if (exact.length > 1) return null
+  const partial = cast.filter((e) => {
+    const full = e.name.toLowerCase()
+    return full.startsWith(`${want} `) || full.endsWith(` ${want}`) || full.includes(` ${want} `)
+  })
+  if (partial.length === 1) return partial[0]!
+  if (partial.length > 1) return null
+  return phonebookLookup(s.academyId, name)
+}
+
 export function academyOf(s: Session, key: string): string {
   const contactId = s.contacts[key]
   const seat = contactId ? s.roster.find((r) => r.contactId === contactId) : undefined
@@ -581,6 +643,44 @@ export async function writeHeldBack(s: Session, key: string, seen: unknown[]): P
   await writeFile(heldBackPath(s, key), JSON.stringify(seen))
 }
 
+/**
+ * How much is on this phone that its owner has not seen: the held-back replies
+ * plus everything past the cursor. A COUNT, for the driver's presence decision,
+ * and never the content — the blindfold does not open here.
+ *
+ * The predicates are `readPhone`'s own five, kept in step deliberately: a second
+ * copy that dropped the suppression clause would count a message the real
+ * recipient never received, and the presence it then forced would be a person
+ * pulled to their phone by nothing — the exact false reading `DRIVING.md` names
+ * the blindfold as existing to prevent.
+ */
+export async function unreadOnPhone(s: Session, key: string): Promise<number> {
+  let held = 0
+  const raw = await readFile(heldBackPath(s, key), 'utf8').catch(() => '')
+  if (raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw)
+      held = Array.isArray(parsed) ? parsed.length : 0
+    } catch {
+      held = 0
+    }
+  }
+  const contactId = s.contacts[key]
+  if (!contactId) return held
+  const since = await readCursor(s, key)
+  const [row] = await q<{ n: number }>(
+    academyOf(s, key),
+    `select count(*)::int as n
+       from message m
+      where m.direction = 'outbound'
+        and m.contact_id = '${contactId}'::uuid
+        and m.created_at > '${since}'::timestamptz
+        and m.suppressed_reason is null
+        and m.status <> 'failed'`,
+  ).catch(() => [{ n: 0 }])
+  return held + (row?.n ?? 0)
+}
+
 /** Drains: what was waiting, and it is not waiting any more. */
 export async function takeHeldBack(s: Session, key: string): Promise<any[]> {
   const raw = await readFile(heldBackPath(s, key), 'utf8').catch(() => '')
@@ -781,6 +881,13 @@ export async function drive(
       // the slower turn's time window swallowed the faster one's reply. See
       // `TurnMeta.contactId`.
       ...(s.contacts[key] === undefined ? {} : { contactId: s.contacts[key] }),
+      // This person's own number, so `reply` holds what reached THEM. A founding
+      // or invite turn legitimately messages two recipients under one turn id,
+      // and a reply that blends them shows a reader words the speaker never saw.
+      ...(() => {
+        const phone = s.roster.find((r) => r.contactId === s.contacts[key])?.phone
+        return phone ? { to: phone } : {}
+      })(),
       // The tenant this turn's evidence was read as, so a reader can tell a
       // turn that said nothing from a turn read in the wrong academy.
       academyId: acad,

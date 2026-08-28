@@ -489,6 +489,35 @@ if (departures.length) {
     .join('')}</ul></div>`
 }
 
+/* --- the lifecycle, when the record carries it ----------------------------- */
+
+/**
+ * `extra.lifecycle` is the arc as first-timestamps — founded, first class,
+ * first enrolment, through billed → paid — written by `sim.ts` at close for the
+ * exit-bar question. Timestamps and nulls, never a verdict: a null against a
+ * three-day run is a fact about the run's length, and the judge is who says so.
+ */
+const lifecycle = rec.extra?.lifecycle
+if (lifecycle && typeof lifecycle === 'object') {
+  const STAGES = [
+    ['founded', 'business founded'],
+    ['first_class', 'first class'],
+    ['first_enrollment', 'first enrolment'],
+    ['first_session', 'first session scheduled'],
+    ['first_session_completed', 'first session completed'],
+    ['first_attendance', 'first attendance marked'],
+    ['first_tally_line', 'first tally line (billed)'],
+    ['first_month_end_tally_done', 'month-end tally ran'],
+    ['first_payment_requested', 'first payment requested'],
+    ['first_payment_confirmed', 'first payment confirmed'],
+  ]
+  body += `<div class="lead"><b>The lifecycle, as first-timestamps.</b>
+  <table>${STAGES.map(([k, label]) => {
+    const v = lifecycle[k]
+    return `<tr><td>${esc(label)}</td><td>${v ? esc(String(v)) : '<i>— never</i>'}</td></tr>`
+  }).join('')}</table></div>`
+}
+
 /* --- the numbers ---------------------------------------------------------- */
 
 const totalInr = turns.reduce((a, t) => a + (Number(t.inr) || 0), 0)

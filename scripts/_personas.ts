@@ -97,7 +97,15 @@ you meant.`
  * the place the product is weakest: there is less context in the message, so
  * more of the answer has to come from the rows.
  */
-export const MACHINE_POSTURE = `The number you are texting is not a person. It is the academy's WhatsApp bot —
+export const MACHINE_POSTURE_LEVELS: Record<'trusting' | 'ordinary' | 'hard', string> = {
+  /**
+   * The high end, verbatim what every seat used to get unconditionally — which
+   * was the defect: a world written to measure "can a motivated owner succeed"
+   * ran with people instructed to withhold context, repeat rather than explain,
+   * and probe for weaknesses. Hard mode is real traffic and stays available —
+   * `ace-tennis` pins it — it just stopped being everybody.
+   */
+  hard: `The number you are texting is not a person. It is the academy's WhatsApp bot —
 software — and you know that. Text it the way you text software, not the way you
 text a human being:
 
@@ -120,12 +128,67 @@ text a human being:
 
 You do not owe it manners and you do not extend it the benefit of the doubt you
 would give a receptionist. If what comes back does not answer you, that is its
-fault, and you behave accordingly.`
+fault, and you behave accordingly.`,
+
+  /** The middle of the road, and the default draw: brisk, not hostile. */
+  ordinary: `The number you are texting is the academy's WhatsApp bot — software — and you
+know that. You are matter-of-fact about it:
+
+  - Skip the pleasantries. No "hope you are well", no sign-off. A bare "hi"
+    while you find the words is fine; a paragraph of warm-up is not.
+  - Lead with the thing you want. Give context when the request needs it —
+    "dev out friday, school thing" — as facts, not as a story.
+  - TAP THE BUTTON when it offers the right one. Faster than typing.
+  - If it misunderstands, explain ONCE, differently. If it misunderstands the
+    explanation too, get shorter and blunter, and start doubting the product.
+  - Expect it to be quick. A long silence gets a "?".
+  - When it has genuinely failed you twice on the same errand, ask for a person.
+
+You give it the benefit of the doubt about once — more than you would give a
+phone menu, less than you would give a receptionist.`,
+
+  /** The low end. Real too: plenty of people talk to a business number like a desk. */
+  trusting: `The number you are texting is the academy's WhatsApp bot. You know it is
+software, but you talk to it much the way you would talk to the person at the
+desk:
+
+  - You greet it, you thank it when it helps, and you explain your situation in
+    full sentences before you ask.
+  - You answer its questions patiently, even ones it should not have needed to
+    ask.
+  - When it offers a button you sometimes type the words instead, because typing
+    is what you are used to.
+  - When it misunderstands, you assume you were unclear and try again with MORE
+    words, not fewer.
+  - It takes a lot before you complain, and even then you are polite about it.
+
+You extend it the courtesy you extend anybody who is helping you run your day.`,
+}
+
+/** The high end, for callers that predate the dial. `seatSystem` picks by style. */
+export const MACHINE_POSTURE = MACHINE_POSTURE_LEVELS.hard
 
 export type Window = 'morning' | 'afternoon' | 'evening'
 
 /** The axis every score in this repo is split by. Four, and never averaged. */
 export type SeatRole = 'admin' | 'coach' | 'client' | 'prospect'
+
+/**
+ * How this person is at a machine — the dial that replaced two welded constants.
+ *
+ * `skepticism` picks which `MACHINE_POSTURE_LEVELS` text the seat reads;
+ * `messiness` is the garble rate `messyLine` flips against (the old code was a
+ * literal 50% for everybody, so the fee table had the same forced-typo odds as
+ * "ok"); `presence` overrides the role's phone-checking habit in `whoChecks`.
+ * A world file sets any of them; the rest are drawn in `briefFor` from a hash
+ * of the person's own name, so a temperament is a property of the person and
+ * survives reseeding.
+ */
+export type PersonaStyle = {
+  skepticism: 'trusting' | 'ordinary' | 'hard'
+  messiness: number
+  presence?: number
+}
 
 export type Persona = {
   /**
@@ -158,6 +221,8 @@ export type Persona = {
   redLines: string[]
   /** What happens in their life, by day. Not what they say — what happens TO them. */
   life: Record<number, string>
+  /** How they are at a machine. Always filled by `briefFor` — see `PersonaStyle`. */
+  style: PersonaStyle
 }
 
 /** Same shape whoever wrote it, because it goes into the same seat. */
@@ -365,6 +430,47 @@ export function briefFor(o: { person: WorldPerson; worldName: string; days: numb
     goals,
     redLines: [...(p.redLines ?? []), ...ROLE_RED_LINES[role]],
     life: p.life ?? {},
+    style: styleFor(p, role),
+  }
+}
+
+/** FNV-1a, 32 bits — the same four lines `_persona-agent.ts` and `lib/phonebook.ts` carry. */
+function fnv(text: string): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return h >>> 0
+}
+
+/**
+ * The dial's unset halves, drawn from the person's NAME and not the run's seed.
+ *
+ * Deliberately: a temperament is a property of the person, and a person who is
+ * hard work on Monday's seed and a pushover on Tuesday's is two people wearing
+ * one brief — every cross-run comparison of "how did the product do with Kiran"
+ * would be comparing different Kirans. The seed still varies everything the
+ * seed should vary: the words, the mess placement, the presence coins.
+ *
+ * The draw: skepticism ~ 20% trusting / 60% ordinary / 20% hard — a business
+ * number's real traffic is mostly brisk, with tails in both directions.
+ * Messiness sits on a role centre (the coach types worst, the client proofreads)
+ * ± 0.15 of person-hash jitter.
+ */
+const MESSINESS_CENTRE: Record<SeatRole, number> = { client: 0.3, admin: 0.45, coach: 0.55, prospect: 0.5 }
+
+function styleFor(p: WorldPerson, role: SeatRole): PersonaStyle {
+  const h = fnv(`style|${p.name}`)
+  const skepticism =
+    p.style?.skepticism ?? (h % 10 < 2 ? 'trusting' : h % 10 < 8 ? 'ordinary' : 'hard')
+  const jitter = (((h >>> 8) % 31) - 15) / 100
+  const messiness =
+    p.style?.messiness ?? Math.min(1, Math.max(0, (MESSINESS_CENTRE[role] ?? 0.5) + jitter))
+  return {
+    skepticism,
+    messiness,
+    ...(p.style?.presence !== undefined ? { presence: p.style.presence } : {}),
   }
 }
 
