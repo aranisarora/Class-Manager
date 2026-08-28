@@ -255,12 +255,41 @@ function createPool(): postgres.Sql<{}> {
   return pool as unknown as postgres.Sql<{}>
 }
 
-/** Raw handle. Only lib/db.ts, lib/clock.ts and migrations may use it. */
-export const sql: postgres.Sql<{}> = ((): postgres.Sql<{}> => {
+function pool(): postgres.Sql<{}> {
   const g = globalThis as PoolGlobal
   if (!g.__cm_sql) g.__cm_sql = createPool()
   return g.__cm_sql
-})()
+}
+
+/**
+ * Raw handle. Only lib/db.ts, lib/clock.ts and migrations may use it.
+ *
+ * A Proxy so the pool — and therefore `env.DATABASE_URL` — is not touched until
+ * the first query. It used to be created at module scope, which made *importing*
+ * this file need runtime secrets: `next build`'s page-data collection imports
+ * every route's module graph, so a Vercel Preview build (an environment that
+ * deliberately holds no secrets) died in `get DATABASE_URL` before it had built
+ * anything, and every PR wore a red check for a failure no code caused. A build
+ * must be constructible from source alone; secrets are for requests.
+ *
+ * Methods are bound to the real pool on the way through, so `sql.begin`,
+ * `sql.unsafe` and the template-tag call all behave exactly as before.
+ */
+export const sql: postgres.Sql<{}> = new Proxy(
+  // The target is never used — every trap forwards to `pool()`. It is a
+  // function so the proxy is callable (the template-tag form).
+  (() => {}) as unknown as postgres.Sql<{}>,
+  {
+    get(_target, prop) {
+      const p = pool()
+      const v = Reflect.get(p as unknown as object, prop)
+      return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(p) : v
+    },
+    apply(_target, _thisArg, args) {
+      return Reflect.apply(pool() as unknown as (...a: unknown[]) => unknown, undefined, args)
+    },
+  },
+)
 
 /**
  * Escape hatch for parameterised dynamic SQL inside this codebase's own
