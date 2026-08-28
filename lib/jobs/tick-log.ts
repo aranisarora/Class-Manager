@@ -71,6 +71,24 @@ function boundedLog(log: string[]): string[] {
 }
 
 /**
+ * The previous beat's outcome, for `shouldPlan` in the cron route — the one
+ * signal that a handler may have changed the calendar since the last full
+ * planning sweep. Same rule as `recordTick`: never throws. `null` means the
+ * diary is unreadable, and the caller treats that as "plan" — an unreadable
+ * log must degrade to the old always-plan behaviour, not to silence.
+ */
+export async function readLastTick(): Promise<{ ran: number; failed: number; error: string | null } | null> {
+  try {
+    const rows = await withInfra((tx) => tx<{ ran: number; failed: number; error: string | null }[]>`
+      select ran, failed, error from tick_runs order by started_at desc limit 1
+    `)
+    return rows[0] ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
  * Insert one `tick_runs` row. Returns quietly whether or not it worked.
  *
  * `withInfra` because `tick_runs` carries no tenant (§6.6, the same reason

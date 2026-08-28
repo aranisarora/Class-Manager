@@ -6,7 +6,7 @@ import { now } from '@/lib/clock'
 import { errorMessage } from '@/lib/errors'
 import { planAhead } from '@/lib/jobs/plan-ahead'
 import { runDueJobs, type RunReport } from '@/lib/jobs/runner'
-import { recordTick } from '@/lib/jobs/tick-log'
+import { readLastTick, recordTick } from '@/lib/jobs/tick-log'
 import { drainWebhookEvents } from '@/lib/seed'
 
 /**
@@ -129,14 +129,34 @@ const WEBHOOK_LIMIT = 5
 const WEBHOOK_BUDGET_MS = 120_000
 const WEBHOOK_MAX_ROUNDS = 8
 
-const Params = z.object({ limit: z.coerce.number().int().min(1).max(500).optional() })
+/**
+ * How often an IDLE beat re-plans, in minutes of wall clock.
+ *
+ * Ten minutes is bounded by the planner's own guarantees: the horizon is 48
+ * hours, `enqueueMany` is idempotent, and the tightest moment it plans — a
+ * session's T-60 prompt — has the T-30 behind it. A calendar change that must
+ * be planned NOW arrives through a turn, and every turn path either reaches
+ * this beat as drained ingress (planned in the same tick, below) or runs jobs
+ * that the next beat sees in `tick_runs` — so the cadence only ever delays
+ * planning for a world in which nothing happened.
+ */
+const PLAN_EVERY_MIN = 10
+
+const Params = z.object({
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  /** `?plan=1` / `{"plan":true}`: plan this tick regardless of the cadence. */
+  plan: z
+    .union([z.boolean(), z.enum(['1', 'true', '0', 'false'])])
+    .optional()
+    .transform((v) => v === true || v === '1' || v === 'true'),
+})
 
 /**
  * Both verbs carry the same one parameter, so both are read the same way:
  * query string first (Vercel Cron can only send a URL), then a JSON body on
  * POST, which wins because a caller who bothered to send one meant it.
  */
-async function requestedLimit(req: Request): Promise<z.SafeParseReturnType<unknown, { limit?: number }>> {
+async function requestedLimit(req: Request): Promise<z.SafeParseReturnType<unknown, z.infer<typeof Params>>> {
   const query = Object.fromEntries(new URL(req.url).searchParams)
   const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {}
   const merged = body && typeof body === 'object' ? { ...query, ...body } : query
@@ -182,6 +202,30 @@ async function drainIngress(total: Drain, deadline: number): Promise<void> {
 }
 
 /**
+ * Does THIS beat need the full planning sweep, and why.
+ *
+ * @mechanism shouldPlan — an idle beat no longer pays the whole per-academy planning
+ *   sweep every sixty seconds forever. The beat drains ingress first, then plans only
+ *   when that drain did work (a turn may have changed the calendar), when the previous
+ *   beat ran or failed a job (a handler may have), on a ten-minute wall-clock cadence
+ *   (the horizon is 48 h and every write is idempotent, so a delayed re-plan of an
+ *   unchanged world plans the same nothing), or when `?plan=1` forces it. Measured
+ *   before the fix: ~17 database transactions a minute against a database in which
+ *   nothing was happening — the beat alone was a 2–3 GB/month egress instrument, the
+ *   same class of standing cost F-CP named on the console. Fails open: a beat that
+ *   cannot read its own diary plans. Closes F-FF.
+ */
+async function shouldPlan(drained: Drain, startedAt: Date, force: boolean): Promise<string | null> {
+  if (force) return 'forced by the caller'
+  if (drained.processed + drained.failed > 0) return 'ingress was drained this beat'
+  if (startedAt.getUTCMinutes() % PLAN_EVERY_MIN === 0) return `the ${PLAN_EVERY_MIN}-minute cadence`
+  const prev = await readLastTick()
+  if (!prev) return 'the previous beat is unreadable'
+  if (prev.ran > 0 || prev.failed > 0 || prev.error !== null) return 'the previous beat did work'
+  return null
+}
+
+/**
  * One handler behind both verbs. Vercel Cron issues GET; pg_net's `http_post`
  * issues POST. Nothing about the work differs, and a second copy of it is a
  * second thing to keep in step.
@@ -207,6 +251,7 @@ async function tick(req: Request): Promise<Response> {
   let jobs: RunReport = { ran: 0, skipped: 0, failed: 0, log: [] }
   // `const` because the drain fills this in place rather than replacing it.
   const webhook: Drain = { processed: 0, failed: 0, log: [] }
+  const planLog: string[] = []
 
   const close = async (error: string | null): Promise<number> => {
     const finishedAt = new Date()
@@ -221,17 +266,15 @@ async function tick(req: Request): Promise<Response> {
       planned,
       // The ingest drain's lines are kept with the runner's, tagged so the two
       // halves of the beat stay distinguishable in one array.
-      log: [...jobs.log, ...webhook.log.map((l) => `webhook: ${l}`)],
+      log: [...planLog, ...jobs.log, ...webhook.log.map((l) => `webhook: ${l}`)],
       error,
     })
     return durationMs
   }
 
   try {
-    planned = await planAhead()
-
     /**
-     * KEEP THIS CALL, AND KEEP IT HERE — the order is load-bearing, not stylistic.
+     * KEEP THIS CALL, AND KEEP IT FIRST — the order is load-bearing, not stylistic.
      *
      * Keep it, because it reads like emulator plumbing and is the opposite:
      * `drainWebhookEvents` is the only consumer of the `webhook_event` job rows
@@ -259,10 +302,26 @@ async function tick(req: Request): Promise<Response> {
      * agent turn inline and anything it enqueues is claimable by the very next
      * line.
      *
+     * It moved AHEAD of the planner when `shouldPlan` arrived, and that order is
+     * part of the mechanism: a drained turn is the one way the calendar changes
+     * on this build, so planning after the drain catches a message-created class
+     * in the same beat — one beat earlier than the old plan-first order ever
+     * could — and an idle beat learns it can skip the sweep entirely.
+     *
      * Double-draining is harmless: `ingestInbound` is idempotent on
      * `inbound:<wa_message_id>` and `markStatus` is rank-guarded.
      */
     await drainIngress(webhook, startedAt.getTime() + WEBHOOK_BUDGET_MS)
+
+    // Planning stays BEFORE the runner: a job planned into an already-due moment
+    // (a register for a session that ended while nobody looked) runs this beat.
+    const planReason = await shouldPlan(webhook, startedAt, parsed.data.plan)
+    if (planReason) {
+      planned = await planAhead()
+      planLog.push(`plan: ran (${planReason})`)
+    } else {
+      planLog.push(`plan: skipped — idle beat, full sweep on the ${PLAN_EVERY_MIN}-minute cadence`)
+    }
 
     jobs = await runDueJobs({ limit })
 

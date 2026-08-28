@@ -354,8 +354,13 @@ passed.
 
 ```
 tick (Vercel Cron · pg_cron)   app/api/cron/tick/route.ts
- └ planAhead      what should exist by now — idempotent on a dedupe key
- └ drainIngress   the webhook backstop: stored inbound events become ordinary turns
+ └ drainIngress   the webhook backstop: stored inbound events become ordinary turns —
+                  FIRST, so a turn that changed the calendar is planned this very beat
+ └ shouldPlan     does this beat need the sweep at all? yes when the drain did work,
+                  the previous beat ran or failed a job, on the ten-minute cadence,
+                  or when ?plan=1 forces it — an idle beat skips the per-academy sweep
+ └ planAhead      what should exist by now — idempotent on a dedupe key; still BEFORE
+                  the runner, so a job planned into an already-due moment runs this beat
  └ runDueJobs     claim a batch under a lock → handler → done | skipped | failed
     └ a handler that speaks to a person opens an ORDINARY turn: same prefix, same
       tools, same flight recorder (runSynthesis · lib/jobs/handlers/admin.ts)
@@ -365,6 +370,7 @@ tick (Vercel Cron · pg_cron)   app/api/cron/tick/route.ts
 | Rule | Where |
 | --- | --- |
 | A job is due against the clock of its **own** tenant, and the production beat claims only the `live` lane — a drive's world drains its own queue | `runDueJobs` · `app.now_for` · `lane` · `lib/jobs/runner.ts` |
+| The drain runs before the runner's unfiltered reclaim (a stale `webhook_event` flipped `pending` is a parent's message destroyed), and an idle beat skips the planning sweep — the emulator's tick and clock advance still plan unconditionally | `drainIngress` · `shouldPlan` · `readLastTick` · `app/api/cron/tick/route.ts` · `lib/jobs/tick-log.ts` |
 | A transient failure is retried with backoff; past `MAX_ATTEMPTS` the row stands as failed evidence. A worker that died mid-job is reclaimed after `LOCK_STALE_MINUTES` | `fail` · `claim` · `lib/jobs/runner.ts` |
 | A handler whose precondition no longer holds throws `JobSkip` and is recorded as skipped, not failed | `JobSkip` · `lib/jobs/runner.ts` |
 | A watch the model minted needs a parseable expiry, an instruction and an academy before it reaches the queue, and there is a cap on live watches per business; its `context_query` is parsed and planned against the real schema at mint time, in the tool that mints it | `guardAgentTask` · `AGENT_TASK_CAP` · `lib/jobs/enqueue.ts` · `context_query` · `lib/agent/tools.ts` |
