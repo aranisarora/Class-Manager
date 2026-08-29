@@ -233,14 +233,27 @@ async function judgeFromRecord(dir) {
   const rec = JSON.parse(fs.readFileSync(file, 'utf8'))
   const all = Array.isArray(rec.turns) ? rec.turns : []
   const picked = LAST ? all.slice(-LAST) : all
-  const out = { turns: {}, patterns: [], verdict: null }
+  // JUDGING.md's shape, exactly: `turns` is an ARRAY keyed by `n`, because that
+  // is what report.mjs joins on and what a human writes by hand. This file used
+  // to write an object keyed by case id, and every machine-judged run rendered
+  // UNJUDGED — the reader's guard said which shape it found, nothing fixed it,
+  // and the cheap judging path was a dead end that sent readers back to hand-
+  // judging. Interchangeability is the whole promise of this script.
+  const out = { turns: [], patterns: [], verdict: null }
 
   for (const t of picked) {
     const key = t.id || String(t.n)
     try {
       const v = await judgeOne(renderRecordTurn(t, CAP))
-      out.turns[key] = v
       const total = v.safety + v.truth + v.judgement + v.voice + v.economy
+      out.turns.push({
+        n: t.n,
+        id: key,
+        score: total,
+        axes: { safety: v.safety, truth: v.truth, judgement: v.judgement, voice: v.voice, economy: v.economy },
+        reason: v.note,
+        by: v.by,
+      })
       const mark = v.safety === 0 ? '!!' : total >= 9 ? '  ' : ' ·'
       console.log(`${mark} ${String(key).padEnd(28)} ${total}/10  ${v.note}`)
     } catch (e) {
@@ -254,14 +267,26 @@ if (RUN) {
   const out = await judgeFromRecord(RUN)
   const target = OUT || path.join(RUN, 'judgement.json')
   // A human verdict already beside the record is never overwritten by a machine
-  // one — the same rule the academy path keeps below.
+  // one — the same rule the academy path keeps below. Human entries are kept
+  // whole (array shape, or lifted out of the legacy object shape this script
+  // used to write), and a machine verdict is dropped wherever a human has
+  // already judged that turn.
   const existing = fs.existsSync(target) ? JSON.parse(fs.readFileSync(target, 'utf8')) : {}
-  for (const [k, v] of Object.entries(existing.turns ?? {})) {
-    if (!String(v?.by ?? '').startsWith('judge:')) out.turns[k] = v
+  const prior = existing.turns
+  const human = []
+  if (Array.isArray(prior)) {
+    for (const p of prior) if (!String(p?.by ?? '').startsWith('judge:')) human.push(p)
+  } else if (prior && typeof prior === 'object') {
+    for (const [k, p] of Object.entries(prior)) {
+      if (!String(p?.by ?? '').startsWith('judge:')) human.push({ n: null, id: k, ...p })
+    }
   }
-  fs.writeFileSync(target, JSON.stringify({ ...existing, ...out }, null, 2))
+  const humanNs = new Set(human.map((p) => Number(p?.n)).filter(Number.isFinite))
+  const merged = [...human, ...out.turns.filter((t) => !humanNs.has(Number(t.n)))]
+    .sort((a, b) => (Number.isFinite(Number(a?.n)) ? Number(a.n) : 1e9) - (Number.isFinite(Number(b?.n)) ? Number(b.n) : 1e9))
+  fs.writeFileSync(target, JSON.stringify({ ...existing, ...out, turns: merged }, null, 2))
   console.log(`
-wrote ${Object.keys(out.turns).length} judgements to ${target}`)
+wrote ${merged.length} judgements to ${target}`)
   process.exit(0)
 }
 
@@ -293,7 +318,10 @@ if (RECORDS && fs.existsSync(RECORDS)) {
 }
 
 const picked = LAST ? turns.slice(-LAST) : turns
-const out = { turns: {}, patterns: [], verdict: null }
+// Same array shape as the --run path (JUDGING.md's). This path has no record
+// and therefore no `n`; the entry carries `n: null` and the turn/case id, which
+// is the honest amount of joinability a tail without a record can offer.
+const out = { turns: [], patterns: [], verdict: null }
 
 for (const t of picked) {
   const msgs = await db()`
@@ -314,8 +342,15 @@ for (const t of picked) {
   const key = caseOf.get(t.id) ?? t.id
   try {
     const v = await judgeOne(text)
-    out.turns[key] = v
     const total = v.safety + v.truth + v.judgement + v.voice + v.economy
+    out.turns.push({
+      n: null,
+      id: key,
+      score: total,
+      axes: { safety: v.safety, truth: v.truth, judgement: v.judgement, voice: v.voice, economy: v.economy },
+      reason: v.note,
+      by: v.by,
+    })
     const mark = v.safety === 0 ? '!!' : total >= 9 ? '  ' : ' ·'
     console.log(`${mark} ${String(key).padEnd(28)} ${total}/10  ${v.note}`)
   } catch (e) {
@@ -329,13 +364,22 @@ if (OUT) {
   fs.mkdirSync(path.dirname(OUT), { recursive: true })
   // Merged, never clobbered: a human verdict already in the file outranks this
   // one, because the whole point of the shared shape is that a person can
-  // overrule the machine and have it stick.
-  const existing = fs.existsSync(OUT) ? JSON.parse(fs.readFileSync(OUT, 'utf8')) : { turns: {} }
-  for (const [k, v] of Object.entries(existing.turns ?? {})) {
-    if (!String(v?.by ?? '').startsWith('judge:')) out.turns[k] = v
+  // overrule the machine and have it stick. Human entries survive whichever
+  // shape they were written in; machine entries for the same id are dropped.
+  const existing = fs.existsSync(OUT) ? JSON.parse(fs.readFileSync(OUT, 'utf8')) : { turns: [] }
+  const prior = existing.turns
+  const human = []
+  if (Array.isArray(prior)) {
+    for (const p of prior) if (!String(p?.by ?? '').startsWith('judge:')) human.push(p)
+  } else if (prior && typeof prior === 'object') {
+    for (const [k, p] of Object.entries(prior)) {
+      if (!String(p?.by ?? '').startsWith('judge:')) human.push({ n: null, id: k, ...p })
+    }
   }
-  fs.writeFileSync(OUT, JSON.stringify({ ...existing, ...out }, null, 2))
-  console.log(`\nwrote ${Object.keys(out.turns).length} judgements to ${OUT}`)
+  const humanIds = new Set(human.map((p) => String(p?.id ?? '')))
+  const merged = [...human, ...out.turns.filter((t) => !humanIds.has(String(t.id)))]
+  fs.writeFileSync(OUT, JSON.stringify({ ...existing, ...out, turns: merged }, null, 2))
+  console.log(`\nwrote ${merged.length} judgements to ${OUT}`)
 }
 
 await (_sql ? _sql.end() : Promise.resolve())

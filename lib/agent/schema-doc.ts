@@ -339,6 +339,13 @@ enrollment(class_id! uuid, player_id! uuid, rate_amount numeric, rate_unit text,
   -- is a column on player, and it means the person has left altogether.
 session(class_id! uuid, venue_id uuid, starts_at! tstz, ends_at! tstz,
   status text 'scheduled|cancelled|completed', cancel_reason text,
+  rescheduled_n int,       -- how many times a human retimed THIS occurrence in place;
+                           -- reschedule_session/move_class bump it. > 0 marks a
+                           -- deliberate move the nightly materializer must not undo
+  origin_starts_at tstz,   -- the slot-derived time a one-off move came OFF (null =
+                           -- sits where the slot puts it); the materializer treats a
+                           -- claimed origin as occupied so the vacated time is not
+                           -- re-created. Set once, by the first reschedule
   unique(class_id, starts_at))
 session_coach(session_id! uuid, coach_id! uuid, confirmed_at tstz, declined_at tstz,
   arrived_at tstz, running_late bool)              -- pk(session_id,coach_id). ACTUAL coach set

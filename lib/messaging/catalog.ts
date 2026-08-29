@@ -592,7 +592,11 @@ export const CATALOG: Record<CatalogId, CatalogEntry> = {
 /** Spec order: §12.1 client, §12.2 prospect, §12.3 coach, §12.4 admin. */
 export const CATALOG_IDS: CatalogId[] = Object.keys(CATALOG) as CatalogId[]
 
-/** §12: the seven rows the bot may reword or merge but never suppress. */
+/**
+ * §12: the rows the bot may reword or merge but never suppress — the
+ * `fixed: true` set, counted from the table rather than stated here (a "seven"
+ * written into this comment survived two additions and became a lie).
+ */
 export function isCatalogId(x: unknown): x is CatalogId {
   return typeof x === 'string' && Object.prototype.hasOwnProperty.call(CATALOG, x)
 }

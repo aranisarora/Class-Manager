@@ -273,7 +273,7 @@ suppression is a fact, not a failure:
 
 | | Gate | Why it is here |
 | --- | --- | --- |
-| 1 | `no_contact` | there is nobody to send to |
+| 1 | `no_contact` | there is nobody to send to — and the one gate whose suppression writes no `message` row, because there is no contact to hang one on; the returned outcome carries the reason |
 | 2 | `opted_out` | stopping outranks everything below it — the opt-out's own acknowledgement is the one exception |
 | 3 | `muted` | "stop messaging me about money" is a scope, read from `MUTE_SCOPE`; a reply to something they said is never muted |
 | 4 | `quiet_hours` | not for admins, not for anything solicited |
@@ -364,7 +364,9 @@ tick (Vercel Cron · pg_cron)   app/api/cron/tick/route.ts
  └ runDueJobs     claim a batch under a lock → handler → done | skipped | failed
     └ a handler that speaks to a person opens an ORDINARY turn: same prefix, same
       tools, same flight recorder (runSynthesis · lib/jobs/handlers/admin.ts)
- └ reportMissed   every run ends by reporting what did NOT run
+ └ reportMissed   every run ends by reporting what did NOT run — the overdue rows,
+                  and the outage overdue cannot see: a live session inside the plan
+                  horizon whose ladder was never enqueued at all (NEVER-PLANNED)
 ```
 
 | Rule | Where |

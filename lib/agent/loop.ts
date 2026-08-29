@@ -28,6 +28,7 @@ import { LIMITS, type SendOutcome } from '@/lib/messaging/types'
 import type { Identity, Job, Role } from '@/lib/types'
 import { generate, type Msg } from './deepseek'
 import { stablePrefix, variableTail } from './context'
+import type { CatalogId } from '@/lib/messaging/catalog'
 import { proseViolations, structuralViolation, violationMessage } from './lint'
 import { traceabilityNote } from './traceability'
 import { fullTraceOn } from './turn-trace'
@@ -80,6 +81,14 @@ export type TurnInput = {
      * discarding it destroys the only thing the job existed to produce.
      */
     asked?: 'a message' | 'a decision'
+    /**
+     * The catalog moment the job's deliverable IS, stamped by the RUNTIME onto
+     * the reply to the asker when the model does not stamp it itself. The
+     * brief/digest news window is keyed on this id, and it used to survive only
+     * on prompt obedience — one forgetful turn and the next brief re-counted the
+     * same news.
+     */
+    catalogId?: CatalogId
   }
 }
 
@@ -1347,6 +1356,7 @@ async function modelTurn(
     // that carries this person's own typed words. A job turn has nobody speaking,
     // and its service-shaped claim path would skip the contact check entirely.
     typedThisTurn: input.source !== 'job' && Boolean((input.text ?? '').trim()),
+    ...(input.task?.catalogId ? { taskCatalogId: input.task.catalogId } : {}),
     ...(atDesk ? { desk: { arrival: deskArrival, text: input.text ?? '' } } : {}),
     pendingPlans: new Map<string, PlanStep[]>(),
     pendingMeta: new Map<string, { intent: string; summary: string; totalRows: number; needsConfirm: boolean }>(),
@@ -2678,9 +2688,14 @@ async function modelTurn(
     // reflection gate below and becomes `turn.output.reply`, and both were being
     // told a suppressed message was this turn's answer — so reflection opened with
     // "[The reply has gone and nobody is waiting]" over a person who had received
-    // nothing, and the turn row recorded a reply that does not exist.
+    // nothing, and the turn row recorded a reply that does not exist. The second
+    // clause clears the ORIGINAL draft too when a repair round changed the words
+    // (`text !== outgoing`) and the repaired send still did not land — the one
+    // path where an unsent sentence could still record as the reply. What
+    // survives unlanded is only a sentence the runtime itself put on their
+    // screen (`runtimeAuthored`), which is the one thing here that really was said.
     if (landed) text = outgoing
-    else if (text === outgoing) text = ''
+    else if (text === outgoing || !runtimeAuthored) text = ''
   }
 
   /* ----------------------------------------------------------------------- *
@@ -3245,7 +3260,14 @@ function recentLookups(rows: { created_at: Date; tool_calls: ToolTrace[] }[], at
     let used = 0
     let droppedAtBudget = 0
     for (const row of rows) {
-      const age = ageOf(row.created_at, at)
+      // Every row here is an EARLIER turn's read. "just now" was technically true
+      // inside a busy window and still misled: a pre-materialization read wearing
+      // "[read just now]" sat beside a fresh census saying 18 sessions, and the
+      // model paid rounds reconciling two truths from different worlds. The age
+      // keeps its precision; the label stops vouching for the world not having
+      // moved since.
+      const rawAge = ageOf(row.created_at, at)
+      const age = rawAge === 'just now' ? 'moments ago, an earlier turn — the world may have moved since' : rawAge
       for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
         // A `read` is the only call whose *result* is reference data. A write's
         // result is an outcome, and replaying outcomes as if they were facts is
@@ -3368,6 +3390,13 @@ export async function recentActions(
         return 'staged behind a confirmation button — NOT committed'
       }
       if (r.ok === true) {
+        // A watch is a `job` row, which the plan diff never counts — so a
+        // successful mint fell through to "ran — nothing was written", the
+        // F-EL family with the opposite sign: the ledger denying a write that
+        // happened. The result's own slug is the evidence a row exists.
+        if ((call.name === 'schedule' || call.name === 'reflect:schedule') && typeof r.slug === 'string') {
+          return `watch set — '${r.slug}'`
+        }
         const changes = committedChanges
         if (changes) return `done — wrote ${changes} row(s)`
         // Zero rows is not "done" under a heading that says done means it already

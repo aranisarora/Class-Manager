@@ -44,7 +44,13 @@ function weekdayOf(dt: DateTime): number {
  *   sessions with no attendance and no `tally_line` pointing at them. So editing a slot
  *   cannot destroy a cancellation, a marked register, or a session a family has already
  *   been billed for — and each session it does remove has its ladder cancelled (§13 rule
- *   4), so nothing that no longer exists keeps sending.
+ *   4), so nothing that no longer exists keeps sending. A deliberate one-off move is
+ *   remembered against it (0054): a session with `rescheduled_n > 0` is never swept or
+ *   retimed — before that guard, the pass deleted the moved row as an orphan and
+ *   re-created the original slot time, so a family told "moved to Wednesday" watched the
+ *   world revert to Tuesday overnight — and a time claimed by some session's
+ *   `origin_starts_at` is not re-manufactured beside the row that moved off it.
+ *   Closes F-FJ.
  *
  * `unique (class_id, starts_at)` is what makes this idempotent: running it
  * twice writes nothing the second time. Editing a slot rematerialises the
@@ -104,10 +110,19 @@ export async function materializeSessions(job: Job): Promise<void> {
     const endIso = wanted.map((w) => w.endsAt.toISOString())
     const horizonEnd = today.plus({ days: HORIZON_DAYS }).endOf('day').toJSDate().toISOString()
 
+    // A time some session was deliberately moved OFF (`origin_starts_at`, 0054)
+    // is still occupied as far as this pass is concerned: without the exclusion,
+    // the vacated Tuesday is re-manufactured beside the moved Wednesday and the
+    // family attends a session that exists twice.
     const created = wanted.length === 0 ? [] : await tx<{ id: string }[]>`
       insert into session (academy_id, class_id, starts_at, ends_at)
       select ${academyId}::uuid, ${classId}::uuid, w.st::timestamptz, w.en::timestamptz
         from unnest(${startIso}::text[], ${endIso}::text[]) as w(st, en)
+       where not exists (
+         select 1 from session o
+          where o.class_id = ${classId}
+            and o.origin_starts_at = w.st::timestamptz
+       )
       on conflict (class_id, starts_at) do nothing
       returning id
     `
@@ -121,6 +136,7 @@ export async function materializeSessions(job: Job): Promise<void> {
          and s.starts_at = w.st::timestamptz
          and s.ends_at <> w.en::timestamptz
          and s.status = 'scheduled'
+         and s.rescheduled_n = 0
          and s.starts_at > app.now()
       returning s.id
     `
@@ -134,6 +150,7 @@ export async function materializeSessions(job: Job): Promise<void> {
        where s.academy_id = ${academyId}
          and s.class_id = ${classId}
          and s.status = 'scheduled'
+         and s.rescheduled_n = 0
          and s.starts_at > app.now()
          and s.starts_at <= ${horizonEnd}::timestamptz
          and s.starts_at <> all (${startIso}::text[]::timestamptz[])
@@ -271,7 +288,7 @@ export async function postClassRegister(job: Job): Promise<void> {
   await enqueue(
     'register_expiry',
     new Date(session.ends_at.getTime() + expiryHours * 3600_000),
-    dedupe.registerExpiry(session.id),
+    dedupe.registerExpiry(session.id, session.rescheduled_n),
     { academy_id: academy.id, session_id: session.id },
     academy.id,
   )
@@ -362,10 +379,22 @@ export async function registerExpiry(job: Job): Promise<void> {
       : []
     const outstanding = outstandingRows.length ? outstandingRows.map((r) => r.session_id) : [sessionId]
 
-    return { academy, session, coaches, recipients, outstanding, outstandingRows }
+    // Whether marking these registers actually WRITES money. "The register is
+    // what writes the charges" is true only of per-session rates — a monthly
+    // family's bill exists regardless — and the sentence used to be said about
+    // every class. `unmarked_billable_session` is the one authority on which
+    // unmarked sessions owe a line (0035), so the claim is read off it rather
+    // than restated here.
+    const billableRows = await tx<{ session_id: string }[]>`
+      select session_id from unmarked_billable_session
+       where academy_id = ${academyId} and session_id = any (${outstanding}::uuid[])
+    `
+    const billable = billableRows.length > 0
+
+    return { academy, session, coaches, recipients, outstanding, outstandingRows, billable }
   })
 
-  const { academy, session, coaches, recipients, outstanding, outstandingRows } = plan
+  const { academy, session, coaches, recipients, outstanding, outstandingRows, billable } = plan
   const tz = academy.timezone
   const when = `${dayLabel(session.starts_at, tz, nowAt)} ${timeLabel(session.starts_at, tz)}`
 
@@ -411,16 +440,22 @@ export async function registerExpiry(job: Job): Promise<void> {
         // ALL of them, not just the newest one — see `everyRegisterOwed`.
         theWholeSet
           ? (aboutThemselves
-              ? `${outstandingRows.length} registers are still open and nothing is billed for any of them — ` +
-                `the register is what writes the charges.${NL}${NL}${owedList}`
+              ? `${outstandingRows.length} registers are still open` +
+                (billable
+                  ? ` and nothing is billed for the per-session ones — the register is what writes those charges.`
+                  : ` — the register is the record of who came.`) +
+                `${NL}${NL}${owedList}`
               : `${outstandingRows.length} registers still aren't marked.${NL}${NL}${owedList}`)
           // News, in the order a person cares about it: how long, whose session,
           // and the consequence that is actually theirs — nothing is billed until
           // this is marked. No "still isn't", because there is nobody to have
           // been waiting on.
           : aboutThemselves
-            ? `Two hours since ${session.class_name} (${when}) and nothing is billed for it yet — ` +
-              `the register is what writes the charges.`
+            ? (billable
+                ? `Two hours since ${session.class_name} (${when}) and nothing is billed for it yet — ` +
+                  `the register is what writes the charges.`
+                : `Two hours since ${session.class_name} (${when}) and the register isn't marked — ` +
+                  `it's the record of who came.`)
             : `The register for ${session.class_name} (${when}) still isn't marked.`,
         LIMITS.bodyChars,
       ),

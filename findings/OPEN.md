@@ -1,6 +1,6 @@
 # What is open
 
-28 findings. This file is the source of truth for what is broken — hand-written, and short on
+27 findings. This file is the source of truth for what is broken — hand-written, and short on
 purpose. `npm run findings` reads it.
 
 **Before proposing a fix for any of these, read [`../docs/MECHANISMS.md`](../docs/MECHANISMS.md).**
@@ -25,8 +25,6 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-BB** | The plan reports "two places" and nothing makes the model say it | [detail](#f-bb--the-plan-reports-two-places-and-nothing-makes-the-model-say-it) |
 | **F-BC** | the affordance — an experiment, not a fix **[decided]** | [detail](#f-bc--the-affordance--an-experiment-not-a-fix) |
 | **F-BL** | `session_coach` cannot record a removal **[decided]** | [detail](#f-bl--session_coach-cannot-record-a-removal) |
-| **F-BU** | The proactive surface was unpriced, and it is most of what the product says | [detail](#f-bu--the-proactive-surface-was-unpriced-and-it-is-most-of-what-the-product-says) |
-| **F-BV** | A window over `job` cannot answer "what ran in this turn", and never could | [detail](#f-bv--a-window-over-job-cannot-answer-what-ran-in-this-turn-and-never-could) |
 | **F-BZ** | A statement cannot say which turn sent it, so a drain cannot be recorded as the several turns it is | [detail](#f-bz--a-statement-cannot-say-which-turn-sent-it-so-a-drain-cannot-be-recorded-as-the-several-turns-it-is) |
 | **F-CC** | A commercial term nobody agreed to — "(first class is free)" — volunteered in a parenthetical and stated as the business's own rule | [detail](#f-cc--a-commercial-term-nobody-agreed-to--first-class-is-free--volunteered-in-a-parenthetical-and-stated-as-the-businesss-own-rule) |
 | **F-CI** | The product reports what it TRIED as what HAPPENED — 26 unbacked claims in 33 turns, while `turnState` is already telling it otherwise | [detail](#f-ci--the-product-reports-what-it-tried-as-what-happened-and-turnstate-is-already-telling-it-otherwise) |
@@ -36,7 +34,8 @@ code, moving its row to [`CLOSED.md`](./CLOSED.md), and running `npm run mechani
 | **F-DY** | A persona brief asserts a history the world never builds, so the model is argued out of a correct read of its own database | [detail](#f-dy--a-persona-brief-asserts-a-history-the-world-never-builds-so-the-model-is-argued-out-of-a-correct-read-of-its-own-database) |
 | **F-EB** | A person taps when ONE thing is waiting and types when several are, and several things reach one person from DIFFERENT paths between two looks at a phone | [detail](#f-eb--a-person-taps-when-one-thing-is-waiting-and-types-when-several-are-and-several-things-reach-one-person-from-different-paths-between-two-looks-at-a-phone) |
 | **F-EM** | A person minted by name alone can never be messaged, and the real human arriving mints a second one — the coach's pay and classes end the run on a person with no phone | [detail](#f-em--a-person-minted-by-name-alone-can-never-be-messaged-and-the-real-human-arriving-mints-a-second-one) |
-| **F-EN** | A slot written in the evening has no sessions until the overnight beat, and the same evening's turns fall into the gap | [detail](#f-en--a-slot-written-in-the-evening-has-no-sessions-until-the-overnight-beat-and-the-same-evenings-turns-fall-into-the-gap) |
+| **F-FL** | `opted_out` is a state with no exit — nothing anywhere clears `opted_out_at`, and a comment used to promise "messaging back turns it on again" | [detail](#f-fl--opted_out-is-a-state-with-no-exit) |
+| **F-FM** | `drive` is the one instrument outside the record spine — no run directory, and its only trace (`turn.tool_calls`) is clipped at 4,000 chars unless the server ran with `PROBE_FULL_TRACE=1` | [detail](#f-fm--drive-is-the-one-instrument-outside-the-record-spine) |
 | **F-ER** | An absence declared in advance has no row, so the product asks the owner about the thing it relayed itself, twice | [detail](#f-er--an-absence-declared-in-advance-has-no-row-so-the-product-asks-the-owner-about-the-thing-it-relayed-itself-twice) |
 | **F-EU** | Commit-by-words can spend the wrong card — a consenter existed, consent to THIS did not | [detail](#f-eu--commit-by-words-can-spend-the-wrong-card--a-consenter-existed-consent-to-this-did-not) |
 | **F-ES** | A fact learned from one person never reaches the turn where another person's decision needs it | [detail](#f-es--a-fact-learned-from-one-person-never-reaches-the-turn-where-another-persons-decision-needs-it) |
@@ -257,6 +256,25 @@ And two from the 23 Aug line review, both pre-existing:
   reader who only opens the page cannot see the runtime intervene. Where: `scripts/report.mjs`,
   the rounds section of the HTML render.
 
+**Status sweep, 28 Aug 2026 — this entry is a grab-bag and half of it had quietly been fixed
+without the ledger learning.** Verified against HEAD, bullet by bullet: the advance-cancellation
+register skip is closed (`postClassRegister` — "the register's universe is the UNRESOLVED
+roster", tagged); the "0 in, 0 out" ack is closed (the note now counts the entries being
+marked; the operations header narrates it as a retired defect); `drop_watch`'s miss-refusal
+already points at the ALREADY WATCHING lines verbatim (`dropWatch.because`); job-send
+attribution exists (`serviceFrom`/`serviceCtx` — `origin`/`originRef` on every job write, and
+turn ids wherever a turn exists), so the 27-of-81 bullet's ask is met by different columns.
+Fixed IN the 28 Aug rework: the reply-retarget refusal now names the omitted `to_contact_id`
+as the likely cause; `register_expiry` speaks per-unit (the charges claim is read off
+`unmarked_billable_session` instead of asserted); the three line-review items (refusalHint's
+unrecorded service re-run, the `replyText` fallback recording an unsent draft, report.mjs
+hiding runtime-authored rounds) are all closed. Still standing in this entry: the brief that
+did not fire (suspected, planner), stale-context replay, August billed whole, `defaultButtons`
+two-copies drift (direction: handlers read the catalog), §14.8's language-triggered
+escalation (no honest mechanism — a prose scanner is the banned fix), the recovery-flatten
+ambiguity drop (verify it recurs), the promised-tap-never-minted shape, and the four
+suspected items awaiting their traces.
+
 ### F-R · The lifecycle arc re-driven, 16 Aug 2026 — a button deleted on the way out, and nobody told
 
 Eighteen cases, `deepseek-v4-flash` at `thinking=low`, one fresh business, driven end to end
@@ -290,6 +308,17 @@ when every button died. The note already written there ("say the missing option 
 message") is the right instruction; it is simply unreachable when one button survives. This is
 the F-P lesson again in a third place: a mechanism that fires only in the rare case looks
 exactly like a mechanism that is never needed.
+
+**Status, 28 Aug 2026 — the button half above is superseded by code (shipped 16 Aug,
+`9921b2a`, same day this entry was written, and the entry never learned).** A refused button
+is no longer dropped at all: it is DOWNGRADED to a plain reply button carrying its own title
+(the tap becomes typing it), and the result reports `downgraded_buttons` on every send,
+partial or not, beside `dropped_over_cap` and a `tappable` count read off the wire message.
+The conditional guard this entry names does not exist in the code any more. **What is still
+open in this entry:** the second run's shape — an explicit stop request that never ends in a
+working stop affordance (the model offered prose bullets and only the backstop menu) — and
+the duplicate-send trips (F-C's class through the front door), and the `app.session_roster`
+timeout at scale. Those stand.
 
 **The other three are not defects, and are recorded so the next drive does not re-litigate
 them.** `client-leaves` — a family's leave routes to the admin (`4320558`), so `ended_on` stays
@@ -484,68 +513,6 @@ The root of it is in the schema. `session_coach` (`0002_schema.sql:225-236`) has
 and none of them records a removal. **Assignment is row existence**, so a delete leaves no
 trace at all — checked across all 37 migrations, there has never been a `removed_at`,
 `deleted_at` or `status` column.
-
-### F-BU · The proactive surface was unpriced, and it is most of what the product says
-
-`live.ts` called `walkTo`/`drain` at three sites — `open`, `window`, `endday` — and none was
-inside a `rec.turn()`. The only `rec.turn()` in the file was the seat turn. So the queue's work
-was recorded as a list of job names in `days.jsonl` and nothing else.
-
-The evidence is not that the record was thin; it is that the arithmetic was wrong:
-
-- **49 of 137 delivered messages (36%)** in `2026-08-18-14-38-live` went out from a job, with
-  ₹0 against them. The run's own cost table therefore priced the conversational third and
-  presented it as the run.
-- `lib/clock.ts` opens by saying **"~70% of this product is proactive."** The instrument was
-  measuring the other 30% and extrapolating a monthly figure from it.
-- `days.jsonl` *is* folded into `record.json` as `run.days` by `close`. It was never rendered:
-  `report.mjs` reads `rec.world` and `rec.turns`, so a shape nothing renders is a shape nobody
-  reads. The data existed and was invisible, which is the harder failure to notice.
-
-The fix is the one the critique named. `queueTurn` opens the record inside the same lock the seat
-turns use and wraps the drain, so the queue gets the identical treatment: its handlers' model
-calls land in `rounds`, their statements in `sql`, their messages in `messages`, and their cost in
-`inr`. `who` and `persona` are both `queue`, which puts the proactive surface in `report.mjs`'s
-split table as its own row beside the four people — the reading that was impossible before.
-
-`say` is empty, because nobody typed. An invented sentence there would be the harness putting
-words in the product's mouth, and `report.mjs` renders these turns under *What ran* and *What
-went out unprompted* rather than *What they typed*.
-
-### F-BV · A window over `job` cannot answer "what ran in this turn", and never could
-
-`_capture.ts` asked for `coalesce(locked_at, run_at, created_at) >= cursor and status <> 'pending'`.
-Every part of that is defensible and the whole is unanswerable, because **no column on `job`
-records when a job finished**: `run_at` is when it was DUE, `created_at` is when it was MADE, and
-both `live.ts`'s drain and `lib/jobs/runner.ts`'s `finish` set `locked_at = null` on completion
-(0002_schema.sql:355-368 is the whole column list). The `coalesce` therefore fell through to
-`run_at`, and every already-finished job still scheduled ahead of the cursor re-listed on every
-turn for the rest of the run.
-
-Measured, not argued:
-
-- **6,912 job strings across 68 turns** — mean 101.6 — from **31 distinct values**, 1,324 of them
-  the same `materialize_sessions:done`.
-- The count falls **161 → 66** and plateaus exactly on simulated-day boundaries; **61 of 67**
-  consecutive turns are a strict sub-multiset of the turn before. That is a shrinking horizon
-  being rendered as per-turn work.
-- Against the live database on 20 Aug: **560 of 567** finished jobs have `locked_at` null, and
-  with the cursor at `app.now()` the old predicate returns **25 finished jobs from 9 distinct
-  values** — 14 `done`, 10 `cancelled`, 1 `skipped`, all with `run_at` ahead of the clock — for a
-  turn in which nothing ran at all.
-- `report.mjs` rendered this as `Queue: …` under each turn, so a reader saw ~100 queue events per
-  turn and concluded the queue was heavily instrumented.
-
-`drain()` has always returned exactly the right answer — a `string[]` of `kind:status` for the
-jobs it just ran — and `live.ts` was discarding it. The fix is to record that: `fn` now receives a
-`TurnSink` and pushes into `sink.jobs`, and the query is gone. There is no predicate left to get
-wrong.
-
-**A `ran_at` column was considered and deliberately not added.** It would let the table answer the
-question directly, and `lib/jobs/runner.ts` has the same blind spot in production. But no product
-behaviour needs it — `job_tick` (0029) already covers whether the beat is alive — and adding a
-column to the product's schema to serve an instrument inverts this repo's own layering. Recorded
-here so the next reader does not re-derive the choice.
 
 ### F-BZ · A statement cannot say which turn sent it, so a drain cannot be recorded as the several turns it is
 
@@ -879,6 +846,15 @@ failure it guards against is the one that cannot be undone from inside the produ
 quality rating has been dropped takes every tenant on it down together, and the first evidence
 would be parents silently not receiving messages.
 
+**28 Aug 2026 — the roll-up is built; the policy number is what remains.**
+`app.tenant_quality_proxies` (0055) is the scheduled-read half: one row per academy, trailing
+seven days on the academy's OWN clock — sends, failures, reads, inbound, contacts messaged vs
+replied, opt-outs — service-role only, read with `node scripts/q.mjs`. The digest census also
+already carries `sends_failed`, so failures reach the owner's evening digest as news. Still
+open, deliberately: the per-sender backoff NUMBER (a policy decision to argue from a real
+quality rating), and whether AD-DELIVERY-FAILURE earns a standalone immediate raiser beside
+the digest's mention.
+
 ### F-CI, fresh evidence · 23 Aug 2026 — the third owner departure, on his stated red line
 
 `2026-08-22-19-49-sim-p882`, day 18. Rahul Menon's brief lists three red lines, and the second is
@@ -1050,26 +1026,6 @@ he coached two sessions without ever being confirmable, and the 15-minutes-to-se
 fired at the owner four days running about a coach who was present every time. The
 cross-person half (why the deciding turn could not see he existed) is F-ES.
 
-### F-EN · A slot written in the evening has no sessions until the overnight beat, and the same evening's turns fall into the gap
-
-**Saw:** both 23 Aug week sims, and the gap has two halves — the judge pass sharpened the first.
-Blank, day 5: the `session` rows existed from day-4 morning; what did not exist were Dinesh's
-`session_coach` stamps, because his `class_coach` assignment went in at 17:20 and the stamps
-materialise on the overnight pass — so his "who's on today" read empty, the model burned its round
-cap investigating, and the recovery round asserted *"no dated sessions have materialised — this is
-a setup thing on my side"* (false twice over). Eager, day 4: slot inserts at 17:20 produced zero
-sessions until the overnight beat; Sunil's tap aftermath landed inside, and the model noticed,
-verified with four reads, set a watch that fired next morning and correctly went silent — handled
-perfectly, and the gap still cost the most expensive investigation in the run (₹0.80, 86s).
-
-**Where it lives.** The plan that writes `class_slot` or `class_coach` should leave the horizon
-existing the moment the timetable does — enqueue an immediate materialize for that class (or run
-it in the plan's own transaction, the way `cancelJobsForSession` sweeps in-transaction).
-`materializeSessions` is idempotent on `unique (class_id, starts_at)` by its own design, so an
-immediate pass is safe and the overnight beat stays as the horizon-extender. Until then every
-evening timetable or staffing edit manufactures a gap that either misleads a turn (blank) or
-taxes one (eager).
-
 *(F-EO — the hand-over carrying only the opening message — closed 23 Aug 2026 by
 `carryDeskTranscript`; see CLOSED.md. The architectural question it raised — whether the desk
 should be a separate brain at all — is being settled the way ARCHITECTURE.md demands, by an A/B
@@ -1180,6 +1136,15 @@ scoped by 0019's `turn_id` stamp — needs an `audit_entry` schema look before t
 Until then, a reader of `changed` on overlapping turns is reading a union; the turn-level
 `turnIds` field is the disambiguator that already exists.
 
+**Verified 28 Aug 2026, and the easy fix is already in — so this is deeper than it reads.**
+`_capture.ts` HAS scoped the audit query by `turn_id in (this record's turns) or turn_id is
+null` since 21 Aug (`owned('a.turn_id')`, `179411f`), and `withSession` has stamped
+`app.turn_id` on every session that carries a turnId since `serviceFrom`. Both predate the
+df05 observation — so the bleeding venue insert must have reached Postgres with `turn_id`
+NULL (a write path whose SessionCtx dropped the turn id) or under the other turn's id. The
+next move is reading df05's record for the row's actual stamp, then finding which write path
+loses the ctx; do not re-fix the capture side, it is not the hole.
+
 ### F-FE · An event's `who` binds by display name, so a product-created stranger sharing a cast name takes their weather
 
 **Saw:** 24 Aug 2026, by construction during the withheld-cast change (F-FA): `_events.ts` builds
@@ -1194,3 +1159,42 @@ construction) with the name kept for display, or refuse an `admit` that would sh
 name. The world-file validator already refuses in-file duplicates, so this only fires when the
 PRODUCT creates the namesake — rare, and legible in the roster when it happens.
 
+### F-FL · `opted_out` is a state with no exit
+
+**Saw:** the 28 Aug 2026 front-desk audit, by grep rather than by drive: no code path
+anywhere sets `opted_out_at = null`; the 0004 state trigger's case handles only
+`registered|prospect → engaged`; and the send path's own comment promised the person
+"never learns that messaging back turns it on again" — a mechanism that does not exist.
+The comment now tells the truth (lib/messaging/send.ts, gate 1), and the desk's own
+half is fixed alongside it: `stop_messaging`'s acknowledgement rides
+`ComposeSpec.optOutAck`, so the person who asks the desk to stop is no longer answered
+with a silence their own opt-out manufactured.
+
+**What remains, and why it is not built here:** whether an inbound message should ever
+clear `opted_out_at` is a policy decision, not a mechanism gap — a person writing "why
+am I still being charged?" has asked a question, not to resume messaging, and clearing
+the row on any inbound would resubscribe every complainer. The model CAN already act
+when someone plainly asks to come back (the row is writable under the owner's session),
+and the standing block shows the opt-out state on every turn. What has no route is the
+person doing it THEMSELVES from an opted-out phone in one exchange. Options when this
+is designed: an explicit re-opt-in two-tap (the opt-out protocol's mirror), or an
+owner-side operation. Do not close this with an auto-clear on inbound.
+
+### F-FM · `drive` is the one instrument outside the record spine
+
+**Saw:** the 28 Aug 2026 instrument audit. `scripts/README.md` says every instrument in
+its table records to `.probe/runs/` in one shape with no flag to record less;
+`drive.ts` writes no run directory at all — its only persistent trace is
+`turn.tool_calls`, which `lib/agent/turn-trace.ts` clips at 4,000 characters unless the
+SERVER was started with `PROBE_FULL_TRACE=1`. So the default `drive` session is the one
+recording path that truncates, on the sharpest single-sentence instrument — forget the
+env var and the flight recorder for the exact turn you drove is clipped, with a re-run
+as the only fix. `turn-record.ts` can back-fill a record from the `turn` table, but
+only as whole as the stored projection was.
+
+**Where it lives:** either `drive say`/`tap` auto-backfill through the existing
+`turn-record.ts` path into a per-session run directory, or (cheaper) the emulator
+transport defaults `PROBE_FULL_TRACE=1` so the database copy is whole and the backfill
+is always lossless. The first makes `drive` a real instrument; the second only stops
+the truncation. Recorded rather than built: the choice changes what a `drive` session
+IS, and the README's one-shape rule should not be un-broken by accident.

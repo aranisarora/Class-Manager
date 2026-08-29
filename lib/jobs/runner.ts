@@ -27,12 +27,12 @@
  */
 
 import type { Job } from '@/lib/types'
-import { MAX_ATTEMPTS, MISSED_AFTER_MINUTES, type JobKind } from './kinds'
+import { BOOKEND_KINDS, MAX_ATTEMPTS, MISSED_AFTER_MINUTES, type JobKind } from './kinds'
 import { JobSkip, msOf, setJobOrigin, setNoteSink, withInfra } from './util'
 import { materializeSessions, postClassRegister, registerExpiry } from './handlers/sessions'
 import { coachComing, coachDay, coachNudge } from './handlers/coach'
 import {
-  clientOutcome, clientReminder, clientSessionTrouble, firstContactBatch,
+  clientOutcome, clientReceipt, clientReminder, clientSessionTrouble, firstContactBatch,
 } from './handlers/client'
 import {
   adminEscalateUncovered, adminEveningDigest, adminMorningBrief, coachNotOnboarded,
@@ -53,6 +53,7 @@ export const HANDLERS: Record<JobKind, (job: Job) => Promise<void>> = {
   post_class_register: postClassRegister,
   register_expiry: registerExpiry,
   client_outcome: clientOutcome,
+  client_receipt: clientReceipt,
   admin_morning_brief: adminMorningBrief,
   admin_evening_digest: adminEveningDigest,
   monthly_lines: monthlyLines,
@@ -237,7 +238,12 @@ async function fail(job: Job, error: string): Promise<boolean> {
  *   the two bookends labelled MISSED rather than overdue. `running` belongs in that list
  *   because a row whose worker died is the one status meaning nobody is coming back for
  *   it. Without this a scheduler reports only what it managed to do, which is the half of
- *   the truth that never contains the outage.
+ *   the truth that never contains the outage. It also reports the outage this shape is
+ *   BLIND to — a job that was never inserted is not overdue — by asserting, for every
+ *   live academy's session inside the plan horizon, that its `post_class_register` job
+ *   exists in some status: that job is planned unconditionally per session, so its
+ *   absence means the whole ladder was never enqueued. A month of judged drives missed
+ *   F-FI's dead re-enqueue precisely because no instrument asked this question.
  */
 async function reportMissed(log: string[]): Promise<void> {
   const rows = await withInfra((tx) => tx<
@@ -264,11 +270,47 @@ async function reportMissed(log: string[]): Promise<void> {
      limit 50
   `)
   for (const r of rows) {
-    const loud = r.kind === 'admin_evening_digest' || r.kind === 'admin_morning_brief'
+    const loud = (BOOKEND_KINDS as readonly string[]).includes(r.kind)
     log.push(
       `${loud ? 'MISSED' : 'overdue'} ${r.kind} ${r.dedupe_key} `
       + `(due ${new Date(msOf(r.run_at)).toISOString()}, ${r.status}`
       + `${r.last_error ? `: ${r.last_error}` : ''})`,
+    )
+  }
+
+  // The blindness the overdue query cannot cure: a job never INSERTED is not
+  // overdue. `post_class_register` is planned unconditionally for every session
+  // of a live academy (plan-ahead), so a near-term session with no such row in
+  // ANY status means the whole ladder was never enqueued — the F-FI shape,
+  // where a swept ladder's cancelled rows absorbed the re-plan and every
+  // instrument read the silence as health. Payload-matched, not key-matched,
+  // because the key carries the session's reschedule generation.
+  const unplanned = await withInfra((tx) => tx<
+    { id: string; class_name: string; starts_at: Date }[]
+  >`
+    select s.id, cl.name as class_name, s.starts_at
+      from session s
+      join class cl on cl.id = s.class_id
+      join academy a on a.id = s.academy_id
+      join sender sn on sn.id = a.sender_id
+     where sn.is_sim = false
+       and a.onboarding_state = 'live'
+       and s.status = 'scheduled'
+       and s.starts_at >= app.now()
+       and s.starts_at <= app.now() + interval '48 hours'
+       and not exists (
+         select 1 from job j
+          where j.kind = 'post_class_register'
+            and j.payload->>'session_id' = s.id::text
+       )
+     order by s.starts_at asc
+     limit 20
+  `)
+  for (const s of unplanned) {
+    log.push(
+      `NEVER-PLANNED ${s.class_name} session ${s.id} `
+      + `(starts ${new Date(msOf(s.starts_at)).toISOString()}) — no register job in any `
+      + `status, so this session's whole ladder was never enqueued`,
     )
   }
 }

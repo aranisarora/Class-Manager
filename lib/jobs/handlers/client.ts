@@ -21,10 +21,11 @@ import { LIMITS } from '@/lib/messaging/types'
 import { dedupe, FIRST_CONTACT_BATCH_SIZE, FIRST_CONTACT_GAP_MINUTES } from '../kinds'
 import { enqueue } from '../enqueue'
 import {
-  admins, assignedCoaches, buttonTitle, clamp, dayLabel, enrolledPlayers, firstName,
+  admins, assignedCoaches, buttonTitle, clamp, contactFor, dayLabel, enrolledPlayers, firstName,
   isCovered, isoDate, joinLines, loadAcademy, loadSession, need, note, payloadOf,
-  serviceCtx, skip, timeLabel, whenLabel, withAcademy,
+  serviceCtx, skip, timeLabel, whenLabel, withAcademy, zoned,
 } from '../util'
+import { formatINR } from '@/lib/format'
 
 /**
  * `client_reminder` — CL-REMINDER (§9.2).
@@ -103,10 +104,14 @@ export async function clientReminder(job: Job): Promise<void> {
         select count(*)::int as n from attendance
          where session_id = ${sessionId} and player_id = ${s.player_id}`
       if ((smarked?.n ?? 0) > 0) continue
+      // Payload, not key: a rescheduled session's reminders live under a
+      // generation-suffixed key (kinds.ts `dedupe`), and the sibling's rev may
+      // even differ from this job's own if a move landed between two plans.
       const cancelled = await tx<{ id: string }[]>`
         update job set status = 'cancelled'
          where status in ('pending', 'running') and kind = 'client_reminder'
-           and dedupe_key = ${dedupe.clientReminder(sessionId, s.player_id)}
+           and payload->>'session_id' = ${sessionId}
+           and payload->>'player_id' = ${s.player_id}
            and id <> ${job.id}
          returning id`
       if (cancelled.length) together.push(s)
@@ -600,4 +605,64 @@ type ContactTarget = {
   /** Null once the lateral went LEFT: enrolled, but nothing scheduled yet. */
   starts_at: Date | null
   venue_name: string | null
+}
+
+/**
+ * `client_receipt` — CL-RECEIPT (§11.5): a confirmed payment owes its payer a
+ * receipt, composed from the payment row itself.
+ *
+ * @mechanism clientReceipt — the receipt fires from the `payment` row, whoever wrote it —
+ *   an admin's tap, the model's raw steps — via the plan-ahead sweep, the same shape as
+ *   the attendance sweep. The wrapper operation that used to raise this moment was
+ *   deleted, and by the catalog's own contract a raw write raises no moment — so
+ *   CL-RECEIPT spent that whole era as a promise with no raiser: the prefix told the
+ *   model "code guarantees these reach you", the model lawfully never volunteered one,
+ *   and no family ever received a receipt for any confirmed payment. Idempotent on the
+ *   payment's identity (`receipt:<payment_id>`, both as dedupe key and idempotency key),
+ *   so a re-run cannot thank anybody twice. Closes F-FK.
+ */
+export async function clientReceipt(job: Job): Promise<void> {
+  const p = payloadOf(job)
+  const academyId = need(p, 'academy_id')
+  const paymentId = need(p, 'payment_id')
+
+  const plan = await withAcademy(academyId, async (tx) => {
+    const academy = await loadAcademy(tx, academyId)
+    if (!academy) skip('academy gone')
+    const [pay] = await tx<
+      {
+        id: string
+        amount: string
+        reference: string | null
+        confirmed_at: Date
+        holder_person_id: string
+        holder_name: string
+      }[]
+    >`
+      select p.id, p.amount::text as amount, p.reference, p.confirmed_at,
+             a.holder_person_id, pe.full_name as holder_name
+        from payment p
+        join account a on a.id = p.account_id
+        join person pe on pe.id = a.holder_person_id
+       where p.id = ${paymentId} and p.academy_id = ${academyId} and p.status = 'confirmed'
+    `
+    if (!pay) skip('payment gone or no longer confirmed')
+    const contactId = await contactFor(tx, academyId, pay.holder_person_id)
+    if (!contactId) skip('no reachable number for this family')
+    return { academy, pay, contactId }
+  })
+
+  const { academy, pay, contactId } = plan
+  const when = zoned(pay.confirmed_at instanceof Date ? pay.confirmed_at : new Date(pay.confirmed_at), academy.timezone).toFormat('d LLL')
+  const ref = pay.reference ? ` (ref ${pay.reference})` : ''
+  await composeAndSend(serviceCtx(academy.id), {
+    toContactId: contactId as string,
+    header: clamp(academy.name, LIMITS.headerChars),
+    body: clamp(`Received ${formatINR(pay.amount)} on ${when}${ref}. Thanks — this message is your receipt.`, LIMITS.bodyChars),
+    catalogId: 'CL-RECEIPT',
+    fixed: true,
+    subjectPersonIds: [pay.holder_person_id],
+    idempotencyKey: `receipt:${pay.id}`,
+  })
+  note(`receipt sent — ${formatINR(pay.amount)} to ${firstName(pay.holder_name)}`)
 }

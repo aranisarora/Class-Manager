@@ -57,6 +57,7 @@ const DEFAULT_COACH_DAY_AT = '07:00:00'
 
 type SessionRow = {
   id: string; class_id: string; class_name: string; starts_at: Date; ends_at: Date
+  rescheduled_n: number
 }
 type CoachRow = {
   session_id: string; coach_id: string; person_id: string; status: string
@@ -365,7 +366,8 @@ export async function planAheadFor(academyId: string): Promise<number> {
 
     // -- the 48-hour window -----------------------------------------------------
     const sessions = await tx<SessionRow[]>`
-      select s.id, s.class_id, cl.name as class_name, s.starts_at, s.ends_at
+      select s.id, s.class_id, cl.name as class_name, s.starts_at, s.ends_at,
+             s.rescheduled_n
         from session s join class cl on cl.id = s.class_id
        where s.academy_id = ${academyId}
          and s.status = 'scheduled'
@@ -424,10 +426,18 @@ export async function planAheadFor(academyId: string): Promise<number> {
         if (!c.confirmed_at && !c.arrived_at) {
           const comingLead = leadFor('coachComingLeadMinutes', c.settings, academy, null)
           const nudgeLead = leadFor('coachNudgeLeadMinutes', c.settings, academy, null)
-          push('coach_coming', new Date(start - comingLead * 60_000),
-            dedupe.coachComing(s.id, c.coach_id), { session_id: s.id, coach_id: c.coach_id })
+          // A 6am class's T-60 ask lands at 5am, inside quiet hours, where the
+          // send floor suppresses it and a confirmation is never redelivered by
+          // timer (its asker owns the re-ask) — so the coach for the early class
+          // was simply never asked. Pulled back to the evening before, the same
+          // move `client_reminder` makes below. The NUDGE is deliberately not
+          // pulled: minutes-before urgency pulled to the evening is just the ask
+          // twice, and a nudge the night suppresses is already backstopped by
+          // the T-15 admin escalation, which quiet hours exempt.
+          push('coach_coming', pullOutOfQuietHours(new Date(start - comingLead * 60_000), tz, academy.settings),
+            dedupe.coachComing(s.id, c.coach_id, s.rescheduled_n), { session_id: s.id, coach_id: c.coach_id })
           push('coach_nudge', new Date(start - nudgeLead * 60_000),
-            dedupe.coachNudge(s.id, c.coach_id), { session_id: s.id, coach_id: c.coach_id })
+            dedupe.coachNudge(s.id, c.coach_id, s.rescheduled_n), { session_id: s.id, coach_id: c.coach_id })
         }
 
         // §8.1 — invited, session inside 48h: the admin is told, not the coach,
@@ -440,12 +450,12 @@ export async function planAheadFor(academyId: string): Promise<number> {
 
       // T-15: the admin, about the session, never about a person (§6.3, §8.2).
       push('admin_escalate_uncovered', new Date(start - escalateLead * 60_000),
-        dedupe.adminEscalateUncovered(s.id), { session_id: s.id })
+        dedupe.adminEscalateUncovered(s.id, s.rescheduled_n), { session_id: s.id })
 
       // Only speaks if the session is actually in trouble (§9.2).
-      push('client_session_trouble', s.starts_at, dedupe.clientSessionTrouble(s.id), { session_id: s.id })
+      push('client_session_trouble', s.starts_at, dedupe.clientSessionTrouble(s.id, s.rescheduled_n), { session_id: s.id })
 
-      push('post_class_register', s.ends_at, dedupe.postClassRegister(s.id), { session_id: s.id }, true)
+      push('post_class_register', s.ends_at, dedupe.postClassRegister(s.id, s.rescheduled_n), { session_id: s.id }, true)
       // The expiry ALERT waits for morning when the grace period ends inside
       // quiet hours — an 8:30pm class used to page the admin at 22:30. Deferred
       // forward (never pulled back: pulling back would fire it before the grace
@@ -453,7 +463,7 @@ export async function planAheadFor(academyId: string): Promise<number> {
       // marked overnight simply skips.
       push('register_expiry',
         deferPastQuietHours(new Date(s.ends_at.getTime() + expiryHours * 3600_000), tz, academy.settings),
-        dedupe.registerExpiry(s.id), { session_id: s.id }, true)
+        dedupe.registerExpiry(s.id, s.rescheduled_n), { session_id: s.id }, true)
 
       for (const e of enrolByClass.get(s.class_id) ?? []) {
         if (e.started_on > date) continue
@@ -476,7 +486,7 @@ export async function planAheadFor(academyId: string): Promise<number> {
         // default 14h lead. Quiet-hours times are pulled back to the evening
         // before (util.pullOutOfQuietHours).
         push('client_reminder', pullOutOfQuietHours(new Date(start - leadHours * 3600_000), tz, academy.settings),
-          dedupe.clientReminder(s.id, e.player_id), { session_id: s.id, player_id: e.player_id })
+          dedupe.clientReminder(s.id, e.player_id, s.rescheduled_n), { session_id: s.id, player_id: e.player_id })
       }
     }
 
@@ -505,6 +515,31 @@ export async function planAheadFor(academyId: string): Promise<number> {
         deferPastQuietHours(nowAt, academy.timezone, academy.settings),
         dedupe.clientOutcome(m.session_id, m.player_id),
         { session_id: m.session_id, player_id: m.player_id },
+        true,
+      )
+    }
+
+    // -- payments confirmed but never receipted (§11.5, CL-RECEIPT) -------------
+    // From the ROW, whoever wrote it — an admin's tap, the model's raw steps —
+    // the same shape as the attendance sweep above, because the operation that
+    // used to raise this moment died with the wrappers and the catalog's own
+    // contract ("a raw write raises no moment") then made CL-RECEIPT a promise
+    // with no raiser: the prefix told the model code guarantees the receipt, so
+    // the model lawfully never volunteered one, and no family ever got one.
+    // Bounded to a week so the first deploy cannot dump months of back-receipts.
+    const receipts = await tx<{ id: string }[]>`
+      select p.id
+        from payment p
+       where p.academy_id = ${academyId}
+         and p.status = 'confirmed'
+         and p.confirmed_at >= app.now() - interval '7 days'
+    `
+    for (const r of receipts) {
+      push(
+        'client_receipt',
+        deferPastQuietHours(nowAt, academy.timezone, academy.settings),
+        dedupe.clientReceipt(r.id),
+        { payment_id: r.id },
         true,
       )
     }

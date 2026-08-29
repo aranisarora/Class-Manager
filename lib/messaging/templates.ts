@@ -281,7 +281,7 @@ export const TEMPLATES: Record<TemplateName, TemplateDef> = {
       'Open this in your chat with them to read it all and reply there.',
     quickReply: 'Open',
     covers:
-      'every escalation — AD-ESCALATE-UNCONFIRMED, AD-COACH-LATE, AD-COACH-NOT-ONBOARDED, AD-REGISTER-MISSING, AD-RECONCILE, AD-NEW-TRIAL, AD-OPT-OUT, AD-DELIVERY-FAILURE',
+      'every escalation — AD-ESCALATE-UNCONFIRMED, AD-COACH-LATE, AD-COACH-NOT-ONBOARDED, AD-REGISTER-MISSING, AD-RECONCILE, AD-NEW-TRIAL, AD-OPT-OUT, AD-DELIVERY-FAILURE, AD-NEEDS-YOU',
     example:
       "Message from Sharwin Academy.\n\nIssue: Saturday 8:30am Advanced is uncovered\nDetails: Vinod declined, nobody has claimed it, starts in 15 minutes.\n\nOpen this in your chat with them to read it all and reply there.",
     exampleParams: {

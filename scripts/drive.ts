@@ -8,8 +8,10 @@
  *
  *   npm run drive -- world                       # who exists, and their ids
  *   npm run drive -- reset                       # wipe everything, no seed
- *   npm run drive -- seed                        # the deterministic fixture, if wanted
- *   npm run drive -- seed --stage roster         # one business at a named lifecycle stage
+ *   npm run drive -- seed --stage roster         # one sandbox business at a named lifecycle
+ *                                                # stage (the bare `seed` fixture is gone —
+ *                                                # 21 Aug 2026; it used to wipe the live
+ *                                                # sender credentials)
  *   npm run drive -- academy "Ace TT" --admin "Sharwin Rao"
  *   npm run drive -- new <academyId> --name "Meera Iyer" --role client
  *   npm run drive -- say <contactId> "saturday batch pls"

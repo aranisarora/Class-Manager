@@ -2014,9 +2014,38 @@ async function refusalHint(
   )
   if (!writes.length) return null
   try {
+    // Recorded like every other statement the turn issues. This diagnostic
+    // re-run used to reach Postgres with no `recordSql` around it, so the very
+    // statements that decided between "refused" and "matched nothing" appeared
+    // in no record — and `SqlRecord.rolledBack` was vacuous on exactly the path
+    // that always rolls back.
     const matched = await withRollback(serviceFrom(ctx), async (tx) => {
       let n = 0
-      for (const w of writes) n += rowCount(await tx.unsafe(w.write))
+      for (const w of writes) {
+        const startedAt = Date.now()
+        let count = 0
+        let error: string | undefined
+        try {
+          count = rowCount(await tx.unsafe(w.write))
+        } catch (e) {
+          error = e instanceof Error ? e.message : String(e)
+          throw e
+        } finally {
+          recordSql(() => ({
+            kind: 'write' as const,
+            sql: w.write,
+            rolledBack: true,
+            note: 'refusalHint re-run — service role, always rolled back; a diagnosis, not a write',
+            role: 'service',
+            academyId: ctx.academyId ?? null,
+            personId: 'personId' in ctx ? (ctx.personId ?? null) : null,
+            ms: Date.now() - startedAt,
+            rowCount: error ? null : count,
+            ...(error ? { error } : {}),
+          }))
+        }
+        n += count
+      }
       return n
     })
     if (matched > 0) {
@@ -2047,7 +2076,9 @@ async function refusalHint(
         `or the WHERE names something that does not exist. Read it back before writing again, and if somebody else ` +
         `got there first, say so rather than retrying.`
       : `the rows genuinely do not exist — the same writes match nothing even with no permissions in the way. ` +
-        `The WHERE is wrong, not the permission. Read the row back and check the id before writing again.`
+        `The WHERE is wrong, not the permission. Read the row back and compare EVERY predicate in the WHERE ` +
+        `against what it holds — a state or status column is the usual mismatch, not the id. (A recovery round ` +
+        `once spent itself re-checking a correct id while status = 'invited' was the clause that failed.)`
   } catch {
     /* a hint is an improvement on the error, never a precondition for reporting it */
     return null

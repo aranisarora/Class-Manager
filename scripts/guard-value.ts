@@ -30,7 +30,7 @@
  * the bug the first version of this file had. `looseParse` is the fix and the
  * reason this measurement is not simply `JSON.parse`.
  */
-import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { encodeForWhatsApp, proseViolations } from '@/lib/agent/lint'
 import { rowShapedFact } from '@/lib/agent/memory'
@@ -53,9 +53,53 @@ type Rec = {
 
 const ROOT = '.probe/runs'
 const runs: { run: string; file: string; recs: Rec[] }[] = []
+
+/**
+ * A current-shape turn (`record.json`, 20 Aug 2026 onward) read as the Rec this
+ * file's guards expect. Without this adapter the loop below matched only the
+ * pre-20-Aug per-arm array files, so the tool silently reported on the archive
+ * while APPEARING current — the corpus was frozen at "385 turns as of 17 Aug"
+ * and nothing said so. Exactly the measuring-dead-code trap the 23 Aug review
+ * names.
+ */
+function fromRecordTurn(t: any): Rec {
+  return {
+    case: String(t?.id ?? t?.n ?? ''),
+    persona: t?.persona ? String(t.persona) : undefined,
+    said: t?.say ? String(t.say) : undefined,
+    reply: {
+      body: typeof t?.reply === 'string' ? t.reply : undefined,
+      all: Array.isArray(t?.messages)
+        ? t.messages.map((m: any) => ({ body: String(m?.body ?? ''), buttons: m?.buttons }))
+        : [],
+    },
+    tools: Array.isArray(t?.rounds)
+      ? t.rounds
+          .filter((r: any) => r?.name && !String(r.name).startsWith('('))
+          .map((r: any) => ({
+            round: Number(r?.round ?? 0),
+            name: String(r.name),
+            args: typeof r?.args === 'string' ? r.args : JSON.stringify(r?.args ?? ''),
+            result: typeof r?.result === 'string' ? r.result : JSON.stringify(r?.result ?? ''),
+          }))
+      : [],
+  }
+}
+
 for (const d of readdirSync(ROOT).sort()) {
   const dir = join(ROOT, d)
   if (!statSync(dir).isDirectory()) continue
+  const record = join(dir, 'record.json')
+  if (existsSync(record)) {
+    try {
+      const rec = JSON.parse(readFileSync(record, 'utf8'))
+      const turns = Array.isArray(rec?.turns) ? rec.turns : []
+      if (turns.length) runs.push({ run: d, file: 'record.json', recs: turns.map(fromRecordTurn) })
+    } catch {
+      console.error(`  guard-value: could not read ${record} — skipped`)
+    }
+    continue
+  }
   for (const f of readdirSync(dir)) {
     if (!f.endsWith('.json') || f === 'judgements.json') continue
     const recs = JSON.parse(readFileSync(join(dir, f), 'utf8'))
